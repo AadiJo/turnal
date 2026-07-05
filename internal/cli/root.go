@@ -9,16 +9,26 @@ import (
 
 const version = "0.0.1"
 
-var rootCmd = &cobra.Command{
-	Use:     "acs",
-	Short:   "acs is a CLI application",
-	Version: version,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return cmd.Help()
-	},
+func NewRootCmd() *cobra.Command {
+	rootCmd := &cobra.Command{
+		Use:     "agent-vcs",
+		Short:   "Local-first version control for AI agent activity",
+		Version: version,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
+	}
+
+	rootCmd.AddCommand(initCmd())
+	rootCmd.AddCommand(checkpointCmd())
+	rootCmd.AddCommand(diffCmd())
+	rootCmd.AddCommand(versionCmd())
+
+	return rootCmd
 }
 
 func Execute() {
+	rootCmd := NewRootCmd()
 	rootCmd.SetOut(os.Stdout)
 	rootCmd.SetErr(os.Stderr)
 	rootCmd.SetVersionTemplate("{{.Version}}\n")
