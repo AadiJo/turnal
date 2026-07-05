@@ -59,8 +59,12 @@ func Init(root primitives.WorkspaceRoot) (*Repo, error) {
 		return nil, err
 	}
 
-	if _, err := runHiddenGit(repo, "", "rev-parse", "--is-bare-repository"); err != nil {
+	bare, err := repo.HiddenGitBare()
+	if err != nil {
 		return nil, fmt.Errorf("verify hidden git repo: %w", err)
+	}
+	if !bare {
+		return nil, fmt.Errorf("hidden git repo is not bare: %s", repo.GitDir)
 	}
 
 	return repo, nil

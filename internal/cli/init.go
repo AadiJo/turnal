@@ -23,11 +23,16 @@ func initCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			repo, err := checkpoint.Init(root)
+			result, err := checkpoint.Bootstrap(root)
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "initialized hidden git repo: %s\n", repo.GitDir)
+			fmt.Fprintf(cmd.OutOrStdout(), "initialized hidden git repo: %s\n", result.Repo.GitDir)
+			if result.GitignoreUpdated {
+				fmt.Fprintf(cmd.OutOrStdout(), "updated gitignore: %s\n", result.GitignorePath)
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "gitignore already configured: %s\n", result.GitignorePath)
+			}
 			return nil
 		},
 	}
