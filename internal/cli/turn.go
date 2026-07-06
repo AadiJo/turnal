@@ -12,8 +12,9 @@ import (
 
 func turnCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "turn",
-		Short: "Create manual turn checkpoints",
+		Use:    "turn",
+		Short:  "Create manual turn checkpoints",
+		Hidden: true,
 	}
 	cmd.AddCommand(turnStartCmd())
 	cmd.AddCommand(turnFinishCmd())
