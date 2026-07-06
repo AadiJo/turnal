@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"agent-vcs-again/internal/adapters"
 	"agent-vcs-again/internal/checkpoint"
 	agentconfig "agent-vcs-again/internal/config"
 	"agent-vcs-again/internal/primitives"
@@ -38,6 +39,18 @@ func statusCmd() *cobra.Command {
 			if configErr != nil {
 				status.Problems = append(status.Problems, configErr.Error())
 			}
+			var hookHealth []adapters.HookHealth
+			hooksOK := false
+			if configErr == nil {
+				hookHealth = adapters.InspectHooks(root.String(), effective.Hooks.Command)
+				hooksOK = true
+				for _, health := range hookHealth {
+					if !health.OK() {
+						hooksOK = false
+						status.Problems = append(status.Problems, health.Problems...)
+					}
+				}
+			}
 			out := cmd.OutOrStdout()
 			fmt.Fprintf(out, "workspace: %s\n", status.WorkspaceRoot)
 			fmt.Fprintf(out, "metadata:  %s\n", status.MetadataDir)
@@ -47,6 +60,11 @@ func statusCmd() *cobra.Command {
 			if configErr == nil {
 				fmt.Fprintf(out, "git-sync:   %t\n", effective.GitSync.Enabled)
 				fmt.Fprintf(out, "rollback:   %s\n", effective.Rollback.Mode)
+				if hooksOK {
+					fmt.Fprintln(out, "hooks:      ok")
+				} else {
+					fmt.Fprintln(out, "hooks:      needs attention")
+				}
 			}
 			fmt.Fprintf(out, "state:      ")
 			if status.OK() {

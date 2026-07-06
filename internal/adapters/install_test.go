@@ -177,6 +177,30 @@ func TestInstallHooksCanUseConfiguredCommandPrefix(t *testing.T) {
 	}
 }
 
+func TestInspectHooksReportsInstalledHooks(t *testing.T) {
+	root := t.TempDir()
+	opts := InstallOptions{HookCommand: "/tmp/agent-vcs-live"}
+	if _, err := InstallWithOptions(root, []Target{TargetClaude, TargetCodex}, opts); err != nil {
+		t.Fatalf("InstallWithOptions: %v", err)
+	}
+
+	health := InspectHooks(root, opts.HookCommand)
+	for _, item := range health {
+		if !item.OK() {
+			t.Fatalf("%s health problems = %#v", item.Target, item.Problems)
+		}
+	}
+
+	health = InspectHooks(root, "agent-vcs")
+	var problems []string
+	for _, item := range health {
+		problems = append(problems, item.Problems...)
+	}
+	if len(problems) == 0 {
+		t.Fatal("InspectHooks reported no problems for mismatched command")
+	}
+}
+
 func TestResolveTargets(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".claude"), 0o755); err != nil {
