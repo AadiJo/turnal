@@ -13,6 +13,15 @@ import (
 	"agent-vcs-again/internal/turns"
 )
 
+type checkpointEventPayload struct {
+	Turn          uint64 `json:"turn"`
+	Phase         string `json:"phase"`
+	CommitSHA     string `json:"commit_sha"`
+	Ref           string `json:"ref"`
+	EventSeqStart uint64 `json:"event_seq_start"`
+	EventSeqEnd   uint64 `json:"event_seq_end"`
+}
+
 func TestHandleClaudeHookPayloadCreatesAutomaticTurn(t *testing.T) {
 	requireGit(t)
 
@@ -69,6 +78,14 @@ func TestHandleClaudeHookPayloadCreatesAutomaticTurn(t *testing.T) {
 	}
 	if got := eventTypes(events); !sameEventTypes(got, wantTypes) {
 		t.Fatalf("event types = %#v, want %#v", got, wantTypes)
+	}
+	preCheckpoint := checkpointPayloadForPhase(t, events, primitives.CheckpointPhasePre)
+	if preCheckpoint.EventSeqStart != 1 || preCheckpoint.EventSeqEnd != 3 {
+		t.Fatalf("pre checkpoint event range = %d-%d, want 1-3", preCheckpoint.EventSeqStart, preCheckpoint.EventSeqEnd)
+	}
+	postCheckpoint := checkpointPayloadForPhase(t, events, primitives.CheckpointPhasePost)
+	if postCheckpoint.EventSeqStart != 4 || postCheckpoint.EventSeqEnd != 9 {
+		t.Fatalf("post checkpoint event range = %d-%d, want 4-9", postCheckpoint.EventSeqStart, postCheckpoint.EventSeqEnd)
 	}
 	for _, event := range events {
 		if event.RawRef == "" {
@@ -154,6 +171,16 @@ func TestNextPromptFinishesStaleActiveTurn(t *testing.T) {
 	if _, err := repo.DiffTurn(sessionID, turn1); err != nil {
 		t.Fatalf("turn 1 should have pre/post checkpoints: %v", err)
 	}
+	turn2, _ := primitives.NewTurnID(2)
+	if preTurn1 := checkpointPayloadForTurnPhase(t, events, turn1, primitives.CheckpointPhasePre); preTurn1.EventSeqStart != 1 || preTurn1.EventSeqEnd != 3 {
+		t.Fatalf("turn 1 pre checkpoint event range = %d-%d, want 1-3", preTurn1.EventSeqStart, preTurn1.EventSeqEnd)
+	}
+	if postTurn1 := checkpointPayloadForTurnPhase(t, events, turn1, primitives.CheckpointPhasePost); postTurn1.EventSeqStart != 4 || postTurn1.EventSeqEnd != 6 {
+		t.Fatalf("turn 1 post checkpoint event range = %d-%d, want 4-6", postTurn1.EventSeqStart, postTurn1.EventSeqEnd)
+	}
+	if preTurn2 := checkpointPayloadForTurnPhase(t, events, turn2, primitives.CheckpointPhasePre); preTurn2.EventSeqStart != 7 || preTurn2.EventSeqEnd != 8 {
+		t.Fatalf("turn 2 pre checkpoint event range = %d-%d, want 7-8", preTurn2.EventSeqStart, preTurn2.EventSeqEnd)
+	}
 	active, ok, err := turns.NewManager(repo).Active(sessionID)
 	if err != nil {
 		t.Fatalf("Active: %v", err)
@@ -211,6 +238,42 @@ func countEvents(events []eventlog.Event, eventType primitives.EventType) int {
 		}
 	}
 	return count
+}
+
+func checkpointPayloadForPhase(t *testing.T, events []eventlog.Event, phase primitives.CheckpointPhase) checkpointEventPayload {
+	t.Helper()
+	for _, event := range events {
+		if event.Type != primitives.EventTypeCheckpoint {
+			continue
+		}
+		var payload checkpointEventPayload
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("unmarshal checkpoint payload: %v", err)
+		}
+		if payload.Phase == phase.String() {
+			return payload
+		}
+	}
+	t.Fatalf("missing %s checkpoint event", phase)
+	return checkpointEventPayload{}
+}
+
+func checkpointPayloadForTurnPhase(t *testing.T, events []eventlog.Event, turnID primitives.TurnID, phase primitives.CheckpointPhase) checkpointEventPayload {
+	t.Helper()
+	for _, event := range events {
+		if event.Type != primitives.EventTypeCheckpoint {
+			continue
+		}
+		var payload checkpointEventPayload
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("unmarshal checkpoint payload: %v", err)
+		}
+		if payload.Turn == turnID.Uint64() && payload.Phase == phase.String() {
+			return payload
+		}
+	}
+	t.Fatalf("missing turn %s %s checkpoint event", turnID, phase)
+	return checkpointEventPayload{}
 }
 
 func containsAll(value string, wants ...string) bool {

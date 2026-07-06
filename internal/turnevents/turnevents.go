@@ -22,10 +22,12 @@ type turnPayload struct {
 }
 
 type checkpointPayload struct {
-	Turn      uint64 `json:"turn"`
-	Phase     string `json:"phase"`
-	CommitSHA string `json:"commit_sha"`
-	Ref       string `json:"ref"`
+	Turn          uint64 `json:"turn"`
+	Phase         string `json:"phase"`
+	CommitSHA     string `json:"commit_sha"`
+	Ref           string `json:"ref"`
+	EventSeqStart uint64 `json:"event_seq_start"`
+	EventSeqEnd   uint64 `json:"event_seq_end"`
 }
 
 func (recorder Recorder) Start(sessionID primitives.SessionID, requestedTurnID primitives.TurnID) (turns.StartResult, error) {
@@ -88,13 +90,31 @@ func AppendCheckpoint(log eventlog.Log, adapter primitives.AdapterName, sessionI
 		Adapter:   adapter,
 		SourceID:  fmt.Sprintf("%s:turn:%s:checkpoint:%s", adapter, turnID, phase),
 		RawRef:    rawRef,
-		Payload: mustJSON(checkpointPayload{
-			Turn:      turnID.Uint64(),
-			Phase:     phase.String(),
-			CommitSHA: created.Commit.String(),
-			Ref:       created.Ref.String(),
-		}),
+		BuildPayload: func(context eventlog.AppendContext) (json.RawMessage, error) {
+			eventSeqStart, err := checkpointEventSeqStart(context.PreviousEvents)
+			if err != nil {
+				return nil, err
+			}
+			return mustJSON(checkpointPayload{
+				Turn:          turnID.Uint64(),
+				Phase:         phase.String(),
+				CommitSHA:     created.Commit.String(),
+				Ref:           created.Ref.String(),
+				EventSeqStart: eventSeqStart.Uint64(),
+				EventSeqEnd:   context.Seq.Uint64(),
+			}), nil
+		},
 	})
+}
+
+func checkpointEventSeqStart(events []eventlog.Event) (primitives.EventSeq, error) {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type != primitives.EventTypeCheckpoint {
+			continue
+		}
+		return primitives.NewEventSeq(events[i].Seq.Uint64() + 1)
+	}
+	return primitives.NewEventSeq(1)
 }
 
 func appendPayloadEvent(log eventlog.Log, input eventlog.AppendInput) error {

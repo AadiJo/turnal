@@ -38,15 +38,21 @@ type Event struct {
 	Hash      primitives.EventHash   `json:"hash"`
 }
 
+type AppendContext struct {
+	Seq            primitives.EventSeq
+	PreviousEvents []Event
+}
+
 type AppendInput struct {
-	SessionID primitives.SessionID
-	TurnID    *primitives.TurnID
-	Type      primitives.EventType
-	Adapter   primitives.AdapterName
-	Time      primitives.Timestamp
-	SourceID  string
-	RawRef    string
-	Payload   json.RawMessage
+	SessionID    primitives.SessionID
+	TurnID       *primitives.TurnID
+	Type         primitives.EventType
+	Adapter      primitives.AdapterName
+	Time         primitives.Timestamp
+	SourceID     string
+	RawRef       string
+	Payload      json.RawMessage
+	BuildPayload func(AppendContext) (json.RawMessage, error)
 }
 
 func Open(metadataDir string) Log {
@@ -87,9 +93,12 @@ func (log Log) Append(input AppendInput) (Event, error) {
 		return Event{}, err
 	}
 
-	payload, err := compactPayload(input.Payload)
-	if err != nil {
-		return Event{}, err
+	payload := input.Payload
+	if input.BuildPayload == nil {
+		payload, err = compactPayload(payload)
+		if err != nil {
+			return Event{}, err
+		}
 	}
 
 	if err := os.MkdirAll(log.Dir, 0o755); err != nil {
@@ -119,6 +128,20 @@ func (log Log) Append(input AppendInput) (Event, error) {
 	prevHash := GenesisHash
 	if len(events) > 0 {
 		prevHash = events[len(events)-1].Hash
+	}
+
+	if input.BuildPayload != nil {
+		payload, err = input.BuildPayload(AppendContext{
+			Seq:            nextSeq,
+			PreviousEvents: events,
+		})
+		if err != nil {
+			return Event{}, err
+		}
+		payload, err = compactPayload(payload)
+		if err != nil {
+			return Event{}, err
+		}
 	}
 
 	event := Event{

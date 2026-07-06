@@ -39,9 +39,11 @@ type Turn struct {
 }
 
 type Checkpoint struct {
-	Phase     primitives.CheckpointPhase `json:"phase"`
-	CommitSHA primitives.CommitSHA       `json:"commit_sha"`
-	Ref       primitives.CheckpointRef   `json:"ref"`
+	Phase         primitives.CheckpointPhase `json:"phase"`
+	CommitSHA     primitives.CommitSHA       `json:"commit_sha"`
+	Ref           primitives.CheckpointRef   `json:"ref"`
+	EventSeqStart *primitives.EventSeq       `json:"event_seq_start,omitempty"`
+	EventSeqEnd   *primitives.EventSeq       `json:"event_seq_end,omitempty"`
 }
 
 type RawRecord struct {
@@ -55,10 +57,12 @@ type RawRecordError struct {
 }
 
 type checkpointPayload struct {
-	Turn      uint64 `json:"turn"`
-	Phase     string `json:"phase"`
-	CommitSHA string `json:"commit_sha"`
-	Ref       string `json:"ref"`
+	Turn          uint64 `json:"turn"`
+	Phase         string `json:"phase"`
+	CommitSHA     string `json:"commit_sha"`
+	Ref           string `json:"ref"`
+	EventSeqStart uint64 `json:"event_seq_start,omitempty"`
+	EventSeqEnd   uint64 `json:"event_seq_end,omitempty"`
 }
 
 type sessionPayload struct {
@@ -189,7 +193,23 @@ func parseCheckpointPayload(sessionID primitives.SessionID, turnID primitives.Tu
 	if err != nil {
 		return Checkpoint{}, fmt.Errorf("recall invariant failed for session %s turn %s: %w", sessionID, turnID, err)
 	}
-	return Checkpoint{Phase: phase, CommitSHA: commit, Ref: ref}, nil
+	checkpoint := Checkpoint{Phase: phase, CommitSHA: commit, Ref: ref}
+	if parsed.EventSeqStart != 0 || parsed.EventSeqEnd != 0 {
+		eventSeqStart, err := primitives.NewEventSeq(parsed.EventSeqStart)
+		if err != nil {
+			return Checkpoint{}, fmt.Errorf("recall invariant failed for session %s turn %s: %w", sessionID, turnID, err)
+		}
+		eventSeqEnd, err := primitives.NewEventSeq(parsed.EventSeqEnd)
+		if err != nil {
+			return Checkpoint{}, fmt.Errorf("recall invariant failed for session %s turn %s: %w", sessionID, turnID, err)
+		}
+		if eventSeqStart.Uint64() > eventSeqEnd.Uint64() {
+			return Checkpoint{}, fmt.Errorf("recall invariant failed for session %s turn %s: checkpoint event sequence range %s-%s is invalid", sessionID, turnID, eventSeqStart, eventSeqEnd)
+		}
+		checkpoint.EventSeqStart = &eventSeqStart
+		checkpoint.EventSeqEnd = &eventSeqEnd
+	}
+	return checkpoint, nil
 }
 
 func (reader Reader) rawRecords(turn Turn) ([]RawRecord, []RawRecordError) {

@@ -79,6 +79,12 @@ func TestRecallTurnIncludesProviderEventsAndRawRecords(t *testing.T) {
 			if !turn.Complete {
 				t.Fatalf("turn.Complete=false, want true: %#v", turn)
 			}
+			if eventSeqValue(turn.PreCheckpoint.EventSeqStart) != 1 || eventSeqValue(turn.PreCheckpoint.EventSeqEnd) != 3 {
+				t.Fatalf("pre checkpoint event range = %v-%v, want 1-3", turn.PreCheckpoint.EventSeqStart, turn.PreCheckpoint.EventSeqEnd)
+			}
+			if eventSeqValue(turn.PostCheckpoint.EventSeqStart) != 4 || eventSeqValue(turn.PostCheckpoint.EventSeqEnd) != 9 {
+				t.Fatalf("post checkpoint event range = %v-%v, want 4-9", turn.PostCheckpoint.EventSeqStart, turn.PostCheckpoint.EventSeqEnd)
+			}
 			if len(turn.SessionEvents) != 1 {
 				t.Fatalf("session events len = %d, want 1", len(turn.SessionEvents))
 			}
@@ -360,6 +366,13 @@ func eventTypes(events []eventlog.Event) []primitives.EventType {
 		types = append(types, event.Type)
 	}
 	return types
+}
+
+func eventSeqValue(seq *primitives.EventSeq) uint64 {
+	if seq == nil {
+		return 0
+	}
+	return seq.Uint64()
 }
 
 func requireGit(t *testing.T) {
