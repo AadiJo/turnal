@@ -22,6 +22,7 @@ func NewRootCmd() *cobra.Command {
 
 	rootCmd.AddCommand(initCmd())
 	rootCmd.AddCommand(statusCmd())
+	rootCmd.AddCommand(showCmd())
 	rootCmd.AddCommand(turnCmd())
 	rootCmd.AddCommand(checkpointCmd())
 	rootCmd.AddCommand(diffCmd())
