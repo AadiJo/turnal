@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -174,31 +173,6 @@ var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 func stripANSI(value string) string {
 	return ansiPattern.ReplaceAllString(value, "")
-}
-
-func requireGit(t *testing.T) {
-	t.Helper()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git executable not found")
-	}
-}
-
-func workspaceRoot(t *testing.T) primitives.WorkspaceRoot {
-	t.Helper()
-	root, err := primitives.ParseWorkspaceRoot(t.TempDir())
-	if err != nil {
-		t.Fatalf("ParseWorkspaceRoot: %v", err)
-	}
-	return root
-}
-
-func sessionID(t *testing.T, value string) primitives.SessionID {
-	t.Helper()
-	sessionID, err := primitives.ParseSessionID(value)
-	if err != nil {
-		t.Fatalf("ParseSessionID: %v", err)
-	}
-	return sessionID
 }
 
 func writeFile(t *testing.T, root primitives.WorkspaceRoot, relPath, content string) {

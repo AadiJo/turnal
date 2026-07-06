@@ -17,15 +17,16 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func graphCmd() *cobra.Command {
+func logCmd() *cobra.Command {
 	var session string
 	var limit int
 	var verbose bool
-	var pager bool
+	var noPager bool
 
 	cmd := &cobra.Command{
-		Use:          "graph",
-		Short:        "Show checkpoint history as an ASCII graph",
+		Use:          "log",
+		Aliases:      []string{"graph"},
+		Short:        "Show checkpoint history",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if limit < 0 {
@@ -61,7 +62,7 @@ func graphCmd() *cobra.Command {
 			options := graphRenderOptions{
 				Verbose: verbose,
 			}
-			if pager {
+			if shouldPageOutput(cmd.OutOrStdout(), noPager) {
 				var buf bytes.Buffer
 				if err := renderCheckpointGraph(&buf, sessions, options); err != nil {
 					return err
@@ -75,7 +76,7 @@ func graphCmd() *cobra.Command {
 	cmd.Flags().StringVar(&session, "session", "", "Session id to show; defaults to all sessions")
 	cmd.Flags().IntVarP(&limit, "limit", "n", 0, "Maximum turns per session; 0 shows all")
 	cmd.Flags().BoolVar(&verbose, "verbose", false, "Show full refs, commit ids, event counts, and per-file stats")
-	cmd.Flags().BoolVar(&pager, "pager", false, "Open graph in $PAGER, defaulting to less -R")
+	cmd.Flags().BoolVar(&noPager, "no-pager", false, "Print directly instead of opening a pager")
 	return cmd
 }
 
@@ -702,6 +703,21 @@ func styleTool(value string, options graphRenderOptions) string {
 
 func styleDim(value string, options graphRenderOptions) string {
 	return ansiDim + value + ansiReset
+}
+
+func shouldPageOutput(w io.Writer, noPager bool) bool {
+	if noPager {
+		return false
+	}
+	file, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
 }
 
 func pageOutput(fallback io.Writer, data []byte) error {

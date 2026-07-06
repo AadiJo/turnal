@@ -11,8 +11,9 @@ import (
 
 func checkpointCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "checkpoint",
-		Short: "Manage hidden Git checkpoints",
+		Use:    "checkpoint",
+		Short:  "Manage hidden Git checkpoints",
+		Hidden: true,
 	}
 	cmd.AddCommand(checkpointCreateCmd())
 	return cmd
