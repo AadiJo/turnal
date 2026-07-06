@@ -105,6 +105,63 @@ func TestRunFinalizesRestoredJournal(t *testing.T) {
 	}
 }
 
+func TestRunClearsPreRestoreJournal(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	sessionID := sessionID(t, "demo")
+	turnID, _ := primitives.NewTurnID(1)
+	writeFile(t, root, "app.txt", "target\n")
+	if _, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre); err != nil {
+		t.Fatalf("target checkpoint: %v", err)
+	}
+	targetRef, err := primitives.NewTargetRef(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("NewTargetRef: %v", err)
+	}
+	resolved, err := ResolveTarget(repo, targetRef)
+	if err != nil {
+		t.Fatalf("ResolveTarget: %v", err)
+	}
+
+	for _, phase := range []string{"intent", "planned"} {
+		t.Run(phase, func(t *testing.T) {
+			journal := Journal{
+				Version:         1,
+				State:           phase,
+				RestorePhase:    phase,
+				StartedAt:       time.Now().UTC().Format(time.RFC3339Nano),
+				Target:          targetRef.String(),
+				CheckpointRef:   resolved.CheckpointRef.String(),
+				TargetCommitSHA: resolved.Commit.String(),
+				Changes: []checkpoint.RestoreChange{{
+					Path:   "app.txt",
+					Action: checkpoint.RestoreActionModified,
+				}},
+			}
+			if err := writeJournal(JournalPath(repo), journal); err != nil {
+				t.Fatalf("writeJournal: %v", err)
+			}
+
+			result, err := New(repo).Run(Request{Target: targetRef, DryRun: true})
+			if err != nil {
+				t.Fatalf("Run with %s journal: %v", phase, err)
+			}
+			if !result.DryRun {
+				t.Fatal("Run result DryRun=false")
+			}
+			if _, err := os.Stat(JournalPath(repo)); !os.IsNotExist(err) {
+				t.Fatalf("journal still exists or stat failed: %v", err)
+			}
+		})
+	}
+}
+
 func TestRunRestoreFailureReturnsSafetyAndKeepsExtraFiles(t *testing.T) {
 	requireGit(t)
 
