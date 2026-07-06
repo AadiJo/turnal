@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -16,6 +15,7 @@ import (
 
 	"agent-vcs-again/internal/checkpoint"
 	eventlog "agent-vcs-again/internal/events"
+	queryindex "agent-vcs-again/internal/index"
 	"agent-vcs-again/internal/primitives"
 	"github.com/spf13/cobra"
 )
@@ -25,6 +25,8 @@ func logCmd() *cobra.Command {
 	var limit int
 	var verbose bool
 	var noPager bool
+	var useIndex bool
+	var durable bool
 
 	cmd := &cobra.Command{
 		Use:          "log",
@@ -35,32 +37,39 @@ func logCmd() *cobra.Command {
 			if limit < 0 {
 				return fmt.Errorf("--limit must be zero or greater")
 			}
+			if useIndex && durable {
+				return fmt.Errorf("--index and --durable cannot be combined")
+			}
+			if session != "" {
+				if _, err := primitives.ParseSessionID(session); err != nil {
+					return err
+				}
+			}
 
 			repo, err := openCheckpointRepo()
 			if err != nil {
 				return err
 			}
 
-			var infos []checkpoint.CheckpointRefInfo
-			if session != "" {
-				sessionID, err := primitives.ParseSessionID(session)
+			var sessions []graphSession
+			if useIndex {
+				var loaded bool
+				sessions, loaded, err = tryLoadIndexedGraph(repo, session, limit)
 				if err != nil {
-					return err
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: index unavailable: %v\n", err)
 				}
-				infos, err = repo.ListCheckpointRefInfos(sessionID)
-				if err != nil {
-					return err
+				if !loaded {
+					sessions, err = loadDurableGraph(repo, session, limit)
+					if err != nil {
+						return err
+					}
 				}
 			} else {
-				infos, err = repo.ListAllCheckpointRefInfos()
+				sessions, err = loadDurableGraph(repo, session, limit)
 				if err != nil {
 					return err
 				}
 			}
-
-			sessions := buildGraphSessions(infos, limit)
-			attachGraphDiffs(repo, sessions)
-			attachGraphEventSummaries(repo, sessions)
 
 			options := graphRenderOptions{
 				Verbose: verbose,
@@ -81,6 +90,8 @@ func logCmd() *cobra.Command {
 	cmd.Flags().IntVarP(&limit, "limit", "n", 0, "Maximum turns per session; 0 shows all")
 	cmd.Flags().BoolVar(&verbose, "verbose", false, "Show full refs, commit ids, event counts, and per-file stats")
 	cmd.Flags().BoolVar(&noPager, "no-pager", false, "Print directly instead of opening a pager")
+	cmd.Flags().BoolVar(&useIndex, "index", false, "Read from the disposable SQLite index when available")
+	cmd.Flags().BoolVar(&durable, "durable", false, "Read directly from durable logs and checkpoints")
 	return cmd
 }
 
@@ -105,16 +116,7 @@ type graphTurn struct {
 	Warnings   []string
 }
 
-type turnEventSummary struct {
-	Count      int
-	Adapter    string
-	Prompt     string
-	Assistant  string
-	ToolNames  []string
-	TypeCounts map[primitives.EventType]int
-	First      time.Time
-	Last       time.Time
-}
+type turnEventSummary = queryindex.TurnEventSummary
 
 type graphTimelineRow struct {
 	SessionID    primitives.SessionID
@@ -125,6 +127,97 @@ type graphTimelineRow struct {
 type laneSpan struct {
 	First int
 	Last  int
+}
+
+func loadDurableGraph(repo *checkpoint.Repo, session string, limit int) ([]graphSession, error) {
+	var infos []checkpoint.CheckpointRefInfo
+	var err error
+	if session != "" {
+		sessionID, err := primitives.ParseSessionID(session)
+		if err != nil {
+			return nil, err
+		}
+		infos, err = repo.ListCheckpointRefInfos(sessionID)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		infos, err = repo.ListAllCheckpointRefInfos()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	sessions := buildGraphSessions(infos, limit)
+	attachGraphDiffs(repo, sessions)
+	attachGraphEventSummaries(repo, sessions)
+	return sessions, nil
+}
+
+func tryLoadIndexedGraph(repo *checkpoint.Repo, session string, limit int) ([]graphSession, bool, error) {
+	var sessionID primitives.SessionID
+	var err error
+	if session != "" {
+		sessionID, err = primitives.ParseSessionID(session)
+		if err != nil {
+			return nil, false, err
+		}
+	}
+
+	exists, err := queryindex.Exists(repo.MetadataDir)
+	if err != nil {
+		return nil, false, err
+	}
+	if !exists {
+		return nil, false, nil
+	}
+
+	store, err := queryindex.Open(repo.MetadataDir)
+	if err != nil {
+		return nil, false, err
+	}
+	defer store.Close()
+
+	healthy, err := store.Healthy()
+	if err != nil {
+		return nil, false, err
+	}
+	if !healthy {
+		return nil, false, fmt.Errorf("schema version mismatch or missing rebuild metadata")
+	}
+
+	indexSessions, err := store.LoadGraph(queryindex.GraphQuery{
+		Session: sessionID,
+		Limit:   limit,
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return graphSessionsFromIndex(indexSessions), true, nil
+}
+
+func graphSessionsFromIndex(indexSessions []queryindex.GraphSession) []graphSession {
+	sessions := make([]graphSession, 0, len(indexSessions))
+	for _, indexSession := range indexSessions {
+		session := graphSession{
+			ID:         indexSession.ID,
+			TotalTurns: indexSession.TotalTurns,
+			Warnings:   append([]string(nil), indexSession.Warnings...),
+		}
+		for _, indexTurn := range indexSession.Turns {
+			session.Turns = append(session.Turns, graphTurn{
+				TurnID:     indexTurn.TurnID,
+				Pre:        indexTurn.Pre,
+				Post:       indexTurn.Post,
+				Diff:       indexTurn.Diff,
+				DiffLoaded: indexTurn.DiffLoaded,
+				Events:     indexTurn.Events,
+				Warnings:   append([]string(nil), indexTurn.Warnings...),
+			})
+		}
+		sessions = append(sessions, session)
+	}
+	return sessions
 }
 
 func buildGraphSessions(infos []checkpoint.CheckpointRefInfo, limit int) []graphSession {
@@ -213,66 +306,12 @@ func attachGraphEventSummaries(repo *checkpoint.Repo, sessions []graphSession) {
 			sessions[sessionIndex].Warnings = append(sessions[sessionIndex].Warnings, fmt.Sprintf("event log unavailable: %v", err))
 			continue
 		}
-		summaries := summarizeTurnEvents(events)
+		summaries := queryindex.SummarizeTurnEvents(events)
 		for turnIndex := range sessions[sessionIndex].Turns {
 			turnID := sessions[sessionIndex].Turns[turnIndex].TurnID.Uint64()
 			sessions[sessionIndex].Turns[turnIndex].Events = summaries[turnID]
 		}
 	}
-}
-
-func summarizeTurnEvents(events []eventlog.Event) map[uint64]turnEventSummary {
-	summaries := make(map[uint64]turnEventSummary)
-	seenTools := make(map[uint64]map[string]struct{})
-
-	for _, event := range events {
-		if event.TurnID == nil {
-			continue
-		}
-
-		turnKey := event.TurnID.Uint64()
-		summary := summaries[turnKey]
-		summary.Count++
-		if summary.TypeCounts == nil {
-			summary.TypeCounts = make(map[primitives.EventType]int)
-		}
-		summary.TypeCounts[event.Type]++
-		if summary.Adapter == "" && event.Adapter != "" {
-			summary.Adapter = event.Adapter.String()
-		}
-		if summary.First.IsZero() || event.Time.Time.Before(summary.First) {
-			summary.First = event.Time.Time
-		}
-		if summary.Last.IsZero() || event.Time.Time.After(summary.Last) {
-			summary.Last = event.Time.Time
-		}
-
-		switch event.Type {
-		case primitives.EventTypePromptUser:
-			if summary.Prompt == "" {
-				summary.Prompt = payloadString(event.Payload, "text")
-			}
-		case primitives.EventTypeAssistantMessage:
-			if summary.Assistant == "" {
-				summary.Assistant = payloadString(event.Payload, "text")
-			}
-		case primitives.EventTypeToolCall:
-			toolName := payloadString(event.Payload, "tool_name")
-			if toolName != "" {
-				if seenTools[turnKey] == nil {
-					seenTools[turnKey] = make(map[string]struct{})
-				}
-				if _, ok := seenTools[turnKey][toolName]; !ok {
-					seenTools[turnKey][toolName] = struct{}{}
-					summary.ToolNames = append(summary.ToolNames, toolName)
-				}
-			}
-		}
-
-		summaries[turnKey] = summary
-	}
-
-	return summaries
 }
 
 func renderCheckpointGraph(w io.Writer, sessions []graphSession, options graphRenderOptions) error {
@@ -711,23 +750,6 @@ func formatEventTypeCounts(typeCounts map[primitives.EventType]int) string {
 		parts = append(parts, fmt.Sprintf("%s=%d", eventType, typeCounts[primitives.EventType(eventType)]))
 	}
 	return strings.Join(parts, ", ")
-}
-
-func payloadString(payload json.RawMessage, key string) string {
-	var object map[string]json.RawMessage
-	if err := json.Unmarshal(payload, &object); err != nil {
-		return ""
-	}
-
-	raw, ok := object[key]
-	if !ok {
-		return ""
-	}
-	var value string
-	if err := json.Unmarshal(raw, &value); err != nil {
-		return ""
-	}
-	return value
 }
 
 func truncateText(value string, limit int) string {

@@ -12,6 +12,7 @@ import (
 
 	"agent-vcs-again/internal/checkpoint"
 	eventlog "agent-vcs-again/internal/events"
+	queryindex "agent-vcs-again/internal/index"
 	"agent-vcs-again/internal/primitives"
 )
 
@@ -74,6 +75,43 @@ func TestGraphCommandShowsCheckpointGraph(t *testing.T) {
 		if !strings.Contains(output, want) {
 			t.Fatalf("graph output missing %q:\n%s", want, output)
 		}
+	}
+}
+
+func TestReindexThenIndexedLogMatchesDurableAndFallsBack(t *testing.T) {
+	root, repo, sessionID, turnID := createTurnWithDiff(t)
+	t.Chdir(root.String())
+
+	if _, err := eventlog.Open(repo.MetadataDir).Append(eventlog.AppendInput{
+		SessionID: sessionID,
+		TurnID:    &turnID,
+		Type:      primitives.EventTypePromptUser,
+		Adapter:   primitives.AdapterCodex,
+		Payload:   json.RawMessage(`{"text":"change app.txt"}`),
+	}); err != nil {
+		t.Fatalf("append prompt event: %v", err)
+	}
+
+	durable := stripANSI(runRootStdout(t, "log", "--durable", "--session", sessionID.String(), "--verbose"))
+
+	_ = runRootStdout(t, "reindex")
+	indexed := stripANSI(runRootStdout(t, "log", "--index", "--session", sessionID.String(), "--verbose"))
+	if indexed != durable {
+		t.Fatalf("indexed log differs from durable log:\n--- durable ---\n%s\n--- indexed ---\n%s", durable, indexed)
+	}
+
+	if err := os.Remove(queryindex.PathsForMetadata(repo.MetadataDir).DBPath); err != nil {
+		t.Fatalf("remove index database: %v", err)
+	}
+	fallback := stripANSI(runRootStdout(t, "log", "--index", "--session", sessionID.String(), "--verbose"))
+	if fallback != durable {
+		t.Fatalf("missing-index fallback differs from durable log:\n--- durable ---\n%s\n--- fallback ---\n%s", durable, fallback)
+	}
+
+	_ = runRootStdout(t, "reindex")
+	reindexed := stripANSI(runRootStdout(t, "log", "--index", "--session", sessionID.String(), "--verbose"))
+	if reindexed != durable {
+		t.Fatalf("reindexed log differs from durable log:\n--- durable ---\n%s\n--- reindexed ---\n%s", durable, reindexed)
 	}
 }
 
@@ -284,6 +322,23 @@ var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 func stripANSI(value string) string {
 	return ansiPattern.ReplaceAllString(value, "")
+}
+
+func runRootStdout(t *testing.T, args ...string) string {
+	t.Helper()
+	cmd := NewRootCmd()
+	var out bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs(args)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("agent-vcs %s: %v\nstdout=%s\nstderr=%s", strings.Join(args, " "), err, out.String(), stderr.String())
+	}
+	if stderr.Len() > 0 {
+		t.Fatalf("agent-vcs %s wrote stderr:\n%s", strings.Join(args, " "), stderr.String())
+	}
+	return out.String()
 }
 
 func writeFile(t *testing.T, root primitives.WorkspaceRoot, relPath, content string) {

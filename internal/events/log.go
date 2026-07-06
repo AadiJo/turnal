@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -57,6 +58,40 @@ type AppendInput struct {
 
 func Open(metadataDir string) Log {
 	return Log{Dir: filepath.Join(metadataDir, "log", eventLogDirName)}
+}
+
+func ListSessions(metadataDir string) ([]primitives.SessionID, error) {
+	return Open(metadataDir).ListSessions()
+}
+
+func (log Log) ListSessions() ([]primitives.SessionID, error) {
+	entries, err := os.ReadDir(log.Dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read event log dir: %w", err)
+	}
+
+	var sessions []primitives.SessionID
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if filepath.Ext(name) != ".jsonl" {
+			continue
+		}
+		sessionID, err := primitives.ParseSessionID(strings.TrimSuffix(name, ".jsonl"))
+		if err != nil {
+			return nil, fmt.Errorf("event log filename invariant failed for %s: %w", name, err)
+		}
+		sessions = append(sessions, sessionID)
+	}
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[i].String() < sessions[j].String()
+	})
+	return sessions, nil
 }
 
 func (log Log) Append(input AppendInput) (Event, error) {
