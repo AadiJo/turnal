@@ -3,6 +3,7 @@ package turnevents
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 
 	"agent-vcs-again/internal/checkpoint"
 	eventlog "agent-vcs-again/internal/events"
@@ -32,7 +33,11 @@ type checkpointPayload struct {
 }
 
 func (recorder Recorder) Start(sessionID primitives.SessionID, requestedTurnID primitives.TurnID) (turns.StartResult, error) {
-	started, err := recorder.Manager.Start(sessionID, requestedTurnID)
+	manager := recorder.Manager.WithCheckpointEvents(recorder.Adapter, recorder.RawRef)
+	if err := RecoverCheckpointJournals(recorder.Log, manager.Repo); err != nil {
+		return turns.StartResult{}, err
+	}
+	started, err := manager.Start(sessionID, requestedTurnID)
 	if err != nil {
 		return turns.StartResult{}, err
 	}
@@ -46,7 +51,11 @@ func (recorder Recorder) Start(sessionID primitives.SessionID, requestedTurnID p
 }
 
 func (recorder Recorder) Finish(sessionID primitives.SessionID, requestedTurnID primitives.TurnID) (turns.FinishResult, error) {
-	finished, err := recorder.Manager.Finish(sessionID, requestedTurnID)
+	manager := recorder.Manager.WithCheckpointEvents(recorder.Adapter, recorder.RawRef)
+	if err := RecoverCheckpointJournals(recorder.Log, manager.Repo); err != nil {
+		return turns.FinishResult{}, err
+	}
+	finished, err := manager.Finish(sessionID, requestedTurnID)
 	if err != nil {
 		return turns.FinishResult{}, err
 	}
@@ -60,7 +69,7 @@ func (recorder Recorder) Finish(sessionID primitives.SessionID, requestedTurnID 
 }
 
 func AppendTurnStart(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, rawRef string) error {
-	return appendPayloadEvent(log, eventlog.AppendInput{
+	_, err := appendPayloadEvent(log, eventlog.AppendInput{
 		SessionID: sessionID,
 		TurnID:    &turnID,
 		Type:      primitives.EventTypeTurnStart,
@@ -69,10 +78,11 @@ func AppendTurnStart(log eventlog.Log, adapter primitives.AdapterName, sessionID
 		RawRef:    rawRef,
 		Payload:   mustJSON(turnPayload{Turn: turnID.Uint64()}),
 	})
+	return err
 }
 
 func AppendTurnFinish(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, rawRef string) error {
-	return appendPayloadEvent(log, eventlog.AppendInput{
+	_, err := appendPayloadEvent(log, eventlog.AppendInput{
 		SessionID: sessionID,
 		TurnID:    &turnID,
 		Type:      primitives.EventTypeTurnFinish,
@@ -81,6 +91,7 @@ func AppendTurnFinish(log eventlog.Log, adapter primitives.AdapterName, sessionI
 		RawRef:    rawRef,
 		Payload:   mustJSON(turnPayload{Turn: turnID.Uint64()}),
 	})
+	return err
 }
 
 func AppendCheckpoint(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, phase primitives.CheckpointPhase, created checkpoint.Checkpoint, rawRef string) error {
@@ -92,7 +103,7 @@ func AppendCheckpointWithGitSync(log eventlog.Log, adapter primitives.AdapterNam
 	if gitSync != nil {
 		gitSyncRef = gitSync.Ref
 	}
-	return appendPayloadEvent(log, eventlog.AppendInput{
+	event, err := appendPayloadEvent(log, eventlog.AppendInput{
 		SessionID: sessionID,
 		TurnID:    &turnID,
 		Type:      primitives.EventTypeCheckpoint,
@@ -115,6 +126,74 @@ func AppendCheckpointWithGitSync(log eventlog.Log, adapter primitives.AdapterNam
 			}), nil
 		},
 	})
+	if err != nil {
+		return err
+	}
+	return checkpointRepoFromLog(log).FinalizeCheckpointJournal(sessionID, turnID, phase, event.Seq, event.Hash)
+}
+
+func RecoverCheckpointJournals(log eventlog.Log, repo *checkpoint.Repo) error {
+	if repo == nil {
+		return nil
+	}
+	journals, err := repo.ListCheckpointJournals()
+	if err != nil {
+		return err
+	}
+	for _, journal := range journals {
+		switch journal.State {
+		case "intent":
+			if err := repo.ClearCheckpointJournal(journal.SessionID, journal.TurnID, journal.Phase); err != nil {
+				return err
+			}
+		case "committed":
+			if err := recoverCheckpointJournal(log, repo, journal); err != nil {
+				return err
+			}
+		case "finalized":
+			if err := repo.ClearCheckpointJournal(journal.SessionID, journal.TurnID, journal.Phase); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("checkpoint invariant failed: unknown checkpoint journal state %q", journal.State)
+		}
+	}
+	return nil
+}
+
+func recoverCheckpointJournal(log eventlog.Log, repo *checkpoint.Repo, journal checkpoint.CheckpointJournal) error {
+	if journal.Adapter == "" {
+		return fmt.Errorf("checkpoint invariant failed: committed checkpoint journal for session %s turn %s %s has no adapter", journal.SessionID, journal.TurnID, journal.Phase)
+	}
+	if journal.Ref == "" || journal.CommitSHA == "" {
+		return fmt.Errorf("checkpoint invariant failed: committed checkpoint journal for session %s turn %s %s has no ref/commit", journal.SessionID, journal.TurnID, journal.Phase)
+	}
+	if _, err := repo.CheckpointCommit(journal.Ref); err != nil {
+		return fmt.Errorf("checkpoint invariant failed: checkpoint journal ref %s is not readable: %w", journal.Ref, err)
+	}
+
+	if journal.Phase == primitives.CheckpointPhasePre {
+		if err := AppendTurnStart(log, journal.Adapter, journal.SessionID, journal.TurnID, journal.RawRef); err != nil {
+			return err
+		}
+	} else if journal.Phase == primitives.CheckpointPhasePost {
+		if err := AppendTurnFinish(log, journal.Adapter, journal.SessionID, journal.TurnID, journal.RawRef); err != nil {
+			return err
+		}
+	}
+
+	var gitSync *checkpoint.Snapshot
+	if journal.GitSyncRef != "" && journal.GitSyncCommitSHA != "" {
+		gitSyncCommit, err := primitives.ParseCommitSHA(journal.GitSyncCommitSHA)
+		if err != nil {
+			return err
+		}
+		gitSync = &checkpoint.Snapshot{Ref: journal.GitSyncRef, Commit: gitSyncCommit}
+	}
+	return AppendCheckpointWithGitSync(log, journal.Adapter, journal.SessionID, journal.TurnID, journal.Phase, checkpoint.Checkpoint{
+		Ref:    journal.Ref,
+		Commit: journal.CommitSHA,
+	}, gitSync, journal.RawRef)
 }
 
 func checkpointEventSeqStart(events []eventlog.Event) (primitives.EventSeq, error) {
@@ -127,18 +206,28 @@ func checkpointEventSeqStart(events []eventlog.Event) (primitives.EventSeq, erro
 	return primitives.NewEventSeq(1)
 }
 
-func appendPayloadEvent(log eventlog.Log, input eventlog.AppendInput) error {
+func appendPayloadEvent(log eventlog.Log, input eventlog.AppendInput) (eventlog.Event, error) {
 	if input.SourceID != "" {
-		seen, err := log.ContainsSourceID(input.SessionID, input.SourceID)
+		event, seen, err := log.FindSourceID(input.SessionID, input.SourceID)
 		if err != nil {
-			return err
+			return eventlog.Event{}, err
 		}
 		if seen {
-			return nil
+			return event, nil
 		}
 	}
-	_, err := log.Append(input)
-	return err
+	return log.Append(input)
+}
+
+func checkpointRepoFromLog(log eventlog.Log) *checkpoint.Repo {
+	metadataDir := filepath.Clean(filepath.Join(log.Dir, "..", ".."))
+	root := filepath.Dir(metadataDir)
+	return &checkpoint.Repo{
+		WorkspaceRoot: primitives.WorkspaceRoot(root),
+		MetadataDir:   metadataDir,
+		GitDir:        filepath.Join(metadataDir, "git"),
+		TmpDir:        filepath.Join(metadataDir, "tmp"),
+	}
 }
 
 func mustJSON(value any) json.RawMessage {

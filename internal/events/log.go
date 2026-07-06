@@ -237,19 +237,24 @@ func (log Log) Verify(sessionID primitives.SessionID) error {
 }
 
 func (log Log) ContainsSourceID(sessionID primitives.SessionID, sourceID string) (bool, error) {
+	_, ok, err := log.FindSourceID(sessionID, sourceID)
+	return ok, err
+}
+
+func (log Log) FindSourceID(sessionID primitives.SessionID, sourceID string) (Event, bool, error) {
 	if sourceID == "" {
-		return false, nil
+		return Event{}, false, nil
 	}
 	events, err := log.Read(sessionID)
 	if err != nil {
-		return false, err
+		return Event{}, false, err
 	}
 	for _, event := range events {
 		if event.SourceID == sourceID {
-			return true, nil
+			return event, true, nil
 		}
 	}
-	return false, nil
+	return Event{}, false, nil
 }
 
 func (log Log) RecoverTrailingPartial(sessionID primitives.SessionID) (bool, error) {

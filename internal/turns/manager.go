@@ -19,8 +19,10 @@ import (
 const activeTurnStateVersion = 1
 
 type Manager struct {
-	Repo           *checkpoint.Repo
-	GitSyncEnabled *bool
+	Repo              *checkpoint.Repo
+	GitSyncEnabled    *bool
+	CheckpointAdapter primitives.AdapterName
+	CheckpointRawRef  string
 }
 
 type StartResult struct {
@@ -60,6 +62,12 @@ func NewManager(repo *checkpoint.Repo) Manager {
 	return Manager{Repo: repo}
 }
 
+func (manager Manager) WithCheckpointEvents(adapter primitives.AdapterName, rawRef string) Manager {
+	manager.CheckpointAdapter = adapter
+	manager.CheckpointRawRef = rawRef
+	return manager
+}
+
 func (manager Manager) Start(sessionID primitives.SessionID, requestedTurnID primitives.TurnID) (StartResult, error) {
 	if err := manager.validate(); err != nil {
 		return StartResult{}, err
@@ -91,18 +99,50 @@ func (manager Manager) Start(sessionID primitives.SessionID, requestedTurnID pri
 		return StartResult{}, fmt.Errorf("turn %s already has checkpoint refs for session %s", turnID, sessionID)
 	}
 
+	journaled := manager.checkpointJournalingEnabled()
+	if journaled {
+		if err := manager.Repo.BeginCheckpointJournal(sessionID, turnID, primitives.CheckpointPhasePre, manager.CheckpointAdapter, manager.CheckpointRawRef); err != nil {
+			return StartResult{}, err
+		}
+	}
+
 	pre, err := manager.Repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
 	if err != nil {
+		if journaled {
+			_ = manager.Repo.ClearCheckpointJournal(sessionID, turnID, primitives.CheckpointPhasePre)
+		}
 		return StartResult{}, err
+	}
+	if journaled {
+		if err := manager.Repo.MarkCheckpointJournalCommitted(sessionID, turnID, primitives.CheckpointPhasePre, pre); err != nil {
+			if cleanupErr := manager.Repo.DeleteCheckpointRef(pre.Ref); cleanupErr != nil {
+				return StartResult{}, errors.Join(err, fmt.Errorf("cleanup pre checkpoint after checkpoint journal failure: %w", cleanupErr))
+			}
+			return StartResult{}, err
+		}
 	}
 	gitSync, err := manager.captureGitSyncIfEnabled(sessionID, turnID, primitives.CheckpointPhasePre)
 	if err != nil {
+		if journaled {
+			_ = manager.Repo.ClearCheckpointJournal(sessionID, turnID, primitives.CheckpointPhasePre)
+		}
 		if cleanupErr := manager.Repo.DeleteCheckpointRef(pre.Ref); cleanupErr != nil {
 			return StartResult{}, errors.Join(err, fmt.Errorf("cleanup pre checkpoint after git-sync capture failure: %w", cleanupErr))
 		}
 		return StartResult{}, err
 	}
+	if journaled {
+		if err := manager.Repo.MarkCheckpointJournalGitSync(sessionID, turnID, primitives.CheckpointPhasePre, gitSync); err != nil {
+			if cleanupErr := manager.Repo.DeleteCheckpointRef(pre.Ref); cleanupErr != nil {
+				return StartResult{}, errors.Join(err, fmt.Errorf("cleanup pre checkpoint after checkpoint git-sync journal failure: %w", cleanupErr))
+			}
+			return StartResult{}, err
+		}
+	}
 	if err := manager.writeActive(sessionID, turnID, pre); err != nil {
+		if journaled {
+			_ = manager.Repo.ClearCheckpointJournal(sessionID, turnID, primitives.CheckpointPhasePre)
+		}
 		if cleanupErr := manager.Repo.DeleteCheckpointRef(pre.Ref); cleanupErr != nil {
 			return StartResult{}, errors.Join(err, fmt.Errorf("cleanup pre checkpoint after active turn state failure: %w", cleanupErr))
 		}
@@ -148,16 +188,45 @@ func (manager Manager) Finish(sessionID primitives.SessionID, requestedTurnID pr
 		return FinishResult{}, fmt.Errorf("post checkpoint already exists for session %s turn %s", sessionID, turnID)
 	}
 
+	journaled := manager.checkpointJournalingEnabled()
+	if journaled {
+		if err := manager.Repo.BeginCheckpointJournal(sessionID, turnID, primitives.CheckpointPhasePost, manager.CheckpointAdapter, manager.CheckpointRawRef); err != nil {
+			return FinishResult{}, err
+		}
+	}
+
 	post, err := manager.Repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePost)
 	if err != nil {
+		if journaled {
+			_ = manager.Repo.ClearCheckpointJournal(sessionID, turnID, primitives.CheckpointPhasePost)
+		}
 		return FinishResult{}, err
+	}
+	if journaled {
+		if err := manager.Repo.MarkCheckpointJournalCommitted(sessionID, turnID, primitives.CheckpointPhasePost, post); err != nil {
+			if cleanupErr := manager.Repo.DeleteCheckpointRef(post.Ref); cleanupErr != nil {
+				return FinishResult{}, errors.Join(err, fmt.Errorf("cleanup post checkpoint after checkpoint journal failure: %w", cleanupErr))
+			}
+			return FinishResult{}, err
+		}
 	}
 	gitSync, err := manager.captureGitSyncIfEnabled(sessionID, turnID, primitives.CheckpointPhasePost)
 	if err != nil {
+		if journaled {
+			_ = manager.Repo.ClearCheckpointJournal(sessionID, turnID, primitives.CheckpointPhasePost)
+		}
 		if cleanupErr := manager.Repo.DeleteCheckpointRef(post.Ref); cleanupErr != nil {
 			return FinishResult{}, errors.Join(err, fmt.Errorf("cleanup post checkpoint after git-sync capture failure: %w", cleanupErr))
 		}
 		return FinishResult{}, err
+	}
+	if journaled {
+		if err := manager.Repo.MarkCheckpointJournalGitSync(sessionID, turnID, primitives.CheckpointPhasePost, gitSync); err != nil {
+			if cleanupErr := manager.Repo.DeleteCheckpointRef(post.Ref); cleanupErr != nil {
+				return FinishResult{}, errors.Join(err, fmt.Errorf("cleanup post checkpoint after checkpoint git-sync journal failure: %w", cleanupErr))
+			}
+			return FinishResult{}, err
+		}
 	}
 	if active != nil {
 		if err := manager.clearActive(sessionID); err != nil {
@@ -217,6 +286,10 @@ func (manager Manager) validate() error {
 		return errors.New("turn manager requires checkpoint repo")
 	}
 	return nil
+}
+
+func (manager Manager) checkpointJournalingEnabled() bool {
+	return manager.CheckpointAdapter != ""
 }
 
 func (manager Manager) gitSyncEnabled() (bool, error) {

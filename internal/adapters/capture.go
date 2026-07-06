@@ -158,6 +158,9 @@ func ProcessHookPayload(adapter primitives.AdapterName, hookName, rawRef string,
 		return err
 	}
 	defer unlock()
+	if err := turnevents.RecoverCheckpointJournals(log, repo); err != nil {
+		return err
+	}
 	if err := processHook(log, manager, parsedAdapter, hookName, rawRef, raw, sessionID, payload); err != nil {
 		_ = appendErrorEvent(log, parsedAdapter, sessionID, rawRef, hookName, err)
 		return err
@@ -291,6 +294,7 @@ func appendSessionStart(log eventlog.Log, adapter primitives.AdapterName, sessio
 }
 
 func startPromptTurn(log eventlog.Log, manager turns.Manager, adapter primitives.AdapterName, sessionID primitives.SessionID, rawRef string, payload hookPayload) (primitives.TurnID, error) {
+	manager = manager.WithCheckpointEvents(adapter, rawRef)
 	active, ok, err := manager.Active(sessionID)
 	if err != nil {
 		return 0, err
@@ -322,6 +326,7 @@ func startPromptTurn(log eventlog.Log, manager turns.Manager, adapter primitives
 }
 
 func ensureActiveTurn(log eventlog.Log, manager turns.Manager, adapter primitives.AdapterName, sessionID primitives.SessionID, rawRef string) (primitives.TurnID, error) {
+	manager = manager.WithCheckpointEvents(adapter, rawRef)
 	active, ok, err := manager.Active(sessionID)
 	if err != nil {
 		return 0, err
@@ -343,6 +348,7 @@ func ensureActiveTurn(log eventlog.Log, manager turns.Manager, adapter primitive
 }
 
 func finishTurn(log eventlog.Log, manager turns.Manager, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, rawRef string) error {
+	manager = manager.WithCheckpointEvents(adapter, rawRef)
 	finished, err := manager.Finish(sessionID, turnID)
 	if err != nil {
 		if strings.Contains(err.Error(), "post checkpoint already exists") {
