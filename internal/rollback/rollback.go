@@ -89,6 +89,13 @@ type Journal struct {
 	GitSafetyCommitSHA string                     `json:"git_safety_commit_sha,omitempty"`
 	EventSourceID      string                     `json:"event_source_id"`
 	Changes            []checkpoint.RestoreChange `json:"changes"`
+	GitChanges         *WorkspaceGitChanges       `json:"git_changes,omitempty"`
+}
+
+type WorkspaceGitChanges struct {
+	StagedPaths   []primitives.RepoPath `json:"staged_paths,omitempty"`
+	UnstagedPaths []primitives.RepoPath `json:"unstaged_paths,omitempty"`
+	Untracked     []primitives.RepoPath `json:"untracked,omitempty"`
 }
 
 type ActiveJournalError struct {
@@ -343,6 +350,7 @@ func (engine Engine) runWorkspaceGitUnlocked(request Request) (Result, error) {
 		CheckpointRef:   target.CheckpointRef.String(),
 		TargetCommitSHA: target.Commit.String(),
 		GitSyncRef:      gitSyncRef.String(),
+		GitChanges:      workspaceGitChangesFromPlan(gitPlan),
 	}
 	if err := writeJournal(JournalPath(engine.Repo), journal); err != nil {
 		return result, fmt.Errorf("write rollback journal: %w", err)
@@ -464,7 +472,7 @@ func (engine Engine) finalizeRestoredJournal(path string, journal Journal) error
 }
 
 func (engine Engine) finalizeRestoredWorkspaceGitJournal(path string, journal Journal) error {
-	target, safety, gitSafety, gitSyncRef, eventSourceID, err := journalWorkspaceGitRollback(journal)
+	target, safety, gitSafety, gitSyncRef, gitPlan, eventSourceID, err := journalWorkspaceGitRollback(journal)
 	if err != nil {
 		return err
 	}
@@ -475,7 +483,7 @@ func (engine Engine) finalizeRestoredWorkspaceGitJournal(path string, journal Jo
 		return fmt.Errorf("finalize restored workspace-git rollback journal: %w", err)
 	}
 	if !exists {
-		if _, err := appendWorkspaceGitRollbackEvent(engine.Repo, target, safety, gitSafety, gitSyncRef, workspacegit.RestorePlan{}, eventSourceID); err != nil {
+		if _, err := appendWorkspaceGitRollbackEvent(engine.Repo, target, safety, gitSafety, gitSyncRef, gitPlan, eventSourceID); err != nil {
 			return SafetyError{
 				Op:          "finalize restored workspace-git rollback journal",
 				Err:         err,
@@ -626,26 +634,30 @@ func journalRollback(journal Journal) (ResolvedTarget, checkpoint.Snapshot, chec
 	return target, safety, plan, eventSourceID, nil
 }
 
-func journalWorkspaceGitRollback(journal Journal) (ResolvedTarget, checkpoint.Snapshot, checkpoint.Snapshot, primitives.GitSyncRef, string, error) {
+func journalWorkspaceGitRollback(journal Journal) (ResolvedTarget, checkpoint.Snapshot, checkpoint.Snapshot, primitives.GitSyncRef, workspacegit.RestorePlan, string, error) {
 	target, safety, _, eventSourceID, err := journalRollback(journal)
 	if err != nil {
-		return ResolvedTarget{}, checkpoint.Snapshot{}, checkpoint.Snapshot{}, "", "", err
+		return ResolvedTarget{}, checkpoint.Snapshot{}, checkpoint.Snapshot{}, "", workspacegit.RestorePlan{}, "", err
 	}
 	gitSafetyCommit, err := primitives.ParseCommitSHA(journal.GitSafetyCommitSHA)
 	if err != nil {
-		return ResolvedTarget{}, checkpoint.Snapshot{}, checkpoint.Snapshot{}, "", "", fmt.Errorf("rollback journal git safety commit invariant failed: %w", err)
+		return ResolvedTarget{}, checkpoint.Snapshot{}, checkpoint.Snapshot{}, "", workspacegit.RestorePlan{}, "", fmt.Errorf("rollback journal git safety commit invariant failed: %w", err)
 	}
 	if journal.GitSafetyRef == "" {
-		return ResolvedTarget{}, checkpoint.Snapshot{}, checkpoint.Snapshot{}, "", "", fmt.Errorf("rollback journal git safety ref invariant failed: must not be empty")
+		return ResolvedTarget{}, checkpoint.Snapshot{}, checkpoint.Snapshot{}, "", workspacegit.RestorePlan{}, "", fmt.Errorf("rollback journal git safety ref invariant failed: must not be empty")
 	}
 	gitSyncRef, err := primitives.ParseGitSyncRef(journal.GitSyncRef)
 	if err != nil {
-		return ResolvedTarget{}, checkpoint.Snapshot{}, checkpoint.Snapshot{}, "", "", fmt.Errorf("rollback journal git-sync ref invariant failed: %w", err)
+		return ResolvedTarget{}, checkpoint.Snapshot{}, checkpoint.Snapshot{}, "", workspacegit.RestorePlan{}, "", fmt.Errorf("rollback journal git-sync ref invariant failed: %w", err)
 	}
 	if eventSourceID == "" {
 		eventSourceID = rollbackEventSourceIDForMode(target, safety, primitives.RollbackModeWorkspaceGit)
 	}
-	return target, safety, checkpoint.Snapshot{Ref: journal.GitSafetyRef, Commit: gitSafetyCommit}, gitSyncRef, eventSourceID, nil
+	gitPlan := workspacegit.RestorePlan{}
+	if journal.GitChanges != nil {
+		gitPlan = journal.GitChanges.restorePlan()
+	}
+	return target, safety, checkpoint.Snapshot{Ref: journal.GitSafetyRef, Commit: gitSafetyCommit}, gitSyncRef, gitPlan, eventSourceID, nil
 }
 
 func summarizeChanges(changes []checkpoint.RestoreChange) ChangeSummary {
@@ -663,6 +675,22 @@ func summarizeChanges(changes []checkpoint.RestoreChange) ChangeSummary {
 		}
 	}
 	return summary
+}
+
+func workspaceGitChangesFromPlan(plan workspacegit.RestorePlan) *WorkspaceGitChanges {
+	return &WorkspaceGitChanges{
+		StagedPaths:   append([]primitives.RepoPath(nil), plan.StagedPaths...),
+		UnstagedPaths: append([]primitives.RepoPath(nil), plan.UnstagedPaths...),
+		Untracked:     append([]primitives.RepoPath(nil), plan.Untracked...),
+	}
+}
+
+func (changes WorkspaceGitChanges) restorePlan() workspacegit.RestorePlan {
+	return workspacegit.RestorePlan{
+		StagedPaths:   append([]primitives.RepoPath(nil), changes.StagedPaths...),
+		UnstagedPaths: append([]primitives.RepoPath(nil), changes.UnstagedPaths...),
+		Untracked:     append([]primitives.RepoPath(nil), changes.Untracked...),
+	}
 }
 
 func (engine Engine) safetyError(op string, safety checkpoint.Snapshot, err error) error {

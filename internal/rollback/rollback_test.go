@@ -1,6 +1,7 @@
 package rollback
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -11,8 +12,10 @@ import (
 
 	"agent-vcs-again/internal/checkpoint"
 	eventlog "agent-vcs-again/internal/events"
+	"agent-vcs-again/internal/gitsync"
 	"agent-vcs-again/internal/primitives"
 	"agent-vcs-again/internal/turns"
+	"agent-vcs-again/internal/workspacegit"
 )
 
 func TestRunFinalizesRestoredJournal(t *testing.T) {
@@ -102,6 +105,106 @@ func TestRunFinalizesRestoredJournal(t *testing.T) {
 	}
 	if got := countRollbackEvents(t, repo, sessionID); got != 1 {
 		t.Fatalf("rollback events after payload-matched retry = %d, want 1", got)
+	}
+}
+
+func TestRunFinalizesRestoredWorkspaceGitJournalWithChangeSummary(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	bootstrapped, err := checkpoint.Bootstrap(root)
+	if err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	repo := bootstrapped.Repo
+	runWorkspaceGit(t, root, "config", "user.email", "agent-vcs@example.test")
+	runWorkspaceGit(t, root, "config", "user.name", "agent-vcs")
+
+	writeFile(t, root, "tracked.txt", "base\n")
+	runWorkspaceGit(t, root, "add", ".gitignore", "tracked.txt")
+	runWorkspaceGit(t, root, "commit", "-m", "base")
+
+	writeFile(t, root, "tracked.txt", "staged\n")
+	runWorkspaceGit(t, root, "add", "tracked.txt")
+	writeFile(t, root, "tracked.txt", "unstaged\n")
+	writeFile(t, root, "scratch.txt", "untracked\n")
+
+	sessionID := sessionID(t, "demo")
+	enabled := true
+	manager := turns.Manager{Repo: repo, GitSyncEnabled: &enabled}
+	started, err := manager.Start(sessionID, 0)
+	if err != nil {
+		t.Fatalf("Start with git-sync: %v", err)
+	}
+	if started.GitSync == nil {
+		t.Fatal("Start did not create git-sync state")
+	}
+
+	targetRef, err := primitives.NewTargetRef(sessionID, started.TurnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("NewTargetRef: %v", err)
+	}
+	resolved, err := ResolveTarget(repo, targetRef)
+	if err != nil {
+		t.Fatalf("ResolveTarget: %v", err)
+	}
+	gitSyncRef, err := gitsync.Ref(sessionID, started.TurnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("git-sync ref: %v", err)
+	}
+	targetCapture, err := gitsync.Load(repo, gitSyncRef)
+	if err != nil {
+		t.Fatalf("load git-sync: %v", err)
+	}
+	workspace := workspacegit.Open(repo.WorkspaceRoot)
+	gitPlan, err := workspace.PlanRestore(targetCapture)
+	if err != nil {
+		t.Fatalf("PlanRestore: %v", err)
+	}
+	currentCapture, err := workspace.Capture()
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	safety, err := repo.CreateSnapshotRef("refs/agent-vcs/rollback-safety/demo/turn/000001/pre/workspace-test", "test safety")
+	if err != nil {
+		t.Fatalf("CreateSnapshotRef: %v", err)
+	}
+	gitSafety, err := gitsync.SavePrivate(repo, "refs/agent-vcs/git-safety/demo/turn/000001/pre/workspace-test", currentCapture, "test git safety")
+	if err != nil {
+		t.Fatalf("SavePrivate git safety: %v", err)
+	}
+	sourceID := rollbackEventSourceIDForMode(resolved, safety, primitives.RollbackModeWorkspaceGit)
+	journal := Journal{
+		Version:            1,
+		State:              "restored",
+		RestorePhase:       "restored",
+		StartedAt:          time.Now().UTC().Format(time.RFC3339Nano),
+		Mode:               primitives.RollbackModeWorkspaceGit.String(),
+		Target:             targetRef.String(),
+		CheckpointRef:      resolved.CheckpointRef.String(),
+		TargetCommitSHA:    resolved.Commit.String(),
+		GitSyncRef:         gitSyncRef.String(),
+		SafetyRef:          safety.Ref,
+		SafetyCommitSHA:    safety.Commit.String(),
+		GitSafetyRef:       gitSafety.Ref,
+		GitSafetyCommitSHA: gitSafety.Commit.String(),
+		EventSourceID:      sourceID,
+		GitChanges:         workspaceGitChangesFromPlan(gitPlan),
+	}
+	if err := writeJournal(JournalPath(repo), journal); err != nil {
+		t.Fatalf("writeJournal: %v", err)
+	}
+
+	if _, err := New(repo).Run(Request{Target: targetRef, DryRun: true, WorkspaceGit: true}); err != nil {
+		t.Fatalf("Run with restored workspace-git journal: %v", err)
+	}
+	event := rollbackEventWithSourceID(t, repo, sessionID, sourceID)
+	var payload EventPayload
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal rollback payload: %v", err)
+	}
+	if payload.ChangeSummary.Total != 3 || payload.ChangeSummary.Modified != 2 || payload.ChangeSummary.Added != 1 {
+		t.Fatalf("change summary = %#v, want total=3 modified=2 added=1", payload.ChangeSummary)
 	}
 }
 
@@ -527,6 +630,21 @@ func countEventsWithSourceID(t *testing.T, repo *checkpoint.Repo, sessionID prim
 		}
 	}
 	return count
+}
+
+func rollbackEventWithSourceID(t *testing.T, repo *checkpoint.Repo, sessionID primitives.SessionID, sourceID string) eventlog.Event {
+	t.Helper()
+	events, err := eventlog.Open(repo.MetadataDir).Read(sessionID)
+	if err != nil {
+		t.Fatalf("read events: %v", err)
+	}
+	for _, event := range events {
+		if event.Type == primitives.EventTypeRollback && event.SourceID == sourceID {
+			return event
+		}
+	}
+	t.Fatalf("rollback event with source id %s not found", sourceID)
+	return eventlog.Event{}
 }
 
 func countRollbackEvents(t *testing.T, repo *checkpoint.Repo, sessionID primitives.SessionID) int {
