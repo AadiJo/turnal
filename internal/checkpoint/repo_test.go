@@ -80,6 +80,43 @@ func TestCreateCheckpointSnapshotsWorktreeAndExcludesMetadata(t *testing.T) {
 	}
 }
 
+func TestCreateCheckpointHonorsGitignore(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	writeFile(t, root, ".gitignore", "dist/\n*.log\n!keep.log\n")
+	writeFile(t, root, "nested/.gitignore", "local.txt\n")
+	writeFile(t, root, "src/app.txt", "hello\n")
+	writeFile(t, root, "dist/bundle.js", "generated\n")
+	writeFile(t, root, "debug.log", "ignored\n")
+	writeFile(t, root, "keep.log", "kept\n")
+	writeFile(t, root, "nested/local.txt", "ignored by nested gitignore\n")
+	writeFile(t, root, "nested/keep.txt", "kept nested\n")
+
+	sessionID, _ := primitives.ParseSessionID("demo")
+	turnID, _ := primitives.NewTurnID(1)
+	checkpoint, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("CreateCheckpoint: %v", err)
+	}
+
+	for _, path := range []string{".gitignore", "nested/.gitignore", "src/app.txt", "keep.log", "nested/keep.txt"} {
+		if _, err := runHiddenGit(repo, "", "show", checkpoint.Commit.String()+":"+path); err != nil {
+			t.Fatalf("%s was not captured: %v", path, err)
+		}
+	}
+	for _, path := range []string{"dist/bundle.js", "debug.log", "nested/local.txt"} {
+		if _, err := runHiddenGit(repo, "", "show", checkpoint.Commit.String()+":"+path); err == nil {
+			t.Fatalf("%s was captured, want gitignored", path)
+		}
+	}
+}
+
 func TestCreateCheckpointBypassesGitFilters(t *testing.T) {
 	requireGit(t)
 
@@ -438,6 +475,61 @@ func TestRestoreCommitPreservesBytesModesSymlinksAndMetadata(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root.String(), ".agent-vcs/tmp/keep.txt")); err != nil {
 		t.Fatalf("metadata file was not preserved: %v", err)
+	}
+}
+
+func TestRestoreCommitPreservesGitignoredFiles(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	writeFile(t, root, ".gitignore", "ignored/\n*.tmp\n")
+	writeFile(t, root, "app.txt", "target\n")
+	writeFile(t, root, "ignored/cache.tmp", "before checkpoint\n")
+
+	sessionID, _ := primitives.ParseSessionID("demo")
+	turnID, _ := primitives.NewTurnID(1)
+	target, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("target checkpoint: %v", err)
+	}
+
+	writeFile(t, root, "app.txt", "current\n")
+	writeFile(t, root, "extra.txt", "remove me\n")
+	writeFile(t, root, "ignored/cache.tmp", "preserve me\n")
+	writeFile(t, root, "ignored/new.tmp", "preserve me too\n")
+	writeFile(t, root, "scratch.tmp", "preserve ignored file\n")
+
+	if err := repo.RestoreCommit(target.Commit); err != nil {
+		t.Fatalf("RestoreCommit: %v", err)
+	}
+
+	app, err := os.ReadFile(filepath.Join(root.String(), "app.txt"))
+	if err != nil {
+		t.Fatalf("read app.txt: %v", err)
+	}
+	if string(app) != "target\n" {
+		t.Fatalf("app.txt = %q, want target", app)
+	}
+	if _, err := os.Stat(filepath.Join(root.String(), "extra.txt")); !os.IsNotExist(err) {
+		t.Fatalf("extra.txt still exists or stat failed: %v", err)
+	}
+	for path, want := range map[string]string{
+		"ignored/cache.tmp": "preserve me\n",
+		"ignored/new.tmp":   "preserve me too\n",
+		"scratch.tmp":       "preserve ignored file\n",
+	} {
+		content, err := os.ReadFile(filepath.Join(root.String(), filepath.FromSlash(path)))
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if string(content) != want {
+			t.Fatalf("%s = %q, want %q", path, content, want)
+		}
 	}
 }
 

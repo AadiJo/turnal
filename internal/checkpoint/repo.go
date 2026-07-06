@@ -515,6 +515,11 @@ func (repo *Repo) RestoreCommit(commit primitives.CommitSHA) error {
 	if _, err := runHiddenGit(repo, "", "rev-parse", parsedCommit.String()+"^{commit}"); err != nil {
 		return err
 	}
+	indexPath, cleanup, err := repo.tempIndex()
+	if err != nil {
+		return err
+	}
+	defer cleanup()
 
 	entries, err := repo.ListCommitTree(parsedCommit)
 	if err != nil {
@@ -525,10 +530,10 @@ func (repo *Repo) RestoreCommit(commit primitives.CommitSHA) error {
 			return err
 		}
 	}
-	if err := repo.deleteFilesAbsentFrom(entries); err != nil {
+	if err := repo.deleteFilesAbsentFrom(entries, indexPath); err != nil {
 		return err
 	}
-	return repo.removeEmptyDirs()
+	return repo.removeEmptyDirs(indexPath)
 }
 
 func (repo *Repo) ListCommitTree(commit primitives.CommitSHA) ([]TreeEntry, error) {
@@ -653,7 +658,7 @@ func restoreAction(oldMode, newMode, oldObject, newObject, status string) Restor
 	}
 }
 
-func (repo *Repo) deleteFilesAbsentFrom(entries []TreeEntry) error {
+func (repo *Repo) deleteFilesAbsentFrom(entries []TreeEntry, indexPath string) error {
 	targetPaths := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
 		targetPaths[entry.Path] = struct{}{}
@@ -674,6 +679,16 @@ func (repo *Repo) deleteFilesAbsentFrom(entries []TreeEntry) error {
 
 		repoPath := filepath.ToSlash(relPath)
 		if excludedPath(repoPath) {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		ignored, err := repo.gitignoredPath(indexPath, repoPath)
+		if err != nil {
+			return err
+		}
+		if ignored {
 			if entry.IsDir() {
 				return fs.SkipDir
 			}
@@ -849,7 +864,7 @@ func (repo *Repo) blobBytes(objectID string) ([]byte, error) {
 	return []byte(output), nil
 }
 
-func (repo *Repo) removeEmptyDirs() error {
+func (repo *Repo) removeEmptyDirs(indexPath string) error {
 	root := repo.WorkspaceRoot.String()
 	var dirs []string
 	if err := filepath.WalkDir(root, func(absPath string, entry fs.DirEntry, walkErr error) error {
@@ -865,6 +880,16 @@ func (repo *Repo) removeEmptyDirs() error {
 		}
 		repoPath := filepath.ToSlash(relPath)
 		if excludedPath(repoPath) {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		ignored, err := repo.gitignoredPath(indexPath, repoPath)
+		if err != nil {
+			return err
+		}
+		if ignored {
 			if entry.IsDir() {
 				return fs.SkipDir
 			}
@@ -933,6 +958,16 @@ func (repo *Repo) snapshotWorktree(indexPath string) error {
 			}
 			return nil
 		}
+		ignored, err := repo.gitignoredPath(indexPath, repoPath)
+		if err != nil {
+			return err
+		}
+		if ignored {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
 		if entry.IsDir() {
 			return nil
 		}
@@ -972,6 +1007,27 @@ func (repo *Repo) snapshotWorktree(indexPath string) error {
 		}
 		return nil
 	})
+}
+
+func (repo *Repo) gitignoredPath(indexPath string, repoPath string) (bool, error) {
+	cmd := exec.Command("git", "check-ignore", "--quiet", "--no-index", "--", repoPath)
+	cmd.Dir = repo.WorkspaceRoot.String()
+	cmd.Env = append(cleanGitEnv(os.Environ()),
+		"GIT_DIR="+repo.GitDir,
+		"GIT_WORK_TREE="+repo.WorkspaceRoot.String(),
+		"GIT_INDEX_FILE="+indexPath,
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		return true, nil
+	}
+
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("git check-ignore --quiet --no-index -- %s: %w\n%s", repoPath, err, strings.TrimSpace(string(output)))
 }
 
 func excludedPath(repoPath string) bool {
