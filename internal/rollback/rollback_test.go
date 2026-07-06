@@ -162,6 +162,40 @@ func TestRunClearsPreRestoreJournal(t *testing.T) {
 	}
 }
 
+func TestRunFailsWhenWorkspaceLockHeld(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	sessionID := sessionID(t, "demo")
+	turnID, _ := primitives.NewTurnID(1)
+	writeFile(t, root, "app.txt", "target\n")
+	if _, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre); err != nil {
+		t.Fatalf("target checkpoint: %v", err)
+	}
+	writeFile(t, root, "app.txt", "current\n")
+	if err := os.Mkdir(repo.WorkspaceLockPath(), 0o700); err != nil {
+		t.Fatalf("create workspace lock: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(repo.WorkspaceLockPath()) })
+
+	targetRef, err := primitives.NewTargetRef(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("NewTargetRef: %v", err)
+	}
+	_, err = New(repo).Run(Request{Target: targetRef})
+	if err == nil {
+		t.Fatal("Run succeeded while workspace lock was held")
+	}
+	if !strings.Contains(err.Error(), "workspace lock busy") {
+		t.Fatalf("Run error = %v, want workspace lock busy", err)
+	}
+}
+
 func TestRunRestoreFailureReturnsSafetyAndKeepsExtraFiles(t *testing.T) {
 	requireGit(t)
 

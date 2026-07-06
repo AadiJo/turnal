@@ -36,6 +36,50 @@ func TestInitCreatesHiddenBareRepo(t *testing.T) {
 	}
 }
 
+func TestWorkspaceLockBlocksCheckpointMutation(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := os.Mkdir(repo.WorkspaceLockPath(), 0o700); err != nil {
+		t.Fatalf("create workspace lock: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(repo.WorkspaceLockPath()) })
+
+	sessionID, _ := primitives.ParseSessionID("demo")
+	turnID, _ := primitives.NewTurnID(1)
+	_, err = repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err == nil {
+		t.Fatal("CreateCheckpoint succeeded while workspace lock was held")
+	}
+	if !strings.Contains(err.Error(), "workspace lock busy") {
+		t.Fatalf("CreateCheckpoint error = %v, want workspace lock busy", err)
+	}
+}
+
+func TestWorkspaceLockIsReentrantInProcess(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	writeFile(t, root, "app.txt", "content\n")
+
+	sessionID, _ := primitives.ParseSessionID("demo")
+	turnID, _ := primitives.NewTurnID(1)
+	if err := repo.WithWorkspaceLock("test", func() error {
+		_, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
+		return err
+	}); err != nil {
+		t.Fatalf("CreateCheckpoint under existing workspace lock: %v", err)
+	}
+}
+
 func TestCreateCheckpointSnapshotsWorktreeAndExcludesMetadata(t *testing.T) {
 	requireGit(t)
 

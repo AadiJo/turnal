@@ -199,6 +199,16 @@ func FindRoot(start string) (primitives.WorkspaceRoot, error) {
 }
 
 func (repo *Repo) CreateCheckpoint(sessionID primitives.SessionID, turnID primitives.TurnID, phase primitives.CheckpointPhase) (Checkpoint, error) {
+	var checkpoint Checkpoint
+	err := repo.WithWorkspaceLock("create checkpoint", func() error {
+		var err error
+		checkpoint, err = repo.createCheckpoint(sessionID, turnID, phase)
+		return err
+	})
+	return checkpoint, err
+}
+
+func (repo *Repo) createCheckpoint(sessionID primitives.SessionID, turnID primitives.TurnID, phase primitives.CheckpointPhase) (Checkpoint, error) {
 	ref, err := primitives.NewCheckpointRef(sessionID, turnID, phase)
 	if err != nil {
 		return Checkpoint{}, err
@@ -221,6 +231,16 @@ func (repo *Repo) CreateCheckpoint(sessionID primitives.SessionID, turnID primit
 }
 
 func (repo *Repo) CreateSnapshotRef(ref string, message string) (Snapshot, error) {
+	var snapshot Snapshot
+	err := repo.WithWorkspaceLock("create snapshot", func() error {
+		var err error
+		snapshot, err = repo.createSnapshotRef(ref, message)
+		return err
+	})
+	return snapshot, err
+}
+
+func (repo *Repo) createSnapshotRef(ref string, message string) (Snapshot, error) {
 	ref, err := repo.validatePrivateRef(ref)
 	if err != nil {
 		return Snapshot{}, err
@@ -240,6 +260,16 @@ func (repo *Repo) CreateSnapshotRef(ref string, message string) (Snapshot, error
 }
 
 func (repo *Repo) CreateSyntheticSnapshotRef(ref string, message string, entries []SyntheticTreeEntry) (Snapshot, error) {
+	var snapshot Snapshot
+	err := repo.WithWorkspaceLock("create synthetic snapshot", func() error {
+		var err error
+		snapshot, err = repo.createSyntheticSnapshotRef(ref, message, entries)
+		return err
+	})
+	return snapshot, err
+}
+
+func (repo *Repo) createSyntheticSnapshotRef(ref string, message string, entries []SyntheticTreeEntry) (Snapshot, error) {
 	ref, err := repo.validatePrivateRef(ref)
 	if err != nil {
 		return Snapshot{}, err
@@ -687,6 +717,12 @@ func (repo *Repo) PlanRestoreCommit(commit primitives.CommitSHA) (RestorePlan, e
 }
 
 func (repo *Repo) RestoreCommit(commit primitives.CommitSHA) error {
+	return repo.WithWorkspaceLock("restore checkpoint", func() error {
+		return repo.restoreCommit(commit)
+	})
+}
+
+func (repo *Repo) restoreCommit(commit primitives.CommitSHA) error {
 	parsedCommit, err := primitives.ParseCommitSHA(commit.String())
 	if err != nil {
 		return err
