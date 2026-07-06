@@ -7,6 +7,7 @@ import (
 	"agent-vcs-again/internal/adapters"
 	"agent-vcs-again/internal/checkpoint"
 	agentconfig "agent-vcs-again/internal/config"
+	"agent-vcs-again/internal/integrity"
 	"agent-vcs-again/internal/primitives"
 	"github.com/spf13/cobra"
 )
@@ -34,6 +35,14 @@ func statusCmd() *cobra.Command {
 			status := checkpoint.Inspect(root)
 			if rootErr != nil {
 				status.Problems = append([]string{rootErr.Error()}, status.Problems...)
+			} else {
+				report := integrity.Inspect(&checkpoint.Repo{
+					WorkspaceRoot: root,
+					MetadataDir:   status.MetadataDir,
+					GitDir:        status.GitDir,
+					TmpDir:        status.TmpDir,
+				})
+				status.Problems = append(status.Problems, report.Problems...)
 			}
 			effective, _, configErr := agentconfig.Resolve(root.String(), agentconfig.Overrides{})
 			if configErr != nil {

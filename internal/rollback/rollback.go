@@ -137,6 +137,30 @@ func JournalPath(repo *checkpoint.Repo) string {
 	return filepath.Join(repo.TmpDir, journalFileName)
 }
 
+func InspectJournal(repo *checkpoint.Repo) []string {
+	if repo == nil {
+		return nil
+	}
+	path := JournalPath(repo)
+	journal, ok, err := readJournal(path)
+	if err != nil {
+		return []string{err.Error()}
+	}
+	if !ok {
+		return nil
+	}
+	switch journal.phase() {
+	case "intent", "planned":
+		return []string{fmt.Sprintf("rollback journal pending before restore at %s: target=%s phase=%s", path, journal.Target, journal.phase())}
+	case "restoring":
+		return []string{fmt.Sprintf("rollback journal indicates restore may be incomplete at %s: target=%s safety_ref=%s safety_commit=%s", path, journal.Target, journal.SafetyRef, journal.SafetyCommitSHA)}
+	case "restored":
+		return []string{fmt.Sprintf("rollback journal restored but not finalized at %s: target=%s safety_ref=%s safety_commit=%s", path, journal.Target, journal.SafetyRef, journal.SafetyCommitSHA)}
+	default:
+		return []string{fmt.Sprintf("rollback invariant failed: unknown rollback journal phase %q at %s", journal.phase(), path)}
+	}
+}
+
 func ResolveTarget(repo *checkpoint.Repo, target primitives.TargetRef) (ResolvedTarget, error) {
 	phase, ok := target.Phase()
 	if !ok {
