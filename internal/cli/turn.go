@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 
+	eventlog "agent-vcs-again/internal/events"
 	"agent-vcs-again/internal/primitives"
 	"agent-vcs-again/internal/recall"
+	"agent-vcs-again/internal/turnevents"
 	"agent-vcs-again/internal/turns"
 	"github.com/spf13/cobra"
 )
@@ -48,7 +50,11 @@ func turnStartCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			result, err := turns.NewManager(repo).Start(sessionID, turnID)
+			result, err := turnevents.Recorder{
+				Log:     eventlog.Open(repo.MetadataDir),
+				Manager: turns.NewManager(repo),
+				Adapter: primitives.AdapterManual,
+			}.Start(sessionID, turnID)
 			if err != nil {
 				return err
 			}
@@ -91,7 +97,11 @@ func turnFinishCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			result, err := turns.NewManager(repo).Finish(sessionID, turnID)
+			result, err := turnevents.Recorder{
+				Log:     eventlog.Open(repo.MetadataDir),
+				Manager: turns.NewManager(repo),
+				Adapter: primitives.AdapterManual,
+			}.Finish(sessionID, turnID)
 			if err != nil {
 				return err
 			}

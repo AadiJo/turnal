@@ -10,6 +10,7 @@ import (
 	"agent-vcs-again/internal/checkpoint"
 	eventlog "agent-vcs-again/internal/events"
 	"agent-vcs-again/internal/primitives"
+	"agent-vcs-again/internal/turnevents"
 	"agent-vcs-again/internal/turns"
 )
 
@@ -58,17 +59,6 @@ type toolResultPayload struct {
 	ToolUseID      string          `json:"tool_use_id,omitempty"`
 	ProviderTurnID string          `json:"provider_turn_id,omitempty"`
 	Output         json.RawMessage `json:"output"`
-}
-
-type turnPayload struct {
-	Turn uint64 `json:"turn"`
-}
-
-type checkpointPayload struct {
-	Turn      uint64 `json:"turn"`
-	Phase     string `json:"phase"`
-	CommitSHA string `json:"commit_sha"`
-	Ref       string `json:"ref"`
 }
 
 type errorPayload struct {
@@ -273,44 +263,15 @@ func finishTurn(log eventlog.Log, manager turns.Manager, adapter primitives.Adap
 }
 
 func appendTurnStart(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, rawRef string) error {
-	return appendPayloadEvent(log, eventlog.AppendInput{
-		SessionID: sessionID,
-		TurnID:    &turnID,
-		Type:      primitives.EventTypeTurnStart,
-		Adapter:   adapter,
-		SourceID:  fmt.Sprintf("%s:turn:%s:start", adapter, turnID),
-		RawRef:    rawRef,
-		Payload:   mustJSON(turnPayload{Turn: turnID.Uint64()}),
-	})
+	return turnevents.AppendTurnStart(log, adapter, sessionID, turnID, rawRef)
 }
 
 func appendTurnFinish(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, rawRef string) error {
-	return appendPayloadEvent(log, eventlog.AppendInput{
-		SessionID: sessionID,
-		TurnID:    &turnID,
-		Type:      primitives.EventTypeTurnFinish,
-		Adapter:   adapter,
-		SourceID:  fmt.Sprintf("%s:turn:%s:finish", adapter, turnID),
-		RawRef:    rawRef,
-		Payload:   mustJSON(turnPayload{Turn: turnID.Uint64()}),
-	})
+	return turnevents.AppendTurnFinish(log, adapter, sessionID, turnID, rawRef)
 }
 
 func appendCheckpoint(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, phase primitives.CheckpointPhase, checkpoint checkpoint.Checkpoint, rawRef string) error {
-	return appendPayloadEvent(log, eventlog.AppendInput{
-		SessionID: sessionID,
-		TurnID:    &turnID,
-		Type:      primitives.EventTypeCheckpoint,
-		Adapter:   adapter,
-		SourceID:  fmt.Sprintf("%s:turn:%s:checkpoint:%s", adapter, turnID, phase),
-		RawRef:    rawRef,
-		Payload: mustJSON(checkpointPayload{
-			Turn:      turnID.Uint64(),
-			Phase:     phase.String(),
-			CommitSHA: checkpoint.Commit.String(),
-			Ref:       checkpoint.Ref.String(),
-		}),
-	})
+	return turnevents.AppendCheckpoint(log, adapter, sessionID, turnID, phase, checkpoint, rawRef)
 }
 
 func appendPrompt(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, rawRef, sourceID string, payload hookPayload) error {

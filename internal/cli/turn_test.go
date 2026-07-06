@@ -60,6 +60,96 @@ func TestTurnRecallCommandJSON(t *testing.T) {
 	}
 }
 
+func TestManualTurnCommandsAppendEventLog(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+
+	writeFile(t, root, "app.txt", "before\n")
+	start := NewRootCmd()
+	var startOut bytes.Buffer
+	start.SetOut(&startOut)
+	start.SetErr(&startOut)
+	start.SetArgs([]string{"turn", "start", "--session", "demo"})
+	if err := start.Execute(); err != nil {
+		t.Fatalf("turn start: %v\n%s", err, startOut.String())
+	}
+
+	writeFile(t, root, "app.txt", "after\n")
+	finish := NewRootCmd()
+	var finishOut bytes.Buffer
+	finish.SetOut(&finishOut)
+	finish.SetErr(&finishOut)
+	finish.SetArgs([]string{"turn", "finish", "--session", "demo"})
+	if err := finish.Execute(); err != nil {
+		t.Fatalf("turn finish: %v\n%s", err, finishOut.String())
+	}
+
+	sessionID := sessionID(t, "demo")
+	turnID, _ := primitives.NewTurnID(1)
+	events, err := eventlog.Open(repo.MetadataDir).Read(sessionID)
+	if err != nil {
+		t.Fatalf("Read events: %v", err)
+	}
+	wantTypes := []primitives.EventType{
+		primitives.EventTypeTurnStart,
+		primitives.EventTypeCheckpoint,
+		primitives.EventTypeTurnFinish,
+		primitives.EventTypeCheckpoint,
+	}
+	wantSources := []string{
+		"manual:turn:1:start",
+		"manual:turn:1:checkpoint:pre",
+		"manual:turn:1:finish",
+		"manual:turn:1:checkpoint:post",
+	}
+	if len(events) != len(wantTypes) {
+		t.Fatalf("events len = %d, want %d: %#v", len(events), len(wantTypes), events)
+	}
+	for i, event := range events {
+		if event.TurnID == nil || *event.TurnID != turnID {
+			t.Fatalf("event %d turn = %#v, want %s", i, event.TurnID, turnID)
+		}
+		if event.Type != wantTypes[i] {
+			t.Fatalf("event %d type = %s, want %s", i, event.Type, wantTypes[i])
+		}
+		if event.Adapter != primitives.AdapterManual {
+			t.Fatalf("event %d adapter = %s, want manual", i, event.Adapter)
+		}
+		if event.SourceID != wantSources[i] {
+			t.Fatalf("event %d source = %q, want %q", i, event.SourceID, wantSources[i])
+		}
+		if event.RawRef != "" {
+			t.Fatalf("event %d raw ref = %q, want empty", i, event.RawRef)
+		}
+	}
+
+	recalled, err := recall.NewReader(repo.MetadataDir).RecallTurn(sessionID, turnID, recall.Options{IncludeRaw: true})
+	if err != nil {
+		t.Fatalf("RecallTurn: %v", err)
+	}
+	if !recalled.Complete {
+		t.Fatalf("recalled turn complete=false: %#v", recalled)
+	}
+	if recalled.StartedAt == nil || recalled.FinishedAt == nil {
+		t.Fatalf("recalled timestamps missing: started=%v finished=%v", recalled.StartedAt, recalled.FinishedAt)
+	}
+	if recalled.PreCheckpoint == nil || recalled.PostCheckpoint == nil {
+		t.Fatalf("recalled checkpoints missing: pre=%#v post=%#v", recalled.PreCheckpoint, recalled.PostCheckpoint)
+	}
+	if len(recalled.Adapters) != 1 || recalled.Adapters[0] != primitives.AdapterManual {
+		t.Fatalf("recalled adapters = %#v, want manual", recalled.Adapters)
+	}
+	if len(recalled.RawRecords) != 0 || len(recalled.RawRecordErrors) != 0 {
+		t.Fatalf("manual turn should not reference raw adapter records: records=%#v errors=%#v", recalled.RawRecords, recalled.RawRecordErrors)
+	}
+}
+
 func TestTurnRecallCommandIncludesTranscript(t *testing.T) {
 	requireGit(t)
 
