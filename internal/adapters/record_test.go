@@ -123,6 +123,41 @@ func TestRecordHookPayloadUsesProcessWorkspaceBeforePayloadCWD(t *testing.T) {
 	}
 }
 
+func TestReadRawHookRecord(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	payload := []byte(`{"cwd":` + quote(root.String()) + `,"session_id":"claude-session","prompt":"hello"}`)
+	rawRef, err := RecordHookPayload(primitives.AdapterClaudeCode, "UserPromptSubmit", payload)
+	if err != nil {
+		t.Fatalf("RecordHookPayload: %v", err)
+	}
+
+	record, err := ReadRawHookRecord(repo.MetadataDir, rawRef)
+	if err != nil {
+		t.Fatalf("ReadRawHookRecord: %v", err)
+	}
+	if record.Adapter != primitives.AdapterClaudeCode || record.Hook != "UserPromptSubmit" {
+		t.Fatalf("record = %#v", record)
+	}
+	if string(record.Payload) != string(payload) {
+		t.Fatalf("payload = %s, want %s", record.Payload, payload)
+	}
+}
+
+func TestReadRawHookRecordRejectsInvalidRef(t *testing.T) {
+	for _, rawRef := range []string{"", "../codex:1", "codex:0", "codex:not-a-number", "codex:1:2"} {
+		if _, err := ReadRawHookRecord(t.TempDir(), rawRef); err == nil {
+			t.Fatalf("ReadRawHookRecord(%q) succeeded", rawRef)
+		}
+	}
+}
+
 func requireGit(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {

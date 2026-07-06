@@ -1,10 +1,14 @@
 package adapters
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,6 +25,35 @@ type RawHookRecord struct {
 	Payload    json.RawMessage        `json:"payload,omitempty"`
 	Raw        string                 `json:"raw,omitempty"`
 	Error      string                 `json:"error,omitempty"`
+}
+
+type RawHookRef struct {
+	Adapter    primitives.AdapterName
+	LineNumber uint64
+}
+
+func ParseRawHookRef(value string) (RawHookRef, error) {
+	value = strings.TrimSpace(value)
+	adapterText, lineText, ok := strings.Cut(value, ":")
+	if !ok || strings.Contains(lineText, ":") {
+		return RawHookRef{}, fmt.Errorf("invalid raw adapter ref %q: must be <adapter>:<line>", value)
+	}
+
+	adapter, err := primitives.ParseAdapterName(adapterText)
+	if err != nil {
+		return RawHookRef{}, fmt.Errorf("invalid raw adapter ref %q: %w", value, err)
+	}
+
+	lineNumber, err := strconv.ParseUint(lineText, 10, 64)
+	if err != nil || lineNumber == 0 {
+		return RawHookRef{}, fmt.Errorf("invalid raw adapter ref %q: line must be a positive integer", value)
+	}
+
+	return RawHookRef{Adapter: adapter, LineNumber: lineNumber}, nil
+}
+
+func (ref RawHookRef) String() string {
+	return fmt.Sprintf("%s:%d", ref.Adapter, ref.LineNumber)
 }
 
 func RecordHookPayload(adapter primitives.AdapterName, hookName string, raw []byte) (string, error) {
@@ -100,6 +133,56 @@ func appendRawHookRecord(metadataDir string, record RawHookRecord) (string, erro
 		return "", fmt.Errorf("sync adapter log: %w", err)
 	}
 	return fmt.Sprintf("%s:%d", record.Adapter, lineNumber), nil
+}
+
+func ReadRawHookRecord(metadataDir string, rawRef string) (RawHookRecord, error) {
+	ref, err := ParseRawHookRef(rawRef)
+	if err != nil {
+		return RawHookRecord{}, err
+	}
+
+	path := filepath.Join(metadataDir, "log", "adapter", ref.Adapter.String()+".jsonl")
+	file, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return RawHookRecord{}, fmt.Errorf("raw adapter record invariant failed for %s: adapter log missing", ref)
+		}
+		return RawHookRecord{}, fmt.Errorf("read raw adapter record %s: %w", ref, err)
+	}
+	defer func() { _ = file.Close() }()
+
+	reader := bufio.NewReader(file)
+	for lineNumber := uint64(1); ; lineNumber++ {
+		line, readErr := reader.ReadBytes('\n')
+		if readErr != nil && len(line) == 0 {
+			if readErr == io.EOF {
+				return RawHookRecord{}, fmt.Errorf("raw adapter record invariant failed for %s: line not found", ref)
+			}
+			return RawHookRecord{}, fmt.Errorf("read raw adapter record %s: %w", ref, readErr)
+		}
+
+		if lineNumber == ref.LineNumber {
+			line = bytes.TrimRight(line, "\r\n")
+			var record RawHookRecord
+			if err := json.Unmarshal(line, &record); err != nil {
+				return RawHookRecord{}, fmt.Errorf("raw adapter record invariant failed for %s: malformed JSON: %w", ref, err)
+			}
+			if record.Version != 1 {
+				return RawHookRecord{}, fmt.Errorf("raw adapter record invariant failed for %s: unsupported version %d", ref, record.Version)
+			}
+			if record.Adapter != ref.Adapter {
+				return RawHookRecord{}, fmt.Errorf("raw adapter record invariant failed for %s: record adapter %s does not match ref adapter %s", ref, record.Adapter, ref.Adapter)
+			}
+			if record.Hook == "" {
+				return RawHookRecord{}, fmt.Errorf("raw adapter record invariant failed for %s: hook is empty", ref)
+			}
+			return record, nil
+		}
+
+		if readErr == io.EOF {
+			return RawHookRecord{}, fmt.Errorf("raw adapter record invariant failed for %s: line not found", ref)
+		}
+	}
 }
 
 func hookWorkspaceCWD(raw []byte) (string, error) {
