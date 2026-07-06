@@ -12,6 +12,7 @@ import (
 
 func TestInitCommandInitializesWorkspaceGitAndGitignore(t *testing.T) {
 	requireGit(t)
+	isolateAgentConfig(t)
 
 	root := workspaceRoot(t)
 	t.Chdir(root.String())
@@ -42,6 +43,50 @@ func TestInitCommandInitializesWorkspaceGitAndGitignore(t *testing.T) {
 		"initialized hidden git repo:",
 		"initialized workspace git repo:",
 		"updated gitignore:",
+		"adapter hooks skipped",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("init output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestInitCommandUsesGlobalConfig(t *testing.T) {
+	requireGit(t)
+	writeGlobalAgentConfig(t, `
+version = 1
+
+[init]
+agent = "none"
+
+[bootstrap]
+init_workspace_git = false
+update_gitignore = false
+`)
+
+	root := workspaceRoot(t)
+	t.Chdir(root.String())
+
+	cmd := NewRootCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"init"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init command: %v\n%s", err, out.String())
+	}
+
+	if _, err := os.Stat(filepath.Join(root.String(), ".git")); !os.IsNotExist(err) {
+		t.Fatalf("workspace .git exists or could not be checked: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root.String(), ".gitignore")); !os.IsNotExist(err) {
+		t.Fatalf(".gitignore exists or could not be checked: %v", err)
+	}
+
+	output := out.String()
+	for _, want := range []string{
+		"workspace git skipped",
+		"gitignore update skipped",
 		"adapter hooks skipped",
 	} {
 		if !strings.Contains(output, want) {

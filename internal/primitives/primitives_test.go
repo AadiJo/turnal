@@ -244,6 +244,52 @@ func TestCheckpointRef(t *testing.T) {
 	}
 }
 
+func TestGitSyncRefAndRollbackMode(t *testing.T) {
+	sessionID, _ := ParseSessionID("Demo")
+	turnID, _ := NewTurnID(7)
+
+	ref, err := NewGitSyncRef(sessionID, turnID, CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("NewGitSyncRef: %v", err)
+	}
+	want := "refs/agent-vcs/git-sync/demo/turn/000007/pre"
+	if ref.String() != want {
+		t.Fatalf("git-sync ref = %q, want %q", ref, want)
+	}
+	parsed, err := ParseGitSyncRef(want)
+	if err != nil {
+		t.Fatalf("ParseGitSyncRef: %v", err)
+	}
+	parts, err := parsed.Parts()
+	if err != nil {
+		t.Fatalf("GitSyncRef.Parts: %v", err)
+	}
+	if parts.SessionID != "demo" || parts.TurnID != 7 || parts.Phase != CheckpointPhasePre {
+		t.Fatalf("unexpected git-sync ref parts: %+v", parts)
+	}
+
+	for _, input := range []string{
+		"refs/agent-vcs/git-sync/Demo/turn/000007/pre",
+		"refs/agent-vcs/git-sync/demo/turn/0007/pre",
+		"refs/agent-vcs/git-sync/demo/turn/000007/mid",
+		"refs/agent-vcs/checkpoints/demo/turn/000007/pre",
+	} {
+		if _, err := ParseGitSyncRef(input); err == nil {
+			t.Fatalf("ParseGitSyncRef(%q) succeeded, want error", input)
+		}
+	}
+
+	if mode, err := ParseRollbackMode("workspace-git"); err != nil || mode != RollbackModeWorkspaceGit {
+		t.Fatalf("ParseRollbackMode workspace-git = %q, %v", mode, err)
+	}
+	if mode, err := ParseRollbackMode(""); err != nil || mode != RollbackModeCheckpoint {
+		t.Fatalf("ParseRollbackMode empty = %q, %v", mode, err)
+	}
+	if _, err := ParseRollbackMode("hard-reset"); err == nil {
+		t.Fatal("ParseRollbackMode accepted invalid mode")
+	}
+}
+
 func TestWorkspaceRoot(t *testing.T) {
 	root, err := ParseWorkspaceRoot(t.TempDir())
 	if err != nil {

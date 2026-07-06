@@ -6,9 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 
+	"agent-vcs-again/internal/hookcmd"
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -27,6 +27,10 @@ type InstallResult struct {
 	ConfigPath string
 	BackupPath string
 	Installed  bool
+}
+
+type InstallOptions struct {
+	HookCommand string
 }
 
 func ResolveTargets(projectRoot string, target Target) ([]Target, error) {
@@ -57,17 +61,21 @@ func ResolveTargets(projectRoot string, target Target) ([]Target, error) {
 }
 
 func Install(projectRoot string, targets []Target) ([]InstallResult, error) {
+	return InstallWithOptions(projectRoot, targets, InstallOptions{})
+}
+
+func InstallWithOptions(projectRoot string, targets []Target, opts InstallOptions) ([]InstallResult, error) {
 	results := make([]InstallResult, 0, len(targets))
 	for _, target := range targets {
 		switch target {
 		case TargetClaude:
-			result, err := InstallClaudeHook(projectRoot)
+			result, err := InstallClaudeHookWithOptions(projectRoot, opts)
 			if err != nil {
 				return nil, err
 			}
 			results = append(results, result)
 		case TargetCodex:
-			result, err := InstallCodexHook(projectRoot)
+			result, err := InstallCodexHookWithOptions(projectRoot, opts)
 			if err != nil {
 				return nil, err
 			}
@@ -80,6 +88,10 @@ func Install(projectRoot string, targets []Target) ([]InstallResult, error) {
 }
 
 func InstallClaudeHook(projectRoot string) (InstallResult, error) {
+	return InstallClaudeHookWithOptions(projectRoot, InstallOptions{})
+}
+
+func InstallClaudeHookWithOptions(projectRoot string, opts InstallOptions) (InstallResult, error) {
 	result := InstallResult{Target: TargetClaude}
 	claudeDir := filepath.Join(projectRoot, ".claude")
 	settingsPath := filepath.Join(claudeDir, "settings.json")
@@ -107,7 +119,7 @@ func InstallClaudeHook(projectRoot string) (InstallResult, error) {
 		settings["hooks"] = hooks
 	}
 
-	command := HookCommandPrefix()
+	command := opts.hookCommand()
 	mergeHookCommand(hooks, "UserPromptSubmit", claudeUserHook(command))
 	mergeHookCommand(hooks, "Stop", claudeAssistantHook(command))
 	mergeHookCommand(hooks, "PostToolUse", claudeToolUseHook(command))
@@ -126,6 +138,10 @@ func InstallClaudeHook(projectRoot string) (InstallResult, error) {
 }
 
 func InstallCodexHook(projectRoot string) (InstallResult, error) {
+	return InstallCodexHookWithOptions(projectRoot, InstallOptions{})
+}
+
+func InstallCodexHookWithOptions(projectRoot string, opts InstallOptions) (InstallResult, error) {
 	result := InstallResult{Target: TargetCodex}
 	codexDir := filepath.Join(projectRoot, ".codex")
 	configPath := filepath.Join(codexDir, "config.toml")
@@ -153,7 +169,7 @@ func InstallCodexHook(projectRoot string) (InstallResult, error) {
 		config["hooks"] = hooks
 	}
 
-	command := HookCommandPrefix()
+	command := opts.hookCommand()
 	for _, eventName := range []string{"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"} {
 		mergeHookCommand(hooks, eventName, codexHookCommand(command))
 	}
@@ -169,6 +185,13 @@ func InstallCodexHook(projectRoot string) (InstallResult, error) {
 
 	result.Installed = true
 	return result, nil
+}
+
+func (opts InstallOptions) hookCommand() string {
+	if configured := strings.TrimSpace(opts.HookCommand); configured != "" {
+		return configured
+	}
+	return hookcmd.Default()
 }
 
 func enableCodexHooksFeature(config map[string]any) {
@@ -281,27 +304,7 @@ func IsAgentVCSHookCommand(command string) bool {
 }
 
 func HookCommandPrefix() string {
-	if configured := strings.TrimSpace(os.Getenv("AGENT_VCS_HOOK_COMMAND")); configured != "" {
-		return configured
-	}
-
-	executable, err := os.Executable()
-	if err != nil {
-		return "agent-vcs"
-	}
-	executable, err = filepath.EvalSymlinks(executable)
-	if err != nil {
-		return "agent-vcs"
-	}
-	switch filepath.Base(executable) {
-	case "agent-vcs", "acs":
-	default:
-		return "agent-vcs"
-	}
-	if isUnderTempDir(executable) {
-		return "agent-vcs"
-	}
-	return shellQuote(executable)
+	return hookcmd.Default()
 }
 
 func claudeUserHook(commandPrefix string) string {
@@ -318,24 +321,6 @@ func claudeToolUseHook(commandPrefix string) string {
 
 func codexHookCommand(commandPrefix string) string {
 	return commandPrefix + " codex-hook"
-}
-
-func isUnderTempDir(path string) bool {
-	rel, err := filepath.Rel(os.TempDir(), path)
-	if err != nil {
-		return false
-	}
-	return rel == "." || (rel != "" && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
-}
-
-func shellQuote(value string) string {
-	if value == "" {
-		return "''"
-	}
-	if !strings.ContainsAny(value, " \t\n'\"\\$`") {
-		return value
-	}
-	return strconv.Quote(value)
 }
 
 func backupFile(path string) (string, error) {

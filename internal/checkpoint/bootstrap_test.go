@@ -59,6 +59,14 @@ func TestBootstrapCreatesWorkspaceMetadataAndGitignore(t *testing.T) {
 		t.Fatalf("gitignore = %q, want %q", gitignore, GitignoreEntry+"\n")
 	}
 
+	configData, err := os.ReadFile(filepath.Join(result.Repo.MetadataDir, configFileName))
+	if err != nil {
+		t.Fatalf("read workspace config: %v", err)
+	}
+	if !strings.Contains(string(configData), "version = 1") || !strings.Contains(string(configData), "[run]") {
+		t.Fatalf("workspace config missing template content:\n%s", configData)
+	}
+
 	status := Inspect(root)
 	if !status.OK() {
 		t.Fatalf("Inspect after bootstrap has problems: %v", status.Problems)
@@ -102,6 +110,53 @@ func TestBootstrapIsIdempotent(t *testing.T) {
 	}
 	if count := strings.Count(string(gitignore), GitignoreEntry); count != 1 {
 		t.Fatalf("gitignore contains %d entries, want 1:\n%s", count, gitignore)
+	}
+}
+
+func TestBootstrapWithOptionsCanSkipWorkspaceGit(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	result, err := BootstrapWithOptions(root, BootstrapOptions{
+		InitWorkspaceGit: false,
+		UpdateGitignore:  true,
+	})
+	if err != nil {
+		t.Fatalf("BootstrapWithOptions: %v", err)
+	}
+	if result.WorkspaceGitInitialized {
+		t.Fatal("workspace git initialized despite InitWorkspaceGit=false")
+	}
+	if _, err := os.Lstat(filepath.Join(root.String(), ".git")); !os.IsNotExist(err) {
+		t.Fatalf("workspace .git exists or could not be checked: %v", err)
+	}
+	if !result.GitignoreUpdated {
+		t.Fatal("gitignore was not updated")
+	}
+	if _, err := os.Stat(result.Repo.GitDir); err != nil {
+		t.Fatalf("hidden git repo missing: %v", err)
+	}
+}
+
+func TestBootstrapWithOptionsCanSkipGitignore(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	result, err := BootstrapWithOptions(root, BootstrapOptions{
+		InitWorkspaceGit: true,
+		UpdateGitignore:  false,
+	})
+	if err != nil {
+		t.Fatalf("BootstrapWithOptions: %v", err)
+	}
+	if !result.WorkspaceGitInitialized {
+		t.Fatal("workspace git was not initialized")
+	}
+	if result.GitignoreUpdated {
+		t.Fatal("gitignore updated despite UpdateGitignore=false")
+	}
+	if _, err := os.Stat(filepath.Join(root.String(), ".gitignore")); !os.IsNotExist(err) {
+		t.Fatalf(".gitignore exists or could not be checked: %v", err)
 	}
 }
 

@@ -26,6 +26,7 @@ type checkpointPayload struct {
 	Phase         string `json:"phase"`
 	CommitSHA     string `json:"commit_sha"`
 	Ref           string `json:"ref"`
+	GitSyncRef    string `json:"git_sync_ref,omitempty"`
 	EventSeqStart uint64 `json:"event_seq_start"`
 	EventSeqEnd   uint64 `json:"event_seq_end"`
 }
@@ -38,7 +39,7 @@ func (recorder Recorder) Start(sessionID primitives.SessionID, requestedTurnID p
 	if err := AppendTurnStart(recorder.Log, recorder.Adapter, sessionID, started.TurnID, recorder.RawRef); err != nil {
 		return turns.StartResult{}, fmt.Errorf("append turn.start event for session %s turn %s: %w", sessionID, started.TurnID, err)
 	}
-	if err := AppendCheckpoint(recorder.Log, recorder.Adapter, sessionID, started.TurnID, primitives.CheckpointPhasePre, started.Pre, recorder.RawRef); err != nil {
+	if err := AppendCheckpointWithGitSync(recorder.Log, recorder.Adapter, sessionID, started.TurnID, primitives.CheckpointPhasePre, started.Pre, started.GitSync, recorder.RawRef); err != nil {
 		return turns.StartResult{}, fmt.Errorf("append pre checkpoint event for session %s turn %s: %w", sessionID, started.TurnID, err)
 	}
 	return started, nil
@@ -52,7 +53,7 @@ func (recorder Recorder) Finish(sessionID primitives.SessionID, requestedTurnID 
 	if err := AppendTurnFinish(recorder.Log, recorder.Adapter, sessionID, finished.TurnID, recorder.RawRef); err != nil {
 		return turns.FinishResult{}, fmt.Errorf("append turn.finish event for session %s turn %s: %w", sessionID, finished.TurnID, err)
 	}
-	if err := AppendCheckpoint(recorder.Log, recorder.Adapter, sessionID, finished.TurnID, primitives.CheckpointPhasePost, finished.Post, recorder.RawRef); err != nil {
+	if err := AppendCheckpointWithGitSync(recorder.Log, recorder.Adapter, sessionID, finished.TurnID, primitives.CheckpointPhasePost, finished.Post, finished.GitSync, recorder.RawRef); err != nil {
 		return turns.FinishResult{}, fmt.Errorf("append post checkpoint event for session %s turn %s: %w", sessionID, finished.TurnID, err)
 	}
 	return finished, nil
@@ -83,6 +84,14 @@ func AppendTurnFinish(log eventlog.Log, adapter primitives.AdapterName, sessionI
 }
 
 func AppendCheckpoint(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, phase primitives.CheckpointPhase, created checkpoint.Checkpoint, rawRef string) error {
+	return AppendCheckpointWithGitSync(log, adapter, sessionID, turnID, phase, created, nil, rawRef)
+}
+
+func AppendCheckpointWithGitSync(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, phase primitives.CheckpointPhase, created checkpoint.Checkpoint, gitSync *checkpoint.Snapshot, rawRef string) error {
+	gitSyncRef := ""
+	if gitSync != nil {
+		gitSyncRef = gitSync.Ref
+	}
 	return appendPayloadEvent(log, eventlog.AppendInput{
 		SessionID: sessionID,
 		TurnID:    &turnID,
@@ -100,6 +109,7 @@ func AppendCheckpoint(log eventlog.Log, adapter primitives.AdapterName, sessionI
 				Phase:         phase.String(),
 				CommitSHA:     created.Commit.String(),
 				Ref:           created.Ref.String(),
+				GitSyncRef:    gitSyncRef,
 				EventSeqStart: eventSeqStart.Uint64(),
 				EventSeqEnd:   context.Seq.Uint64(),
 			}), nil

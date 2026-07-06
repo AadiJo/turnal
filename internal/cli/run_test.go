@@ -17,6 +17,7 @@ import (
 
 func TestRunCodexWrapperCreatesCheckpointsAndEnablesHooks(t *testing.T) {
 	requireGit(t)
+	isolateAgentConfig(t)
 
 	root := workspaceRoot(t)
 	repo, err := checkpoint.Init(root)
@@ -85,8 +86,61 @@ func TestRunCodexWrapperCreatesCheckpointsAndEnablesHooks(t *testing.T) {
 	}
 }
 
+func TestRunCodexWrapperUsesGlobalConfig(t *testing.T) {
+	requireGit(t)
+	writeGlobalAgentConfig(t, `
+version = 1
+
+[run]
+quiet = true
+bypass_hook_trust = true
+
+[hooks]
+command = "/tmp/custom-agent-vcs"
+`)
+
+	root := workspaceRoot(t)
+	if _, err := checkpoint.Init(root); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+
+	argsPath := installFakeCodex(t, root.String(), 0)
+	writeFile(t, root, "app.txt", "before\n")
+
+	cmd := NewRootCmd()
+	var out bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"run", "--", "codex", "exec", "change app.txt"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("run command: %v\nstdout=%s\nstderr=%s", err, out.String(), stderr.String())
+	}
+
+	argsData, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read fake args: %v", err)
+	}
+	if !strings.Contains(string(argsData), "--dangerously-bypass-hook-trust\n") {
+		t.Fatalf("fake codex args missing bypass hook trust:\n%s", argsData)
+	}
+	if strings.Contains(stderr.String(), "agent-vcs: recorded wrapper checkpoints") {
+		t.Fatalf("quiet global config did not suppress wrapper status:\n%s", stderr.String())
+	}
+
+	configData, err := os.ReadFile(filepath.Join(root.String(), ".codex", "config.toml"))
+	if err != nil {
+		t.Fatalf("read Codex config: %v", err)
+	}
+	if !strings.Contains(string(configData), "/tmp/custom-agent-vcs codex-hook") {
+		t.Fatalf("Codex config missing custom hook command:\n%s", configData)
+	}
+}
+
 func TestRunCodexWrapperPropagatesChildExitCodeAndFinishesTurn(t *testing.T) {
 	requireGit(t)
+	isolateAgentConfig(t)
 
 	root := workspaceRoot(t)
 	repo, err := checkpoint.Init(root)
@@ -131,6 +185,7 @@ func TestRunCodexLiveEndToEnd(t *testing.T) {
 	if os.Getenv("AGENT_VCS_LIVE_CODEX") != "1" {
 		t.Skip("set AGENT_VCS_LIVE_CODEX=1 to run live Codex end-to-end test")
 	}
+	isolateAgentConfig(t)
 	if _, err := exec.LookPath("codex"); err != nil {
 		t.Skip("codex executable not found")
 	}

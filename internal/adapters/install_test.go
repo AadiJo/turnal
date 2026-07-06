@@ -160,13 +160,12 @@ func TestInstallHooksBackUpInvalidConfig(t *testing.T) {
 }
 
 func TestInstallHooksCanUseConfiguredCommandPrefix(t *testing.T) {
-	t.Setenv("AGENT_VCS_HOOK_COMMAND", "/tmp/agent-vcs-live")
-
 	root := t.TempDir()
-	if _, err := InstallCodexHook(root); err != nil {
+	opts := InstallOptions{HookCommand: "/tmp/agent-vcs-live"}
+	if _, err := InstallCodexHookWithOptions(root, opts); err != nil {
 		t.Fatalf("InstallCodexHook: %v", err)
 	}
-	if _, err := InstallCodexHook(root); err != nil {
+	if _, err := InstallCodexHookWithOptions(root, opts); err != nil {
 		t.Fatalf("second InstallCodexHook: %v", err)
 	}
 

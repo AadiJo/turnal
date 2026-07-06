@@ -19,6 +19,18 @@ type BootstrapResult struct {
 	GitignoreUpdated        bool
 }
 
+type BootstrapOptions struct {
+	InitWorkspaceGit bool
+	UpdateGitignore  bool
+}
+
+func DefaultBootstrapOptions() BootstrapOptions {
+	return BootstrapOptions{
+		InitWorkspaceGit: true,
+		UpdateGitignore:  true,
+	}
+}
+
 type Status struct {
 	WorkspaceRoot     primitives.WorkspaceRoot
 	MetadataDir       string
@@ -37,19 +49,31 @@ type Status struct {
 }
 
 func Bootstrap(root primitives.WorkspaceRoot) (BootstrapResult, error) {
+	return BootstrapWithOptions(root, DefaultBootstrapOptions())
+}
+
+func BootstrapWithOptions(root primitives.WorkspaceRoot, opts BootstrapOptions) (BootstrapResult, error) {
 	repo, err := Init(root)
 	if err != nil {
 		return BootstrapResult{}, err
 	}
 
-	workspaceGitPath, workspaceGitInitialized, err := ensureWorkspaceGit(root)
-	if err != nil {
-		return BootstrapResult{}, err
+	workspaceGitPath := filepath.Join(root.String(), ".git")
+	var workspaceGitInitialized bool
+	if opts.InitWorkspaceGit {
+		workspaceGitPath, workspaceGitInitialized, err = ensureWorkspaceGit(root)
+		if err != nil {
+			return BootstrapResult{}, err
+		}
 	}
 
-	gitignorePath, updated, err := EnsureGitignoreEntry(root)
-	if err != nil {
-		return BootstrapResult{}, err
+	gitignorePath := filepath.Join(root.String(), ".gitignore")
+	var updated bool
+	if opts.UpdateGitignore {
+		gitignorePath, updated, err = EnsureGitignoreEntry(root)
+		if err != nil {
+			return BootstrapResult{}, err
+		}
 	}
 
 	return BootstrapResult{

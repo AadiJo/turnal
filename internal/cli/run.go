@@ -12,6 +12,7 @@ import (
 
 	"agent-vcs-again/internal/adapters"
 	"agent-vcs-again/internal/checkpoint"
+	agentconfig "agent-vcs-again/internal/config"
 	eventlog "agent-vcs-again/internal/events"
 	"agent-vcs-again/internal/primitives"
 	"agent-vcs-again/internal/turns"
@@ -29,10 +30,11 @@ type runTurnPayload struct {
 }
 
 type runCheckpointPayload struct {
-	Turn      uint64 `json:"turn"`
-	Phase     string `json:"phase"`
-	CommitSHA string `json:"commit_sha"`
-	Ref       string `json:"ref"`
+	Turn       uint64 `json:"turn"`
+	Phase      string `json:"phase"`
+	CommitSHA  string `json:"commit_sha"`
+	Ref        string `json:"ref"`
+	GitSyncRef string `json:"git_sync_ref,omitempty"`
 }
 
 type childExitError struct {
@@ -69,8 +71,27 @@ func runCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if !skipHookInstall {
-				if _, err := adapters.InstallCodexHook(repo.WorkspaceRoot.String()); err != nil {
+
+			overrides := agentconfig.Overrides{}
+			if cmd.Flags().Changed("skip-hook-install") {
+				installHooks := !skipHookInstall
+				overrides.RunInstallHooks = &installHooks
+			}
+			if cmd.Flags().Changed("bypass-hook-trust") {
+				overrides.RunBypassHookTrust = &bypassHookTrust
+			}
+			if cmd.Flags().Changed("quiet") {
+				overrides.RunQuiet = &quiet
+			}
+			effective, _, err := agentconfig.Resolve(repo.WorkspaceRoot.String(), overrides)
+			if err != nil {
+				return err
+			}
+
+			if effective.Run.InstallHooks {
+				if _, err := adapters.InstallCodexHookWithOptions(repo.WorkspaceRoot.String(), adapters.InstallOptions{
+					HookCommand: effective.Hooks.Command,
+				}); err != nil {
 					return err
 				}
 			}
@@ -89,13 +110,13 @@ func runCmd() *cobra.Command {
 				return err
 			}
 
-			childArgs := prepareCodexCommand(args, bypassHookTrust)
+			childArgs := prepareCodexCommand(args, effective.Run.BypassHookTrust)
 			childErr := runChildCommand(cmd, childArgs)
 
 			finishErr := finishRunTurn(repo, sessionID, started.TurnID)
 			afterRawCount, countErr := codexRawRecordCount(repo.MetadataDir)
 
-			if !quiet {
+			if !effective.Run.Quiet {
 				fmt.Fprintf(cmd.ErrOrStderr(), "agent-vcs: recorded wrapper checkpoints for %s:%s\n", sessionID, started.TurnID)
 				if countErr == nil && afterRawCount == beforeRawCount {
 					fmt.Fprintln(cmd.ErrOrStderr(), "agent-vcs: no Codex hook payloads were observed; wrapper checkpoints are available, but prompt/tool/assistant capture depends on Codex hooks. Review /hooks in Codex, or rerun with --bypass-hook-trust after reviewing hook sources.")
@@ -235,10 +256,11 @@ func startRunTurn(repo *checkpoint.Repo, sessionID primitives.SessionID, command
 		Adapter:   primitives.AdapterCodex,
 		SourceID:  fmt.Sprintf("codex-run:%s:%s:checkpoint:pre", sessionID, started.TurnID),
 		Payload: mustJSON(runCheckpointPayload{
-			Turn:      started.TurnID.Uint64(),
-			Phase:     primitives.CheckpointPhasePre.String(),
-			CommitSHA: started.Pre.Commit.String(),
-			Ref:       started.Pre.Ref.String(),
+			Turn:       started.TurnID.Uint64(),
+			Phase:      primitives.CheckpointPhasePre.String(),
+			CommitSHA:  started.Pre.Commit.String(),
+			Ref:        started.Pre.Ref.String(),
+			GitSyncRef: snapshotRef(started.GitSync),
 		}),
 	}); err != nil {
 		return turns.StartResult{}, err
@@ -269,15 +291,23 @@ func finishRunTurn(repo *checkpoint.Repo, sessionID primitives.SessionID, turnID
 		Adapter:   primitives.AdapterCodex,
 		SourceID:  fmt.Sprintf("codex-run:%s:%s:checkpoint:post", sessionID, finished.TurnID),
 		Payload: mustJSON(runCheckpointPayload{
-			Turn:      finished.TurnID.Uint64(),
-			Phase:     primitives.CheckpointPhasePost.String(),
-			CommitSHA: finished.Post.Commit.String(),
-			Ref:       finished.Post.Ref.String(),
+			Turn:       finished.TurnID.Uint64(),
+			Phase:      primitives.CheckpointPhasePost.String(),
+			CommitSHA:  finished.Post.Commit.String(),
+			Ref:        finished.Post.Ref.String(),
+			GitSyncRef: snapshotRef(finished.GitSync),
 		}),
 	}); err != nil {
 		return err
 	}
 	return nil
+}
+
+func snapshotRef(snapshot *checkpoint.Snapshot) string {
+	if snapshot == nil {
+		return ""
+	}
+	return snapshot.Ref
 }
 
 func codexRawRecordCount(metadataDir string) (int, error) {

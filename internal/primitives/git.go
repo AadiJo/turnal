@@ -41,6 +41,120 @@ func (sha *CommitSHA) UnmarshalText(text []byte) error {
 	return nil
 }
 
+// GitObjectID is a full Git object id for any object type.
+type GitObjectID string
+
+func ParseGitObjectID(value string) (GitObjectID, error) {
+	value = strings.TrimSpace(value)
+	if len(value) != 40 && len(value) != 64 {
+		return "", invalid("git object id", value, "must be a full 40-character SHA-1 or 64-character SHA-256 hex id")
+	}
+	if !isHex(value) {
+		return "", invalid("git object id", value, "must be hex encoded")
+	}
+	return GitObjectID(strings.ToLower(value)), nil
+}
+
+func (id GitObjectID) String() string {
+	return string(id)
+}
+
+func (id GitObjectID) MarshalText() ([]byte, error) {
+	parsed, err := ParseGitObjectID(id.String())
+	if err != nil {
+		return nil, err
+	}
+	return []byte(parsed), nil
+}
+
+func (id *GitObjectID) UnmarshalText(text []byte) error {
+	parsed, err := ParseGitObjectID(string(text))
+	if err != nil {
+		return err
+	}
+	*id = parsed
+	return nil
+}
+
+type GitFileMode string
+
+const (
+	GitFileModeRegular    GitFileMode = "100644"
+	GitFileModeExecutable GitFileMode = "100755"
+	GitFileModeSymlink    GitFileMode = "120000"
+)
+
+func ParseGitFileMode(value string) (GitFileMode, error) {
+	value = strings.TrimSpace(value)
+	switch GitFileMode(value) {
+	case GitFileModeRegular, GitFileModeExecutable, GitFileModeSymlink:
+		return GitFileMode(value), nil
+	default:
+		return "", invalid("git file mode", value, "must be 100644, 100755, or 120000")
+	}
+}
+
+func (mode GitFileMode) String() string {
+	return string(mode)
+}
+
+func (mode GitFileMode) MarshalText() ([]byte, error) {
+	parsed, err := ParseGitFileMode(mode.String())
+	if err != nil {
+		return nil, err
+	}
+	return []byte(parsed), nil
+}
+
+func (mode *GitFileMode) UnmarshalText(text []byte) error {
+	parsed, err := ParseGitFileMode(string(text))
+	if err != nil {
+		return err
+	}
+	*mode = parsed
+	return nil
+}
+
+type RollbackMode string
+
+const (
+	RollbackModeCheckpoint   RollbackMode = "checkpoint"
+	RollbackModeWorkspaceGit RollbackMode = "workspace-git"
+)
+
+func ParseRollbackMode(value string) (RollbackMode, error) {
+	value = strings.TrimSpace(value)
+	switch RollbackMode(value) {
+	case "", RollbackModeCheckpoint:
+		return RollbackModeCheckpoint, nil
+	case RollbackModeWorkspaceGit:
+		return RollbackModeWorkspaceGit, nil
+	default:
+		return "", invalid("rollback mode", value, "must be checkpoint or workspace-git")
+	}
+}
+
+func (mode RollbackMode) String() string {
+	return string(mode)
+}
+
+func (mode RollbackMode) MarshalText() ([]byte, error) {
+	parsed, err := ParseRollbackMode(mode.String())
+	if err != nil {
+		return nil, err
+	}
+	return []byte(parsed), nil
+}
+
+func (mode *RollbackMode) UnmarshalText(text []byte) error {
+	parsed, err := ParseRollbackMode(string(text))
+	if err != nil {
+		return err
+	}
+	*mode = parsed
+	return nil
+}
+
 // CheckpointPhase identifies whether a checkpoint is before or after a turn.
 type CheckpointPhase string
 
@@ -214,4 +328,124 @@ func buildCheckpointRef(sessionID SessionID, turnID TurnID, phase CheckpointPhas
 		ref += "/" + phase.String()
 	}
 	return ref
+}
+
+// GitSyncRef is a private Git ref pointing at captured workspace Git state.
+type GitSyncRef string
+
+type GitSyncRefParts struct {
+	SessionID SessionID
+	TurnID    TurnID
+	Phase     CheckpointPhase
+}
+
+const gitSyncRefPrefix = "refs/agent-vcs/git-sync"
+
+func GitSyncRefsPrefix() string {
+	return gitSyncRefPrefix
+}
+
+func NewGitSyncRef(sessionID SessionID, turnID TurnID, phase CheckpointPhase) (GitSyncRef, error) {
+	parsedSessionID, err := ParseSessionID(sessionID.String())
+	if err != nil {
+		return "", err
+	}
+	parsedTurnID, err := NewTurnID(turnID.Uint64())
+	if err != nil {
+		return "", err
+	}
+	parsedPhase, err := ParseCheckpointPhase(phase.String())
+	if err != nil {
+		return "", err
+	}
+
+	ref := buildGitSyncRef(parsedSessionID, parsedTurnID, parsedPhase)
+	if err := validateGitRefName(ref); err != nil {
+		return "", err
+	}
+	return GitSyncRef(ref), nil
+}
+
+func ParseGitSyncRef(value string) (GitSyncRef, error) {
+	parts, err := parseGitSyncRefParts(value)
+	if err != nil {
+		return "", err
+	}
+	expected := buildGitSyncRef(parts.SessionID, parts.TurnID, parts.Phase)
+	if value = strings.TrimSpace(value); value != expected {
+		return "", invalid("git-sync ref", value, fmt.Sprintf("must be canonical %q", expected))
+	}
+	return GitSyncRef(expected), nil
+}
+
+func (ref GitSyncRef) String() string {
+	return string(ref)
+}
+
+func (ref GitSyncRef) Parts() (GitSyncRefParts, error) {
+	parsed, err := ParseGitSyncRef(ref.String())
+	if err != nil {
+		return GitSyncRefParts{}, err
+	}
+	return parseGitSyncRefParts(parsed.String())
+}
+
+func (ref GitSyncRef) MarshalText() ([]byte, error) {
+	parsed, err := ParseGitSyncRef(ref.String())
+	if err != nil {
+		return nil, err
+	}
+	return []byte(parsed), nil
+}
+
+func (ref *GitSyncRef) UnmarshalText(text []byte) error {
+	parsed, err := ParseGitSyncRef(string(text))
+	if err != nil {
+		return err
+	}
+	*ref = parsed
+	return nil
+}
+
+func parseGitSyncRefParts(value string) (GitSyncRefParts, error) {
+	value = strings.TrimSpace(value)
+	if err := validateGitRefName(value); err != nil {
+		return GitSyncRefParts{}, err
+	}
+	segments := strings.Split(value, "/")
+	if len(segments) != 7 {
+		return GitSyncRefParts{}, invalid("git-sync ref", value, "must be refs/agent-vcs/git-sync/<session>/turn/<turn>/<phase>")
+	}
+	if strings.Join(segments[:3], "/") != gitSyncRefPrefix {
+		return GitSyncRefParts{}, invalid("git-sync ref", value, "must be under refs/agent-vcs/git-sync")
+	}
+	if segments[4] != "turn" {
+		return GitSyncRefParts{}, invalid("git-sync ref", value, "must contain /turn/ after the session id")
+	}
+
+	sessionID, err := ParseSessionID(segments[3])
+	if err != nil {
+		return GitSyncRefParts{}, err
+	}
+	turnSegment := segments[5]
+	if len(turnSegment) < 6 || !isAllDigits(turnSegment) {
+		return GitSyncRefParts{}, invalid("git-sync ref", value, "turn ref segment must be at least six digits")
+	}
+	turnNumber, err := strconv.ParseUint(turnSegment, 10, 64)
+	if err != nil {
+		return GitSyncRefParts{}, invalid("git-sync ref", value, "turn ref segment overflows uint64")
+	}
+	turnID, err := NewTurnID(turnNumber)
+	if err != nil {
+		return GitSyncRefParts{}, err
+	}
+	phase, err := ParseCheckpointPhase(segments[6])
+	if err != nil {
+		return GitSyncRefParts{}, err
+	}
+	return GitSyncRefParts{SessionID: sessionID, TurnID: turnID, Phase: phase}, nil
+}
+
+func buildGitSyncRef(sessionID SessionID, turnID TurnID, phase CheckpointPhase) string {
+	return fmt.Sprintf("%s/%s/turn/%s/%s", gitSyncRefPrefix, sessionID, turnID.RefSegment(), phase)
 }

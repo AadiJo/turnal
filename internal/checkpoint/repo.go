@@ -1,6 +1,7 @@
 package checkpoint
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -27,6 +28,29 @@ const (
 	configFileName  = "config.toml"
 )
 
+const workspaceConfigTemplate = `# agent-vcs workspace configuration
+version = 1
+
+# Workspace-specific overrides go here. Global defaults live in:
+#   ~/.config/agent-vcs/config.toml
+#
+# [init]
+# agent = "auto"
+# install_hooks = true
+#
+# [run]
+# install_hooks = true
+# quiet = false
+# bypass_hook_trust = false
+#
+# [hooks]
+# command = "agent-vcs"
+#
+# [bootstrap]
+# init_workspace_git = true
+# update_gitignore = true
+`
+
 type Repo struct {
 	WorkspaceRoot primitives.WorkspaceRoot
 	MetadataDir   string
@@ -42,6 +66,12 @@ type Checkpoint struct {
 type Snapshot struct {
 	Ref    string
 	Commit primitives.CommitSHA
+}
+
+type SyntheticTreeEntry struct {
+	Path    string
+	Mode    primitives.GitFileMode
+	Content []byte
 }
 
 type CheckpointRefInfo struct {
@@ -114,7 +144,7 @@ func Init(root primitives.WorkspaceRoot) (*Repo, error) {
 	if err := writeFileIfMissing(filepath.Join(repo.MetadataDir, versionFileName), []byte("1\n")); err != nil {
 		return nil, err
 	}
-	if err := writeFileIfMissing(filepath.Join(repo.MetadataDir, configFileName), []byte("# agent-vcs configuration\n")); err != nil {
+	if err := writeFileIfMissing(filepath.Join(repo.MetadataDir, configFileName), []byte(workspaceConfigTemplate)); err != nil {
 		return nil, err
 	}
 
@@ -203,6 +233,24 @@ func (repo *Repo) CreateSnapshotRef(ref string, message string) (Snapshot, error
 	return Snapshot{Ref: ref, Commit: commit}, nil
 }
 
+func (repo *Repo) CreateSyntheticSnapshotRef(ref string, message string, entries []SyntheticTreeEntry) (Snapshot, error) {
+	ref, err := repo.validatePrivateRef(ref)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if strings.TrimSpace(message) == "" {
+		message = "agent-vcs snapshot"
+	}
+	commit, err := repo.createSyntheticCommit(message, entries)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if _, err := runHiddenGit(repo, "", "update-ref", ref, commit.String()); err != nil {
+		return Snapshot{}, err
+	}
+	return Snapshot{Ref: ref, Commit: commit}, nil
+}
+
 func (repo *Repo) createSnapshotCommit(message string) (primitives.CommitSHA, error) {
 	indexPath, cleanup, err := repo.tempIndex()
 	if err != nil {
@@ -233,6 +281,54 @@ func (repo *Repo) createSnapshotCommit(message string) (primitives.CommitSHA, er
 		return "", fmt.Errorf("parse checkpoint commit: %w", err)
 	}
 
+	return commit, nil
+}
+
+func (repo *Repo) createSyntheticCommit(message string, entries []SyntheticTreeEntry) (primitives.CommitSHA, error) {
+	indexPath, cleanup, err := repo.tempIndex()
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
+
+	if _, err := runHiddenGit(repo, indexPath, "read-tree", "--empty"); err != nil {
+		return "", err
+	}
+
+	for _, entry := range entries {
+		repoPath, err := primitives.ParseRepoPath(entry.Path)
+		if err != nil {
+			return "", err
+		}
+		mode, err := primitives.ParseGitFileMode(entry.Mode.String())
+		if err != nil {
+			return "", err
+		}
+		output, err := runHiddenGitWithInput(repo, indexPath, bytes.NewReader(entry.Content), "hash-object", "-w", "--stdin")
+		if err != nil {
+			return "", err
+		}
+		blob, err := primitives.ParseGitObjectID(strings.TrimSpace(output))
+		if err != nil {
+			return "", fmt.Errorf("parse synthetic blob id for %s: %w", repoPath, err)
+		}
+		if _, err := runHiddenGit(repo, indexPath, "update-index", "--add", "--cacheinfo", mode.String(), blob.String(), repoPath.String()); err != nil {
+			return "", err
+		}
+	}
+
+	tree, err := runHiddenGit(repo, indexPath, "write-tree")
+	if err != nil {
+		return "", err
+	}
+	commitOutput, err := runHiddenGit(repo, indexPath, "commit-tree", strings.TrimSpace(tree), "-m", message)
+	if err != nil {
+		return "", err
+	}
+	commit, err := primitives.ParseCommitSHA(strings.TrimSpace(commitOutput))
+	if err != nil {
+		return "", fmt.Errorf("parse synthetic commit: %w", err)
+	}
 	return commit, nil
 }
 
@@ -461,6 +557,22 @@ func (repo *Repo) RefCommit(ref string) (primitives.CommitSHA, error) {
 		return "", err
 	}
 	return primitives.ParseCommitSHA(strings.TrimSpace(output))
+}
+
+func (repo *Repo) CommitFileBytes(commit primitives.CommitSHA, repoPath string) ([]byte, error) {
+	parsedCommit, err := primitives.ParseCommitSHA(commit.String())
+	if err != nil {
+		return nil, err
+	}
+	parsedPath, err := primitives.ParseRepoPath(repoPath)
+	if err != nil {
+		return nil, err
+	}
+	output, err := runHiddenGit(repo, "", "show", parsedCommit.String()+":"+parsedPath.String())
+	if err != nil {
+		return nil, err
+	}
+	return []byte(output), nil
 }
 
 func (repo *Repo) RestoreCheckpoint(ref primitives.CheckpointRef) error {

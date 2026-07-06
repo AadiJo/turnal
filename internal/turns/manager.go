@@ -10,23 +10,29 @@ import (
 	"time"
 
 	"agent-vcs-again/internal/checkpoint"
+	"agent-vcs-again/internal/config"
+	"agent-vcs-again/internal/gitsync"
 	"agent-vcs-again/internal/primitives"
+	"agent-vcs-again/internal/workspacegit"
 )
 
 const activeTurnStateVersion = 1
 
 type Manager struct {
-	Repo *checkpoint.Repo
+	Repo           *checkpoint.Repo
+	GitSyncEnabled *bool
 }
 
 type StartResult struct {
-	TurnID primitives.TurnID
-	Pre    checkpoint.Checkpoint
+	TurnID  primitives.TurnID
+	Pre     checkpoint.Checkpoint
+	GitSync *checkpoint.Snapshot
 }
 
 type FinishResult struct {
-	TurnID primitives.TurnID
-	Post   checkpoint.Checkpoint
+	TurnID  primitives.TurnID
+	Post    checkpoint.Checkpoint
+	GitSync *checkpoint.Snapshot
 }
 
 type ActiveTurn struct {
@@ -89,6 +95,13 @@ func (manager Manager) Start(sessionID primitives.SessionID, requestedTurnID pri
 	if err != nil {
 		return StartResult{}, err
 	}
+	gitSync, err := manager.captureGitSyncIfEnabled(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		if cleanupErr := manager.Repo.DeleteCheckpointRef(pre.Ref); cleanupErr != nil {
+			return StartResult{}, errors.Join(err, fmt.Errorf("cleanup pre checkpoint after git-sync capture failure: %w", cleanupErr))
+		}
+		return StartResult{}, err
+	}
 	if err := manager.writeActive(sessionID, turnID, pre); err != nil {
 		if cleanupErr := manager.Repo.DeleteCheckpointRef(pre.Ref); cleanupErr != nil {
 			return StartResult{}, errors.Join(err, fmt.Errorf("cleanup pre checkpoint after active turn state failure: %w", cleanupErr))
@@ -96,7 +109,7 @@ func (manager Manager) Start(sessionID primitives.SessionID, requestedTurnID pri
 		return StartResult{}, err
 	}
 
-	return StartResult{TurnID: turnID, Pre: pre}, nil
+	return StartResult{TurnID: turnID, Pre: pre, GitSync: gitSync}, nil
 }
 
 func (manager Manager) Finish(sessionID primitives.SessionID, requestedTurnID primitives.TurnID) (FinishResult, error) {
@@ -139,13 +152,20 @@ func (manager Manager) Finish(sessionID primitives.SessionID, requestedTurnID pr
 	if err != nil {
 		return FinishResult{}, err
 	}
+	gitSync, err := manager.captureGitSyncIfEnabled(sessionID, turnID, primitives.CheckpointPhasePost)
+	if err != nil {
+		if cleanupErr := manager.Repo.DeleteCheckpointRef(post.Ref); cleanupErr != nil {
+			return FinishResult{}, errors.Join(err, fmt.Errorf("cleanup post checkpoint after git-sync capture failure: %w", cleanupErr))
+		}
+		return FinishResult{}, err
+	}
 	if active != nil {
 		if err := manager.clearActive(sessionID); err != nil {
 			return FinishResult{}, err
 		}
 	}
 
-	return FinishResult{TurnID: turnID, Post: post}, nil
+	return FinishResult{TurnID: turnID, Post: post, GitSync: gitSync}, nil
 }
 
 func (manager Manager) NextTurnID(sessionID primitives.SessionID) (primitives.TurnID, error) {
@@ -197,6 +217,40 @@ func (manager Manager) validate() error {
 		return errors.New("turn manager requires checkpoint repo")
 	}
 	return nil
+}
+
+func (manager Manager) gitSyncEnabled() (bool, error) {
+	if manager.GitSyncEnabled != nil {
+		return *manager.GitSyncEnabled, nil
+	}
+	effective, _, err := config.Resolve(manager.Repo.WorkspaceRoot.String(), config.Overrides{})
+	if err != nil {
+		return false, err
+	}
+	return effective.GitSync.Enabled, nil
+}
+
+func (manager Manager) captureGitSyncIfEnabled(sessionID primitives.SessionID, turnID primitives.TurnID, phase primitives.CheckpointPhase) (*checkpoint.Snapshot, error) {
+	enabled, err := manager.gitSyncEnabled()
+	if err != nil {
+		return nil, err
+	}
+	if !enabled {
+		return nil, nil
+	}
+	ref, err := gitsync.Ref(sessionID, turnID, phase)
+	if err != nil {
+		return nil, err
+	}
+	capture, err := workspacegit.Open(manager.Repo.WorkspaceRoot).Capture()
+	if err != nil {
+		return nil, fmt.Errorf("capture workspace git state for %s: %w", ref, err)
+	}
+	snapshot, err := gitsync.Save(manager.Repo, ref, capture, fmt.Sprintf("agent-vcs git-sync %s turn %s %s", sessionID, turnID, phase))
+	if err != nil {
+		return nil, err
+	}
+	return &snapshot, nil
 }
 
 func (manager Manager) activeStatePath(sessionID primitives.SessionID) string {

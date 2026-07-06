@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"agent-vcs-again/internal/checkpoint"
+	agentconfig "agent-vcs-again/internal/config"
 	"agent-vcs-again/internal/primitives"
 	"github.com/spf13/cobra"
 )
@@ -33,12 +34,20 @@ func statusCmd() *cobra.Command {
 			if rootErr != nil {
 				status.Problems = append([]string{rootErr.Error()}, status.Problems...)
 			}
+			effective, _, configErr := agentconfig.Resolve(root.String(), agentconfig.Overrides{})
+			if configErr != nil {
+				status.Problems = append(status.Problems, configErr.Error())
+			}
 			out := cmd.OutOrStdout()
 			fmt.Fprintf(out, "workspace: %s\n", status.WorkspaceRoot)
 			fmt.Fprintf(out, "metadata:  %s\n", status.MetadataDir)
 			fmt.Fprintf(out, "hidden git: %s\n", status.GitDir)
 			fmt.Fprintf(out, "version:    %s\n", status.Version)
 			fmt.Fprintf(out, "gitignore:  %s\n", status.GitignorePath)
+			if configErr == nil {
+				fmt.Fprintf(out, "git-sync:   %t\n", effective.GitSync.Enabled)
+				fmt.Fprintf(out, "rollback:   %s\n", effective.Rollback.Mode)
+			}
 			fmt.Fprintf(out, "state:      ")
 			if status.OK() {
 				fmt.Fprintln(out, "ok")

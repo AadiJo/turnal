@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"agent-vcs-again/internal/checkpoint"
+	agentconfig "agent-vcs-again/internal/config"
 	"agent-vcs-again/internal/primitives"
 	rollbackengine "agent-vcs-again/internal/rollback"
 	"github.com/spf13/cobra"
@@ -14,6 +15,7 @@ import (
 func rollbackCmd() *cobra.Command {
 	var targetText string
 	var dryRun bool
+	var workspaceGit bool
 
 	cmd := &cobra.Command{
 		Use:          "rollback --to <session:turn:<turn>:pre|post>",
@@ -39,9 +41,15 @@ func rollbackCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			effective, _, err := agentconfig.Resolve(repo.WorkspaceRoot.String(), agentconfig.Overrides{})
+			if err != nil {
+				return err
+			}
+			useWorkspaceGit := workspaceGit || effective.Rollback.Mode == primitives.RollbackModeWorkspaceGit
 			result, err := rollbackengine.New(repo).Run(rollbackengine.Request{
-				Target: target,
-				DryRun: dryRun,
+				Target:       target,
+				DryRun:       dryRun,
+				WorkspaceGit: useWorkspaceGit,
 			})
 			if err != nil {
 				return err
@@ -52,6 +60,7 @@ func rollbackCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&targetText, "to", "", "Checkpoint target, for example demo:turn:1:pre")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show changes without modifying the workspace")
+	cmd.Flags().BoolVar(&workspaceGit, "workspace-git", false, "Restore captured workspace Git HEAD, index, dirty tracked files, and untracked files")
 	return cmd
 }
 
@@ -99,6 +108,9 @@ func targetWithDefaultPhase(target primitives.TargetRef) (primitives.TargetRef, 
 }
 
 func writeRollbackResult(w io.Writer, result rollbackengine.Result) error {
+	if result.Mode == primitives.RollbackModeWorkspaceGit {
+		return writeWorkspaceGitRollbackResult(w, result)
+	}
 	if result.DryRun {
 		if _, err := fmt.Fprintf(w, "dry-run rollback to %s %s\n", result.Target.Commit, result.Target.CheckpointRef); err != nil {
 			return err
@@ -111,6 +123,59 @@ func writeRollbackResult(w io.Writer, result rollbackengine.Result) error {
 	}
 	if result.Safety != nil {
 		if _, err := fmt.Fprintf(w, "safety checkpoint %s %s\n", result.Safety.Commit, result.Safety.Ref); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeWorkspaceGitRollbackResult(w io.Writer, result rollbackengine.Result) error {
+	if result.DryRun {
+		if _, err := fmt.Fprintf(w, "dry-run workspace-git rollback to %s %s\n", result.Target.Target, result.GitSyncRef); err != nil {
+			return err
+		}
+		if result.GitPlan != nil {
+			if _, err := fmt.Fprintf(w, "head: %s -> %s\n", result.GitPlan.CurrentHead.Commit, result.GitPlan.TargetHead.Commit); err != nil {
+				return err
+			}
+			if err := writeRepoPathGroup(w, "staged", result.GitPlan.StagedPaths); err != nil {
+				return err
+			}
+			if err := writeRepoPathGroup(w, "unstaged", result.GitPlan.UnstagedPaths); err != nil {
+				return err
+			}
+			if err := writeRepoPathGroup(w, "untracked", result.GitPlan.Untracked); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	if _, err := fmt.Fprintf(w, "rolled back workspace git to %s %s\n", result.Target.Target, result.GitSyncRef); err != nil {
+		return err
+	}
+	if result.Safety != nil {
+		if _, err := fmt.Fprintf(w, "safety checkpoint %s %s\n", result.Safety.Commit, result.Safety.Ref); err != nil {
+			return err
+		}
+	}
+	if result.GitSafety != nil {
+		if _, err := fmt.Fprintf(w, "safety git-sync state %s %s\n", result.GitSafety.Commit, result.GitSafety.Ref); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeRepoPathGroup(w io.Writer, label string, paths []primitives.RepoPath) error {
+	if len(paths) == 0 {
+		return nil
+	}
+	if _, err := fmt.Fprintf(w, "%s:\n", label); err != nil {
+		return err
+	}
+	for _, path := range paths {
+		if _, err := fmt.Fprintf(w, "  %s\n", path); err != nil {
 			return err
 		}
 	}

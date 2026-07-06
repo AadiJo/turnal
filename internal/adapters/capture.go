@@ -315,7 +315,7 @@ func startPromptTurn(log eventlog.Log, manager turns.Manager, adapter primitives
 	if err := appendTurnStart(log, adapter, sessionID, started.TurnID, rawRef); err != nil {
 		return 0, err
 	}
-	if err := appendCheckpoint(log, adapter, sessionID, started.TurnID, primitives.CheckpointPhasePre, started.Pre, rawRef); err != nil {
+	if err := appendCheckpoint(log, adapter, sessionID, started.TurnID, primitives.CheckpointPhasePre, started.Pre, started.GitSync, rawRef); err != nil {
 		return 0, err
 	}
 	return started.TurnID, nil
@@ -336,7 +336,7 @@ func ensureActiveTurn(log eventlog.Log, manager turns.Manager, adapter primitive
 	if err := appendTurnStart(log, adapter, sessionID, started.TurnID, rawRef); err != nil {
 		return 0, err
 	}
-	if err := appendCheckpoint(log, adapter, sessionID, started.TurnID, primitives.CheckpointPhasePre, started.Pre, rawRef); err != nil {
+	if err := appendCheckpoint(log, adapter, sessionID, started.TurnID, primitives.CheckpointPhasePre, started.Pre, started.GitSync, rawRef); err != nil {
 		return 0, err
 	}
 	return started.TurnID, nil
@@ -353,7 +353,7 @@ func finishTurn(log eventlog.Log, manager turns.Manager, adapter primitives.Adap
 	if err := appendTurnFinish(log, adapter, sessionID, finished.TurnID, rawRef); err != nil {
 		return err
 	}
-	return appendCheckpoint(log, adapter, sessionID, finished.TurnID, primitives.CheckpointPhasePost, finished.Post, rawRef)
+	return appendCheckpoint(log, adapter, sessionID, finished.TurnID, primitives.CheckpointPhasePost, finished.Post, finished.GitSync, rawRef)
 }
 
 func appendTurnStart(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, rawRef string) error {
@@ -364,8 +364,8 @@ func appendTurnFinish(log eventlog.Log, adapter primitives.AdapterName, sessionI
 	return turnevents.AppendTurnFinish(log, adapter, sessionID, turnID, rawRef)
 }
 
-func appendCheckpoint(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, phase primitives.CheckpointPhase, checkpoint checkpoint.Checkpoint, rawRef string) error {
-	return turnevents.AppendCheckpoint(log, adapter, sessionID, turnID, phase, checkpoint, rawRef)
+func appendCheckpoint(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, phase primitives.CheckpointPhase, created checkpoint.Checkpoint, gitSync *checkpoint.Snapshot, rawRef string) error {
+	return turnevents.AppendCheckpointWithGitSync(log, adapter, sessionID, turnID, phase, created, gitSync, rawRef)
 }
 
 func appendPrompt(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, rawRef, sourceID string, payload hookPayload) error {

@@ -5,12 +5,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"agent-vcs-again/internal/checkpoint"
 	eventlog "agent-vcs-again/internal/events"
 	"agent-vcs-again/internal/primitives"
+	"agent-vcs-again/internal/turns"
 )
 
 func TestRunFinalizesRestoredJournal(t *testing.T) {
@@ -158,6 +160,88 @@ func TestRunRestoreFailureReturnsSafetyAndKeepsExtraFiles(t *testing.T) {
 	}
 }
 
+func TestRunWorkspaceGitRestoresCapturedDirtyState(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	bootstrapped, err := checkpoint.Bootstrap(root)
+	if err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	repo := bootstrapped.Repo
+	runWorkspaceGit(t, root, "config", "user.email", "agent-vcs@example.test")
+	runWorkspaceGit(t, root, "config", "user.name", "agent-vcs")
+
+	writeFile(t, root, "tracked.txt", "base\n")
+	runWorkspaceGit(t, root, "add", ".gitignore", "tracked.txt")
+	runWorkspaceGit(t, root, "commit", "-m", "base")
+	baseCommit := strings.TrimSpace(runWorkspaceGit(t, root, "rev-parse", "HEAD"))
+
+	writeFile(t, root, "tracked.txt", "staged\n")
+	runWorkspaceGit(t, root, "add", "tracked.txt")
+	writeFile(t, root, "tracked.txt", "unstaged\n")
+	writeFile(t, root, "scratch.txt", "untracked\n")
+
+	sessionID := sessionID(t, "demo")
+	enabled := true
+	manager := turns.Manager{Repo: repo, GitSyncEnabled: &enabled}
+	started, err := manager.Start(sessionID, 0)
+	if err != nil {
+		t.Fatalf("Start with git-sync: %v", err)
+	}
+	if started.GitSync == nil {
+		t.Fatal("Start did not create git-sync state")
+	}
+
+	runWorkspaceGit(t, root, "reset", "--hard", "HEAD")
+	runWorkspaceGit(t, root, "clean", "-fd", "--", ".")
+	writeFile(t, root, "tracked.txt", "future\n")
+	runWorkspaceGit(t, root, "add", "tracked.txt")
+	runWorkspaceGit(t, root, "commit", "-m", "future")
+	writeFile(t, root, "other.txt", "remove me\n")
+
+	targetRef, err := primitives.NewTargetRef(sessionID, started.TurnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("NewTargetRef: %v", err)
+	}
+	result, err := New(repo).Run(Request{Target: targetRef, WorkspaceGit: true})
+	if err != nil {
+		t.Fatalf("workspace-git rollback: %v", err)
+	}
+	if result.Mode != primitives.RollbackModeWorkspaceGit || result.GitSafety == nil || result.Safety == nil {
+		t.Fatalf("workspace-git rollback result missing mode/safety: %#v", result)
+	}
+
+	if head := strings.TrimSpace(runWorkspaceGit(t, root, "rev-parse", "HEAD")); head != baseCommit {
+		t.Fatalf("HEAD = %s, want base %s", head, baseCommit)
+	}
+	indexContent := runWorkspaceGit(t, root, "show", ":tracked.txt")
+	if indexContent != "staged\n" {
+		t.Fatalf("index tracked.txt = %q, want staged", indexContent)
+	}
+	worktreeContent, err := os.ReadFile(filepath.Join(root.String(), "tracked.txt"))
+	if err != nil {
+		t.Fatalf("read tracked.txt: %v", err)
+	}
+	if string(worktreeContent) != "unstaged\n" {
+		t.Fatalf("worktree tracked.txt = %q, want unstaged", worktreeContent)
+	}
+	scratch, err := os.ReadFile(filepath.Join(root.String(), "scratch.txt"))
+	if err != nil {
+		t.Fatalf("read scratch.txt: %v", err)
+	}
+	if string(scratch) != "untracked\n" {
+		t.Fatalf("scratch.txt = %q, want untracked", scratch)
+	}
+	if _, err := os.Stat(filepath.Join(root.String(), "other.txt")); !os.IsNotExist(err) {
+		t.Fatalf("other.txt still exists or stat failed: %v", err)
+	}
+	status := runWorkspaceGit(t, root, "status", "--porcelain")
+	if !strings.Contains(status, "MM tracked.txt") || !strings.Contains(status, "?? scratch.txt") {
+		t.Fatalf("status after workspace-git rollback = %q, want staged+unstaged tracked and untracked scratch", status)
+	}
+}
+
 func requireGit(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
@@ -192,6 +276,17 @@ func writeFile(t *testing.T, root primitives.WorkspaceRoot, relPath, content str
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write %s: %v", relPath, err)
 	}
+}
+
+func runWorkspaceGit(t *testing.T, root primitives.WorkspaceRoot, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = root.String()
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
+	return string(output)
 }
 
 func countEventsWithSourceID(t *testing.T, repo *checkpoint.Repo, sessionID primitives.SessionID, sourceID string) int {

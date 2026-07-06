@@ -11,7 +11,9 @@ import (
 
 	"agent-vcs-again/internal/checkpoint"
 	eventlog "agent-vcs-again/internal/events"
+	"agent-vcs-again/internal/gitsync"
 	"agent-vcs-again/internal/primitives"
+	"agent-vcs-again/internal/workspacegit"
 )
 
 const journalFileName = "rollback-journal.json"
@@ -21,8 +23,9 @@ type Engine struct {
 }
 
 type Request struct {
-	Target primitives.TargetRef
-	DryRun bool
+	Target       primitives.TargetRef
+	DryRun       bool
+	WorkspaceGit bool
 }
 
 type ResolvedTarget struct {
@@ -35,11 +38,15 @@ type ResolvedTarget struct {
 }
 
 type Result struct {
-	Target ResolvedTarget
-	Plan   checkpoint.RestorePlan
-	Safety *checkpoint.Snapshot
-	Event  *eventlog.Event
-	DryRun bool
+	Target     ResolvedTarget
+	Mode       primitives.RollbackMode
+	Plan       checkpoint.RestorePlan
+	GitPlan    *workspacegit.RestorePlan
+	GitSyncRef string
+	Safety     *checkpoint.Snapshot
+	GitSafety  *checkpoint.Snapshot
+	Event      *eventlog.Event
+	DryRun     bool
 }
 
 type ChangeSummary struct {
@@ -51,28 +58,36 @@ type ChangeSummary struct {
 }
 
 type EventPayload struct {
-	Turn            uint64        `json:"turn"`
-	Phase           string        `json:"phase"`
-	Target          string        `json:"target"`
-	Ref             string        `json:"ref"`
-	CommitSHA       string        `json:"commit_sha"`
-	SafetyRef       string        `json:"safety_ref"`
-	SafetyCommitSHA string        `json:"safety_commit_sha"`
-	ChangeSummary   ChangeSummary `json:"change_summary"`
+	Turn               uint64        `json:"turn"`
+	Phase              string        `json:"phase"`
+	Mode               string        `json:"mode,omitempty"`
+	Target             string        `json:"target"`
+	Ref                string        `json:"ref"`
+	CommitSHA          string        `json:"commit_sha"`
+	SafetyRef          string        `json:"safety_ref"`
+	SafetyCommitSHA    string        `json:"safety_commit_sha"`
+	GitSyncRef         string        `json:"git_sync_ref,omitempty"`
+	GitSafetyRef       string        `json:"git_safety_ref,omitempty"`
+	GitSafetyCommitSHA string        `json:"git_safety_commit_sha,omitempty"`
+	ChangeSummary      ChangeSummary `json:"change_summary"`
 }
 
 type Journal struct {
-	Version         int                        `json:"version"`
-	State           string                     `json:"state"`
-	StartedAt       string                     `json:"started_at"`
-	UpdatedAt       string                     `json:"updated_at"`
-	Target          string                     `json:"target"`
-	CheckpointRef   string                     `json:"checkpoint_ref"`
-	TargetCommitSHA string                     `json:"target_commit_sha"`
-	SafetyRef       string                     `json:"safety_ref"`
-	SafetyCommitSHA string                     `json:"safety_commit_sha"`
-	EventSourceID   string                     `json:"event_source_id"`
-	Changes         []checkpoint.RestoreChange `json:"changes"`
+	Version            int                        `json:"version"`
+	State              string                     `json:"state"`
+	StartedAt          string                     `json:"started_at"`
+	UpdatedAt          string                     `json:"updated_at"`
+	Target             string                     `json:"target"`
+	CheckpointRef      string                     `json:"checkpoint_ref"`
+	TargetCommitSHA    string                     `json:"target_commit_sha"`
+	Mode               string                     `json:"mode,omitempty"`
+	GitSyncRef         string                     `json:"git_sync_ref,omitempty"`
+	SafetyRef          string                     `json:"safety_ref"`
+	SafetyCommitSHA    string                     `json:"safety_commit_sha"`
+	GitSafetyRef       string                     `json:"git_safety_ref,omitempty"`
+	GitSafetyCommitSHA string                     `json:"git_safety_commit_sha,omitempty"`
+	EventSourceID      string                     `json:"event_source_id"`
+	Changes            []checkpoint.RestoreChange `json:"changes"`
 }
 
 type ActiveJournalError struct {
@@ -151,6 +166,13 @@ func ResolveTarget(repo *checkpoint.Repo, target primitives.TargetRef) (Resolved
 }
 
 func (engine Engine) Run(request Request) (Result, error) {
+	if request.WorkspaceGit {
+		return engine.runWorkspaceGit(request)
+	}
+	return engine.runCheckpoint(request)
+}
+
+func (engine Engine) runCheckpoint(request Request) (Result, error) {
 	if engine.Repo == nil {
 		return Result{}, fmt.Errorf("rollback repo is required")
 	}
@@ -167,7 +189,7 @@ func (engine Engine) Run(request Request) (Result, error) {
 		return Result{}, err
 	}
 
-	result := Result{Target: target, Plan: plan, DryRun: request.DryRun}
+	result := Result{Target: target, Mode: primitives.RollbackModeCheckpoint, Plan: plan, DryRun: request.DryRun}
 	if request.DryRun {
 		return result, nil
 	}
@@ -221,6 +243,104 @@ func (engine Engine) Run(request Request) (Result, error) {
 	return result, nil
 }
 
+func (engine Engine) runWorkspaceGit(request Request) (Result, error) {
+	if engine.Repo == nil {
+		return Result{}, fmt.Errorf("rollback repo is required")
+	}
+	if err := engine.ensureNoActiveJournal(); err != nil {
+		return Result{}, err
+	}
+
+	target, err := ResolveTarget(engine.Repo, request.Target)
+	if err != nil {
+		return Result{}, err
+	}
+	gitSyncRef, err := gitsync.Ref(target.SessionID, target.TurnID, target.Phase)
+	if err != nil {
+		return Result{}, err
+	}
+	targetCapture, err := gitsync.Load(engine.Repo, gitSyncRef)
+	if err != nil {
+		return Result{}, fmt.Errorf("workspace-git rollback requires captured git-sync state for %s: %w", gitSyncRef, err)
+	}
+	workspace := workspacegit.Open(engine.Repo.WorkspaceRoot)
+	gitPlan, err := workspace.PlanRestore(targetCapture)
+	if err != nil {
+		return Result{}, err
+	}
+	result := Result{
+		Target:     target,
+		Mode:       primitives.RollbackModeWorkspaceGit,
+		GitPlan:    &gitPlan,
+		GitSyncRef: gitSyncRef.String(),
+		DryRun:     request.DryRun,
+	}
+	if request.DryRun {
+		return result, nil
+	}
+
+	now := time.Now().UTC()
+	safety, err := engine.Repo.CreateSnapshotRef(safetyRef(target, now), fmt.Sprintf("agent-vcs rollback safety %s", target.Target))
+	if err != nil {
+		return result, err
+	}
+	result.Safety = &safety
+
+	currentCapture, err := workspace.Capture()
+	if err != nil {
+		return result, engine.safetyError("capture workspace git safety state", safety, err)
+	}
+	gitSafetyRef := gitSafetyRef(target, now)
+	gitSafety, err := gitsync.SavePrivate(engine.Repo, gitSafetyRef, currentCapture, fmt.Sprintf("agent-vcs workspace git rollback safety %s", target.Target))
+	if err != nil {
+		return result, engine.safetyError("save workspace git safety state", safety, err)
+	}
+	result.GitSafety = &gitSafety
+
+	eventSourceID := rollbackEventSourceIDForMode(target, safety, primitives.RollbackModeWorkspaceGit)
+	journal := Journal{
+		Version:            1,
+		State:              "planned",
+		StartedAt:          now.Format(time.RFC3339Nano),
+		Mode:               primitives.RollbackModeWorkspaceGit.String(),
+		Target:             target.Target.String(),
+		CheckpointRef:      target.CheckpointRef.String(),
+		TargetCommitSHA:    target.Commit.String(),
+		GitSyncRef:         gitSyncRef.String(),
+		SafetyRef:          safety.Ref,
+		SafetyCommitSHA:    safety.Commit.String(),
+		GitSafetyRef:       gitSafety.Ref,
+		GitSafetyCommitSHA: gitSafety.Commit.String(),
+		EventSourceID:      eventSourceID,
+	}
+	if err := writeJournal(JournalPath(engine.Repo), journal); err != nil {
+		return result, engine.safetyError("write rollback journal", safety, err)
+	}
+
+	journal.State = "restoring"
+	if err := writeJournal(JournalPath(engine.Repo), journal); err != nil {
+		return result, engine.safetyError("write rollback journal", safety, err)
+	}
+	if err := workspace.Restore(targetCapture); err != nil {
+		return result, engine.safetyError("restore workspace git state", safety, err)
+	}
+
+	event, err := appendWorkspaceGitRollbackEvent(engine.Repo, target, safety, gitSafety, gitSyncRef, gitPlan, eventSourceID)
+	if err != nil {
+		return result, engine.safetyError("append rollback event", safety, err)
+	}
+	result.Event = &event
+
+	journal.State = "restored"
+	if err := writeJournal(JournalPath(engine.Repo), journal); err != nil {
+		return result, engine.safetyError("write rollback journal", safety, err)
+	}
+	if err := os.Remove(JournalPath(engine.Repo)); err != nil && !os.IsNotExist(err) {
+		return result, engine.safetyError("clear rollback journal", safety, err)
+	}
+	return result, nil
+}
+
 func (engine Engine) ensureNoActiveJournal() error {
 	path := JournalPath(engine.Repo)
 	journal, ok, err := readJournal(path)
@@ -229,6 +349,12 @@ func (engine Engine) ensureNoActiveJournal() error {
 	}
 	if ok {
 		if journal.State == "restored" {
+			if journal.Mode == primitives.RollbackModeWorkspaceGit.String() {
+				if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+					return fmt.Errorf("clear restored workspace-git rollback journal: %w", err)
+				}
+				return nil
+			}
 			return engine.finalizeRestoredJournal(path, journal)
 		}
 		return ActiveJournalError{Path: path, Journal: journal}
@@ -273,6 +399,7 @@ func appendRollbackEvent(repo *checkpoint.Repo, target ResolvedTarget, safety ch
 	payload, err := json.Marshal(EventPayload{
 		Turn:            target.TurnID.Uint64(),
 		Phase:           target.Phase.String(),
+		Mode:            primitives.RollbackModeCheckpoint.String(),
 		Target:          target.Target.String(),
 		Ref:             target.CheckpointRef.String(),
 		CommitSHA:       target.Commit.String(),
@@ -282,6 +409,38 @@ func appendRollbackEvent(repo *checkpoint.Repo, target ResolvedTarget, safety ch
 	})
 	if err != nil {
 		return eventlog.Event{}, fmt.Errorf("marshal rollback event: %w", err)
+	}
+	return eventlog.Open(repo.MetadataDir).Append(eventlog.AppendInput{
+		SessionID: target.SessionID,
+		TurnID:    &target.TurnID,
+		Type:      primitives.EventTypeRollback,
+		SourceID:  sourceID,
+		RawRef:    target.Target.String(),
+		Payload:   payload,
+	})
+}
+
+func appendWorkspaceGitRollbackEvent(repo *checkpoint.Repo, target ResolvedTarget, safety checkpoint.Snapshot, gitSafety checkpoint.Snapshot, gitSyncRef primitives.GitSyncRef, plan workspacegit.RestorePlan, sourceID string) (eventlog.Event, error) {
+	payload, err := json.Marshal(EventPayload{
+		Turn:               target.TurnID.Uint64(),
+		Phase:              target.Phase.String(),
+		Mode:               primitives.RollbackModeWorkspaceGit.String(),
+		Target:             target.Target.String(),
+		Ref:                target.CheckpointRef.String(),
+		CommitSHA:          target.Commit.String(),
+		SafetyRef:          safety.Ref,
+		SafetyCommitSHA:    safety.Commit.String(),
+		GitSyncRef:         gitSyncRef.String(),
+		GitSafetyRef:       gitSafety.Ref,
+		GitSafetyCommitSHA: gitSafety.Commit.String(),
+		ChangeSummary: ChangeSummary{
+			Total:    len(plan.StagedPaths) + len(plan.UnstagedPaths) + len(plan.Untracked),
+			Modified: len(plan.StagedPaths) + len(plan.UnstagedPaths),
+			Added:    len(plan.Untracked),
+		},
+	})
+	if err != nil {
+		return eventlog.Event{}, fmt.Errorf("marshal workspace-git rollback event: %w", err)
 	}
 	return eventlog.Open(repo.MetadataDir).Append(eventlog.AppendInput{
 		SessionID: target.SessionID,
@@ -393,7 +552,11 @@ func (engine Engine) safetyError(op string, safety checkpoint.Snapshot, err erro
 }
 
 func rollbackEventSourceID(target ResolvedTarget, safety checkpoint.Snapshot) string {
-	return fmt.Sprintf("agent-vcs:rollback:%s:%s", target.Target, safety.Commit)
+	return rollbackEventSourceIDForMode(target, safety, primitives.RollbackModeCheckpoint)
+}
+
+func rollbackEventSourceIDForMode(target ResolvedTarget, safety checkpoint.Snapshot, mode primitives.RollbackMode) string {
+	return fmt.Sprintf("agent-vcs:rollback:%s:%s:%s", mode, target.Target, safety.Commit)
 }
 
 func readJournal(path string) (Journal, bool, error) {
@@ -435,6 +598,17 @@ func writeJournal(path string, journal Journal) error {
 func safetyRef(target ResolvedTarget, now time.Time) string {
 	return fmt.Sprintf(
 		"refs/agent-vcs/rollback-safety/%s/turn/%s/%s/%d-%s",
+		target.SessionID,
+		target.TurnID.RefSegment(),
+		target.Phase,
+		now.UnixNano(),
+		randomSuffix(),
+	)
+}
+
+func gitSafetyRef(target ResolvedTarget, now time.Time) string {
+	return fmt.Sprintf(
+		"refs/agent-vcs/git-sync-safety/rollback/%s/turn/%s/%s/%d-%s",
 		target.SessionID,
 		target.TurnID.RefSegment(),
 		target.Phase,
