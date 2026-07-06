@@ -776,6 +776,11 @@ func (repo *Repo) PlanRestoreCommit(commit primitives.CommitSHA) (RestorePlan, e
 	if err != nil {
 		return RestorePlan{}, err
 	}
+	denyGlobs, err := repo.secretDenyGlobs()
+	if err != nil {
+		return RestorePlan{}, err
+	}
+	changes = filterSecretDeniedChanges(changes, denyGlobs)
 	return RestorePlan{TargetCommit: parsedCommit, Changes: changes}, nil
 }
 
@@ -941,6 +946,20 @@ func restoreAction(oldMode, newMode, oldObject, newObject, status string) Restor
 	default:
 		return RestoreActionModified
 	}
+}
+
+func filterSecretDeniedChanges(changes []RestoreChange, denyGlobs []string) []RestoreChange {
+	if len(changes) == 0 || len(denyGlobs) == 0 {
+		return changes
+	}
+	filtered := changes[:0]
+	for _, change := range changes {
+		if secretDeniedPath(change.Path, denyGlobs) {
+			continue
+		}
+		filtered = append(filtered, change)
+	}
+	return filtered
 }
 
 func (repo *Repo) deleteFilesAbsentFrom(entries []TreeEntry, indexPath string, denyGlobs []string) error {

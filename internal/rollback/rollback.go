@@ -201,16 +201,13 @@ func (engine Engine) runCheckpoint(request Request) (Result, error) {
 	if engine.Repo == nil {
 		return Result{}, fmt.Errorf("rollback repo is required")
 	}
-	if !request.DryRun {
-		var result Result
-		err := engine.Repo.WithWorkspaceLock("rollback", func() error {
-			var err error
-			result, err = engine.runCheckpointUnlocked(request)
-			return err
-		})
-		return result, err
-	}
-	return engine.runCheckpointUnlocked(request)
+	var result Result
+	err := engine.Repo.WithWorkspaceLock("rollback", func() error {
+		var err error
+		result, err = engine.runCheckpointUnlocked(request)
+		return err
+	})
+	return result, err
 }
 
 func (engine Engine) runCheckpointUnlocked(request Request) (Result, error) {
@@ -293,16 +290,13 @@ func (engine Engine) runWorkspaceGit(request Request) (Result, error) {
 	if engine.Repo == nil {
 		return Result{}, fmt.Errorf("rollback repo is required")
 	}
-	if !request.DryRun {
-		var result Result
-		err := engine.Repo.WithWorkspaceLock("workspace-git rollback", func() error {
-			var err error
-			result, err = engine.runWorkspaceGitUnlocked(request)
-			return err
-		})
-		return result, err
-	}
-	return engine.runWorkspaceGitUnlocked(request)
+	var result Result
+	err := engine.Repo.WithWorkspaceLock("workspace-git rollback", func() error {
+		var err error
+		result, err = engine.runWorkspaceGitUnlocked(request)
+		return err
+	})
+	return result, err
 }
 
 func (engine Engine) runWorkspaceGitUnlocked(request Request) (Result, error) {

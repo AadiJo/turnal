@@ -201,12 +201,17 @@ func TestRunFailsWhenWorkspaceLockHeld(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTargetRef: %v", err)
 	}
-	_, err = New(repo).Run(Request{Target: targetRef})
-	if err == nil {
-		t.Fatal("Run succeeded while workspace lock was held")
-	}
-	if !strings.Contains(err.Error(), "workspace lock busy") {
-		t.Fatalf("Run error = %v, want workspace lock busy", err)
+	for _, request := range []Request{
+		{Target: targetRef, DryRun: true},
+		{Target: targetRef},
+	} {
+		_, err = New(repo).Run(request)
+		if err == nil {
+			t.Fatalf("Run(%#v) succeeded while workspace lock was held", request)
+		}
+		if !strings.Contains(err.Error(), "workspace lock busy") {
+			t.Fatalf("Run(%#v) error = %v, want workspace lock busy", request, err)
+		}
 	}
 }
 
@@ -307,6 +312,58 @@ func TestRunPreservesSecretsDeniedFiles(t *testing.T) {
 		if got := readFile(t, root, path); got != want {
 			t.Fatalf("%s = %q, want %q", path, got, want)
 		}
+	}
+}
+
+func TestRunDryRunAndRestoreIgnoreDeniedSecretsFromOldCheckpoints(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	writeFile(t, root, ".agent-vcs/config.toml", "version = 1\n[secrets]\nsnapshot_deny_globs = [\"never-match-secret\"]\n")
+
+	sessionID := sessionID(t, "demo")
+	turnID, _ := primitives.NewTurnID(1)
+	writeFile(t, root, "app.txt", "target\n")
+	writeFile(t, root, ".env", "SECRET=target\n")
+	target, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("target checkpoint: %v", err)
+	}
+	if _, err := repo.CommitFileBytes(target.Commit, ".env"); err != nil {
+		t.Fatalf("target checkpoint did not capture .env: %v", err)
+	}
+
+	writeFile(t, root, ".agent-vcs/config.toml", "version = 1\n[secrets]\nsnapshot_deny_globs = [\".env\"]\n")
+	writeFile(t, root, "app.txt", "current\n")
+	writeFile(t, root, ".env", "SECRET=current\n")
+
+	targetRef, err := primitives.NewTargetRef(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("NewTargetRef: %v", err)
+	}
+	dryRun, err := New(repo).Run(Request{Target: targetRef, DryRun: true})
+	if err != nil {
+		t.Fatalf("dry-run Run: %v", err)
+	}
+	if !hasRestoreChange(dryRun.Plan.Changes, "app.txt") {
+		t.Fatalf("dry-run changes = %#v, want app.txt", dryRun.Plan.Changes)
+	}
+	if hasRestoreChange(dryRun.Plan.Changes, ".env") {
+		t.Fatalf("dry-run changes = %#v, want .env filtered by secrets policy", dryRun.Plan.Changes)
+	}
+
+	if _, err := New(repo).Run(Request{Target: targetRef}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := readFile(t, root, "app.txt"); got != "target\n" {
+		t.Fatalf("app.txt = %q, want target", got)
+	}
+	if got := readFile(t, root, ".env"); got != "SECRET=current\n" {
+		t.Fatalf(".env = %q, want current secret preserved", got)
 	}
 }
 
@@ -435,6 +492,15 @@ func readFile(t *testing.T, root primitives.WorkspaceRoot, relPath string) strin
 		t.Fatalf("read %s: %v", relPath, err)
 	}
 	return string(content)
+}
+
+func hasRestoreChange(changes []checkpoint.RestoreChange, path string) bool {
+	for _, change := range changes {
+		if change.Path == path {
+			return true
+		}
+	}
+	return false
 }
 
 func runWorkspaceGit(t *testing.T, root primitives.WorkspaceRoot, args ...string) string {
