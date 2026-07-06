@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -27,6 +28,8 @@ func NewRootCmd() *cobra.Command {
 	rootCmd.AddCommand(turnCmd())
 	rootCmd.AddCommand(checkpointCmd())
 	rootCmd.AddCommand(diffCmd())
+	rootCmd.AddCommand(rollbackCmd())
+	rootCmd.AddCommand(runCmd())
 	rootCmd.AddCommand(versionCmd())
 	rootCmd.AddCommand(claudeHookCmd())
 	rootCmd.AddCommand(codexHookCmd())
@@ -41,6 +44,10 @@ func Execute() {
 	rootCmd.SetVersionTemplate("{{.Version}}\n")
 
 	if err := rootCmd.Execute(); err != nil {
+		var exitErr interface{ ExitCode() int }
+		if errors.As(err, &exitErr) {
+			os.Exit(exitErr.ExitCode())
+		}
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

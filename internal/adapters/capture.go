@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"agent-vcs-again/internal/checkpoint"
@@ -28,6 +30,46 @@ type hookPayload struct {
 	ToolInput            json.RawMessage `json:"tool_input"`
 	ToolUseID            string          `json:"tool_use_id"`
 	ToolResponse         json.RawMessage `json:"tool_response"`
+}
+
+type codexHookPayload struct {
+	SessionID            string          `json:"session_id"`
+	TranscriptPath       string          `json:"transcript_path"`
+	CWD                  string          `json:"cwd"`
+	HookEventName        string          `json:"hook_event_name"`
+	Model                string          `json:"model"`
+	PermissionMode       string          `json:"permission_mode"`
+	TurnID               string          `json:"turn_id"`
+	Source               string          `json:"source"`
+	Prompt               string          `json:"prompt"`
+	ToolName             string          `json:"tool_name"`
+	ToolUseID            string          `json:"tool_use_id"`
+	ToolInput            json.RawMessage `json:"tool_input"`
+	ToolResponse         json.RawMessage `json:"tool_response"`
+	Trigger              string          `json:"trigger"`
+	AgentID              string          `json:"agent_id"`
+	AgentType            string          `json:"agent_type"`
+	AgentTranscriptPath  string          `json:"agent_transcript_path"`
+	StopHookActive       bool            `json:"stop_hook_active"`
+	LastAssistantMessage string          `json:"last_assistant_message"`
+}
+
+func (payload codexHookPayload) normalize() hookPayload {
+	return hookPayload{
+		SessionID:            payload.SessionID,
+		TurnID:               payload.TurnID,
+		TranscriptPath:       payload.TranscriptPath,
+		CWD:                  payload.CWD,
+		HookEventName:        payload.HookEventName,
+		Model:                payload.Model,
+		PermissionMode:       payload.PermissionMode,
+		Prompt:               payload.Prompt,
+		LastAssistantMessage: payload.LastAssistantMessage,
+		ToolName:             payload.ToolName,
+		ToolInput:            payload.ToolInput,
+		ToolUseID:            payload.ToolUseID,
+		ToolResponse:         payload.ToolResponse,
+	}
 }
 
 type sessionPayload struct {
@@ -83,8 +125,8 @@ func ProcessHookPayload(adapter primitives.AdapterName, hookName, rawRef string,
 		return err
 	}
 
-	var payload hookPayload
-	if err := json.Unmarshal(raw, &payload); err != nil {
+	payload, err := decodeHookPayload(parsedAdapter, raw)
+	if err != nil {
 		return nil
 	}
 	if hookName == "CodexHook" && payload.HookEventName != "" {
@@ -111,11 +153,43 @@ func ProcessHookPayload(adapter primitives.AdapterName, hookName, rawRef string,
 
 	log := eventlog.Open(repo.MetadataDir)
 	manager := turns.NewManager(repo)
+	unlock, err := acquireHookProcessLock(repo, sessionID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if err := processHook(log, manager, parsedAdapter, hookName, rawRef, raw, sessionID, payload); err != nil {
 		_ = appendErrorEvent(log, parsedAdapter, sessionID, rawRef, hookName, err)
 		return err
 	}
 	return nil
+}
+
+func acquireHookProcessLock(repo *checkpoint.Repo, sessionID primitives.SessionID) (func(), error) {
+	lockDir := filepath.Join(repo.TmpDir, "hooks", sessionID.String()+".lock")
+	if err := os.MkdirAll(filepath.Dir(lockDir), 0o755); err != nil {
+		return nil, fmt.Errorf("create hook lock dir: %w", err)
+	}
+	if err := acquireDirLock(lockDir); err != nil {
+		return nil, err
+	}
+	return func() { _ = os.Remove(lockDir) }, nil
+}
+
+func decodeHookPayload(adapter primitives.AdapterName, raw []byte) (hookPayload, error) {
+	if adapter == primitives.AdapterCodex {
+		var payload codexHookPayload
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			return hookPayload{}, err
+		}
+		return payload.normalize(), nil
+	}
+
+	var payload hookPayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return hookPayload{}, err
+	}
+	return payload, nil
 }
 
 func processHook(log eventlog.Log, manager turns.Manager, adapter primitives.AdapterName, hookName, rawRef string, raw []byte, sessionID primitives.SessionID, payload hookPayload) error {
@@ -177,7 +251,27 @@ func ensureSessionStarted(log eventlog.Log, adapter primitives.AdapterName, sess
 	if seen {
 		return nil
 	}
+	started, err := hasSessionStart(log, adapter, sessionID)
+	if err != nil {
+		return err
+	}
+	if started {
+		return nil
+	}
 	return appendSessionStart(log, adapter, sessionID, rawRef, sourceID, payload)
+}
+
+func hasSessionStart(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID) (bool, error) {
+	events, err := log.Read(sessionID)
+	if err != nil {
+		return false, err
+	}
+	for _, event := range events {
+		if event.Type == primitives.EventTypeSessionStart && event.Adapter == adapter {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func appendSessionStart(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, rawRef, sourceID string, payload hookPayload) error {

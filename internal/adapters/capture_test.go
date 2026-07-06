@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"agent-vcs-again/internal/checkpoint"
@@ -132,6 +133,158 @@ func TestHandleHookPayloadIsIdempotentForDuplicatePrompt(t *testing.T) {
 	}
 	if !ok || active.TurnID.Uint64() != 1 {
 		t.Fatalf("active = %#v ok=%v, want turn 1 active", active, ok)
+	}
+}
+
+func TestHandleHookPayloadSerializesConcurrentDuplicatePrompt(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+
+	raw, err := json.Marshal(map[string]any{
+		"cwd":             root.String(),
+		"session_id":      "codex-session",
+		"hook_event_name": "UserPromptSubmit",
+		"turn_id":         "turn-1",
+		"prompt":          "make change",
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 8)
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- HandleHookPayload(primitives.AdapterCodex, "CodexHook", raw)
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("HandleHookPayload: %v", err)
+		}
+	}
+
+	sessionID := sessionID(t, "codex-session")
+	events := readEvents(t, repo, sessionID)
+	for _, event := range events {
+		if event.Type == primitives.EventTypeError {
+			t.Fatalf("unexpected error event: %#v", event)
+		}
+	}
+	if countEvents(events, primitives.EventTypeTurnStart) != 1 {
+		t.Fatalf("turn starts = %d, want 1; events=%#v", countEvents(events, primitives.EventTypeTurnStart), events)
+	}
+	if countEvents(events, primitives.EventTypePromptUser) != 1 {
+		t.Fatalf("prompt events = %d, want 1; events=%#v", countEvents(events, primitives.EventTypePromptUser), events)
+	}
+	if countEvents(events, primitives.EventTypeCheckpoint) != 1 {
+		t.Fatalf("checkpoint events = %d, want 1; events=%#v", countEvents(events, primitives.EventTypeCheckpoint), events)
+	}
+}
+
+func TestHandleCodexDocumentedHookPayloads(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+
+	writeFile(t, root, "app.txt", "before\n")
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd":             root.String(),
+		"session_id":      "codex-session",
+		"hook_event_name": "SessionStart",
+		"transcript_path": nil,
+		"model":           "gpt-5",
+		"permission_mode": "default",
+		"source":          "startup",
+	})
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd":             root.String(),
+		"session_id":      "codex-session",
+		"hook_event_name": "UserPromptSubmit",
+		"turn_id":         "turn-1",
+		"prompt":          "change app.txt",
+		"permission_mode": "default",
+	})
+	writeFile(t, root, "app.txt", "after\n")
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd":             root.String(),
+		"session_id":      "codex-session",
+		"hook_event_name": "PostToolUse",
+		"turn_id":         "turn-1",
+		"tool_name":       "Bash",
+		"tool_use_id":     "call-1",
+		"tool_input":      map[string]any{"command": "printf after > app.txt"},
+		"tool_response":   map[string]any{"exit_code": 0, "stdout": ""},
+		"permission_mode": "default",
+	})
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd":                    root.String(),
+		"session_id":             "codex-session",
+		"hook_event_name":        "Stop",
+		"turn_id":                "turn-1",
+		"stop_hook_active":       false,
+		"last_assistant_message": "done",
+		"permission_mode":        "default",
+	})
+
+	sessionID := sessionID(t, "codex-session")
+	events := readEvents(t, repo, sessionID)
+	wantTypes := []primitives.EventType{
+		primitives.EventTypeSessionStart,
+		primitives.EventTypeTurnStart,
+		primitives.EventTypeCheckpoint,
+		primitives.EventTypePromptUser,
+		primitives.EventTypeToolCall,
+		primitives.EventTypeToolResult,
+		primitives.EventTypeAssistantMessage,
+		primitives.EventTypeTurnFinish,
+		primitives.EventTypeCheckpoint,
+	}
+	if got := eventTypes(events); !sameEventTypes(got, wantTypes) {
+		t.Fatalf("event types = %#v, want %#v", got, wantTypes)
+	}
+	if countEvents(events, primitives.EventTypeSessionStart) != 1 {
+		t.Fatalf("session starts = %d, want 1", countEvents(events, primitives.EventTypeSessionStart))
+	}
+}
+
+func TestHandleCodexUnsupportedDocumentedHookFallsBackToRawEvent(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd":             root.String(),
+		"session_id":      "codex-session",
+		"hook_event_name": "PreCompact",
+		"turn_id":         "turn-1",
+		"trigger":         "manual",
+	})
+
+	sessionID := sessionID(t, "codex-session")
+	events := readEvents(t, repo, sessionID)
+	if len(events) != 1 || events[0].Type != primitives.EventTypeAdapterRaw {
+		t.Fatalf("events = %#v, want one adapter.raw event", events)
 	}
 }
 

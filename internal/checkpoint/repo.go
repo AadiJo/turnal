@@ -1,6 +1,7 @@
 package checkpoint
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -10,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"agent-vcs-again/internal/primitives"
@@ -381,6 +383,100 @@ func (repo *Repo) DeleteCheckpointRef(ref primitives.CheckpointRef) error {
 		return err
 	}
 	return nil
+}
+
+func (repo *Repo) CheckpointCommit(ref primitives.CheckpointRef) (primitives.CommitSHA, error) {
+	parsedRef, err := primitives.ParseCheckpointRef(ref.String())
+	if err != nil {
+		return "", err
+	}
+	output, err := runHiddenGit(repo, "", "rev-parse", parsedRef.String()+"^{commit}")
+	if err != nil {
+		return "", err
+	}
+	return primitives.ParseCommitSHA(strings.TrimSpace(output))
+}
+
+func (repo *Repo) RestoreCheckpoint(ref primitives.CheckpointRef) error {
+	parsedRef, err := primitives.ParseCheckpointRef(ref.String())
+	if err != nil {
+		return err
+	}
+	if _, err := repo.CheckpointCommit(parsedRef); err != nil {
+		return err
+	}
+
+	if err := repo.clearWorktree(); err != nil {
+		return err
+	}
+
+	indexPath, cleanup, err := repo.tempIndex()
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	if _, err := runHiddenGit(repo, indexPath, "read-tree", parsedRef.String()+"^{commit}"); err != nil {
+		return err
+	}
+	prefix := repo.WorkspaceRoot.String()
+	if !strings.HasSuffix(prefix, string(os.PathSeparator)) {
+		prefix += string(os.PathSeparator)
+	}
+	if _, err := runHiddenGit(repo, indexPath, "checkout-index", "-a", "-f", "--prefix", prefix); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (repo *Repo) clearWorktree() error {
+	root := repo.WorkspaceRoot.String()
+	var dirs []string
+	if err := filepath.WalkDir(root, func(absPath string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relPath, err := filepath.Rel(root, absPath)
+		if err != nil {
+			return fmt.Errorf("relative path for %s: %w", absPath, err)
+		}
+		if relPath == "." {
+			return nil
+		}
+
+		repoPath := filepath.ToSlash(relPath)
+		if excludedPath(repoPath) {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if entry.IsDir() {
+			dirs = append(dirs, absPath)
+			return nil
+		}
+		if err := os.Remove(absPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove worktree file %s: %w", repoPath, err)
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	sort.Slice(dirs, func(i, j int) bool {
+		return len(dirs[i]) > len(dirs[j])
+	})
+	for _, dir := range dirs {
+		if err := os.Remove(dir); err != nil && !os.IsNotExist(err) && !isDirectoryNotEmpty(err) {
+			relPath, _ := filepath.Rel(root, dir)
+			return fmt.Errorf("remove empty worktree dir %s: %w", filepath.ToSlash(relPath), err)
+		}
+	}
+	return nil
+}
+
+func isDirectoryNotEmpty(err error) bool {
+	return errors.Is(err, syscall.ENOTEMPTY) || errors.Is(err, syscall.EEXIST)
 }
 
 func (repo *Repo) snapshotWorktree(indexPath string) error {

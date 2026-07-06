@@ -160,17 +160,20 @@ func TestInstallHooksBackUpInvalidConfig(t *testing.T) {
 }
 
 func TestInstallHooksCanUseConfiguredCommandPrefix(t *testing.T) {
-	t.Setenv("AGENT_VCS_HOOK_COMMAND", "/opt/agent-vcs/bin/agent-vcs")
+	t.Setenv("AGENT_VCS_HOOK_COMMAND", "/tmp/agent-vcs-live")
 
 	root := t.TempDir()
 	if _, err := InstallCodexHook(root); err != nil {
 		t.Fatalf("InstallCodexHook: %v", err)
 	}
+	if _, err := InstallCodexHook(root); err != nil {
+		t.Fatalf("second InstallCodexHook: %v", err)
+	}
 
 	var config map[string]any
 	readTOMLFile(t, filepath.Join(root, ".codex", "config.toml"), &config)
 	commands := hookCommands(t, config["hooks"].(map[string]any)["Stop"])
-	if countCommand(commands, "/opt/agent-vcs/bin/agent-vcs codex-hook") != 1 {
+	if countCommand(commands, "/tmp/agent-vcs-live codex-hook") != 1 {
 		t.Fatalf("configured command not used: %#v", commands)
 	}
 }

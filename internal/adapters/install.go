@@ -271,16 +271,13 @@ func IsAgentVCSHookCommand(command string) bool {
 	if len(fields) < 2 {
 		return false
 	}
-	binary := filepath.Base(strings.Trim(fields[0], `"'`))
-	if binary != "agent-vcs" && binary != "acs" {
-		return false
+	for index, field := range fields {
+		switch field {
+		case "claude-hook", "codex-hook":
+			return index > 0
+		}
 	}
-	switch fields[1] {
-	case "claude-hook", "codex-hook":
-		return true
-	default:
-		return false
-	}
+	return false
 }
 
 func HookCommandPrefix() string {
