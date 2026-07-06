@@ -204,6 +204,50 @@ func TestDiffTurn(t *testing.T) {
 	}
 }
 
+func TestListCheckpointRefsFiltersSessionAndDropsInheritedGitEnv(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	sessionID, _ := primitives.ParseSessionID("demo")
+	otherSessionID, _ := primitives.ParseSessionID("other")
+	turnID, _ := primitives.NewTurnID(1)
+	if _, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre); err != nil {
+		t.Fatalf("demo pre checkpoint: %v", err)
+	}
+	if _, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePost); err != nil {
+		t.Fatalf("demo post checkpoint: %v", err)
+	}
+	if _, err := repo.CreateCheckpoint(otherSessionID, turnID, primitives.CheckpointPhasePre); err != nil {
+		t.Fatalf("other pre checkpoint: %v", err)
+	}
+
+	t.Setenv("GIT_DIR", "/bad/git-dir")
+	t.Setenv("GIT_WORK_TREE", "/bad/work-tree")
+	t.Setenv("GIT_INDEX_FILE", "/bad/index")
+
+	refs, err := repo.ListCheckpointRefs(sessionID)
+	if err != nil {
+		t.Fatalf("ListCheckpointRefs: %v", err)
+	}
+	if len(refs) != 2 {
+		t.Fatalf("refs len = %d, want 2: %v", len(refs), refs)
+	}
+	for _, ref := range refs {
+		parts, err := ref.Parts()
+		if err != nil {
+			t.Fatalf("ref parts: %v", err)
+		}
+		if parts.SessionID != sessionID {
+			t.Fatalf("listed ref for session %s, want %s: %s", parts.SessionID, sessionID, ref)
+		}
+	}
+}
+
 func workspaceRoot(t *testing.T) primitives.WorkspaceRoot {
 	t.Helper()
 	root, err := primitives.ParseWorkspaceRoot(t.TempDir())
