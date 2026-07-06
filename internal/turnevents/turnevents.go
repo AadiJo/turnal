@@ -9,6 +9,7 @@ import (
 	eventlog "agent-vcs-again/internal/events"
 	"agent-vcs-again/internal/primitives"
 	"agent-vcs-again/internal/turns"
+	"agent-vcs-again/internal/workspacegit"
 )
 
 type Recorder struct {
@@ -23,13 +24,14 @@ type turnPayload struct {
 }
 
 type checkpointPayload struct {
-	Turn          uint64 `json:"turn"`
-	Phase         string `json:"phase"`
-	CommitSHA     string `json:"commit_sha"`
-	Ref           string `json:"ref"`
-	GitSyncRef    string `json:"git_sync_ref,omitempty"`
-	EventSeqStart uint64 `json:"event_seq_start"`
-	EventSeqEnd   uint64 `json:"event_seq_end"`
+	Turn          uint64               `json:"turn"`
+	Phase         string               `json:"phase"`
+	CommitSHA     string               `json:"commit_sha"`
+	Ref           string               `json:"ref"`
+	GitSyncRef    string               `json:"git_sync_ref,omitempty"`
+	EventSeqStart uint64               `json:"event_seq_start"`
+	EventSeqEnd   uint64               `json:"event_seq_end"`
+	UserGit       workspacegit.Context `json:"user_git"`
 }
 
 func (recorder Recorder) Start(sessionID primitives.SessionID, requestedTurnID primitives.TurnID) (turns.StartResult, error) {
@@ -103,6 +105,11 @@ func AppendCheckpointWithGitSync(log eventlog.Log, adapter primitives.AdapterNam
 	if gitSync != nil {
 		gitSyncRef = gitSync.Ref
 	}
+	repo := checkpointRepoFromLog(log)
+	userGit, err := workspacegit.Open(repo.WorkspaceRoot).Context()
+	if err != nil {
+		return err
+	}
 	event, err := appendPayloadEvent(log, eventlog.AppendInput{
 		SessionID: sessionID,
 		TurnID:    &turnID,
@@ -123,13 +130,14 @@ func AppendCheckpointWithGitSync(log eventlog.Log, adapter primitives.AdapterNam
 				GitSyncRef:    gitSyncRef,
 				EventSeqStart: eventSeqStart.Uint64(),
 				EventSeqEnd:   context.Seq.Uint64(),
+				UserGit:       userGit,
 			}), nil
 		},
 	})
 	if err != nil {
 		return err
 	}
-	return checkpointRepoFromLog(log).FinalizeCheckpointJournal(sessionID, turnID, phase, event.Seq, event.Hash)
+	return repo.FinalizeCheckpointJournal(sessionID, turnID, phase, event.Seq, event.Hash)
 }
 
 func RecoverCheckpointJournals(log eventlog.Log, repo *checkpoint.Repo) error {

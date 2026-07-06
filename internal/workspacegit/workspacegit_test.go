@@ -63,6 +63,54 @@ func TestCaptureRequiresWorkspaceRootAtGitRoot(t *testing.T) {
 	}
 }
 
+func TestContextCapturesWorkspaceGitState(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t, t.TempDir())
+	runGit(t, root.String(), "init", "-q")
+	runGit(t, root.String(), "config", "user.email", "agent-vcs@example.test")
+	runGit(t, root.String(), "config", "user.name", "agent-vcs")
+	writeFile(t, root.String(), "README.md", "base\n")
+	runGit(t, root.String(), "add", "README.md")
+	runGit(t, root.String(), "commit", "-q", "-m", "base")
+
+	context, err := Open(root).Context()
+	if err != nil {
+		t.Fatalf("Context: %v", err)
+	}
+	if !context.Exists || context.Head == "" || context.Branch == "" || context.Detached {
+		t.Fatalf("context missing head/branch: %#v", context)
+	}
+	if context.WorktreeRoot != root.String() {
+		t.Fatalf("worktree root = %q, want %q", context.WorktreeRoot, root.String())
+	}
+	if context.Dirty {
+		t.Fatalf("context dirty = true for clean repo: %#v", context)
+	}
+
+	writeFile(t, root.String(), "README.md", "changed\n")
+	context, err = Open(root).Context()
+	if err != nil {
+		t.Fatalf("dirty Context: %v", err)
+	}
+	if !context.Dirty {
+		t.Fatalf("context dirty = false after worktree change: %#v", context)
+	}
+}
+
+func TestContextReportsMissingWorkspaceGit(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t, t.TempDir())
+	context, err := Open(root).Context()
+	if err != nil {
+		t.Fatalf("Context: %v", err)
+	}
+	if context.Exists {
+		t.Fatalf("context Exists = true outside Git repo: %#v", context)
+	}
+}
+
 func requireGit(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"agent-vcs-again/internal/checkpoint"
@@ -58,6 +59,9 @@ func TestRecoverCheckpointJournalsAppendsMissingCheckpointEvent(t *testing.T) {
 	if payload.Ref != started.Pre.Ref.String() || payload.CommitSHA != started.Pre.Commit.String() {
 		t.Fatalf("payload checkpoint = %s %s, want %s %s", payload.CommitSHA, payload.Ref, started.Pre.Commit, started.Pre.Ref)
 	}
+	if payload.UserGit.Exists {
+		t.Fatalf("payload user_git exists = true outside workspace Git repo: %#v", payload.UserGit)
+	}
 
 	if err := RecoverCheckpointJournals(log, repo); err != nil {
 		t.Fatalf("second RecoverCheckpointJournals: %v", err)
@@ -68,6 +72,56 @@ func TestRecoverCheckpointJournalsAppendsMissingCheckpointEvent(t *testing.T) {
 	}
 	if len(events) != 2 {
 		t.Fatalf("events len after second recovery = %d, want 2", len(events))
+	}
+}
+
+func TestAppendCheckpointRecordsUserGitContext(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	bootstrapped, err := checkpoint.Bootstrap(root)
+	if err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	repo := bootstrapped.Repo
+	runGit(t, root.String(), "config", "user.email", "agent-vcs@example.test")
+	runGit(t, root.String(), "config", "user.name", "agent-vcs")
+	writeFile(t, root, "README.md", "base\n")
+	runGit(t, root.String(), "add", ".gitignore", "README.md")
+	runGit(t, root.String(), "commit", "-q", "-m", "base")
+	head := strings.TrimSpace(runGit(t, root.String(), "rev-parse", "HEAD"))
+
+	sessionID := sessionID(t, "demo")
+	started, err := (Recorder{
+		Log:     eventlog.Open(repo.MetadataDir),
+		Manager: turns.NewManager(repo),
+		Adapter: primitives.AdapterManual,
+	}).Start(sessionID, 0)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	events, err := eventlog.Open(repo.MetadataDir).Read(sessionID)
+	if err != nil {
+		t.Fatalf("Read events: %v", err)
+	}
+	var payload checkpointPayload
+	for _, event := range events {
+		if event.Type != primitives.EventTypeCheckpoint {
+			continue
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("unmarshal checkpoint payload: %v", err)
+		}
+	}
+	if payload.Turn != started.TurnID.Uint64() {
+		t.Fatalf("payload turn = %d, want %s", payload.Turn, started.TurnID)
+	}
+	if !payload.UserGit.Exists || payload.UserGit.Head != head || payload.UserGit.Branch == "" || payload.UserGit.Detached {
+		t.Fatalf("payload user_git missing head/branch: %#v", payload.UserGit)
+	}
+	if payload.UserGit.Dirty {
+		t.Fatalf("payload user_git dirty = true, want clean: %#v", payload.UserGit)
 	}
 }
 
@@ -105,4 +159,15 @@ func writeFile(t *testing.T, root primitives.WorkspaceRoot, relPath, content str
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write %s: %v", relPath, err)
 	}
+}
+
+func runGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
+	return string(output)
 }

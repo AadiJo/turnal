@@ -11,6 +11,7 @@ import (
 	"agent-vcs-again/internal/adapters"
 	eventlog "agent-vcs-again/internal/events"
 	"agent-vcs-again/internal/primitives"
+	"agent-vcs-again/internal/workspacegit"
 )
 
 type Options struct {
@@ -44,6 +45,7 @@ type Checkpoint struct {
 	Ref           primitives.CheckpointRef   `json:"ref"`
 	EventSeqStart *primitives.EventSeq       `json:"event_seq_start,omitempty"`
 	EventSeqEnd   *primitives.EventSeq       `json:"event_seq_end,omitempty"`
+	UserGit       *workspacegit.Context      `json:"user_git,omitempty"`
 }
 
 type RawRecord struct {
@@ -57,12 +59,13 @@ type RawRecordError struct {
 }
 
 type checkpointPayload struct {
-	Turn          uint64 `json:"turn"`
-	Phase         string `json:"phase"`
-	CommitSHA     string `json:"commit_sha"`
-	Ref           string `json:"ref"`
-	EventSeqStart uint64 `json:"event_seq_start,omitempty"`
-	EventSeqEnd   uint64 `json:"event_seq_end,omitempty"`
+	Turn          uint64                `json:"turn"`
+	Phase         string                `json:"phase"`
+	CommitSHA     string                `json:"commit_sha"`
+	Ref           string                `json:"ref"`
+	EventSeqStart uint64                `json:"event_seq_start,omitempty"`
+	EventSeqEnd   uint64                `json:"event_seq_end,omitempty"`
+	UserGit       *workspacegit.Context `json:"user_git,omitempty"`
 }
 
 type sessionPayload struct {
@@ -193,7 +196,7 @@ func parseCheckpointPayload(sessionID primitives.SessionID, turnID primitives.Tu
 	if err != nil {
 		return Checkpoint{}, fmt.Errorf("recall invariant failed for session %s turn %s: %w", sessionID, turnID, err)
 	}
-	checkpoint := Checkpoint{Phase: phase, CommitSHA: commit, Ref: ref}
+	checkpoint := Checkpoint{Phase: phase, CommitSHA: commit, Ref: ref, UserGit: parsed.UserGit}
 	if parsed.EventSeqStart != 0 || parsed.EventSeqEnd != 0 {
 		eventSeqStart, err := primitives.NewEventSeq(parsed.EventSeqStart)
 		if err != nil {
