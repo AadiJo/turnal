@@ -283,6 +283,7 @@ func renderCheckpointGraph(w io.Writer, sessions []graphSession, options graphRe
 
 	rows := buildGraphTimelineRows(sessions)
 	spans := buildLaneSpans(rows)
+	labels := buildGraphSessionLabels(sessions)
 	totalTurns := 0
 	totalShownTurns := 0
 	for _, session := range sessions {
@@ -301,7 +302,7 @@ func renderCheckpointGraph(w io.Writer, sessions []graphSession, options graphRe
 
 	fmt.Fprintf(w, "sessions:")
 	for sessionIndex, session := range sessions {
-		label := formatSessionLabel(session.ID, sessionIndex, options)
+		label := formatSessionLabel(labels[sessionIndex], sessionIndex, options)
 		if len(session.Turns) == session.TotalTurns {
 			fmt.Fprintf(w, " %s", label)
 		} else {
@@ -328,7 +329,7 @@ func renderCheckpointGraph(w io.Writer, sessions []graphSession, options graphRe
 			linePrefix,
 			styleHash(formatDisplayCommit(turn), options),
 			formatDisplayTime(turn),
-			formatSessionLabel(row.SessionID, row.SessionIndex, options),
+			formatSessionLabel(labels[row.SessionIndex], row.SessionIndex, options),
 			turn.TurnID,
 			styleTool(formatTurnAction(turn), options),
 			styleDim(turnStatus(turn), options),
@@ -339,7 +340,7 @@ func renderCheckpointGraph(w io.Writer, sessions []graphSession, options graphRe
 			fmt.Fprintf(w, "%s%s %q\n", detailPrefix, styleDim("Human:", options), prompt)
 		}
 		if options.Verbose {
-			renderVerboseTurnDetails(w, detailPrefix, turn, options)
+			renderVerboseTurnDetails(w, detailPrefix, row.SessionID, turn, options)
 		}
 		for _, warning := range turn.Warnings {
 			fmt.Fprintf(w, "%swarning: %s\n", detailPrefix, warning)
@@ -375,6 +376,83 @@ func buildGraphTimelineRows(sessions []graphSession) []graphTimelineRow {
 		return rows[i].Turn.TurnID.Uint64() > rows[j].Turn.TurnID.Uint64()
 	})
 	return rows
+}
+
+func buildGraphSessionLabels(sessions []graphSession) []string {
+	labels := make([]string, len(sessions))
+	counts := make(map[string]int, len(sessions))
+	for index, session := range sessions {
+		labels[index] = graphSessionDisplayName(session)
+		counts[labels[index]]++
+	}
+
+	for index, session := range sessions {
+		if counts[labels[index]] <= 1 {
+			continue
+		}
+		labels[index] = labels[index] + " " + shortSessionID(session.ID.String())
+	}
+	return labels
+}
+
+func graphSessionDisplayName(session graphSession) string {
+	agent := sessionDisplayAgent(session)
+	if at := sessionDisplayTime(session); agent != "" && !at.IsZero() {
+		return agent + " " + at.UTC().Format("15:04")
+	}
+	return session.ID.String()
+}
+
+func sessionDisplayAgent(session graphSession) string {
+	for _, turn := range session.Turns {
+		if turn.Events.Adapter != "" {
+			return normalizeSessionAgent(turn.Events.Adapter)
+		}
+	}
+	return ""
+}
+
+func normalizeSessionAgent(agent string) string {
+	switch agent {
+	case "claude-code":
+		return "claude"
+	case "t3-code":
+		return "t3"
+	default:
+		return agent
+	}
+}
+
+func sessionDisplayTime(session graphSession) time.Time {
+	var earliest time.Time
+	for _, turn := range session.Turns {
+		at := turnDisplayTime(turn)
+		if at.IsZero() {
+			continue
+		}
+		if earliest.IsZero() || at.Before(earliest) {
+			earliest = at
+		}
+	}
+	return earliest
+}
+
+func shortSessionID(sessionID string) string {
+	parts := strings.FieldsFunc(sessionID, func(r rune) bool {
+		return r == '-' || r == '_' || r == '.'
+	})
+	for i := len(parts) - 1; i >= 0; i-- {
+		if parts[i] != "" {
+			if len(parts[i]) <= 8 {
+				return parts[i]
+			}
+			return parts[i][len(parts[i])-8:]
+		}
+	}
+	if len(sessionID) <= 8 {
+		return sessionID
+	}
+	return sessionID[len(sessionID)-8:]
 }
 
 func buildLaneSpans(rows []graphTimelineRow) map[int]laneSpan {
@@ -416,7 +494,8 @@ func renderLanePrefix(rowIndex, currentSessionIndex, sessionCount int, spans map
 	return line.String()
 }
 
-func renderVerboseTurnDetails(w io.Writer, prefix string, turn graphTurn, options graphRenderOptions) {
+func renderVerboseTurnDetails(w io.Writer, prefix string, sessionID primitives.SessionID, turn graphTurn, options graphRenderOptions) {
+	fmt.Fprintf(w, "%ssession: %s\n", prefix, sessionID)
 	if turn.DiffLoaded {
 		fmt.Fprintf(w, "%sdiff: %s\n", prefix, formatDiffSummary(turn.Diff))
 	}
@@ -689,8 +768,8 @@ var graphSessionColors = []string{
 	"\x1b[38;5;147m",
 }
 
-func formatSessionLabel(sessionID primitives.SessionID, sessionIndex int, options graphRenderOptions) string {
-	return styleSession("["+sessionID.String()+"]", sessionIndex, options)
+func formatSessionLabel(label string, sessionIndex int, options graphRenderOptions) string {
+	return styleSession("["+label+"]", sessionIndex, options)
 }
 
 func styleSession(value string, sessionIndex int, options graphRenderOptions) string {

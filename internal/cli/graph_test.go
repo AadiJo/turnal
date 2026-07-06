@@ -59,11 +59,12 @@ func TestGraphCommandShowsCheckpointGraph(t *testing.T) {
 	output := stripANSI(out.String())
 	for _, want := range []string{
 		"checkpoint graph: 1 session, 1 turn",
-		"sessions: [demo]",
+		"sessions: [codex ",
 		"turn 1",
 		"complete",
-		"[demo] turn 1      Prompt complete",
+		"] turn 1      Prompt complete",
 		"1 file +1 -1",
+		"| session: demo",
 		"events: 1 event; codex",
 		"Human: \"change app.txt\"",
 		"| pre:",
@@ -144,6 +145,93 @@ func TestRenderCheckpointGraphShowsOverlappingSessionLanes(t *testing.T) {
 		if !strings.Contains(output, want) {
 			t.Fatalf("overlap graph output missing %q:\n%s", want, output)
 		}
+	}
+}
+
+func TestRenderCheckpointGraphShowsReadableProviderSessionLabels(t *testing.T) {
+	sessionID := sessionID(t, "codex-sess_7f3a9c2d")
+	turnID, _ := primitives.NewTurnID(1)
+	at := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	session := graphSession{
+		ID:         sessionID,
+		TotalTurns: 1,
+		Turns: []graphTurn{
+			{
+				TurnID: turnID,
+				Post:   checkpointInfo(sessionID, turnID, at, "1"),
+				Events: turnEventSummary{Adapter: "codex"},
+			},
+		},
+	}
+
+	var out bytes.Buffer
+	if err := renderCheckpointGraph(&out, []graphSession{session}, graphRenderOptions{}); err != nil {
+		t.Fatalf("renderCheckpointGraph: %v", err)
+	}
+
+	output := stripANSI(out.String())
+	for _, want := range []string{
+		"sessions: [codex 12:00]",
+		"[codex 12:00] turn 1",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("provider graph output missing %q:\n%s", want, output)
+		}
+	}
+	if strings.Contains(output, sessionID.String()) {
+		t.Fatalf("default graph output should not show full generated session id:\n%s", output)
+	}
+
+	out.Reset()
+	if err := renderCheckpointGraph(&out, []graphSession{session}, graphRenderOptions{Verbose: true}); err != nil {
+		t.Fatalf("renderCheckpointGraph verbose: %v", err)
+	}
+	output = stripANSI(out.String())
+	if !strings.Contains(output, "session: "+sessionID.String()) {
+		t.Fatalf("verbose graph output missing full session id:\n%s", output)
+	}
+}
+
+func TestGraphSessionLabelsDisambiguateDuplicateGeneratedNames(t *testing.T) {
+	firstID := sessionID(t, "codex-sess_11111111")
+	secondID := sessionID(t, "codex-sess_22222222")
+	turnID, _ := primitives.NewTurnID(1)
+	at := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+
+	labels := buildGraphSessionLabels([]graphSession{
+		{
+			ID:         firstID,
+			TotalTurns: 1,
+			Turns: []graphTurn{
+				{TurnID: turnID, Post: checkpointInfo(firstID, turnID, at, "1"), Events: turnEventSummary{Adapter: "codex"}},
+			},
+		},
+		{
+			ID:         secondID,
+			TotalTurns: 1,
+			Turns: []graphTurn{
+				{TurnID: turnID, Post: checkpointInfo(secondID, turnID, at, "2"), Events: turnEventSummary{Adapter: "codex"}},
+			},
+		},
+	})
+
+	if labels[0] != "codex 12:00 11111111" {
+		t.Fatalf("first label = %q, want codex 12:00 11111111", labels[0])
+	}
+	if labels[1] != "codex 12:00 22222222" {
+		t.Fatalf("second label = %q, want codex 12:00 22222222", labels[1])
+	}
+}
+
+func TestGraphSessionLabelsPreserveHumanTopicNames(t *testing.T) {
+	sessionID := sessionID(t, "feature-12345678")
+
+	labels := buildGraphSessionLabels([]graphSession{
+		{ID: sessionID, TotalTurns: 1},
+	})
+
+	if labels[0] != "feature-12345678" {
+		t.Fatalf("label = %q, want feature-12345678", labels[0])
 	}
 }
 
