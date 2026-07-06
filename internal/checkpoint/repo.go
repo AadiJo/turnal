@@ -183,6 +183,43 @@ func (repo *Repo) DiffTurn(sessionID primitives.SessionID, turnID primitives.Tur
 	return repo.DiffRefs(preRef, postRef)
 }
 
+func (repo *Repo) ListCheckpointRefs(sessionID primitives.SessionID) ([]primitives.CheckpointRef, error) {
+	refPrefix, err := primitives.CheckpointSessionRefPrefix(sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	output, err := runHiddenGit(repo, "", "for-each-ref", "--format=%(refname)", refPrefix)
+	if err != nil {
+		return nil, err
+	}
+
+	var refs []primitives.CheckpointRef
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		ref, err := primitives.ParseCheckpointRef(line)
+		if err != nil {
+			return nil, fmt.Errorf("checkpoint ref invariant failed for %q: %w", line, err)
+		}
+		refs = append(refs, ref)
+	}
+	return refs, nil
+}
+
+func (repo *Repo) DeleteCheckpointRef(ref primitives.CheckpointRef) error {
+	parsedRef, err := primitives.ParseCheckpointRef(ref.String())
+	if err != nil {
+		return err
+	}
+	if _, err := runHiddenGit(repo, "", "update-ref", "-d", parsedRef.String()); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (repo *Repo) snapshotWorktree(indexPath string) error {
 	root := repo.WorkspaceRoot.String()
 	return filepath.WalkDir(root, func(absPath string, entry fs.DirEntry, walkErr error) error {

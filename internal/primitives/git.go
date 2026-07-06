@@ -75,6 +75,18 @@ type CheckpointRefParts struct {
 
 const checkpointRefPrefix = "refs/agent-vcs/checkpoints"
 
+func CheckpointSessionRefPrefix(sessionID SessionID) (string, error) {
+	parsedSessionID, err := ParseSessionID(sessionID.String())
+	if err != nil {
+		return "", err
+	}
+	refPrefix := fmt.Sprintf("%s/%s/turn", checkpointRefPrefix, parsedSessionID)
+	if err := validateGitRefName(refPrefix); err != nil {
+		return "", err
+	}
+	return refPrefix, nil
+}
+
 func NewCheckpointRef(sessionID SessionID, turnID TurnID, phase CheckpointPhase) (CheckpointRef, error) {
 	parsedSessionID, err := ParseSessionID(sessionID.String())
 	if err != nil {

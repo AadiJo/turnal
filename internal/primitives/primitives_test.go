@@ -193,6 +193,13 @@ func TestCheckpointRef(t *testing.T) {
 	if ref.String() != want {
 		t.Fatalf("ref = %q, want %q", ref, want)
 	}
+	prefix, err := CheckpointSessionRefPrefix(sessionID)
+	if err != nil {
+		t.Fatalf("CheckpointSessionRefPrefix: %v", err)
+	}
+	if prefix != "refs/agent-vcs/checkpoints/demo/turn" {
+		t.Fatalf("checkpoint session prefix = %q", prefix)
+	}
 
 	ref, err = NewCheckpointRef(SessionID("DIRECT"), turnID, CheckpointPhasePre)
 	if err != nil {
