@@ -1,6 +1,7 @@
 package checkpoint
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -308,6 +309,138 @@ func TestListCheckpointRefInfosAndDiffStat(t *testing.T) {
 	}
 }
 
+func TestPlanRestoreCommitClassifiesChanges(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	sessionID, _ := primitives.ParseSessionID("demo")
+	turnID, _ := primitives.NewTurnID(1)
+
+	writeFile(t, root, "add.txt", "target\n")
+	writeFile(t, root, "modify.txt", "target\n")
+	writeFile(t, root, "mode.sh", "same\n")
+	if err := os.Chmod(filepath.Join(root.String(), "mode.sh"), 0o755); err != nil {
+		t.Fatalf("chmod mode.sh: %v", err)
+	}
+	target, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("target checkpoint: %v", err)
+	}
+
+	if err := os.Remove(filepath.Join(root.String(), "add.txt")); err != nil {
+		t.Fatalf("remove add.txt: %v", err)
+	}
+	writeFile(t, root, "modify.txt", "current\n")
+	writeFile(t, root, "delete.txt", "current only\n")
+	if err := os.Chmod(filepath.Join(root.String(), "mode.sh"), 0o644); err != nil {
+		t.Fatalf("chmod mode.sh current: %v", err)
+	}
+
+	plan, err := repo.PlanRestoreCommit(target.Commit)
+	if err != nil {
+		t.Fatalf("PlanRestoreCommit: %v", err)
+	}
+	actions := map[string]RestoreAction{}
+	for _, change := range plan.Changes {
+		actions[change.Path] = change.Action
+	}
+	want := map[string]RestoreAction{
+		"add.txt":    RestoreActionAdded,
+		"modify.txt": RestoreActionModified,
+		"delete.txt": RestoreActionDeleted,
+		"mode.sh":    RestoreActionModeChanged,
+	}
+	for path, action := range want {
+		if actions[path] != action {
+			t.Fatalf("action for %s = %s, want %s; all actions=%#v", path, actions[path], action, actions)
+		}
+	}
+	if len(actions) != len(want) {
+		t.Fatalf("actions = %#v, want %#v", actions, want)
+	}
+}
+
+func TestRestoreCommitPreservesBytesModesSymlinksAndMetadata(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	rawBytes := []byte{'h', 'i', 0, '\r', '\n', 0xff}
+	writeBytes(t, root, "raw.bin", rawBytes, 0o644)
+	writeBytes(t, root, "script.sh", []byte("#!/bin/sh\n"), 0o755)
+	if err := os.Symlink("raw.bin", filepath.Join(root.String(), "link.bin")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	sessionID, _ := primitives.ParseSessionID("demo")
+	turnID, _ := primitives.NewTurnID(1)
+	target, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("target checkpoint: %v", err)
+	}
+
+	writeBytes(t, root, "raw.bin", []byte("changed\n"), 0o644)
+	if err := os.Chmod(filepath.Join(root.String(), "script.sh"), 0o644); err != nil {
+		t.Fatalf("chmod script.sh: %v", err)
+	}
+	if err := os.Remove(filepath.Join(root.String(), "link.bin")); err != nil {
+		t.Fatalf("remove link.bin: %v", err)
+	}
+	writeFile(t, root, "extra.txt", "remove me\n")
+	writeFile(t, root, ".agent-vcs/tmp/keep.txt", "metadata\n")
+
+	if err := repo.RestoreCommit(target.Commit); err != nil {
+		t.Fatalf("RestoreCommit: %v", err)
+	}
+
+	restoredRaw, err := os.ReadFile(filepath.Join(root.String(), "raw.bin"))
+	if err != nil {
+		t.Fatalf("read raw.bin: %v", err)
+	}
+	if !bytes.Equal(restoredRaw, rawBytes) {
+		t.Fatalf("raw.bin = %v, want %v", restoredRaw, rawBytes)
+	}
+
+	scriptInfo, err := os.Stat(filepath.Join(root.String(), "script.sh"))
+	if err != nil {
+		t.Fatalf("stat script.sh: %v", err)
+	}
+	if scriptInfo.Mode().Perm() != 0o755 {
+		t.Fatalf("script.sh mode = %o, want 755", scriptInfo.Mode().Perm())
+	}
+
+	linkInfo, err := os.Lstat(filepath.Join(root.String(), "link.bin"))
+	if err != nil {
+		t.Fatalf("lstat link.bin: %v", err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("link.bin mode = %s, want symlink", linkInfo.Mode())
+	}
+	linkTarget, err := os.Readlink(filepath.Join(root.String(), "link.bin"))
+	if err != nil {
+		t.Fatalf("readlink link.bin: %v", err)
+	}
+	if linkTarget != "raw.bin" {
+		t.Fatalf("link.bin target = %q, want raw.bin", linkTarget)
+	}
+
+	if _, err := os.Stat(filepath.Join(root.String(), "extra.txt")); !os.IsNotExist(err) {
+		t.Fatalf("extra.txt still exists or stat failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root.String(), ".agent-vcs/tmp/keep.txt")); err != nil {
+		t.Fatalf("metadata file was not preserved: %v", err)
+	}
+}
+
 func workspaceRoot(t *testing.T) primitives.WorkspaceRoot {
 	t.Helper()
 	root, err := primitives.ParseWorkspaceRoot(t.TempDir())
@@ -325,6 +458,20 @@ func writeFile(t *testing.T, root primitives.WorkspaceRoot, relPath, content str
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write %s: %v", relPath, err)
+	}
+}
+
+func writeBytes(t *testing.T, root primitives.WorkspaceRoot, relPath string, content []byte, mode os.FileMode) {
+	t.Helper()
+	path := filepath.Join(root.String(), filepath.FromSlash(relPath))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, content, mode); err != nil {
+		t.Fatalf("write %s: %v", relPath, err)
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatalf("chmod %s: %v", relPath, err)
 	}
 }
 

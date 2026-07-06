@@ -44,11 +44,18 @@ func Execute() {
 	rootCmd.SetVersionTemplate("{{.Version}}\n")
 
 	if err := rootCmd.Execute(); err != nil {
-		var exitErr interface{ ExitCode() int }
-		if errors.As(err, &exitErr) {
-			os.Exit(exitErr.ExitCode())
+		if code, ok := commandExitCode(err); ok {
+			os.Exit(code)
 		}
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+func commandExitCode(err error) (int, bool) {
+	var childErr childExitError
+	if errors.As(err, &childErr) {
+		return childErr.ExitCode(), true
+	}
+	return 0, false
 }

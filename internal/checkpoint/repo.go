@@ -39,6 +39,11 @@ type Checkpoint struct {
 	Commit primitives.CommitSHA
 }
 
+type Snapshot struct {
+	Ref    string
+	Commit primitives.CommitSHA
+}
+
 type CheckpointRefInfo struct {
 	Ref       primitives.CheckpointRef
 	SessionID primitives.SessionID
@@ -61,6 +66,31 @@ type DiffSummary struct {
 	Additions   int
 	Deletions   int
 	BinaryFiles int
+}
+
+type TreeEntry struct {
+	Path     string
+	Mode     string
+	ObjectID string
+}
+
+type RestoreAction string
+
+const (
+	RestoreActionAdded       RestoreAction = "added"
+	RestoreActionModified    RestoreAction = "modified"
+	RestoreActionDeleted     RestoreAction = "deleted"
+	RestoreActionModeChanged RestoreAction = "mode-changed"
+)
+
+type RestoreChange struct {
+	Path   string        `json:"path"`
+	Action RestoreAction `json:"action"`
+}
+
+type RestorePlan struct {
+	TargetCommit primitives.CommitSHA `json:"target_commit"`
+	Changes      []RestoreChange      `json:"changes"`
 }
 
 func Init(root primitives.WorkspaceRoot) (*Repo, error) {
@@ -138,44 +168,72 @@ func (repo *Repo) CreateCheckpoint(sessionID primitives.SessionID, turnID primit
 		return Checkpoint{}, err
 	}
 
-	indexPath, cleanup, err := repo.tempIndex()
-	if err != nil {
-		return Checkpoint{}, err
-	}
-	defer cleanup()
-
-	if _, err := runHiddenGit(repo, indexPath, "read-tree", "--empty"); err != nil {
-		return Checkpoint{}, err
-	}
-
-	if err := repo.snapshotWorktree(indexPath); err != nil {
-		return Checkpoint{}, err
-	}
-
-	tree, err := runHiddenGit(repo, indexPath, "write-tree")
-	if err != nil {
-		return Checkpoint{}, err
-	}
-
 	message := fmt.Sprintf("agent-vcs checkpoint %s turn %s", sessionID, turnID)
 	if phase != "" {
 		message += " " + phase.String()
 	}
-	commitOutput, err := runHiddenGit(repo, indexPath, "commit-tree", strings.TrimSpace(tree), "-m", message)
+	commit, err := repo.createSnapshotCommit(message)
 	if err != nil {
 		return Checkpoint{}, err
 	}
 
-	commit, err := primitives.ParseCommitSHA(strings.TrimSpace(commitOutput))
-	if err != nil {
-		return Checkpoint{}, fmt.Errorf("parse checkpoint commit: %w", err)
-	}
-
-	if _, err := runHiddenGit(repo, indexPath, "update-ref", ref.String(), commit.String()); err != nil {
+	if _, err := runHiddenGit(repo, "", "update-ref", ref.String(), commit.String()); err != nil {
 		return Checkpoint{}, err
 	}
 
 	return Checkpoint{Ref: ref, Commit: commit}, nil
+}
+
+func (repo *Repo) CreateSnapshotRef(ref string, message string) (Snapshot, error) {
+	ref, err := repo.validatePrivateRef(ref)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if strings.TrimSpace(message) == "" {
+		message = "agent-vcs snapshot"
+	}
+
+	commit, err := repo.createSnapshotCommit(message)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if _, err := runHiddenGit(repo, "", "update-ref", ref, commit.String()); err != nil {
+		return Snapshot{}, err
+	}
+	return Snapshot{Ref: ref, Commit: commit}, nil
+}
+
+func (repo *Repo) createSnapshotCommit(message string) (primitives.CommitSHA, error) {
+	indexPath, cleanup, err := repo.tempIndex()
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
+
+	if _, err := runHiddenGit(repo, indexPath, "read-tree", "--empty"); err != nil {
+		return "", err
+	}
+
+	if err := repo.snapshotWorktree(indexPath); err != nil {
+		return "", err
+	}
+
+	tree, err := runHiddenGit(repo, indexPath, "write-tree")
+	if err != nil {
+		return "", err
+	}
+
+	commitOutput, err := runHiddenGit(repo, indexPath, "commit-tree", strings.TrimSpace(tree), "-m", message)
+	if err != nil {
+		return "", err
+	}
+
+	commit, err := primitives.ParseCommitSHA(strings.TrimSpace(commitOutput))
+	if err != nil {
+		return "", fmt.Errorf("parse checkpoint commit: %w", err)
+	}
+
+	return commit, nil
 }
 
 func (repo *Repo) DiffRefs(preRef, postRef primitives.CheckpointRef) ([]byte, error) {
@@ -390,7 +448,15 @@ func (repo *Repo) CheckpointCommit(ref primitives.CheckpointRef) (primitives.Com
 	if err != nil {
 		return "", err
 	}
-	output, err := runHiddenGit(repo, "", "rev-parse", parsedRef.String()+"^{commit}")
+	return repo.RefCommit(parsedRef.String())
+}
+
+func (repo *Repo) RefCommit(ref string) (primitives.CommitSHA, error) {
+	parsedRef, err := repo.validatePrivateRef(ref)
+	if err != nil {
+		return "", err
+	}
+	output, err := runHiddenGit(repo, "", "rev-parse", parsedRef+"^{commit}")
 	if err != nil {
 		return "", err
 	}
@@ -402,37 +468,199 @@ func (repo *Repo) RestoreCheckpoint(ref primitives.CheckpointRef) error {
 	if err != nil {
 		return err
 	}
-	if _, err := repo.CheckpointCommit(parsedRef); err != nil {
-		return err
-	}
-
-	if err := repo.clearWorktree(); err != nil {
-		return err
-	}
-
-	indexPath, cleanup, err := repo.tempIndex()
+	commit, err := repo.CheckpointCommit(parsedRef)
 	if err != nil {
 		return err
 	}
-	defer cleanup()
-
-	if _, err := runHiddenGit(repo, indexPath, "read-tree", parsedRef.String()+"^{commit}"); err != nil {
-		return err
-	}
-	prefix := repo.WorkspaceRoot.String()
-	if !strings.HasSuffix(prefix, string(os.PathSeparator)) {
-		prefix += string(os.PathSeparator)
-	}
-	if _, err := runHiddenGit(repo, indexPath, "checkout-index", "-a", "-f", "--prefix", prefix); err != nil {
-		return err
-	}
-	return nil
+	return repo.RestoreCommit(commit)
 }
 
-func (repo *Repo) clearWorktree() error {
+func (repo *Repo) PlanRestoreCommit(commit primitives.CommitSHA) (RestorePlan, error) {
+	parsedCommit, err := primitives.ParseCommitSHA(commit.String())
+	if err != nil {
+		return RestorePlan{}, err
+	}
+
+	currentTree, cleanup, err := repo.snapshotWorktreeTree()
+	if err != nil {
+		return RestorePlan{}, err
+	}
+	defer cleanup()
+
+	output, err := runHiddenGit(repo, "",
+		"diff",
+		"--raw",
+		"-z",
+		"--no-renames",
+		"--no-abbrev",
+		currentTree,
+		parsedCommit.String(),
+	)
+	if err != nil {
+		return RestorePlan{}, err
+	}
+
+	changes, err := parseRestoreChanges(output)
+	if err != nil {
+		return RestorePlan{}, err
+	}
+	return RestorePlan{TargetCommit: parsedCommit, Changes: changes}, nil
+}
+
+func (repo *Repo) RestoreCommit(commit primitives.CommitSHA) error {
+	parsedCommit, err := primitives.ParseCommitSHA(commit.String())
+	if err != nil {
+		return err
+	}
+	if _, err := runHiddenGit(repo, "", "rev-parse", parsedCommit.String()+"^{commit}"); err != nil {
+		return err
+	}
+
+	entries, err := repo.ListCommitTree(parsedCommit)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err := repo.restoreTreeEntry(entry); err != nil {
+			return err
+		}
+	}
+	if err := repo.deleteFilesAbsentFrom(entries); err != nil {
+		return err
+	}
+	return repo.removeEmptyDirs()
+}
+
+func (repo *Repo) ListCommitTree(commit primitives.CommitSHA) ([]TreeEntry, error) {
+	parsedCommit, err := primitives.ParseCommitSHA(commit.String())
+	if err != nil {
+		return nil, err
+	}
+	output, err := runHiddenGit(repo, "", "ls-tree", "-r", "-z", "--full-tree", parsedCommit.String())
+	if err != nil {
+		return nil, err
+	}
+
+	var entries []TreeEntry
+	for _, record := range strings.Split(output, "\x00") {
+		if record == "" {
+			continue
+		}
+		header, repoPath, ok := strings.Cut(record, "\t")
+		if !ok {
+			return nil, fmt.Errorf("tree entry invariant failed for %q: missing path separator", record)
+		}
+		fields := strings.Fields(header)
+		if len(fields) != 3 {
+			return nil, fmt.Errorf("tree entry invariant failed for %q: expected mode, type and object id", record)
+		}
+		if fields[1] != "blob" {
+			return nil, fmt.Errorf("tree entry %s has unsupported object type %s", repoPath, fields[1])
+		}
+		if _, err := primitives.ParseRepoPath(repoPath); err != nil {
+			return nil, fmt.Errorf("tree entry path invariant failed for %q: %w", repoPath, err)
+		}
+		entries = append(entries, TreeEntry{
+			Path:     repoPath,
+			Mode:     fields[0],
+			ObjectID: fields[2],
+		})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Path < entries[j].Path
+	})
+	return entries, nil
+}
+
+func (repo *Repo) snapshotWorktreeTree() (string, func(), error) {
+	indexPath, cleanup, err := repo.tempIndex()
+	if err != nil {
+		return "", nil, err
+	}
+	if _, err := runHiddenGit(repo, indexPath, "read-tree", "--empty"); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	if err := repo.snapshotWorktree(indexPath); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	tree, err := runHiddenGit(repo, indexPath, "write-tree")
+	if err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return strings.TrimSpace(tree), cleanup, nil
+}
+
+func parseRestoreChanges(raw string) ([]RestoreChange, error) {
+	if raw == "" {
+		return nil, nil
+	}
+
+	tokens := strings.Split(raw, "\x00")
+	changes := make([]RestoreChange, 0, len(tokens)/2)
+	for i := 0; i < len(tokens); {
+		header := tokens[i]
+		i++
+		if header == "" {
+			continue
+		}
+		if i >= len(tokens) {
+			return nil, fmt.Errorf("raw diff invariant failed for %q: missing path", header)
+		}
+		repoPath := tokens[i]
+		i++
+		if _, err := primitives.ParseRepoPath(repoPath); err != nil {
+			return nil, fmt.Errorf("raw diff path invariant failed for %q: %w", repoPath, err)
+		}
+
+		fields := strings.Fields(header)
+		if len(fields) != 5 {
+			return nil, fmt.Errorf("raw diff invariant failed for %q: expected modes, object ids and status", header)
+		}
+		status := fields[4]
+		if status == "" {
+			return nil, fmt.Errorf("raw diff invariant failed for %q: empty status", header)
+		}
+
+		changes = append(changes, RestoreChange{
+			Path:   repoPath,
+			Action: restoreAction(fields[0], fields[1], fields[2], fields[3], status),
+		})
+	}
+	sort.Slice(changes, func(i, j int) bool {
+		return changes[i].Path < changes[j].Path
+	})
+	return changes, nil
+}
+
+func restoreAction(oldMode, newMode, oldObject, newObject, status string) RestoreAction {
+	switch status[0] {
+	case 'A':
+		return RestoreActionAdded
+	case 'D':
+		return RestoreActionDeleted
+	case 'T':
+		return RestoreActionModeChanged
+	case 'M':
+		if oldMode != newMode && oldObject == newObject {
+			return RestoreActionModeChanged
+		}
+		return RestoreActionModified
+	default:
+		return RestoreActionModified
+	}
+}
+
+func (repo *Repo) deleteFilesAbsentFrom(entries []TreeEntry) error {
+	targetPaths := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		targetPaths[entry.Path] = struct{}{}
+	}
+
 	root := repo.WorkspaceRoot.String()
-	var dirs []string
-	if err := filepath.WalkDir(root, func(absPath string, entry fs.DirEntry, walkErr error) error {
+	return filepath.WalkDir(root, func(absPath string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -452,11 +680,198 @@ func (repo *Repo) clearWorktree() error {
 			return nil
 		}
 		if entry.IsDir() {
-			dirs = append(dirs, absPath)
+			return nil
+		}
+		if _, ok := targetPaths[repoPath]; ok {
 			return nil
 		}
 		if err := os.Remove(absPath); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove worktree file %s: %w", repoPath, err)
+		}
+		return nil
+	})
+}
+
+func (repo *Repo) restoreTreeEntry(entry TreeEntry) error {
+	repoPath, err := primitives.ParseRepoPath(entry.Path)
+	if err != nil {
+		return err
+	}
+	if err := repo.ensureParentDirs(repoPath); err != nil {
+		return err
+	}
+
+	absPath := repo.WorkspaceRoot.Join(repoPath)
+	if err := repo.removePathForRestore(absPath, entry.Path); err != nil {
+		return err
+	}
+
+	switch entry.Mode {
+	case "100644", "100755":
+		return repo.restoreRegularFile(absPath, entry)
+	case "120000":
+		return repo.restoreSymlink(absPath, entry)
+	default:
+		return fmt.Errorf("tree entry %s has unsupported mode %s", entry.Path, entry.Mode)
+	}
+}
+
+func (repo *Repo) ensureParentDirs(repoPath primitives.RepoPath) error {
+	root := repo.WorkspaceRoot.String()
+	segments := strings.Split(repoPath.String(), "/")
+	current := root
+	for _, segment := range segments[:len(segments)-1] {
+		current = filepath.Join(current, segment)
+		info, err := os.Lstat(current)
+		if err == nil {
+			if info.IsDir() {
+				continue
+			}
+			if err := os.Remove(current); err != nil {
+				relPath, _ := filepath.Rel(root, current)
+				return fmt.Errorf("replace parent path %s: %w", filepath.ToSlash(relPath), err)
+			}
+		} else if !os.IsNotExist(err) {
+			relPath, _ := filepath.Rel(root, current)
+			return fmt.Errorf("stat parent path %s: %w", filepath.ToSlash(relPath), err)
+		}
+		if err := os.Mkdir(current, 0o755); err != nil && !os.IsExist(err) {
+			relPath, _ := filepath.Rel(root, current)
+			return fmt.Errorf("create parent path %s: %w", filepath.ToSlash(relPath), err)
+		}
+	}
+	return nil
+}
+
+func (repo *Repo) removePathForRestore(absPath string, repoPath string) error {
+	info, err := os.Lstat(absPath)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("stat worktree path %s: %w", repoPath, err)
+	}
+	if info.IsDir() {
+		if err := ensureNoExcludedDescendants(absPath, repoPath); err != nil {
+			return err
+		}
+		if err := os.RemoveAll(absPath); err != nil {
+			return fmt.Errorf("replace directory %s: %w", repoPath, err)
+		}
+		return nil
+	}
+	if err := os.Remove(absPath); err != nil {
+		return fmt.Errorf("replace worktree path %s: %w", repoPath, err)
+	}
+	return nil
+}
+
+func ensureNoExcludedDescendants(absPath string, repoPath string) error {
+	return filepath.WalkDir(absPath, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == absPath {
+			return nil
+		}
+		relPath, err := filepath.Rel(absPath, path)
+		if err != nil {
+			return fmt.Errorf("relative path for %s: %w", path, err)
+		}
+		nestedRepoPath := filepath.ToSlash(filepath.Join(repoPath, relPath))
+		if excludedPath(nestedRepoPath) {
+			return fmt.Errorf("cannot replace directory %s because it contains excluded metadata path %s", repoPath, nestedRepoPath)
+		}
+		return nil
+	})
+}
+
+func (repo *Repo) restoreRegularFile(absPath string, entry TreeEntry) error {
+	content, err := repo.blobBytes(entry.ObjectID)
+	if err != nil {
+		return fmt.Errorf("read blob for %s: %w", entry.Path, err)
+	}
+
+	dir := filepath.Dir(absPath)
+	tmpFile, err := os.CreateTemp(dir, ".agent-vcs-restore-*")
+	if err != nil {
+		return fmt.Errorf("create temp file for %s: %w", entry.Path, err)
+	}
+	tmpPath := tmpFile.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := tmpFile.Write(content); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("write temp file for %s: %w", entry.Path, err)
+	}
+	mode := fs.FileMode(0o644)
+	if entry.Mode == "100755" {
+		mode = 0o755
+	}
+	if err := tmpFile.Chmod(mode); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("chmod temp file for %s: %w", entry.Path, err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("close temp file for %s: %w", entry.Path, err)
+	}
+	if err := os.Rename(tmpPath, absPath); err != nil {
+		return fmt.Errorf("restore file %s: %w", entry.Path, err)
+	}
+	cleanup = false
+	return nil
+}
+
+func (repo *Repo) restoreSymlink(absPath string, entry TreeEntry) error {
+	target, err := repo.blobBytes(entry.ObjectID)
+	if err != nil {
+		return fmt.Errorf("read symlink blob for %s: %w", entry.Path, err)
+	}
+	if strings.ContainsRune(string(target), 0) {
+		return fmt.Errorf("restore symlink %s: target contains NUL", entry.Path)
+	}
+	if err := os.Symlink(string(target), absPath); err != nil {
+		return fmt.Errorf("restore symlink %s: %w", entry.Path, err)
+	}
+	return nil
+}
+
+func (repo *Repo) blobBytes(objectID string) ([]byte, error) {
+	output, err := runHiddenGit(repo, "", "cat-file", "blob", objectID)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(output), nil
+}
+
+func (repo *Repo) removeEmptyDirs() error {
+	root := repo.WorkspaceRoot.String()
+	var dirs []string
+	if err := filepath.WalkDir(root, func(absPath string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relPath, err := filepath.Rel(root, absPath)
+		if err != nil {
+			return fmt.Errorf("relative path for %s: %w", absPath, err)
+		}
+		if relPath == "." {
+			return nil
+		}
+		repoPath := filepath.ToSlash(relPath)
+		if excludedPath(repoPath) {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if entry.IsDir() {
+			dirs = append(dirs, absPath)
 		}
 		return nil
 	}); err != nil {
@@ -473,6 +888,23 @@ func (repo *Repo) clearWorktree() error {
 		}
 	}
 	return nil
+}
+
+func (repo *Repo) validatePrivateRef(ref string) (string, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "", fmt.Errorf("private ref is required")
+	}
+	if !strings.HasPrefix(ref, "refs/agent-vcs/") {
+		return "", fmt.Errorf("private ref %q must be under refs/agent-vcs", ref)
+	}
+	if strings.ContainsRune(ref, 0) {
+		return "", fmt.Errorf("private ref %q must not contain NUL", ref)
+	}
+	if _, err := runHiddenGit(repo, "", "check-ref-format", ref); err != nil {
+		return "", err
+	}
+	return ref, nil
 }
 
 func isDirectoryNotEmpty(err error) bool {
