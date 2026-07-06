@@ -242,6 +242,83 @@ func TestDiffTurn(t *testing.T) {
 	}
 }
 
+func TestDiffRefsPathFiltersToPathAndUsesZeroContext(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	sessionID, _ := primitives.ParseSessionID("demo")
+	turnID, _ := primitives.NewTurnID(1)
+
+	writeFile(t, root, "a.txt", "old\nkeep\n")
+	writeFile(t, root, "b.txt", "old\n")
+	pre, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("pre checkpoint: %v", err)
+	}
+
+	writeFile(t, root, "a.txt", "new\nkeep\n")
+	writeFile(t, root, "b.txt", "new\n")
+	post, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePost)
+	if err != nil {
+		t.Fatalf("post checkpoint: %v", err)
+	}
+
+	diff, err := repo.DiffRefsPath(pre.Ref, post.Ref, "a.txt")
+	if err != nil {
+		t.Fatalf("DiffRefsPath: %v", err)
+	}
+	diffText := string(diff)
+	for _, want := range []string{"diff --git a/a.txt b/a.txt", "@@ -1 +1 @@", "-old", "+new"} {
+		if !strings.Contains(diffText, want) {
+			t.Fatalf("path diff missing %q:\n%s", want, diffText)
+		}
+	}
+	for _, notWant := range []string{"b.txt", " keep"} {
+		if strings.Contains(diffText, notWant) {
+			t.Fatalf("path diff unexpectedly contains %q:\n%s", notWant, diffText)
+		}
+	}
+}
+
+func TestCommitFileBytesIfExists(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	sessionID, _ := primitives.ParseSessionID("demo")
+	turnID, _ := primitives.NewTurnID(1)
+	writeFile(t, root, "dir/app.txt", "hello\n")
+	checkpoint, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("checkpoint: %v", err)
+	}
+
+	content, ok, err := repo.CommitFileBytesIfExists(checkpoint.Commit, "dir/app.txt")
+	if err != nil {
+		t.Fatalf("CommitFileBytesIfExists existing: %v", err)
+	}
+	if !ok || string(content) != "hello\n" {
+		t.Fatalf("existing content ok=%t content=%q, want hello", ok, content)
+	}
+
+	if _, ok, err := repo.CommitFileBytesIfExists(checkpoint.Commit, "missing.txt"); err != nil || ok {
+		t.Fatalf("missing file ok=%t err=%v, want false nil", ok, err)
+	}
+
+	if _, ok, err := repo.CommitFileBytesIfExists(checkpoint.Commit, "dir"); err == nil || ok {
+		t.Fatalf("tree path ok=%t err=%v, want non-blob error", ok, err)
+	}
+}
+
 func TestListCheckpointRefsFiltersSessionAndDropsInheritedGitEnv(t *testing.T) {
 	requireGit(t)
 

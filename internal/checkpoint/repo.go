@@ -360,6 +360,37 @@ func (repo *Repo) DiffRefs(preRef, postRef primitives.CheckpointRef) ([]byte, er
 	return []byte(output), nil
 }
 
+func (repo *Repo) DiffRefsPath(preRef, postRef primitives.CheckpointRef, repoPath string) ([]byte, error) {
+	parsedPath, err := primitives.ParseRepoPath(repoPath)
+	if err != nil {
+		return nil, err
+	}
+
+	indexPath, cleanup, err := repo.tempIndex()
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+
+	output, err := runHiddenGit(repo, indexPath,
+		"diff",
+		"--patch",
+		"--unified=0",
+		"--no-renames",
+		"--no-color",
+		"--no-ext-diff",
+		"--no-textconv",
+		preRef.String()+"^{commit}",
+		postRef.String()+"^{commit}",
+		"--",
+		parsedPath.String(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(output), nil
+}
+
 func (repo *Repo) DiffTurn(sessionID primitives.SessionID, turnID primitives.TurnID) ([]byte, error) {
 	preRef, err := primitives.NewCheckpointRef(sessionID, turnID, primitives.CheckpointPhasePre)
 	if err != nil {
@@ -579,6 +610,36 @@ func (repo *Repo) CommitFileBytes(commit primitives.CommitSHA, repoPath string) 
 		return nil, err
 	}
 	return []byte(output), nil
+}
+
+func (repo *Repo) CommitFileBytesIfExists(commit primitives.CommitSHA, repoPath string) ([]byte, bool, error) {
+	parsedCommit, err := primitives.ParseCommitSHA(commit.String())
+	if err != nil {
+		return nil, false, err
+	}
+	parsedPath, err := primitives.ParseRepoPath(repoPath)
+	if err != nil {
+		return nil, false, err
+	}
+
+	spec := parsedCommit.String() + ":" + parsedPath.String()
+	objectType, err := runHiddenGit(repo, "", "cat-file", "-t", spec)
+	if err != nil {
+		if _, commitErr := runHiddenGit(repo, "", "rev-parse", parsedCommit.String()+"^{commit}"); commitErr != nil {
+			return nil, false, commitErr
+		}
+		return nil, false, nil
+	}
+	objectType = strings.TrimSpace(objectType)
+	if objectType != "blob" {
+		return nil, false, fmt.Errorf("%s at %s is a %s, not a file", parsedPath, parsedCommit, objectType)
+	}
+
+	output, err := runHiddenGit(repo, "", "cat-file", "blob", spec)
+	if err != nil {
+		return nil, false, err
+	}
+	return []byte(output), true, nil
 }
 
 func (repo *Repo) RestoreCheckpoint(ref primitives.CheckpointRef) error {
