@@ -39,6 +39,9 @@ func initCmd() *cobra.Command {
 				installHooks := !skipHooks
 				overrides.InitInstallHooks = &installHooks
 			}
+			if cmd.Flags().Changed("git-sync") {
+				overrides.GitSyncEnabled = &enableGitSync
+			}
 			effective, _, err := agentconfig.Resolve(root.String(), overrides)
 			if err != nil {
 				return err
@@ -70,7 +73,7 @@ func initCmd() *cobra.Command {
 			} else {
 				fmt.Fprintln(cmd.OutOrStdout(), "gitignore update skipped")
 			}
-			if enableGitSync {
+			if effective.GitSync.Enabled {
 				if err := enableWorkspaceGitSync(root.String()); err != nil {
 					return err
 				}

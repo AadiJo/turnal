@@ -94,3 +94,39 @@ update_gitignore = false
 		}
 	}
 }
+
+func TestInitCommandUsesGitSyncConfig(t *testing.T) {
+	requireGit(t)
+	writeGlobalAgentConfig(t, `
+version = 1
+
+[init]
+agent = "none"
+
+[git_sync]
+enabled = true
+`)
+
+	root := workspaceRoot(t)
+	t.Chdir(root.String())
+
+	cmd := NewRootCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"init"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init command: %v\n%s", err, out.String())
+	}
+
+	configData, err := os.ReadFile(filepath.Join(root.String(), ".agent-vcs", "config.toml"))
+	if err != nil {
+		t.Fatalf("read workspace config: %v", err)
+	}
+	if !strings.Contains(string(configData), "[git_sync]") || !strings.Contains(string(configData), "enabled = true") {
+		t.Fatalf("workspace config missing enabled git-sync:\n%s", configData)
+	}
+	if !strings.Contains(out.String(), "enabled git-sync capture:") {
+		t.Fatalf("init output missing git-sync enable message:\n%s", out.String())
+	}
+}

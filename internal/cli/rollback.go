@@ -41,11 +41,19 @@ func rollbackCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			effective, _, err := agentconfig.Resolve(repo.WorkspaceRoot.String(), agentconfig.Overrides{})
+			overrides := agentconfig.Overrides{}
+			if cmd.Flags().Changed("workspace-git") {
+				mode := primitives.RollbackModeCheckpoint
+				if workspaceGit {
+					mode = primitives.RollbackModeWorkspaceGit
+				}
+				overrides.RollbackMode = &mode
+			}
+			effective, _, err := agentconfig.Resolve(repo.WorkspaceRoot.String(), overrides)
 			if err != nil {
 				return err
 			}
-			useWorkspaceGit := workspaceGit || effective.Rollback.Mode == primitives.RollbackModeWorkspaceGit
+			useWorkspaceGit := effective.Rollback.Mode == primitives.RollbackModeWorkspaceGit
 			result, err := rollbackengine.New(repo).Run(rollbackengine.Request{
 				Target:       target,
 				DryRun:       dryRun,

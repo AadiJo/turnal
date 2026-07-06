@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"agent-vcs-again/internal/primitives"
 )
 
 func TestResolveDefaultsWhenFilesAreMissing(t *testing.T) {
@@ -26,6 +28,12 @@ func TestResolveDefaultsWhenFilesAreMissing(t *testing.T) {
 	}
 	if !effective.Bootstrap.InitWorkspaceGit || !effective.Bootstrap.UpdateGitignore {
 		t.Fatalf("bootstrap defaults = %+v", effective.Bootstrap)
+	}
+	if effective.GitSync.Enabled {
+		t.Fatal("git-sync default = true, want false")
+	}
+	if effective.Rollback.Mode != primitives.RollbackModeCheckpoint {
+		t.Fatalf("rollback mode default = %q, want checkpoint", effective.Rollback.Mode)
 	}
 	if origins["run.quiet"] != OriginDefault {
 		t.Fatalf("run.quiet origin = %q, want default", origins["run.quiet"])
@@ -51,6 +59,12 @@ command = "global-agent-vcs"
 [bootstrap]
 init_workspace_git = false
 update_gitignore = true
+
+[git_sync]
+enabled = true
+
+[rollback]
+mode = "workspace-git"
 `)
 	writeConfig(t, WorkspacePath(root), `
 version = 1
@@ -63,6 +77,9 @@ command = "workspace-agent-vcs"
 
 [bootstrap]
 update_gitignore = false
+
+[git_sync]
+enabled = false
 `)
 
 	loader := Loader{
@@ -93,6 +110,12 @@ update_gitignore = false
 	if effective.Bootstrap.UpdateGitignore {
 		t.Fatal("workspace bootstrap update_gitignore=false was not applied")
 	}
+	if effective.GitSync.Enabled {
+		t.Fatal("workspace git_sync.enabled=false did not override global true")
+	}
+	if effective.Rollback.Mode != primitives.RollbackModeWorkspaceGit {
+		t.Fatalf("rollback mode = %q, want global workspace-git", effective.Rollback.Mode)
+	}
 	if origins["hooks.command"] != OriginWorkspace {
 		t.Fatalf("hooks.command origin = %q, want workspace", origins["hooks.command"])
 	}
@@ -105,11 +128,15 @@ func TestResolveEnvAndOverridesWin(t *testing.T) {
 	installHooks := false
 	quiet := false
 	agent := "none"
+	gitSync := true
+	rollbackMode := primitives.RollbackModeWorkspaceGit
 
 	effective, origins, err := loader.Resolve("", Overrides{
 		InitAgent:       &agent,
 		RunInstallHooks: &installHooks,
 		RunQuiet:        &quiet,
+		GitSyncEnabled:  &gitSync,
+		RollbackMode:    &rollbackMode,
 	})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -126,11 +153,20 @@ func TestResolveEnvAndOverridesWin(t *testing.T) {
 	if effective.Run.Quiet {
 		t.Fatal("flag run quiet false was not applied")
 	}
+	if !effective.GitSync.Enabled {
+		t.Fatal("flag git-sync true was not applied")
+	}
+	if effective.Rollback.Mode != primitives.RollbackModeWorkspaceGit {
+		t.Fatalf("flag rollback mode = %q, want workspace-git", effective.Rollback.Mode)
+	}
 	if origins["hooks.command"] != OriginEnv {
 		t.Fatalf("hooks.command origin = %q, want env", origins["hooks.command"])
 	}
 	if origins["run.install_hooks"] != OriginFlag {
 		t.Fatalf("run.install_hooks origin = %q, want flag", origins["run.install_hooks"])
+	}
+	if origins["git_sync.enabled"] != OriginFlag {
+		t.Fatalf("git_sync.enabled origin = %q, want flag", origins["git_sync.enabled"])
 	}
 }
 

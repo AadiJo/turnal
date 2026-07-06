@@ -92,6 +92,34 @@ func TestRollbackCommandRestoresCheckpoint(t *testing.T) {
 	}
 }
 
+func TestRollbackCommandWorkspaceGitFlagCanDisableConfigDefault(t *testing.T) {
+	writeGlobalAgentConfig(t, `
+version = 1
+
+[rollback]
+mode = "workspace-git"
+`)
+	root, _, sessionID, turnID := createTurnWithDiff(t)
+	t.Chdir(root.String())
+
+	cmd := NewRootCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"rollback", "--workspace-git=false", "--to", sessionID.String() + ":turn:" + turnID.String() + ":pre"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("rollback command: %v\n%s", err, out.String())
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "rolled back to") {
+		t.Fatalf("rollback output missing checkpoint mode:\n%s", output)
+	}
+	if strings.Contains(output, "workspace git") {
+		t.Fatalf("rollback used workspace-git despite explicit false flag:\n%s", output)
+	}
+}
+
 func TestRollbackCommandDryRunShowsPlannedChangesWithoutMutating(t *testing.T) {
 	requireGit(t)
 

@@ -49,6 +49,12 @@ version = 1
 # [bootstrap]
 # init_workspace_git = true
 # update_gitignore = true
+#
+# [git_sync]
+# enabled = false
+#
+# [rollback]
+# mode = "checkpoint" # checkpoint | workspace-git
 `
 
 type Repo struct {

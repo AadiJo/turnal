@@ -63,7 +63,13 @@ func TestBootstrapCreatesWorkspaceMetadataAndGitignore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read workspace config: %v", err)
 	}
-	if !strings.Contains(string(configData), "version = 1") || !strings.Contains(string(configData), "[run]") {
+	configText := string(configData)
+	for _, want := range []string{"version = 1", "[run]", "[git_sync]", "[rollback]"} {
+		if !strings.Contains(configText, want) {
+			t.Fatalf("workspace config missing %q:\n%s", want, configData)
+		}
+	}
+	if !strings.Contains(configText, `mode = "checkpoint"`) || !strings.Contains(configText, "enabled = false") {
 		t.Fatalf("workspace config missing template content:\n%s", configData)
 	}
 
