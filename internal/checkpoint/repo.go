@@ -55,6 +55,11 @@ version = 1
 #
 # [rollback]
 # mode = "checkpoint" # checkpoint | workspace-git
+#
+# [retention]
+# Hidden Git objects are retained while private refs exist. Use
+# agent-vcs session drop, agent-vcs retention prune, then explicit
+# agent-vcs maintenance gc to delete refs first and garbage-collect later.
 `
 
 type Repo struct {
@@ -600,7 +605,56 @@ func (repo *Repo) DeleteCheckpointRef(ref primitives.CheckpointRef) error {
 	if err != nil {
 		return err
 	}
-	if _, err := runHiddenGit(repo, "", "update-ref", "-d", parsedRef.String()); err != nil {
+	return repo.DeletePrivateRef(parsedRef.String())
+}
+
+func (repo *Repo) ListPrivateRefs(prefix string) ([]string, error) {
+	prefix, err := repo.validatePrivateRef(prefix)
+	if err != nil {
+		return nil, err
+	}
+	output, err := runHiddenGit(repo, "", "for-each-ref", "--format=%(refname)", prefix)
+	if err != nil {
+		return nil, err
+	}
+	var refs []string
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		ref, err := repo.validatePrivateRef(line)
+		if err != nil {
+			return nil, err
+		}
+		refs = append(refs, ref)
+	}
+	sort.Strings(refs)
+	return refs, nil
+}
+
+func (repo *Repo) ListAllPrivateRefs() ([]string, error) {
+	return repo.ListPrivateRefs("refs/agent-vcs")
+}
+
+func (repo *Repo) DeletePrivateRef(ref string) error {
+	parsedRef, err := repo.validatePrivateRef(ref)
+	if err != nil {
+		return err
+	}
+	return repo.WithWorkspaceLock("delete private ref", func() error {
+		if _, err := runHiddenGit(repo, "", "update-ref", "-d", parsedRef); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
+func (repo *Repo) RunHiddenGitGC() error {
+	if _, err := runHiddenGit(repo, "", "reflog", "expire", "--expire=all", "--all"); err != nil {
+		return err
+	}
+	if _, err := runHiddenGit(repo, "", "gc", "--prune=now"); err != nil {
 		return err
 	}
 	return nil
@@ -1135,7 +1189,7 @@ func (repo *Repo) validatePrivateRef(ref string) (string, error) {
 	if ref == "" {
 		return "", fmt.Errorf("private ref is required")
 	}
-	if !strings.HasPrefix(ref, "refs/agent-vcs/") {
+	if ref != "refs/agent-vcs" && !strings.HasPrefix(ref, "refs/agent-vcs/") {
 		return "", fmt.Errorf("private ref %q must be under refs/agent-vcs", ref)
 	}
 	if strings.ContainsRune(ref, 0) {
