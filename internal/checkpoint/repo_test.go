@@ -161,6 +161,38 @@ func TestCreateCheckpointHonorsGitignore(t *testing.T) {
 	}
 }
 
+func TestCreateCheckpointHonorsSecretsSnapshotDenyGlobs(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	writeFile(t, root, "src/app.txt", "hello\n")
+	writeFile(t, root, ".env", "SECRET=root\n")
+	writeFile(t, root, ".env.local", "SECRET=local\n")
+	writeFile(t, root, "nested/.env", "SECRET=nested\n")
+	writeFile(t, root, "config/credentials.json", `{"secret":true}`)
+
+	sessionID, _ := primitives.ParseSessionID("demo")
+	turnID, _ := primitives.NewTurnID(1)
+	checkpoint, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("CreateCheckpoint: %v", err)
+	}
+
+	if _, err := runHiddenGit(repo, "", "show", checkpoint.Commit.String()+":src/app.txt"); err != nil {
+		t.Fatalf("app.txt missing from checkpoint: %v", err)
+	}
+	for _, denied := range []string{".env", ".env.local", "nested/.env", "config/credentials.json"} {
+		if _, err := runHiddenGit(repo, "", "show", checkpoint.Commit.String()+":"+denied); err == nil {
+			t.Fatalf("%s was captured, want denied by secrets snapshot policy", denied)
+		}
+	}
+}
+
 func TestCreateCheckpointBypassesGitFilters(t *testing.T) {
 	requireGit(t)
 

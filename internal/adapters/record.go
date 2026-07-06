@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"agent-vcs-again/internal/checkpoint"
+	agentconfig "agent-vcs-again/internal/config"
 	"agent-vcs-again/internal/primitives"
 )
 
@@ -78,6 +79,11 @@ func RecordHookPayload(adapter primitives.AdapterName, hookName string, raw []by
 	if err != nil {
 		return "", nil
 	}
+	effective, _, err := agentconfig.Resolve(root.String(), agentconfig.Overrides{})
+	if err != nil {
+		return "", err
+	}
+	storedRaw := redactRawHookPayload(raw, effective.Secrets)
 
 	record := RawHookRecord{
 		Version:    1,
@@ -86,10 +92,10 @@ func RecordHookPayload(adapter primitives.AdapterName, hookName string, raw []by
 		ReceivedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		CWD:        cwd,
 	}
-	if json.Valid(raw) {
-		record.Payload = append(json.RawMessage(nil), raw...)
+	if json.Valid(storedRaw) {
+		record.Payload = append(json.RawMessage(nil), storedRaw...)
 	} else {
-		record.Raw = string(raw)
+		record.Raw = string(storedRaw)
 		record.Error = "malformed JSON payload"
 	}
 

@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -34,6 +35,7 @@ type File struct {
 	Bootstrap *BootstrapFile `toml:"bootstrap,omitempty"`
 	GitSync   *GitSyncFile   `toml:"git_sync,omitempty"`
 	Rollback  *RollbackFile  `toml:"rollback,omitempty"`
+	Secrets   *SecretsFile   `toml:"secrets,omitempty"`
 }
 
 type InitFile struct {
@@ -64,6 +66,12 @@ type RollbackFile struct {
 	Mode *string `toml:"mode,omitempty"`
 }
 
+type SecretsFile struct {
+	StorePrompts      *bool    `toml:"store_prompts,omitempty"`
+	StoreToolIO       *bool    `toml:"store_tool_io,omitempty"`
+	SnapshotDenyGlobs []string `toml:"snapshot_deny_globs,omitempty"`
+}
+
 type Effective struct {
 	Init      Init
 	Run       Run
@@ -71,6 +79,7 @@ type Effective struct {
 	Bootstrap Bootstrap
 	GitSync   GitSync
 	Rollback  Rollback
+	Secrets   Secrets
 }
 
 type Init struct {
@@ -101,6 +110,12 @@ type Rollback struct {
 	Mode primitives.RollbackMode
 }
 
+type Secrets struct {
+	StorePrompts      bool
+	StoreToolIO       bool
+	SnapshotDenyGlobs []string
+}
+
 type Overrides struct {
 	InitAgent                 *string
 	InitInstallHooks          *bool
@@ -111,6 +126,9 @@ type Overrides struct {
 	BootstrapUpdateGitignore  *bool
 	GitSyncEnabled            *bool
 	RollbackMode              *primitives.RollbackMode
+	SecretsStorePrompts       *bool
+	SecretsStoreToolIO        *bool
+	SecretsSnapshotDenyGlobs  []string
 }
 
 type Loader struct {
@@ -150,6 +168,11 @@ func Defaults() Effective {
 		},
 		Rollback: Rollback{
 			Mode: primitives.RollbackModeCheckpoint,
+		},
+		Secrets: Secrets{
+			StorePrompts:      true,
+			StoreToolIO:       true,
+			SnapshotDenyGlobs: []string{".env", ".env.*", "**/.env", "**/.env.*", "**/credentials.*"},
 		},
 	}
 }
@@ -279,6 +302,9 @@ func defaultOrigins() map[string]Origin {
 		"bootstrap.update_gitignore":   OriginDefault,
 		"git_sync.enabled":             OriginDefault,
 		"rollback.mode":                OriginDefault,
+		"secrets.store_prompts":        OriginDefault,
+		"secrets.store_tool_io":        OriginDefault,
+		"secrets.snapshot_deny_globs":  OriginDefault,
 	}
 }
 
@@ -350,6 +376,24 @@ func applyFile(effective *Effective, origins map[string]Origin, file File, origi
 			origins["rollback.mode"] = origin
 		}
 	}
+	if file.Secrets != nil {
+		if file.Secrets.StorePrompts != nil {
+			effective.Secrets.StorePrompts = *file.Secrets.StorePrompts
+			origins["secrets.store_prompts"] = origin
+		}
+		if file.Secrets.StoreToolIO != nil {
+			effective.Secrets.StoreToolIO = *file.Secrets.StoreToolIO
+			origins["secrets.store_tool_io"] = origin
+		}
+		if file.Secrets.SnapshotDenyGlobs != nil {
+			globs, err := normalizeGlobs(file.Secrets.SnapshotDenyGlobs)
+			if err != nil {
+				return err
+			}
+			effective.Secrets.SnapshotDenyGlobs = globs
+			origins["secrets.snapshot_deny_globs"] = origin
+		}
+	}
 	return nil
 }
 
@@ -398,6 +442,22 @@ func applyOverrides(effective *Effective, origins map[string]Origin, overrides O
 		effective.Rollback.Mode = mode
 		origins["rollback.mode"] = OriginFlag
 	}
+	if overrides.SecretsStorePrompts != nil {
+		effective.Secrets.StorePrompts = *overrides.SecretsStorePrompts
+		origins["secrets.store_prompts"] = OriginFlag
+	}
+	if overrides.SecretsStoreToolIO != nil {
+		effective.Secrets.StoreToolIO = *overrides.SecretsStoreToolIO
+		origins["secrets.store_tool_io"] = OriginFlag
+	}
+	if overrides.SecretsSnapshotDenyGlobs != nil {
+		globs, err := normalizeGlobs(overrides.SecretsSnapshotDenyGlobs)
+		if err != nil {
+			return err
+		}
+		effective.Secrets.SnapshotDenyGlobs = globs
+		origins["secrets.snapshot_deny_globs"] = OriginFlag
+	}
 	return nil
 }
 
@@ -409,4 +469,19 @@ func normalizeAgent(value string) (string, error) {
 	default:
 		return "", fmt.Errorf("invalid init.agent %q; expected auto, claude, codex, all, or none", value)
 	}
+}
+
+func normalizeGlobs(values []string) ([]string, error) {
+	globs := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return nil, fmt.Errorf("secrets.snapshot_deny_globs must not contain empty patterns")
+		}
+		if _, err := path.Match(value, ""); err != nil {
+			return nil, fmt.Errorf("invalid secrets.snapshot_deny_globs pattern %q: %w", value, err)
+		}
+		globs = append(globs, value)
+	}
+	return globs, nil
 }

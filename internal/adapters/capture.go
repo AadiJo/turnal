@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"agent-vcs-again/internal/checkpoint"
+	agentconfig "agent-vcs-again/internal/config"
 	eventlog "agent-vcs-again/internal/events"
 	"agent-vcs-again/internal/primitives"
 	"agent-vcs-again/internal/turnevents"
@@ -150,6 +151,10 @@ func ProcessHookPayload(adapter primitives.AdapterName, hookName, rawRef string,
 	if err != nil {
 		return nil
 	}
+	effective, _, err := agentconfig.Resolve(root.String(), agentconfig.Overrides{})
+	if err != nil {
+		return err
+	}
 
 	log := eventlog.Open(repo.MetadataDir)
 	manager := turns.NewManager(repo)
@@ -161,7 +166,7 @@ func ProcessHookPayload(adapter primitives.AdapterName, hookName, rawRef string,
 	if err := turnevents.RecoverCheckpointJournals(log, repo); err != nil {
 		return err
 	}
-	if err := processHook(log, manager, parsedAdapter, hookName, rawRef, raw, sessionID, payload); err != nil {
+	if err := processHook(log, manager, parsedAdapter, hookName, rawRef, raw, sessionID, payload, effective.Secrets); err != nil {
 		_ = appendErrorEvent(log, parsedAdapter, sessionID, rawRef, hookName, err)
 		return err
 	}
@@ -195,7 +200,7 @@ func decodeHookPayload(adapter primitives.AdapterName, raw []byte) (hookPayload,
 	return payload, nil
 }
 
-func processHook(log eventlog.Log, manager turns.Manager, adapter primitives.AdapterName, hookName, rawRef string, raw []byte, sessionID primitives.SessionID, payload hookPayload) error {
+func processHook(log eventlog.Log, manager turns.Manager, adapter primitives.AdapterName, hookName, rawRef string, raw []byte, sessionID primitives.SessionID, payload hookPayload, secrets agentconfig.Secrets) error {
 	sourceID := sourceIDFor(adapter, hookName, payload.SessionID, payload.TurnID, payload.ToolUseID, raw)
 	if seen, err := log.ContainsSourceID(sessionID, sourceID); err != nil {
 		return err
@@ -215,7 +220,7 @@ func processHook(log eventlog.Log, manager turns.Manager, adapter primitives.Ada
 		if err != nil {
 			return err
 		}
-		return appendPrompt(log, adapter, sessionID, turnID, rawRef, sourceID, payload)
+		return appendPrompt(log, adapter, sessionID, turnID, rawRef, sourceID, payload, secrets)
 	case "posttooluse":
 		if err := ensureSessionStarted(log, adapter, sessionID, rawRef, payload); err != nil {
 			return err
@@ -224,7 +229,7 @@ func processHook(log eventlog.Log, manager turns.Manager, adapter primitives.Ada
 		if err != nil {
 			return err
 		}
-		return appendToolUse(log, adapter, sessionID, turnID, rawRef, sourceID, payload)
+		return appendToolUse(log, adapter, sessionID, turnID, rawRef, sourceID, payload, secrets)
 	case "stop":
 		if err := ensureSessionStarted(log, adapter, sessionID, rawRef, payload); err != nil {
 			return err
@@ -236,7 +241,7 @@ func processHook(log eventlog.Log, manager turns.Manager, adapter primitives.Ada
 		if !ok {
 			return nil
 		}
-		if err := appendAssistant(log, adapter, sessionID, active.TurnID, rawRef, sourceID, payload); err != nil {
+		if err := appendAssistant(log, adapter, sessionID, active.TurnID, rawRef, sourceID, payload, secrets); err != nil {
 			return err
 		}
 		return finishTurn(log, manager, adapter, sessionID, active.TurnID, rawRef)
@@ -374,7 +379,7 @@ func appendCheckpoint(log eventlog.Log, adapter primitives.AdapterName, sessionI
 	return turnevents.AppendCheckpointWithGitSync(log, adapter, sessionID, turnID, phase, created, gitSync, rawRef)
 }
 
-func appendPrompt(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, rawRef, sourceID string, payload hookPayload) error {
+func appendPrompt(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, rawRef, sourceID string, payload hookPayload, secrets agentconfig.Secrets) error {
 	return appendPayloadEvent(log, eventlog.AppendInput{
 		SessionID: sessionID,
 		TurnID:    &turnID,
@@ -383,13 +388,13 @@ func appendPrompt(log eventlog.Log, adapter primitives.AdapterName, sessionID pr
 		SourceID:  sourceID,
 		RawRef:    rawRef,
 		Payload: mustJSON(promptPayload{
-			Text:           payload.Prompt,
+			Text:           redactedText(payload.Prompt, secrets.StorePrompts),
 			ProviderTurnID: payload.TurnID,
 		}),
 	})
 }
 
-func appendAssistant(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, rawRef, sourceID string, payload hookPayload) error {
+func appendAssistant(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, rawRef, sourceID string, payload hookPayload, secrets agentconfig.Secrets) error {
 	return appendPayloadEvent(log, eventlog.AppendInput{
 		SessionID: sessionID,
 		TurnID:    &turnID,
@@ -398,13 +403,13 @@ func appendAssistant(log eventlog.Log, adapter primitives.AdapterName, sessionID
 		SourceID:  sourceID,
 		RawRef:    rawRef,
 		Payload: mustJSON(assistantPayload{
-			Text:           payload.LastAssistantMessage,
+			Text:           redactedText(payload.LastAssistantMessage, secrets.StorePrompts),
 			ProviderTurnID: payload.TurnID,
 		}),
 	})
 }
 
-func appendToolUse(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, rawRef, sourceID string, payload hookPayload) error {
+func appendToolUse(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, rawRef, sourceID string, payload hookPayload, secrets agentconfig.Secrets) error {
 	callSourceID := sourceID + ":call"
 	if seen, err := log.ContainsSourceID(sessionID, callSourceID); err != nil {
 		return err
@@ -420,7 +425,7 @@ func appendToolUse(log eventlog.Log, adapter primitives.AdapterName, sessionID p
 				ToolName:       payload.ToolName,
 				ToolUseID:      payload.ToolUseID,
 				ProviderTurnID: payload.TurnID,
-				Input:          defaultRawJSON(payload.ToolInput),
+				Input:          redactedJSON(payload.ToolInput, secrets.StoreToolIO),
 			}),
 		}); err != nil {
 			return err
@@ -442,7 +447,7 @@ func appendToolUse(log eventlog.Log, adapter primitives.AdapterName, sessionID p
 				ToolName:       payload.ToolName,
 				ToolUseID:      payload.ToolUseID,
 				ProviderTurnID: payload.TurnID,
-				Output:         defaultRawJSON(payload.ToolResponse),
+				Output:         redactedJSON(payload.ToolResponse, secrets.StoreToolIO),
 			}),
 		})
 	}
@@ -532,4 +537,50 @@ func defaultRawJSON(value json.RawMessage) json.RawMessage {
 		return json.RawMessage(`null`)
 	}
 	return value
+}
+
+func redactedText(value string, store bool) string {
+	if store {
+		return value
+	}
+	return "[redacted by agent-vcs secrets policy]"
+}
+
+func redactedJSON(value json.RawMessage, store bool) json.RawMessage {
+	if store {
+		return defaultRawJSON(value)
+	}
+	return json.RawMessage(`{"redacted":true,"policy":"agent-vcs.secrets"}`)
+}
+
+func redactRawHookPayload(raw []byte, secrets agentconfig.Secrets) []byte {
+	if secrets.StorePrompts && secrets.StoreToolIO {
+		return raw
+	}
+	if !json.Valid(raw) {
+		return raw
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return raw
+	}
+	if !secrets.StorePrompts {
+		for _, key := range []string{"prompt", "last_assistant_message"} {
+			if _, ok := payload[key]; ok {
+				payload[key] = redactedText("", false)
+			}
+		}
+	}
+	if !secrets.StoreToolIO {
+		for _, key := range []string{"tool_input", "tool_response"} {
+			if _, ok := payload[key]; ok {
+				payload[key] = map[string]any{"redacted": true, "policy": "agent-vcs.secrets"}
+			}
+		}
+	}
+	redacted, err := json.Marshal(payload)
+	if err != nil {
+		return raw
+	}
+	return redacted
 }

@@ -136,6 +136,76 @@ func TestHandleHookPayloadIsIdempotentForDuplicatePrompt(t *testing.T) {
 	}
 }
 
+func TestHandleHookPayloadAppliesSecretsRedactionPolicy(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+	writeFile(t, root, ".agent-vcs/config.toml", `
+version = 1
+
+[secrets]
+store_prompts = false
+store_tool_io = false
+`)
+
+	handlePayload(t, primitives.AdapterClaudeCode, "UserPromptSubmit", map[string]any{
+		"cwd":        root.String(),
+		"session_id": "secret-session",
+		"prompt":     "token=secret",
+	})
+	handlePayload(t, primitives.AdapterClaudeCode, "PostToolUse", map[string]any{
+		"cwd":           root.String(),
+		"session_id":    "secret-session",
+		"tool_name":     "Write",
+		"tool_use_id":   "tool-1",
+		"tool_input":    map[string]any{"content": "secret"},
+		"tool_response": map[string]any{"output": "secret"},
+	})
+
+	sessionID := sessionID(t, "secret-session")
+	events := readEvents(t, repo, sessionID)
+	for _, event := range events {
+		switch event.Type {
+		case primitives.EventTypePromptUser:
+			var payload promptPayload
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				t.Fatalf("unmarshal prompt payload: %v", err)
+			}
+			if strings.Contains(payload.Text, "token=secret") || !strings.Contains(payload.Text, "redacted") {
+				t.Fatalf("prompt text not redacted: %#v", payload)
+			}
+			rawRecord, err := ReadRawHookRecord(repo.MetadataDir, event.RawRef)
+			if err != nil {
+				t.Fatalf("ReadRawHookRecord: %v", err)
+			}
+			if strings.Contains(string(rawRecord.Payload), "token=secret") {
+				t.Fatalf("raw prompt payload was not redacted: %s", rawRecord.Payload)
+			}
+		case primitives.EventTypeToolCall:
+			var payload toolCallPayload
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				t.Fatalf("unmarshal tool call payload: %v", err)
+			}
+			if strings.Contains(string(payload.Input), `"content":"secret"`) || !strings.Contains(string(payload.Input), "redacted") {
+				t.Fatalf("tool input not redacted: %s", payload.Input)
+			}
+		case primitives.EventTypeToolResult:
+			var payload toolResultPayload
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				t.Fatalf("unmarshal tool result payload: %v", err)
+			}
+			if strings.Contains(string(payload.Output), `"output":"secret"`) || !strings.Contains(string(payload.Output), "redacted") {
+				t.Fatalf("tool output not redacted: %s", payload.Output)
+			}
+		}
+	}
+}
+
 func TestHandleHookPayloadSerializesConcurrentDuplicatePrompt(t *testing.T) {
 	requireGit(t)
 

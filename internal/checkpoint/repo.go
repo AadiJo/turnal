@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	agentconfig "agent-vcs-again/internal/config"
 	"agent-vcs-again/internal/primitives"
 )
 
@@ -60,6 +62,13 @@ version = 1
 # Hidden Git objects are retained while private refs exist. Use
 # agent-vcs session drop, agent-vcs retention prune, then explicit
 # agent-vcs maintenance gc to delete refs first and garbage-collect later.
+#
+# [secrets]
+# agent-vcs stores local snapshots byte-exact unless paths are denied here.
+# Metadata stays local to this workspace unless you copy or sync .agent-vcs.
+# store_prompts = true
+# store_tool_io = true
+# snapshot_deny_globs = [".env", ".env.*", "**/.env", "**/.env.*", "**/credentials.*"]
 `
 
 type Repo struct {
@@ -1207,6 +1216,11 @@ func isDirectoryNotEmpty(err error) bool {
 
 func (repo *Repo) snapshotWorktree(indexPath string) error {
 	root := repo.WorkspaceRoot.String()
+	effective, _, err := agentconfig.Resolve(root, agentconfig.Overrides{})
+	if err != nil {
+		return err
+	}
+	denyGlobs := effective.Secrets.SnapshotDenyGlobs
 	return filepath.WalkDir(root, func(absPath string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -1222,6 +1236,12 @@ func (repo *Repo) snapshotWorktree(indexPath string) error {
 
 		repoPath := filepath.ToSlash(relPath)
 		if excludedPath(repoPath) {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if secretDeniedPath(repoPath, denyGlobs) {
 			if entry.IsDir() {
 				return fs.SkipDir
 			}
@@ -1303,6 +1323,38 @@ func excludedPath(repoPath string) bool {
 	for _, segment := range strings.Split(repoPath, "/") {
 		if strings.EqualFold(segment, ".git") || strings.EqualFold(segment, metadataDirName) {
 			return true
+		}
+	}
+	return false
+}
+
+func secretDeniedPath(repoPath string, patterns []string) bool {
+	for _, pattern := range patterns {
+		if globMatchesRepoPath(filepath.ToSlash(pattern), repoPath) {
+			return true
+		}
+	}
+	return false
+}
+
+func globMatchesRepoPath(pattern string, repoPath string) bool {
+	if matched, _ := path.Match(pattern, repoPath); matched {
+		return true
+	}
+	if !strings.Contains(pattern, "/") {
+		if matched, _ := path.Match(pattern, path.Base(repoPath)); matched {
+			return true
+		}
+	}
+	if suffix, ok := strings.CutPrefix(pattern, "**/"); ok {
+		if matched, _ := path.Match(suffix, repoPath); matched {
+			return true
+		}
+		parts := strings.Split(repoPath, "/")
+		for i := 1; i < len(parts); i++ {
+			if matched, _ := path.Match(suffix, strings.Join(parts[i:], "/")); matched {
+				return true
+			}
 		}
 	}
 	return false
