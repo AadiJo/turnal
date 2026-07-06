@@ -3,6 +3,7 @@ package turnevents
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"agent-vcs-again/internal/checkpoint"
@@ -151,6 +152,13 @@ func RecoverCheckpointJournals(log eventlog.Log, repo *checkpoint.Repo) error {
 	for _, journal := range journals {
 		switch journal.State {
 		case "intent":
+			recovered, err := recoverIntentCheckpointJournal(log, repo, journal)
+			if err != nil {
+				return err
+			}
+			if recovered {
+				continue
+			}
 			if err := repo.ClearCheckpointJournal(journal.SessionID, journal.TurnID, journal.Phase); err != nil {
 				return err
 			}
@@ -167,6 +175,24 @@ func RecoverCheckpointJournals(log eventlog.Log, repo *checkpoint.Repo) error {
 		}
 	}
 	return nil
+}
+
+func recoverIntentCheckpointJournal(log eventlog.Log, repo *checkpoint.Repo, journal checkpoint.CheckpointJournal) (bool, error) {
+	ref, err := primitives.NewCheckpointRef(journal.SessionID, journal.TurnID, journal.Phase)
+	if err != nil {
+		return false, err
+	}
+	commit, err := repo.CheckpointCommit(ref)
+	if err != nil {
+		return false, nil
+	}
+	created := checkpoint.Checkpoint{Ref: ref, Commit: commit}
+	if err := repo.MarkCheckpointJournalCommitted(journal.SessionID, journal.TurnID, journal.Phase, created); err != nil {
+		return false, err
+	}
+	journal.Ref = ref
+	journal.CommitSHA = commit
+	return true, recoverCheckpointJournal(log, repo, journal)
 }
 
 func recoverCheckpointJournal(log eventlog.Log, repo *checkpoint.Repo, journal checkpoint.CheckpointJournal) error {
@@ -198,10 +224,18 @@ func recoverCheckpointJournal(log eventlog.Log, repo *checkpoint.Repo, journal c
 		}
 		gitSync = &checkpoint.Snapshot{Ref: journal.GitSyncRef, Commit: gitSyncCommit}
 	}
-	return AppendCheckpointWithGitSync(log, journal.Adapter, journal.SessionID, journal.TurnID, journal.Phase, checkpoint.Checkpoint{
+	if err := AppendCheckpointWithGitSync(log, journal.Adapter, journal.SessionID, journal.TurnID, journal.Phase, checkpoint.Checkpoint{
 		Ref:    journal.Ref,
 		Commit: journal.CommitSHA,
-	}, gitSync, journal.RawRef)
+	}, gitSync, journal.RawRef); err != nil {
+		return err
+	}
+	if journal.Phase == primitives.CheckpointPhasePost {
+		if err := os.Remove(filepath.Join(repo.TmpDir, "turns", journal.SessionID.String()+".json")); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("clear recovered active turn state: %w", err)
+		}
+	}
+	return nil
 }
 
 func checkpointEventSeqStart(events []eventlog.Event) (primitives.EventSeq, error) {

@@ -20,6 +20,23 @@ func (health HookHealth) OK() bool {
 }
 
 func InspectHooks(projectRoot string, command string) []HookHealth {
+	return InspectHooksForTargets(projectRoot, command, []Target{TargetClaude, TargetCodex})
+}
+
+func InspectHooksForTargets(projectRoot string, command string, targets []Target) []HookHealth {
+	var health []HookHealth
+	for _, target := range targets {
+		switch target {
+		case TargetClaude:
+			health = append(health, inspectClaudeHooks(projectRoot, command))
+		case TargetCodex:
+			health = append(health, inspectCodexHooks(projectRoot, command))
+		}
+	}
+	return health
+}
+
+func inspectAllHooks(projectRoot string, command string) []HookHealth {
 	return []HookHealth{
 		inspectClaudeHooks(projectRoot, command),
 		inspectCodexHooks(projectRoot, command),

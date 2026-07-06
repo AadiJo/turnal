@@ -415,11 +415,13 @@ func (engine Engine) ensureNoActiveJournal() error {
 	}
 	if ok {
 		switch journal.phase() {
-		case "intent", "planned":
+		case "intent":
 			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 				return fmt.Errorf("clear pre-restore rollback journal: %w", err)
 			}
 			return nil
+		case "planned":
+			return ActiveJournalError{Path: path, Journal: journal}
 		case "restored":
 			if journal.Mode == primitives.RollbackModeWorkspaceGit.String() {
 				return engine.finalizeRestoredWorkspaceGitJournal(path, journal)

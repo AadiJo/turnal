@@ -51,12 +51,20 @@ func statusCmd() *cobra.Command {
 			var hookHealth []adapters.HookHealth
 			hooksOK := false
 			if configErr == nil {
-				hookHealth = adapters.InspectHooks(root.String(), effective.Hooks.Command)
 				hooksOK = true
-				for _, health := range hookHealth {
-					if !health.OK() {
+				if effective.Init.InstallHooks || effective.Run.InstallHooks {
+					targets, err := adapters.ResolveTargets(root.String(), adapters.Target(effective.Init.Agent))
+					if err != nil {
 						hooksOK = false
-						status.Problems = append(status.Problems, health.Problems...)
+						status.Problems = append(status.Problems, err.Error())
+					} else {
+						hookHealth = adapters.InspectHooksForTargets(root.String(), effective.Hooks.Command, targets)
+						for _, health := range hookHealth {
+							if !health.OK() {
+								hooksOK = false
+								status.Problems = append(status.Problems, health.Problems...)
+							}
+						}
 					}
 				}
 			}

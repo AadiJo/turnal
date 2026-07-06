@@ -11,6 +11,7 @@ import (
 	"agent-vcs-again/internal/checkpoint"
 	eventlog "agent-vcs-again/internal/events"
 	"agent-vcs-again/internal/primitives"
+	rollbackengine "agent-vcs-again/internal/rollback"
 )
 
 type Result struct {
@@ -134,10 +135,15 @@ func planDropSession(repo *checkpoint.Repo, sessionID primitives.SessionID, dryR
 }
 
 func sessionFiles(repo *checkpoint.Repo, sessionID primitives.SessionID) []string {
-	return []string{
+	files := []string{
 		filepath.Join(repo.MetadataDir, "log", "events", sessionID.String()+".jsonl"),
 		filepath.Join(repo.TmpDir, "turns", sessionID.String()+".json"),
+		filepath.Join(repo.TmpDir, "hooks", sessionID.String()+".lock"),
 	}
+	if matches, err := filepath.Glob(filepath.Join(repo.TmpDir, "checkpoints", sessionID.String()+"-turn-*.json")); err == nil {
+		files = append(files, matches...)
+	}
+	return files
 }
 
 func referencedPrivateRefs(repo *checkpoint.Repo) (map[string]struct{}, error) {
@@ -169,7 +175,16 @@ func referencedPrivateRefs(repo *checkpoint.Repo) (map[string]struct{}, error) {
 		}
 	}
 	collectActiveTurnRefs(repo, referenced)
+	collectRollbackJournalRefs(repo, referenced)
 	return referenced, nil
+}
+
+func collectRollbackJournalRefs(repo *checkpoint.Repo, referenced map[string]struct{}) {
+	data, err := os.ReadFile(rollbackengine.JournalPath(repo))
+	if err != nil {
+		return
+	}
+	collectPrivateRefs(referenced, json.RawMessage(data))
 }
 
 func collectActiveTurnRefs(repo *checkpoint.Repo, referenced map[string]struct{}) {

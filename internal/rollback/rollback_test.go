@@ -129,36 +129,50 @@ func TestRunClearsPreRestoreJournal(t *testing.T) {
 		t.Fatalf("ResolveTarget: %v", err)
 	}
 
-	for _, phase := range []string{"intent", "planned"} {
-		t.Run(phase, func(t *testing.T) {
-			journal := Journal{
-				Version:         1,
-				State:           phase,
-				RestorePhase:    phase,
-				StartedAt:       time.Now().UTC().Format(time.RFC3339Nano),
-				Target:          targetRef.String(),
-				CheckpointRef:   resolved.CheckpointRef.String(),
-				TargetCommitSHA: resolved.Commit.String(),
-				Changes: []checkpoint.RestoreChange{{
-					Path:   "app.txt",
-					Action: checkpoint.RestoreActionModified,
-				}},
-			}
-			if err := writeJournal(JournalPath(repo), journal); err != nil {
-				t.Fatalf("writeJournal: %v", err)
-			}
+	journal := Journal{
+		Version:         1,
+		State:           "intent",
+		RestorePhase:    "intent",
+		StartedAt:       time.Now().UTC().Format(time.RFC3339Nano),
+		Target:          targetRef.String(),
+		CheckpointRef:   resolved.CheckpointRef.String(),
+		TargetCommitSHA: resolved.Commit.String(),
+		Changes: []checkpoint.RestoreChange{{
+			Path:   "app.txt",
+			Action: checkpoint.RestoreActionModified,
+		}},
+	}
+	if err := writeJournal(JournalPath(repo), journal); err != nil {
+		t.Fatalf("writeJournal intent: %v", err)
+	}
+	result, err := New(repo).Run(Request{Target: targetRef, DryRun: true})
+	if err != nil {
+		t.Fatalf("Run with intent journal: %v", err)
+	}
+	if !result.DryRun {
+		t.Fatal("Run result DryRun=false")
+	}
+	if _, err := os.Stat(JournalPath(repo)); !os.IsNotExist(err) {
+		t.Fatalf("intent journal still exists or stat failed: %v", err)
+	}
 
-			result, err := New(repo).Run(Request{Target: targetRef, DryRun: true})
-			if err != nil {
-				t.Fatalf("Run with %s journal: %v", phase, err)
-			}
-			if !result.DryRun {
-				t.Fatal("Run result DryRun=false")
-			}
-			if _, err := os.Stat(JournalPath(repo)); !os.IsNotExist(err) {
-				t.Fatalf("journal still exists or stat failed: %v", err)
-			}
-		})
+	journal.State = "planned"
+	journal.RestorePhase = "planned"
+	journal.SafetyRef = "refs/agent-vcs/rollback-safety/demo/turn/000001/pre/example"
+	journal.SafetyCommitSHA = resolved.Commit.String()
+	if err := writeJournal(JournalPath(repo), journal); err != nil {
+		t.Fatalf("writeJournal planned: %v", err)
+	}
+	_, err = New(repo).Run(Request{Target: targetRef, DryRun: true})
+	if err == nil {
+		t.Fatal("Run with planned journal succeeded, want active journal error")
+	}
+	var activeErr ActiveJournalError
+	if !errors.As(err, &activeErr) {
+		t.Fatalf("Run error = %T %v, want ActiveJournalError", err, err)
+	}
+	if _, err := os.Stat(JournalPath(repo)); err != nil {
+		t.Fatalf("planned journal missing after blocked run: %v", err)
 	}
 }
 

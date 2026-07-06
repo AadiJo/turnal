@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-vcs-again/internal/checkpoint"
 	eventlog "agent-vcs-again/internal/events"
@@ -75,6 +76,83 @@ func TestRecoverCheckpointJournalsAppendsMissingCheckpointEvent(t *testing.T) {
 	}
 }
 
+func TestRecoverCheckpointIntentJournalPromotesExistingRef(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	writeFile(t, root, "app.txt", "before\n")
+
+	sessionID := sessionID(t, "demo")
+	turnID, _ := primitives.NewTurnID(1)
+	if err := repo.BeginCheckpointJournal(sessionID, turnID, primitives.CheckpointPhasePre, primitives.AdapterManual, ""); err != nil {
+		t.Fatalf("BeginCheckpointJournal: %v", err)
+	}
+	created, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("CreateCheckpoint: %v", err)
+	}
+
+	log := eventlog.Open(repo.MetadataDir)
+	if err := RecoverCheckpointJournals(log, repo); err != nil {
+		t.Fatalf("RecoverCheckpointJournals: %v", err)
+	}
+	if _, ok, err := repo.ReadCheckpointJournal(sessionID, turnID, primitives.CheckpointPhasePre); err != nil || ok {
+		t.Fatalf("journal ok=%t err=%v, want cleared", ok, err)
+	}
+	events, err := log.Read(sessionID)
+	if err != nil {
+		t.Fatalf("Read events: %v", err)
+	}
+	if len(events) != 2 || events[0].Type != primitives.EventTypeTurnStart || events[1].Type != primitives.EventTypeCheckpoint {
+		t.Fatalf("events = %#v, want recovered turn.start and checkpoint", events)
+	}
+	var payload checkpointPayload
+	if err := json.Unmarshal(events[1].Payload, &payload); err != nil {
+		t.Fatalf("unmarshal checkpoint payload: %v", err)
+	}
+	if payload.Ref != created.Ref.String() || payload.CommitSHA != created.Commit.String() {
+		t.Fatalf("payload checkpoint = %s %s, want %s %s", payload.CommitSHA, payload.Ref, created.Commit, created.Ref)
+	}
+}
+
+func TestRecoverPostCheckpointJournalClearsStaleActiveTurn(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	sessionID := sessionID(t, "demo")
+	writeFile(t, root, "app.txt", "before\n")
+	started, err := (Recorder{
+		Log:     eventlog.Open(repo.MetadataDir),
+		Manager: turns.NewManager(repo),
+		Adapter: primitives.AdapterManual,
+	}).Start(sessionID, 0)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	writeFile(t, root, "app.txt", "after\n")
+	manager := turns.NewManager(repo).WithCheckpointEvents(primitives.AdapterManual, "")
+	if _, err := manager.Finish(sessionID, started.TurnID); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	writeActiveState(t, repo, sessionID, started)
+
+	if err := RecoverCheckpointJournals(eventlog.Open(repo.MetadataDir), repo); err != nil {
+		t.Fatalf("RecoverCheckpointJournals: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repo.TmpDir, "turns", sessionID.String()+".json")); !os.IsNotExist(err) {
+		t.Fatalf("active state still exists or stat failed: %v", err)
+	}
+}
+
 func TestAppendCheckpointRecordsUserGitContext(t *testing.T) {
 	requireGit(t)
 
@@ -122,6 +200,30 @@ func TestAppendCheckpointRecordsUserGitContext(t *testing.T) {
 	}
 	if payload.UserGit.Dirty {
 		t.Fatalf("payload user_git dirty = true, want clean: %#v", payload.UserGit)
+	}
+}
+
+func writeActiveState(t *testing.T, repo *checkpoint.Repo, sessionID primitives.SessionID, started turns.StartResult) {
+	t.Helper()
+	dir := filepath.Join(repo.TmpDir, "turns")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir active state dir: %v", err)
+	}
+	state := map[string]any{
+		"version":    1,
+		"session_id": sessionID.String(),
+		"turn_id":    started.TurnID.Uint64(),
+		"pre_ref":    started.Pre.Ref.String(),
+		"pre_commit": started.Pre.Commit.String(),
+		"started_at": time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal active state: %v", err)
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(filepath.Join(dir, sessionID.String()+".json"), data, 0o644); err != nil {
+		t.Fatalf("write active state: %v", err)
 	}
 }
 
