@@ -803,12 +803,19 @@ func (repo *Repo) restoreCommit(commit primitives.CommitSHA) error {
 	if err != nil {
 		return err
 	}
+	denyGlobs, err := repo.secretDenyGlobs()
+	if err != nil {
+		return err
+	}
 	for _, entry := range entries {
+		if secretDeniedPath(entry.Path, denyGlobs) {
+			continue
+		}
 		if err := repo.restoreTreeEntry(entry); err != nil {
 			return err
 		}
 	}
-	if err := repo.deleteFilesAbsentFrom(entries, indexPath); err != nil {
+	if err := repo.deleteFilesAbsentFrom(entries, indexPath, denyGlobs); err != nil {
 		return err
 	}
 	return repo.removeEmptyDirs(indexPath)
@@ -936,7 +943,7 @@ func restoreAction(oldMode, newMode, oldObject, newObject, status string) Restor
 	}
 }
 
-func (repo *Repo) deleteFilesAbsentFrom(entries []TreeEntry, indexPath string) error {
+func (repo *Repo) deleteFilesAbsentFrom(entries []TreeEntry, indexPath string, denyGlobs []string) error {
 	targetPaths := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
 		targetPaths[entry.Path] = struct{}{}
@@ -957,6 +964,12 @@ func (repo *Repo) deleteFilesAbsentFrom(entries []TreeEntry, indexPath string) e
 
 		repoPath := filepath.ToSlash(relPath)
 		if excludedPath(repoPath) {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if secretDeniedPath(repoPath, denyGlobs) {
 			if entry.IsDir() {
 				return fs.SkipDir
 			}
@@ -1216,11 +1229,10 @@ func isDirectoryNotEmpty(err error) bool {
 
 func (repo *Repo) snapshotWorktree(indexPath string) error {
 	root := repo.WorkspaceRoot.String()
-	effective, _, err := agentconfig.Resolve(root, agentconfig.Overrides{})
+	denyGlobs, err := repo.secretDenyGlobs()
 	if err != nil {
 		return err
 	}
-	denyGlobs := effective.Secrets.SnapshotDenyGlobs
 	return filepath.WalkDir(root, func(absPath string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -1296,6 +1308,14 @@ func (repo *Repo) snapshotWorktree(indexPath string) error {
 		}
 		return nil
 	})
+}
+
+func (repo *Repo) secretDenyGlobs() ([]string, error) {
+	effective, _, err := agentconfig.Resolve(repo.WorkspaceRoot.String(), agentconfig.Overrides{})
+	if err != nil {
+		return nil, err
+	}
+	return effective.Secrets.SnapshotDenyGlobs, nil
 }
 
 func (repo *Repo) gitignoredPath(indexPath string, repoPath string) (bool, error) {

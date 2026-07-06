@@ -265,6 +265,51 @@ func TestRunRestoreFailureReturnsSafetyAndKeepsExtraFiles(t *testing.T) {
 	}
 }
 
+func TestRunPreservesSecretsDeniedFiles(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	sessionID := sessionID(t, "demo")
+	turnID, _ := primitives.NewTurnID(1)
+	writeFile(t, root, "app.txt", "target\n")
+	writeFile(t, root, ".env", "SECRET=target\n")
+	writeFile(t, root, "nested/.env", "SECRET=nested-target\n")
+	writeFile(t, root, "config/credentials.json", `{"secret":"target"}`)
+	if _, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre); err != nil {
+		t.Fatalf("target checkpoint: %v", err)
+	}
+
+	writeFile(t, root, "app.txt", "current\n")
+	writeFile(t, root, ".env", "SECRET=current\n")
+	writeFile(t, root, "nested/.env", "SECRET=nested-current\n")
+	writeFile(t, root, "config/credentials.json", `{"secret":"current"}`)
+
+	targetRef, err := primitives.NewTargetRef(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("NewTargetRef: %v", err)
+	}
+	if _, err := New(repo).Run(Request{Target: targetRef}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := readFile(t, root, "app.txt"); got != "target\n" {
+		t.Fatalf("app.txt = %q, want target", got)
+	}
+	for path, want := range map[string]string{
+		".env":                    "SECRET=current\n",
+		"nested/.env":             "SECRET=nested-current\n",
+		"config/credentials.json": `{"secret":"current"}`,
+	} {
+		if got := readFile(t, root, path); got != want {
+			t.Fatalf("%s = %q, want %q", path, got, want)
+		}
+	}
+}
+
 func TestRunWorkspaceGitRestoresCapturedDirtyState(t *testing.T) {
 	requireGit(t)
 
@@ -381,6 +426,15 @@ func writeFile(t *testing.T, root primitives.WorkspaceRoot, relPath, content str
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write %s: %v", relPath, err)
 	}
+}
+
+func readFile(t *testing.T, root primitives.WorkspaceRoot, relPath string) string {
+	t.Helper()
+	content, err := os.ReadFile(filepath.Join(root.String(), filepath.FromSlash(relPath)))
+	if err != nil {
+		t.Fatalf("read %s: %v", relPath, err)
+	}
+	return string(content)
 }
 
 func runWorkspaceGit(t *testing.T, root primitives.WorkspaceRoot, args ...string) string {
