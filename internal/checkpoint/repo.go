@@ -143,6 +143,10 @@ type RestorePlan struct {
 	Changes      []RestoreChange      `json:"changes"`
 }
 
+type MaterializeOptions struct {
+	PreservePaths []string
+}
+
 func Init(root primitives.WorkspaceRoot) (*Repo, error) {
 	repo := paths(root)
 
@@ -397,6 +401,32 @@ func (repo *Repo) DiffRefs(preRef, postRef primitives.CheckpointRef) ([]byte, er
 		"--no-textconv",
 		preRef.String()+"^{commit}",
 		postRef.String()+"^{commit}",
+	)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(output), nil
+}
+
+func (repo *Repo) DiffCommitToWorkspace(commit primitives.CommitSHA) ([]byte, error) {
+	parsedCommit, err := primitives.ParseCommitSHA(commit.String())
+	if err != nil {
+		return nil, err
+	}
+	currentTree, cleanup, err := repo.snapshotWorktreeTree()
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+
+	output, err := runHiddenGit(repo, "",
+		"diff",
+		"--patch",
+		"--no-color",
+		"--no-ext-diff",
+		"--no-textconv",
+		parsedCommit.String()+"^{commit}",
+		currentTree,
 	)
 	if err != nil {
 		return nil, err
@@ -790,6 +820,44 @@ func (repo *Repo) RestoreCommit(commit primitives.CommitSHA) error {
 	})
 }
 
+func (repo *Repo) MaterializeCommit(commit primitives.CommitSHA, root string, options MaterializeOptions) error {
+	parsedCommit, err := primitives.ParseCommitSHA(commit.String())
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(root) == "" {
+		return fmt.Errorf("materialize root is required")
+	}
+	materializeRoot, err := filepath.Abs(root)
+	if err != nil {
+		return fmt.Errorf("resolve materialize root: %w", err)
+	}
+	if _, err := runHiddenGit(repo, "", "rev-parse", parsedCommit.String()+"^{commit}"); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(materializeRoot, 0o755); err != nil {
+		return fmt.Errorf("create materialize root: %w", err)
+	}
+
+	entries, err := repo.ListCommitTree(parsedCommit)
+	if err != nil {
+		return err
+	}
+	preservePaths, err := materializePreserveSet(options.PreservePaths)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err := repo.restoreTreeEntryAtRoot(materializeRoot, entry); err != nil {
+			return err
+		}
+	}
+	if err := materializeDeleteFilesAbsentFrom(materializeRoot, entries, preservePaths); err != nil {
+		return err
+	}
+	return materializeRemoveEmptyDirs(materializeRoot)
+}
+
 func (repo *Repo) restoreCommit(commit primitives.CommitSHA) error {
 	parsedCommit, err := primitives.ParseCommitSHA(commit.String())
 	if err != nil {
@@ -1018,15 +1086,19 @@ func (repo *Repo) deleteFilesAbsentFrom(entries []TreeEntry, indexPath string, d
 }
 
 func (repo *Repo) restoreTreeEntry(entry TreeEntry) error {
+	return repo.restoreTreeEntryAtRoot(repo.WorkspaceRoot.String(), entry)
+}
+
+func (repo *Repo) restoreTreeEntryAtRoot(root string, entry TreeEntry) error {
 	repoPath, err := primitives.ParseRepoPath(entry.Path)
 	if err != nil {
 		return err
 	}
-	if err := repo.ensureParentDirs(repoPath); err != nil {
+	if err := ensureParentDirsAtRoot(root, repoPath); err != nil {
 		return err
 	}
 
-	absPath := repo.WorkspaceRoot.Join(repoPath)
+	absPath := filepath.Join(root, repoPath.OSPath())
 	if err := repo.removePathForRestore(absPath, entry.Path); err != nil {
 		return err
 	}
@@ -1042,7 +1114,10 @@ func (repo *Repo) restoreTreeEntry(entry TreeEntry) error {
 }
 
 func (repo *Repo) ensureParentDirs(repoPath primitives.RepoPath) error {
-	root := repo.WorkspaceRoot.String()
+	return ensureParentDirsAtRoot(repo.WorkspaceRoot.String(), repoPath)
+}
+
+func ensureParentDirsAtRoot(root string, repoPath primitives.RepoPath) error {
 	segments := strings.Split(repoPath.String(), "/")
 	current := root
 	for _, segment := range segments[:len(segments)-1] {
@@ -1063,6 +1138,106 @@ func (repo *Repo) ensureParentDirs(repoPath primitives.RepoPath) error {
 		if err := os.Mkdir(current, 0o755); err != nil && !os.IsExist(err) {
 			relPath, _ := filepath.Rel(root, current)
 			return fmt.Errorf("create parent path %s: %w", filepath.ToSlash(relPath), err)
+		}
+	}
+	return nil
+}
+
+func materializePreserveSet(paths []string) (map[string]struct{}, error) {
+	preserved := make(map[string]struct{}, len(paths))
+	for _, value := range paths {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		repoPath, err := primitives.ParseRepoPath(filepath.ToSlash(value))
+		if err != nil {
+			return nil, fmt.Errorf("preserve path %q: %w", value, err)
+		}
+		preserved[repoPath.String()] = struct{}{}
+	}
+	return preserved, nil
+}
+
+func materializeDeleteFilesAbsentFrom(root string, entries []TreeEntry, preservePaths map[string]struct{}) error {
+	targetPaths := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		targetPaths[entry.Path] = struct{}{}
+	}
+
+	return filepath.WalkDir(root, func(absPath string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relPath, err := filepath.Rel(root, absPath)
+		if err != nil {
+			return fmt.Errorf("relative path for %s: %w", absPath, err)
+		}
+		if relPath == "." {
+			return nil
+		}
+
+		repoPath := filepath.ToSlash(relPath)
+		if excludedPath(repoPath) {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if _, ok := preservePaths[repoPath]; ok {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if _, ok := targetPaths[repoPath]; ok {
+			return nil
+		}
+		if err := os.Remove(absPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove materialized file %s: %w", repoPath, err)
+		}
+		return nil
+	})
+}
+
+func materializeRemoveEmptyDirs(root string) error {
+	var dirs []string
+	if err := filepath.WalkDir(root, func(absPath string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relPath, err := filepath.Rel(root, absPath)
+		if err != nil {
+			return fmt.Errorf("relative path for %s: %w", absPath, err)
+		}
+		if relPath == "." {
+			return nil
+		}
+		repoPath := filepath.ToSlash(relPath)
+		if excludedPath(repoPath) {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if entry.IsDir() {
+			dirs = append(dirs, absPath)
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	sort.Slice(dirs, func(i, j int) bool {
+		return len(dirs[i]) > len(dirs[j])
+	})
+	for _, dir := range dirs {
+		if err := os.Remove(dir); err != nil && !os.IsNotExist(err) && !isDirectoryNotEmpty(err) {
+			relPath, _ := filepath.Rel(root, dir)
+			return fmt.Errorf("remove empty materialized dir %s: %w", filepath.ToSlash(relPath), err)
 		}
 	}
 	return nil

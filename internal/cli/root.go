@@ -34,6 +34,7 @@ func NewRootCmd() *cobra.Command {
 	rootCmd.AddCommand(diffCmd())
 	rootCmd.AddCommand(blameCmd())
 	rootCmd.AddCommand(rollbackCmd())
+	rootCmd.AddCommand(replayCmd())
 	rootCmd.AddCommand(runCmd())
 	rootCmd.AddCommand(versionCmd())
 	rootCmd.AddCommand(claudeHookCmd())
