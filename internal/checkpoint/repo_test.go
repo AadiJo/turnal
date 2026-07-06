@@ -248,6 +248,66 @@ func TestListCheckpointRefsFiltersSessionAndDropsInheritedGitEnv(t *testing.T) {
 	}
 }
 
+func TestListCheckpointRefInfosAndDiffStat(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	sessionID, _ := primitives.ParseSessionID("demo")
+	turnID, _ := primitives.NewTurnID(1)
+
+	writeFile(t, root, "app.txt", "before\n")
+	pre, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("pre checkpoint: %v", err)
+	}
+	writeFile(t, root, "app.txt", "after\n")
+	post, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePost)
+	if err != nil {
+		t.Fatalf("post checkpoint: %v", err)
+	}
+
+	infos, err := repo.ListAllCheckpointRefInfos()
+	if err != nil {
+		t.Fatalf("ListAllCheckpointRefInfos: %v", err)
+	}
+	if len(infos) != 2 {
+		t.Fatalf("infos len = %d, want 2: %#v", len(infos), infos)
+	}
+	if infos[0].SessionID != sessionID || infos[0].TurnID != turnID || infos[0].Phase != primitives.CheckpointPhasePre {
+		t.Fatalf("first ref info = %#v, want demo turn 1 pre", infos[0])
+	}
+	if infos[0].Commit != pre.Commit || infos[1].Commit != post.Commit {
+		t.Fatalf("commits = %s %s, want %s %s", infos[0].Commit, infos[1].Commit, pre.Commit, post.Commit)
+	}
+	if infos[0].Time.IsZero() || infos[1].Time.IsZero() {
+		t.Fatalf("ref info times must be populated: %#v", infos)
+	}
+
+	sessionInfos, err := repo.ListCheckpointRefInfos(sessionID)
+	if err != nil {
+		t.Fatalf("ListCheckpointRefInfos: %v", err)
+	}
+	if len(sessionInfos) != 2 {
+		t.Fatalf("session infos len = %d, want 2", len(sessionInfos))
+	}
+
+	summary, err := repo.DiffStatTurn(sessionID, turnID)
+	if err != nil {
+		t.Fatalf("DiffStatTurn: %v", err)
+	}
+	if len(summary.Files) != 1 {
+		t.Fatalf("diff files len = %d, want 1: %#v", len(summary.Files), summary)
+	}
+	if summary.Files[0].Path != "app.txt" || summary.Additions != 1 || summary.Deletions != 1 {
+		t.Fatalf("summary = %#v, want app.txt +1 -1", summary)
+	}
+}
+
 func workspaceRoot(t *testing.T) primitives.WorkspaceRoot {
 	t.Helper()
 	root, err := primitives.ParseWorkspaceRoot(t.TempDir())
