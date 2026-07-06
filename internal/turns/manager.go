@@ -29,6 +29,12 @@ type FinishResult struct {
 	Post   checkpoint.Checkpoint
 }
 
+type ActiveTurn struct {
+	TurnID    primitives.TurnID
+	PreRef    primitives.CheckpointRef
+	PreCommit primitives.CommitSHA
+}
+
 type activeTurnState struct {
 	Version   int    `json:"version"`
 	SessionID string `json:"session_id"`
@@ -166,6 +172,24 @@ func (manager Manager) NextTurnID(sessionID primitives.SessionID) (primitives.Tu
 		return 0, fmt.Errorf("next turn id overflow for session %s", sessionID)
 	}
 	return primitives.NewTurnID(maxTurn + 1)
+}
+
+func (manager Manager) Active(sessionID primitives.SessionID) (ActiveTurn, bool, error) {
+	if err := manager.validate(); err != nil {
+		return ActiveTurn{}, false, err
+	}
+	active, err := manager.readActive(sessionID)
+	if err != nil {
+		return ActiveTurn{}, false, err
+	}
+	if active == nil {
+		return ActiveTurn{}, false, nil
+	}
+	return ActiveTurn{
+		TurnID:    active.TurnID,
+		PreRef:    active.PreRef,
+		PreCommit: active.PreCommit,
+	}, true, nil
 }
 
 func (manager Manager) validate() error {
