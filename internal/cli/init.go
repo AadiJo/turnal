@@ -32,6 +32,11 @@ func initCmd() *cobra.Command {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "initialized hidden git repo: %s\n", result.Repo.GitDir)
+			if result.WorkspaceGitInitialized {
+				fmt.Fprintf(cmd.OutOrStdout(), "initialized workspace git repo: %s\n", result.WorkspaceGitPath)
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "workspace git already configured: %s\n", result.WorkspaceGitPath)
+			}
 			if result.GitignoreUpdated {
 				fmt.Fprintf(cmd.OutOrStdout(), "updated gitignore: %s\n", result.GitignorePath)
 			} else {

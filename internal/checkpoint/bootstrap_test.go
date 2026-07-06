@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"agent-vcs-again/internal/primitives"
 )
 
 func TestBootstrapCreatesWorkspaceMetadataAndGitignore(t *testing.T) {
@@ -18,6 +20,12 @@ func TestBootstrapCreatesWorkspaceMetadataAndGitignore(t *testing.T) {
 	if !result.GitignoreUpdated {
 		t.Fatal("Bootstrap did not report gitignore update")
 	}
+	if !result.WorkspaceGitInitialized {
+		t.Fatal("Bootstrap did not report workspace git initialization")
+	}
+	if result.WorkspaceGitPath != filepath.Join(root.String(), ".git") {
+		t.Fatalf("workspace git path = %q, want root .git", result.WorkspaceGitPath)
+	}
 
 	for _, path := range []string{
 		result.Repo.MetadataDir,
@@ -27,11 +35,20 @@ func TestBootstrapCreatesWorkspaceMetadataAndGitignore(t *testing.T) {
 		result.Repo.TmpDir,
 		filepath.Join(result.Repo.MetadataDir, versionFileName),
 		filepath.Join(result.Repo.MetadataDir, configFileName),
+		result.WorkspaceGitPath,
 		result.GitignorePath,
 	} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected bootstrap path %s: %v", path, err)
 		}
+	}
+
+	inside, err := runGitNoRepo(root.String(), "rev-parse", "--is-inside-work-tree")
+	if err != nil {
+		t.Fatalf("verify workspace git repo: %v", err)
+	}
+	if strings.TrimSpace(inside) != "true" {
+		t.Fatalf("is-inside-work-tree = %q, want true", inside)
 	}
 
 	gitignore, err := os.ReadFile(result.GitignorePath)
@@ -72,6 +89,12 @@ func TestBootstrapIsIdempotent(t *testing.T) {
 	if second.GitignoreUpdated {
 		t.Fatal("second bootstrap should not update gitignore")
 	}
+	if !first.WorkspaceGitInitialized {
+		t.Fatal("first bootstrap should initialize workspace git")
+	}
+	if second.WorkspaceGitInitialized {
+		t.Fatal("second bootstrap should not reinitialize workspace git")
+	}
 
 	gitignore, err := os.ReadFile(first.GitignorePath)
 	if err != nil {
@@ -79,6 +102,131 @@ func TestBootstrapIsIdempotent(t *testing.T) {
 	}
 	if count := strings.Count(string(gitignore), GitignoreEntry); count != 1 {
 		t.Fatalf("gitignore contains %d entries, want 1:\n%s", count, gitignore)
+	}
+}
+
+func TestBootstrapDoesNotMutateExistingWorkspaceGit(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	if _, err := runGitNoRepo(root.String(), "init"); err != nil {
+		t.Fatalf("init workspace git: %v", err)
+	}
+	configPath := filepath.Join(root.String(), ".git", "config")
+	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read git config before Bootstrap: %v", err)
+	}
+
+	result, err := Bootstrap(root)
+	if err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	if result.WorkspaceGitInitialized {
+		t.Fatal("Bootstrap reinitialized existing workspace git")
+	}
+
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read git config after Bootstrap: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("workspace git config changed unexpectedly:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func TestBootstrapDoesNotCreateNestedGitRepoInsideParentWorktree(t *testing.T) {
+	requireGit(t)
+
+	parent := workspaceRoot(t)
+	if _, err := runGitNoRepo(parent.String(), "init"); err != nil {
+		t.Fatalf("init parent git: %v", err)
+	}
+
+	childPath := filepath.Join(parent.String(), "child")
+	if err := os.MkdirAll(childPath, 0o755); err != nil {
+		t.Fatalf("mkdir child: %v", err)
+	}
+	childRoot, err := primitives.ParseWorkspaceRoot(childPath)
+	if err != nil {
+		t.Fatalf("ParseWorkspaceRoot: %v", err)
+	}
+
+	result, err := Bootstrap(childRoot)
+	if err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	if result.WorkspaceGitInitialized {
+		t.Fatal("Bootstrap initialized nested workspace git inside parent worktree")
+	}
+	if _, err := os.Lstat(filepath.Join(childRoot.String(), ".git")); !os.IsNotExist(err) {
+		t.Fatalf("child .git exists or could not be checked: %v", err)
+	}
+
+	parentGitPath := filepath.Join(parent.String(), ".git")
+	if result.WorkspaceGitPath != parentGitPath {
+		t.Fatalf("workspace git path = %q, want parent git path %q", result.WorkspaceGitPath, parentGitPath)
+	}
+}
+
+func TestBootstrapRefusesNestedGitInitWhenParentGitDiscoveryFails(t *testing.T) {
+	requireGit(t)
+
+	parent := workspaceRoot(t)
+	parentGitPath := filepath.Join(parent.String(), ".git")
+	if _, err := runGitNoRepo(parent.String(), "init"); err != nil {
+		t.Fatalf("init parent git: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(parentGitPath, "config"), []byte("[invalid\n"), 0o644); err != nil {
+		t.Fatalf("corrupt parent git config: %v", err)
+	}
+
+	childPath := filepath.Join(parent.String(), "child")
+	if err := os.MkdirAll(childPath, 0o755); err != nil {
+		t.Fatalf("mkdir child: %v", err)
+	}
+	childRoot, err := primitives.ParseWorkspaceRoot(childPath)
+	if err != nil {
+		t.Fatalf("ParseWorkspaceRoot: %v", err)
+	}
+	if _, err := runGitNoRepo(childRoot.String(), "rev-parse", "--is-inside-work-tree"); err == nil {
+		t.Fatal("test setup unexpectedly created a discoverable parent git worktree")
+	}
+
+	_, err = Bootstrap(childRoot)
+	if err == nil {
+		t.Fatal("Bootstrap succeeded, want refusal to initialize nested workspace git")
+	}
+	if !strings.Contains(err.Error(), "refusing to initialize nested workspace git repo") {
+		t.Fatalf("Bootstrap error = %v, want nested git refusal", err)
+	}
+	if _, err := os.Lstat(filepath.Join(childRoot.String(), ".git")); !os.IsNotExist(err) {
+		t.Fatalf("child .git exists or could not be checked: %v", err)
+	}
+}
+
+func TestBootstrapWorkspaceGitInitDropsInheritedGitEnv(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	badDir := t.TempDir()
+	badGitDir := filepath.Join(badDir, "bad.git")
+	t.Setenv("GIT_DIR", badGitDir)
+	t.Setenv("GIT_WORK_TREE", badDir)
+	t.Setenv("GIT_INDEX_FILE", filepath.Join(badDir, "bad.index"))
+
+	result, err := Bootstrap(root)
+	if err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	if !result.WorkspaceGitInitialized {
+		t.Fatal("Bootstrap did not initialize workspace git")
+	}
+	if _, err := os.Stat(filepath.Join(root.String(), ".git")); err != nil {
+		t.Fatalf("expected root .git: %v", err)
+	}
+	if _, err := os.Stat(badGitDir); !os.IsNotExist(err) {
+		t.Fatalf("inherited GIT_DIR was used or stat failed: %v", err)
 	}
 }
 
