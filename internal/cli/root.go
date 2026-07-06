@@ -26,6 +26,8 @@ func NewRootCmd() *cobra.Command {
 	rootCmd.AddCommand(checkpointCmd())
 	rootCmd.AddCommand(diffCmd())
 	rootCmd.AddCommand(versionCmd())
+	rootCmd.AddCommand(claudeHookCmd())
+	rootCmd.AddCommand(codexHookCmd())
 
 	return rootCmd
 }
