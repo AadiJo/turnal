@@ -7,7 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"agent-vcs-again/internal/primitives"
 )
@@ -32,6 +35,30 @@ type Repo struct {
 type Checkpoint struct {
 	Ref    primitives.CheckpointRef
 	Commit primitives.CommitSHA
+}
+
+type CheckpointRefInfo struct {
+	Ref       primitives.CheckpointRef
+	SessionID primitives.SessionID
+	TurnID    primitives.TurnID
+	Phase     primitives.CheckpointPhase
+	HasPhase  bool
+	Commit    primitives.CommitSHA
+	Time      time.Time
+}
+
+type DiffFileStat struct {
+	Path      string
+	Additions int
+	Deletions int
+	Binary    bool
+}
+
+type DiffSummary struct {
+	Files       []DiffFileStat
+	Additions   int
+	Deletions   int
+	BinaryFiles int
 }
 
 func Init(root primitives.WorkspaceRoot) (*Repo, error) {
@@ -209,6 +236,142 @@ func (repo *Repo) ListCheckpointRefs(sessionID primitives.SessionID) ([]primitiv
 	return refs, nil
 }
 
+func (repo *Repo) ListAllCheckpointRefInfos() ([]CheckpointRefInfo, error) {
+	return repo.listCheckpointRefInfos(primitives.CheckpointRefsPrefix())
+}
+
+func (repo *Repo) ListCheckpointRefInfos(sessionID primitives.SessionID) ([]CheckpointRefInfo, error) {
+	refPrefix, err := primitives.CheckpointSessionRefPrefix(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return repo.listCheckpointRefInfos(refPrefix)
+}
+
+func (repo *Repo) listCheckpointRefInfos(refPrefix string) ([]CheckpointRefInfo, error) {
+	output, err := runHiddenGit(repo, "", "for-each-ref", "--format=%(refname)%09%(objectname)%09%(committerdate:iso-strict)", refPrefix)
+	if err != nil {
+		return nil, err
+	}
+
+	var infos []CheckpointRefInfo
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.SplitN(line, "\t", 3)
+		if len(fields) != 3 {
+			return nil, fmt.Errorf("checkpoint ref listing invariant failed for %q: expected ref, commit and time", line)
+		}
+
+		ref, err := primitives.ParseCheckpointRef(fields[0])
+		if err != nil {
+			return nil, fmt.Errorf("checkpoint ref invariant failed for %q: %w", fields[0], err)
+		}
+		refParts, err := ref.Parts()
+		if err != nil {
+			return nil, fmt.Errorf("checkpoint ref invariant failed for %q: %w", ref, err)
+		}
+		commit, err := primitives.ParseCommitSHA(fields[1])
+		if err != nil {
+			return nil, fmt.Errorf("checkpoint ref %s commit invariant failed: %w", ref, err)
+		}
+		createdAt, err := time.Parse(time.RFC3339, fields[2])
+		if err != nil {
+			return nil, fmt.Errorf("checkpoint ref %s time invariant failed: %w", ref, err)
+		}
+
+		infos = append(infos, CheckpointRefInfo{
+			Ref:       ref,
+			SessionID: refParts.SessionID,
+			TurnID:    refParts.TurnID,
+			Phase:     refParts.Phase,
+			HasPhase:  refParts.HasPhase,
+			Commit:    commit,
+			Time:      createdAt,
+		})
+	}
+
+	sort.Slice(infos, func(i, j int) bool {
+		left, right := infos[i], infos[j]
+		if left.SessionID != right.SessionID {
+			return left.SessionID.String() < right.SessionID.String()
+		}
+		if left.TurnID != right.TurnID {
+			return left.TurnID.Uint64() < right.TurnID.Uint64()
+		}
+		if phaseRank(left.Phase) != phaseRank(right.Phase) {
+			return phaseRank(left.Phase) < phaseRank(right.Phase)
+		}
+		return left.Ref.String() < right.Ref.String()
+	})
+
+	return infos, nil
+}
+
+func (repo *Repo) DiffStatRefs(preRef, postRef primitives.CheckpointRef) (DiffSummary, error) {
+	output, err := runHiddenGit(repo, "",
+		"-c",
+		"core.quotePath=false",
+		"diff",
+		"--numstat",
+		"--no-renames",
+		"--no-ext-diff",
+		"--no-textconv",
+		preRef.String()+"^{commit}",
+		postRef.String()+"^{commit}",
+	)
+	if err != nil {
+		return DiffSummary{}, err
+	}
+
+	var summary DiffSummary
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		if line == "" {
+			continue
+		}
+		fields := strings.SplitN(line, "\t", 3)
+		if len(fields) != 3 {
+			return DiffSummary{}, fmt.Errorf("diff stat invariant failed for %q: expected additions, deletions and path", line)
+		}
+
+		stat := DiffFileStat{Path: fields[2]}
+		if fields[0] == "-" || fields[1] == "-" {
+			stat.Binary = true
+			summary.BinaryFiles++
+		} else {
+			additions, err := strconv.Atoi(fields[0])
+			if err != nil {
+				return DiffSummary{}, fmt.Errorf("parse additions for %q: %w", line, err)
+			}
+			deletions, err := strconv.Atoi(fields[1])
+			if err != nil {
+				return DiffSummary{}, fmt.Errorf("parse deletions for %q: %w", line, err)
+			}
+			stat.Additions = additions
+			stat.Deletions = deletions
+			summary.Additions += additions
+			summary.Deletions += deletions
+		}
+		summary.Files = append(summary.Files, stat)
+	}
+	return summary, nil
+}
+
+func (repo *Repo) DiffStatTurn(sessionID primitives.SessionID, turnID primitives.TurnID) (DiffSummary, error) {
+	preRef, err := primitives.NewCheckpointRef(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		return DiffSummary{}, err
+	}
+	postRef, err := primitives.NewCheckpointRef(sessionID, turnID, primitives.CheckpointPhasePost)
+	if err != nil {
+		return DiffSummary{}, err
+	}
+	return repo.DiffStatRefs(preRef, postRef)
+}
+
 func (repo *Repo) DeleteCheckpointRef(ref primitives.CheckpointRef) error {
 	parsedRef, err := primitives.ParseCheckpointRef(ref.String())
 	if err != nil {
@@ -297,6 +460,17 @@ func gitRegularFileMode(mode fs.FileMode) string {
 		return "100755"
 	}
 	return "100644"
+}
+
+func phaseRank(phase primitives.CheckpointPhase) int {
+	switch phase {
+	case primitives.CheckpointPhasePre:
+		return 0
+	case primitives.CheckpointPhasePost:
+		return 1
+	default:
+		return 2
+	}
 }
 
 func paths(root primitives.WorkspaceRoot) *Repo {

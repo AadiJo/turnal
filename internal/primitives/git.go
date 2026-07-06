@@ -75,6 +75,10 @@ type CheckpointRefParts struct {
 
 const checkpointRefPrefix = "refs/agent-vcs/checkpoints"
 
+func CheckpointRefsPrefix() string {
+	return checkpointRefPrefix
+}
+
 func CheckpointSessionRefPrefix(sessionID SessionID) (string, error) {
 	parsedSessionID, err := ParseSessionID(sessionID.String())
 	if err != nil {

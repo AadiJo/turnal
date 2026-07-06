@@ -1,0 +1,213 @@
+package cli
+
+import (
+	"bytes"
+	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+	"time"
+
+	"agent-vcs-again/internal/checkpoint"
+	eventlog "agent-vcs-again/internal/events"
+	"agent-vcs-again/internal/primitives"
+)
+
+func TestGraphCommandShowsCheckpointGraph(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+
+	sessionID := sessionID(t, "demo")
+	turnID, _ := primitives.NewTurnID(1)
+
+	writeFile(t, root, "app.txt", "before\n")
+	if _, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre); err != nil {
+		t.Fatalf("pre checkpoint: %v", err)
+	}
+	writeFile(t, root, "app.txt", "after\n")
+	if _, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePost); err != nil {
+		t.Fatalf("post checkpoint: %v", err)
+	}
+
+	if _, err := eventlog.Open(repo.MetadataDir).Append(eventlog.AppendInput{
+		SessionID: sessionID,
+		TurnID:    &turnID,
+		Type:      primitives.EventTypePromptUser,
+		Adapter:   primitives.AdapterCodex,
+		Payload:   json.RawMessage(`{"text":"change app.txt"}`),
+	}); err != nil {
+		t.Fatalf("append prompt event: %v", err)
+	}
+
+	cmd := NewRootCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"graph", "--session", "demo", "--verbose"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("graph command: %v\n%s", err, out.String())
+	}
+
+	output := stripANSI(out.String())
+	for _, want := range []string{
+		"checkpoint graph: 1 session, 1 turn",
+		"sessions: [demo]",
+		"turn 1",
+		"complete",
+		"[demo] turn 1      Prompt complete",
+		"1 file +1 -1",
+		"events: 1 event; codex",
+		"Human: \"change app.txt\"",
+		"| pre:",
+		"| post:",
+		"| file: app.txt +1 -1",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("graph output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestRenderCheckpointGraphShowsLimitTruncation(t *testing.T) {
+	sessionID := sessionID(t, "demo")
+	firstTurn, _ := primitives.NewTurnID(1)
+
+	var out bytes.Buffer
+	err := renderCheckpointGraph(&out, []graphSession{
+		{
+			ID:         sessionID,
+			TotalTurns: 2,
+			Turns: []graphTurn{
+				{TurnID: firstTurn},
+			},
+		},
+	}, graphRenderOptions{})
+	if err != nil {
+		t.Fatalf("renderCheckpointGraph: %v", err)
+	}
+
+	output := stripANSI(out.String())
+	for _, want := range []string{
+		"checkpoint graph: 1 session, showing 1 of 2 turns",
+		"sessions: [demo](1/2)",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("limited graph output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestRenderCheckpointGraphShowsOverlappingSessionLanes(t *testing.T) {
+	sessionA := sessionID(t, "session-a")
+	sessionB := sessionID(t, "session-b")
+	turn1, _ := primitives.NewTurnID(1)
+	turn2, _ := primitives.NewTurnID(2)
+	base := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+
+	var out bytes.Buffer
+	err := renderCheckpointGraph(&out, []graphSession{
+		{
+			ID:         sessionA,
+			TotalTurns: 2,
+			Turns: []graphTurn{
+				{TurnID: turn2, Post: checkpointInfo(sessionA, turn2, base.Add(10*time.Minute), "2")},
+				{TurnID: turn1, Post: checkpointInfo(sessionA, turn1, base, "1")},
+			},
+		},
+		{
+			ID:         sessionB,
+			TotalTurns: 1,
+			Turns: []graphTurn{
+				{TurnID: turn1, Post: checkpointInfo(sessionB, turn1, base.Add(5*time.Minute), "3")},
+			},
+		},
+	}, graphRenderOptions{})
+	if err != nil {
+		t.Fatalf("renderCheckpointGraph: %v", err)
+	}
+
+	output := stripANSI(out.String())
+	for _, want := range []string{
+		"sessions: [session-a] [session-b]",
+		"*   222222222222 - 12:10 [session-a] turn 2",
+		"| * 333333333333 - 12:05 [session-b] turn 1",
+		"*   111111111111 - 12:00 [session-a] turn 1",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("overlap graph output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestTruncateTextKeepsValidUTF8(t *testing.T) {
+	got := truncateText("hello 世界🙂 again", 11)
+	if got != "hello 世界..." {
+		t.Fatalf("truncateText = %q, want %q", got, "hello 世界...")
+	}
+	if strings.ContainsRune(got, '\uFFFD') {
+		t.Fatalf("truncateText produced replacement rune: %q", got)
+	}
+}
+
+func checkpointInfo(sessionID primitives.SessionID, turnID primitives.TurnID, at time.Time, digit string) *checkpoint.CheckpointRefInfo {
+	commit := primitives.CommitSHA(strings.Repeat(digit, 40))
+	return &checkpoint.CheckpointRefInfo{
+		SessionID: sessionID,
+		TurnID:    turnID,
+		Phase:     primitives.CheckpointPhasePost,
+		HasPhase:  true,
+		Commit:    commit,
+		Time:      at,
+	}
+}
+
+var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+func stripANSI(value string) string {
+	return ansiPattern.ReplaceAllString(value, "")
+}
+
+func requireGit(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git executable not found")
+	}
+}
+
+func workspaceRoot(t *testing.T) primitives.WorkspaceRoot {
+	t.Helper()
+	root, err := primitives.ParseWorkspaceRoot(t.TempDir())
+	if err != nil {
+		t.Fatalf("ParseWorkspaceRoot: %v", err)
+	}
+	return root
+}
+
+func sessionID(t *testing.T, value string) primitives.SessionID {
+	t.Helper()
+	sessionID, err := primitives.ParseSessionID(value)
+	if err != nil {
+		t.Fatalf("ParseSessionID: %v", err)
+	}
+	return sessionID
+}
+
+func writeFile(t *testing.T, root primitives.WorkspaceRoot, relPath, content string) {
+	t.Helper()
+	path := filepath.Join(root.String(), filepath.FromSlash(relPath))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", relPath, err)
+	}
+}
