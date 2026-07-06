@@ -1,0 +1,155 @@
+package cli
+
+import (
+	"bytes"
+	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"agent-vcs-again/internal/checkpoint"
+	eventlog "agent-vcs-again/internal/events"
+	"agent-vcs-again/internal/primitives"
+	"agent-vcs-again/internal/recall"
+)
+
+func TestTurnRecallCommandJSON(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+
+	sessionID := sessionID(t, "demo")
+	turnID, _ := primitives.NewTurnID(1)
+	if _, err := eventlog.Open(repo.MetadataDir).Append(eventlog.AppendInput{
+		SessionID: sessionID,
+		TurnID:    &turnID,
+		Type:      primitives.EventTypePromptUser,
+		Adapter:   primitives.AdapterCodex,
+		Payload:   json.RawMessage(`{"text":"hello"}`),
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	cmd := NewRootCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"turn", "recall", "--session", "demo", "--turn", "1", "--json", "--raw=false"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	var recalled recall.Turn
+	if err := json.Unmarshal(out.Bytes(), &recalled); err != nil {
+		t.Fatalf("unmarshal recall output: %v\n%s", err, out.String())
+	}
+	if recalled.SessionID != sessionID || recalled.TurnID != turnID {
+		t.Fatalf("recalled target = %s turn %s, want %s turn %s", recalled.SessionID, recalled.TurnID, sessionID, turnID)
+	}
+	if len(recalled.Events) != 1 || recalled.Events[0].Type != primitives.EventTypePromptUser {
+		t.Fatalf("events = %#v", recalled.Events)
+	}
+	if len(recalled.RawRecords) != 0 || len(recalled.RawRecordErrors) != 0 {
+		t.Fatalf("raw output should be disabled: records=%#v errors=%#v", recalled.RawRecords, recalled.RawRecordErrors)
+	}
+}
+
+func TestTurnRecallCommandIncludesTranscript(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+	t.Setenv("CLAUDE_CONFIG_DIR", root.String())
+
+	transcriptPath := filepath.Join(root.String(), "transcript.jsonl")
+	if err := os.WriteFile(transcriptPath, []byte(strings.Join([]string{
+		`{"type":"user","message":{"role":"user","content":"hello"}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"first transcript answer"}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"final transcript answer"}]}}`,
+	}, "\n")+"\n"), 0o644); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+
+	sessionID := sessionID(t, "demo")
+	turnID, _ := primitives.NewTurnID(1)
+	log := eventlog.Open(repo.MetadataDir)
+	if _, err := log.Append(eventlog.AppendInput{
+		SessionID: sessionID,
+		Type:      primitives.EventTypeSessionStart,
+		Adapter:   primitives.AdapterClaudeCode,
+		Payload:   json.RawMessage(`{"provider_session_id":"demo","transcript_path":` + quote(transcriptPath) + `}`),
+	}); err != nil {
+		t.Fatalf("Append session: %v", err)
+	}
+	if _, err := log.Append(eventlog.AppendInput{
+		SessionID: sessionID,
+		TurnID:    &turnID,
+		Type:      primitives.EventTypePromptUser,
+		Adapter:   primitives.AdapterClaudeCode,
+		Payload:   json.RawMessage(`{"text":"hello"}`),
+	}); err != nil {
+		t.Fatalf("Append prompt: %v", err)
+	}
+
+	cmd := NewRootCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"turn", "recall", "--session", "demo", "--turn", "1", "--json", "--raw=false", "--transcript"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	var recalled recall.Turn
+	if err := json.Unmarshal(out.Bytes(), &recalled); err != nil {
+		t.Fatalf("unmarshal recall output: %v\n%s", err, out.String())
+	}
+	if recalled.Transcript == nil || len(recalled.Transcript.Messages) != 3 {
+		t.Fatalf("transcript = %#v", recalled.Transcript)
+	}
+	if recalled.Transcript.Messages[0].Role != "user" || recalled.Transcript.Messages[0].Text != "hello" {
+		t.Fatalf("first transcript message = %#v", recalled.Transcript.Messages[0])
+	}
+	if recalled.Transcript.Messages[1].Text != "first transcript answer" || recalled.Transcript.Messages[2].Text != "final transcript answer" {
+		t.Fatalf("transcript messages = %#v", recalled.Transcript.Messages)
+	}
+}
+
+func requireGit(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git executable not found")
+	}
+}
+
+func workspaceRoot(t *testing.T) primitives.WorkspaceRoot {
+	t.Helper()
+	root, err := primitives.ParseWorkspaceRoot(t.TempDir())
+	if err != nil {
+		t.Fatalf("ParseWorkspaceRoot: %v", err)
+	}
+	return root
+}
+
+func sessionID(t *testing.T, value string) primitives.SessionID {
+	t.Helper()
+	sessionID, err := primitives.ParseSessionID(value)
+	if err != nil {
+		t.Fatalf("ParseSessionID: %v", err)
+	}
+	return sessionID
+}
+
+func quote(value string) string {
+	data, _ := json.Marshal(value)
+	return string(data)
+}
