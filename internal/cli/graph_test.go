@@ -157,6 +157,29 @@ func TestTruncateTextKeepsValidUTF8(t *testing.T) {
 	}
 }
 
+func TestShouldPageRenderedOutputOnlyWhenGraphOverflows(t *testing.T) {
+	data := []byte("one\ntwo\nthree\n")
+	if shouldPageRenderedOutput(false, data, 3, 80) {
+		t.Fatal("expected no pager when rendered output fits terminal height")
+	}
+	if !shouldPageRenderedOutput(false, data, 2, 80) {
+		t.Fatal("expected pager when rendered output exceeds terminal height")
+	}
+	if shouldPageRenderedOutput(true, data, 2, 80) {
+		t.Fatal("expected --no-pager override to disable pager")
+	}
+}
+
+func TestRenderedLineCountIgnoresANSIAndAccountsForWrapping(t *testing.T) {
+	data := []byte("short\n\x1b[38;5;120m12345678901\x1b[0m\n")
+	if got := renderedLineCount(data, 10); got != 3 {
+		t.Fatalf("renderedLineCount = %d, want 3", got)
+	}
+	if got := printableColumns("\x1b[38;5;120mgreen\x1b[0m"); got != 5 {
+		t.Fatalf("printableColumns = %d, want 5", got)
+	}
+}
+
 func checkpointInfo(sessionID primitives.SessionID, turnID primitives.TurnID, at time.Time, digit string) *checkpoint.CheckpointRefInfo {
 	commit := primitives.CommitSHA(strings.Repeat(digit, 40))
 	return &checkpoint.CheckpointRefInfo{

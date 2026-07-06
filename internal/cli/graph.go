@@ -9,7 +9,10 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
+	"unicode/utf8"
+	"unsafe"
 
 	"agent-vcs-again/internal/checkpoint"
 	eventlog "agent-vcs-again/internal/events"
@@ -62,14 +65,15 @@ func logCmd() *cobra.Command {
 			options := graphRenderOptions{
 				Verbose: verbose,
 			}
-			if shouldPageOutput(cmd.OutOrStdout(), noPager) {
-				var buf bytes.Buffer
-				if err := renderCheckpointGraph(&buf, sessions, options); err != nil {
-					return err
-				}
+			var buf bytes.Buffer
+			if err := renderCheckpointGraph(&buf, sessions, options); err != nil {
+				return err
+			}
+			if shouldPageOutput(cmd.OutOrStdout(), noPager, buf.Bytes()) {
 				return pageOutput(cmd.OutOrStdout(), buf.Bytes())
 			}
-			return renderCheckpointGraph(cmd.OutOrStdout(), sessions, options)
+			_, err = cmd.OutOrStdout().Write(buf.Bytes())
+			return err
 		},
 	}
 
@@ -705,7 +709,7 @@ func styleDim(value string, options graphRenderOptions) string {
 	return ansiDim + value + ansiReset
 }
 
-func shouldPageOutput(w io.Writer, noPager bool) bool {
+func shouldPageOutput(w io.Writer, noPager bool, data []byte) bool {
 	if noPager {
 		return false
 	}
@@ -717,7 +721,90 @@ func shouldPageOutput(w io.Writer, noPager bool) bool {
 	if err != nil {
 		return false
 	}
-	return info.Mode()&os.ModeCharDevice != 0
+	if info.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	height, width, ok := terminalSize(file)
+	if !ok || height <= 0 {
+		return false
+	}
+	return shouldPageRenderedOutput(noPager, data, height, width)
+}
+
+type terminalWindowSize struct {
+	Rows    uint16
+	Cols    uint16
+	XPixels uint16
+	YPixels uint16
+}
+
+func terminalSize(file *os.File) (height int, width int, ok bool) {
+	var size terminalWindowSize
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, file.Fd(), uintptr(syscall.TIOCGWINSZ), uintptr(unsafe.Pointer(&size)))
+	if errno != 0 || size.Rows == 0 {
+		return 0, 0, false
+	}
+	return int(size.Rows), int(size.Cols), true
+}
+
+func renderedLineCount(data []byte, width int) int {
+	if len(data) == 0 {
+		return 0
+	}
+
+	lines := strings.Split(string(data), "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) == 0 {
+		return 0
+	}
+
+	total := 0
+	for _, line := range lines {
+		columns := printableColumns(line)
+		if width <= 0 || columns <= width {
+			total++
+			continue
+		}
+		total += (columns + width - 1) / width
+	}
+	return total
+}
+
+func shouldPageRenderedOutput(noPager bool, data []byte, height, width int) bool {
+	if noPager || height <= 0 {
+		return false
+	}
+	return renderedLineCount(data, width) > height
+}
+
+func printableColumns(value string) int {
+	columns := 0
+	for i := 0; i < len(value); {
+		if value[i] == '\x1b' {
+			if i+1 < len(value) && value[i+1] == '[' {
+				i += 2
+				for i < len(value) {
+					if value[i] >= '@' && value[i] <= '~' {
+						i++
+						break
+					}
+					i++
+				}
+				continue
+			}
+			i++
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(value[i:])
+		if r == utf8.RuneError && size == 0 {
+			break
+		}
+		columns++
+		i += size
+	}
+	return columns
 }
 
 func pageOutput(fallback io.Writer, data []byte) error {
