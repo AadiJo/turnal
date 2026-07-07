@@ -86,6 +86,42 @@ func TestComputeBlameDeletedLineShiftsOlderOrigin(t *testing.T) {
 	}
 }
 
+func TestComputeBlameFollowsRenamedPath(t *testing.T) {
+	root, repo := newBlameRepo(t)
+	sessionID := blameSessionID(t, "demo")
+
+	writeBlameFile(t, root, "old.txt", "alpha\nbeta\ngamma\n")
+	captureBlameTurn(t, repo, root, sessionID, 1, "old.txt", "alpha\nbeta v1\ngamma\n", "edit beta")
+
+	turn2 := blameTurnID(t, 2)
+	if _, err := repo.CreateCheckpoint(sessionID, turn2, primitives.CheckpointPhasePre); err != nil {
+		t.Fatalf("turn 2 pre: %v", err)
+	}
+	if err := os.Rename(filepath.Join(root.String(), "old.txt"), filepath.Join(root.String(), "new.txt")); err != nil {
+		t.Fatalf("rename file: %v", err)
+	}
+	writeBlameFile(t, root, "new.txt", "alpha moved\nbeta v1\ngamma\n")
+	if _, err := repo.CreateCheckpoint(sessionID, turn2, primitives.CheckpointPhasePost); err != nil {
+		t.Fatalf("turn 2 post: %v", err)
+	}
+	appendBlamePrompt(t, repo, sessionID, turn2, "rename file")
+
+	path, _ := primitives.ParseRepoPath("new.txt")
+	result, err := New(repo).Compute(Query{Path: path})
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	if len(result.Entries) != 3 {
+		t.Fatalf("entries len = %d, want 3", len(result.Entries))
+	}
+	if result.Entries[0].Text != "alpha moved" || result.Entries[0].Origin.TurnID.Uint64() != 2 {
+		t.Fatalf("line 1 = %#v, want rename turn", result.Entries[0])
+	}
+	if result.Entries[1].Text != "beta v1" || result.Entries[1].Origin.TurnID.Uint64() != 1 {
+		t.Fatalf("line 2 = %#v, want pre-rename edit turn", result.Entries[1])
+	}
+}
+
 func TestComputeBlameSessionScopeUsesSessionEndpoint(t *testing.T) {
 	root, repo := newBlameRepo(t)
 	sessionA := blameSessionID(t, "session-a")
@@ -135,12 +171,12 @@ func TestComputeBlameFileDeletedAtLatest(t *testing.T) {
 	}
 }
 
-func TestComputeBlameMovedLineUsesCurrentDiffSemantics(t *testing.T) {
+func TestComputeBlameMovedLinePreservesPriorOrigin(t *testing.T) {
 	root, repo := newBlameRepo(t)
 	sessionID := blameSessionID(t, "demo")
 
-	writeBlameFile(t, root, "move.txt", "one\ntwo\nthree\n")
-	captureBlameTurn(t, repo, root, sessionID, 1, "move.txt", "two\none\nthree\n", "swap first two")
+	captureBlameTurn(t, repo, root, sessionID, 1, "move.txt", "one\ntwo\nthree\n", "seed file")
+	captureBlameTurn(t, repo, root, sessionID, 2, "move.txt", "two\none\nthree\n", "swap first two")
 
 	path, _ := primitives.ParseRepoPath("move.txt")
 	result, err := New(repo).Compute(Query{Path: path, Line: 2})
@@ -151,8 +187,8 @@ func TestComputeBlameMovedLineUsesCurrentDiffSemantics(t *testing.T) {
 	if entry.Text != "one" {
 		t.Fatalf("line 2 text = %q, want one", entry.Text)
 	}
-	if entry.Origin.Kind != "baseline" {
-		t.Fatalf("moved unchanged line origin = %#v, want baseline until explicit move detection exists", entry.Origin)
+	if entry.Origin.Kind != "turn" || entry.Origin.TurnID.Uint64() != 1 {
+		t.Fatalf("moved unchanged line origin = %#v, want original write turn", entry.Origin)
 	}
 }
 

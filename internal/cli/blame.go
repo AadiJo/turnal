@@ -27,8 +27,9 @@ use Git commit ancestry, and it does not inspect uncheckpointed workspace edits.
 Without :line, all lines in the latest completed post checkpoint are shown.
 Lines marked "baseline" existed before the scoped completed turn history. The
 --session flag scopes both the replay history and the latest checkpoint to that
-session. Rename and move detection are not yet modeled; path history is replayed
-with no-renames diffs.`,
+session. File renames are followed with Git rename detection, and unchanged
+lines moved within a patch keep their earlier origin when the move can be
+matched exactly.`,
 		SilenceUsage: true,
 		Args:         cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
