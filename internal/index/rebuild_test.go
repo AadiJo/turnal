@@ -88,6 +88,13 @@ func TestRebuildPopulatesGraphRows(t *testing.T) {
 	if eventRows != 3 {
 		t.Fatalf("event rows = %d, want 3", eventRows)
 	}
+	var blameCacheRows int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM blame_cache`).Scan(&blameCacheRows); err != nil {
+		t.Fatalf("count blame cache rows: %v", err)
+	}
+	if blameCacheRows != 0 {
+		t.Fatalf("blame cache rows = %d, want empty cache after rebuild", blameCacheRows)
+	}
 
 	sessions, err := store.LoadGraph(GraphQuery{})
 	if err != nil {

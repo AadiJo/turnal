@@ -2,11 +2,15 @@ package blame
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"agent-vcs-again/internal/checkpoint"
+	queryindex "agent-vcs-again/internal/index"
 	"agent-vcs-again/internal/primitives"
 )
 
@@ -30,12 +34,31 @@ func (engine Engine) Compute(query Query) (Result, error) {
 	}
 
 	path := query.Path.String()
+	latest := turns[len(turns)-1].Post
+	historyKey := blameHistoryKey(turns)
+
+	store := engine.openBlameCache()
+	if store != nil {
+		defer store.Close()
+		cached, found, err := store.LoadBlameCache(queryindex.BlameCacheQuery{
+			ScopeSession:  query.SessionID,
+			Path:          query.Path,
+			HistoryKey:    historyKey,
+			LatestRef:     latest.Ref,
+			LatestCommit:  latest.Commit,
+			CompleteTurns: len(turns),
+			Line:          query.Line,
+		})
+		if err == nil && found {
+			return engine.resultFromCache(query, cached, turns)
+		}
+	}
+
 	origins, currentExists, warnings, err := engine.replayPath(path, turns)
 	if err != nil {
 		return Result{}, err
 	}
 
-	latest := turns[len(turns)-1].Post
 	finalBytes, finalExists, err := engine.Repo.CommitFileBytesIfExists(latest.Commit, path)
 	if err != nil {
 		return Result{}, err
@@ -55,16 +78,19 @@ func (engine Engine) Compute(query Query) (Result, error) {
 		return Result{}, fmt.Errorf("%w: %s:%d", ErrLineNotFound, path, query.Line)
 	}
 
-	entries := make([]Entry, 0, len(finalLines))
-	for index, text := range finalLines {
-		lineNumber := index + 1
-		if query.Line != 0 && query.Line != lineNumber {
-			continue
-		}
-		entries = append(entries, Entry{
-			Line:   lineNumber,
-			Text:   text,
-			Origin: origins[index],
+	allEntries := entriesForLines(finalLines, origins, 0)
+	if store != nil {
+		_ = store.SaveBlameCache(queryindex.BlameCacheSnapshot{
+			ScopeSession:  query.SessionID,
+			Path:          query.Path,
+			HistoryKey:    historyKey,
+			LatestRef:     latest.Ref,
+			LatestCommit:  latest.Commit,
+			LatestTime:    latest.Time,
+			CompleteTurns: len(turns),
+			LineCount:     len(finalLines),
+			Entries:       cacheEntriesFromBlame(allEntries),
+			Warnings:      warnings,
 		})
 	}
 
@@ -73,10 +99,151 @@ func (engine Engine) Compute(query Query) (Result, error) {
 		LatestRef:     latest.Ref,
 		LatestCommit:  latest.Commit,
 		LatestTime:    latest.Time,
-		Entries:       entries,
+		Entries:       filterEntries(allEntries, query.Line),
 		Warnings:      warnings,
 		CompleteTurns: len(turns),
 	}, nil
+}
+
+func (engine Engine) openBlameCache() *queryindex.Store {
+	exists, err := queryindex.Exists(engine.Repo.MetadataDir)
+	if err != nil || !exists {
+		return nil
+	}
+	store, err := queryindex.Open(engine.Repo.MetadataDir)
+	if err != nil {
+		return nil
+	}
+	healthy, err := store.Healthy()
+	if err != nil || !healthy {
+		_ = store.Close()
+		return nil
+	}
+	return store
+}
+
+func (engine Engine) resultFromCache(query Query, cached queryindex.BlameCacheSnapshot, turns []completeTurn) (Result, error) {
+	if query.Line > cached.LineCount {
+		return Result{}, fmt.Errorf("%w: %s:%d", ErrLineNotFound, query.Path, query.Line)
+	}
+
+	entries := make([]Entry, 0, len(cached.Entries))
+	for _, cachedEntry := range cached.Entries {
+		entries = append(entries, Entry{
+			Line:   cachedEntry.Line,
+			Text:   cachedEntry.Text,
+			Origin: engine.hydrateCachedOrigin(originFromCache(cachedEntry.Origin), turns),
+		})
+	}
+
+	return Result{
+		Path:          query.Path,
+		LatestRef:     cached.LatestRef,
+		LatestCommit:  cached.LatestCommit,
+		LatestTime:    cached.LatestTime,
+		Entries:       entries,
+		Warnings:      cached.Warnings,
+		CompleteTurns: cached.CompleteTurns,
+	}, nil
+}
+
+func (engine Engine) hydrateCachedOrigin(origin Origin, turns []completeTurn) Origin {
+	if origin.Kind != "turn" || origin.SessionID == "" || origin.TurnID == 0 {
+		return origin
+	}
+	for _, turn := range turns {
+		if turn.SessionID == origin.SessionID && turn.TurnID == origin.TurnID {
+			return turnOrigin(turn)
+		}
+	}
+	return origin
+}
+
+func entriesForLines(lines []string, origins []Origin, line int) []Entry {
+	entries := make([]Entry, 0, len(lines))
+	for index, text := range lines {
+		lineNumber := index + 1
+		if line != 0 && line != lineNumber {
+			continue
+		}
+		entries = append(entries, Entry{
+			Line:   lineNumber,
+			Text:   text,
+			Origin: origins[index],
+		})
+	}
+	return entries
+}
+
+func filterEntries(entries []Entry, line int) []Entry {
+	if line == 0 {
+		return entries
+	}
+	for _, entry := range entries {
+		if entry.Line == line {
+			return []Entry{entry}
+		}
+	}
+	return nil
+}
+
+func cacheEntriesFromBlame(entries []Entry) []queryindex.BlameCacheEntry {
+	cached := make([]queryindex.BlameCacheEntry, 0, len(entries))
+	for _, entry := range entries {
+		cached = append(cached, queryindex.BlameCacheEntry{
+			Line:   entry.Line,
+			Text:   entry.Text,
+			Origin: originToCache(entry.Origin),
+		})
+	}
+	return cached
+}
+
+func originToCache(origin Origin) queryindex.BlameCacheOrigin {
+	return queryindex.BlameCacheOrigin{
+		Kind:          origin.Kind,
+		SessionID:     origin.SessionID,
+		TurnID:        origin.TurnID,
+		CheckpointRef: origin.CheckpointRef,
+		Commit:        origin.Commit,
+		Time:          origin.Time,
+		Adapter:       origin.Adapter,
+		Prompt:        origin.Prompt,
+		ToolNames:     append([]string(nil), origin.ToolNames...),
+	}
+}
+
+func originFromCache(origin queryindex.BlameCacheOrigin) Origin {
+	return Origin{
+		Kind:          origin.Kind,
+		SessionID:     origin.SessionID,
+		TurnID:        origin.TurnID,
+		CheckpointRef: origin.CheckpointRef,
+		Commit:        origin.Commit,
+		Time:          origin.Time,
+		Adapter:       origin.Adapter,
+		Prompt:        origin.Prompt,
+		ToolNames:     append([]string(nil), origin.ToolNames...),
+	}
+}
+
+func blameHistoryKey(turns []completeTurn) string {
+	hash := sha256.New()
+	for _, turn := range turns {
+		writeHistoryField(hash, turn.SessionID.String())
+		writeHistoryField(hash, turn.TurnID.String())
+		writeHistoryField(hash, turn.Pre.Ref.String())
+		writeHistoryField(hash, turn.Pre.Commit.String())
+		writeHistoryField(hash, turn.Post.Ref.String())
+		writeHistoryField(hash, turn.Post.Commit.String())
+		writeHistoryField(hash, turn.Post.Time.UTC().Format(time.RFC3339Nano))
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func writeHistoryField(hash interface{ Write([]byte) (int, error) }, value string) {
+	_, _ = hash.Write([]byte(value))
+	_, _ = hash.Write([]byte{0})
 }
 
 func (engine Engine) replayPath(path string, turns []completeTurn) ([]Origin, bool, []string, error) {

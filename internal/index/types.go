@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	SchemaVersion = 1
+	SchemaVersion = 2
 	DBFileName    = "index.sqlite"
 )
 
@@ -66,4 +66,45 @@ type TurnEventSummary struct {
 	TypeCounts map[primitives.EventType]int
 	First      time.Time
 	Last       time.Time
+}
+
+type BlameCacheQuery struct {
+	ScopeSession  primitives.SessionID
+	Path          primitives.RepoPath
+	HistoryKey    string
+	LatestRef     primitives.CheckpointRef
+	LatestCommit  primitives.CommitSHA
+	CompleteTurns int
+	Line          int
+}
+
+type BlameCacheSnapshot struct {
+	ScopeSession  primitives.SessionID
+	Path          primitives.RepoPath
+	HistoryKey    string
+	LatestRef     primitives.CheckpointRef
+	LatestCommit  primitives.CommitSHA
+	LatestTime    time.Time
+	CompleteTurns int
+	LineCount     int
+	Entries       []BlameCacheEntry
+	Warnings      []string
+}
+
+type BlameCacheEntry struct {
+	Line   int
+	Text   string
+	Origin BlameCacheOrigin
+}
+
+type BlameCacheOrigin struct {
+	Kind          string
+	SessionID     primitives.SessionID
+	TurnID        primitives.TurnID
+	CheckpointRef primitives.CheckpointRef
+	Commit        primitives.CommitSHA
+	Time          time.Time
+	Adapter       string
+	Prompt        string
+	ToolNames     []string
 }
