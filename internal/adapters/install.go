@@ -33,6 +33,19 @@ type InstallOptions struct {
 	HookCommand string
 }
 
+type UninstallResult struct {
+	Target          Target
+	ConfigPath      string
+	ConfigExists    bool
+	RemovedCommands int
+	Changed         bool
+	DryRun          bool
+}
+
+type UninstallOptions struct {
+	DryRun bool
+}
+
 func ResolveTargets(projectRoot string, target Target) ([]Target, error) {
 	switch target {
 	case TargetNone:
@@ -76,6 +89,33 @@ func InstallWithOptions(projectRoot string, targets []Target, opts InstallOption
 			results = append(results, result)
 		case TargetCodex:
 			result, err := InstallCodexHookWithOptions(projectRoot, opts)
+			if err != nil {
+				return nil, err
+			}
+			results = append(results, result)
+		default:
+			return nil, fmt.Errorf("unsupported adapter target %q", target)
+		}
+	}
+	return results, nil
+}
+
+func Uninstall(projectRoot string, targets []Target) ([]UninstallResult, error) {
+	return UninstallWithOptions(projectRoot, targets, UninstallOptions{})
+}
+
+func UninstallWithOptions(projectRoot string, targets []Target, opts UninstallOptions) ([]UninstallResult, error) {
+	results := make([]UninstallResult, 0, len(targets))
+	for _, target := range targets {
+		switch target {
+		case TargetClaude:
+			result, err := UninstallClaudeHookWithOptions(projectRoot, opts)
+			if err != nil {
+				return nil, err
+			}
+			results = append(results, result)
+		case TargetCodex:
+			result, err := UninstallCodexHookWithOptions(projectRoot, opts)
 			if err != nil {
 				return nil, err
 			}
@@ -137,6 +177,66 @@ func InstallClaudeHookWithOptions(projectRoot string, opts InstallOptions) (Inst
 	return result, nil
 }
 
+func UninstallClaudeHook(projectRoot string) (UninstallResult, error) {
+	return UninstallClaudeHookWithOptions(projectRoot, UninstallOptions{})
+}
+
+func UninstallClaudeHookWithOptions(projectRoot string, opts UninstallOptions) (UninstallResult, error) {
+	result := UninstallResult{Target: TargetClaude, DryRun: opts.DryRun}
+	settingsPath := filepath.Join(projectRoot, ".claude", "settings.json")
+	result.ConfigPath = settingsPath
+
+	info, err := os.Stat(settingsPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return result, nil
+		}
+		return result, fmt.Errorf("stat Claude settings: %w", err)
+	}
+	if info.IsDir() {
+		return result, fmt.Errorf("Claude settings is a directory: %s", settingsPath)
+	}
+	result.ConfigExists = true
+
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		return result, fmt.Errorf("read Claude settings: %w", err)
+	}
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return result, nil
+	}
+
+	settings := map[string]any{}
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return result, fmt.Errorf("parse Claude settings %s: %w", settingsPath, err)
+	}
+
+	hooks, _ := settings["hooks"].(map[string]any)
+	if hooks == nil {
+		return result, nil
+	}
+	result.RemovedCommands, result.Changed = removeAgentVCSHookCommands(hooks)
+	if !result.Changed {
+		return result, nil
+	}
+	if len(hooks) == 0 {
+		delete(settings, "hooks")
+	}
+	if opts.DryRun {
+		return result, nil
+	}
+
+	output, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return result, fmt.Errorf("marshal Claude settings: %w", err)
+	}
+	output = append(output, '\n')
+	if err := os.WriteFile(settingsPath, output, info.Mode().Perm()); err != nil {
+		return result, fmt.Errorf("write Claude settings: %w", err)
+	}
+	return result, nil
+}
+
 func InstallCodexHook(projectRoot string) (InstallResult, error) {
 	return InstallCodexHookWithOptions(projectRoot, InstallOptions{})
 }
@@ -187,6 +287,65 @@ func InstallCodexHookWithOptions(projectRoot string, opts InstallOptions) (Insta
 	return result, nil
 }
 
+func UninstallCodexHook(projectRoot string) (UninstallResult, error) {
+	return UninstallCodexHookWithOptions(projectRoot, UninstallOptions{})
+}
+
+func UninstallCodexHookWithOptions(projectRoot string, opts UninstallOptions) (UninstallResult, error) {
+	result := UninstallResult{Target: TargetCodex, DryRun: opts.DryRun}
+	configPath := filepath.Join(projectRoot, ".codex", "config.toml")
+	result.ConfigPath = configPath
+
+	info, err := os.Stat(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return result, nil
+		}
+		return result, fmt.Errorf("stat Codex config: %w", err)
+	}
+	if info.IsDir() {
+		return result, fmt.Errorf("Codex config is a directory: %s", configPath)
+	}
+	result.ConfigExists = true
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return result, fmt.Errorf("read Codex config: %w", err)
+	}
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return result, nil
+	}
+
+	config := map[string]any{}
+	if err := toml.Unmarshal(data, &config); err != nil {
+		return result, fmt.Errorf("parse Codex config %s: %w", configPath, err)
+	}
+
+	hooks, _ := config["hooks"].(map[string]any)
+	if hooks == nil {
+		return result, nil
+	}
+	result.RemovedCommands, result.Changed = removeAgentVCSHookCommands(hooks)
+	if !result.Changed {
+		return result, nil
+	}
+	if len(hooks) == 0 {
+		delete(config, "hooks")
+	}
+	if opts.DryRun {
+		return result, nil
+	}
+
+	output, err := toml.Marshal(config)
+	if err != nil {
+		return result, fmt.Errorf("marshal Codex config: %w", err)
+	}
+	if err := os.WriteFile(configPath, output, info.Mode().Perm()); err != nil {
+		return result, fmt.Errorf("write Codex config: %w", err)
+	}
+	return result, nil
+}
+
 func (opts InstallOptions) hookCommand() string {
 	if configured := strings.TrimSpace(opts.HookCommand); configured != "" {
 		return configured
@@ -206,6 +365,23 @@ func enableCodexHooksFeature(config map[string]any) {
 func mergeHookCommand(hooks map[string]any, eventName, command string) {
 	groups := filterAgentVCSHookCommands(normalizeHookGroups(hooks[eventName]))
 	hooks[eventName] = append(groups, hookGroup(command))
+}
+
+func removeAgentVCSHookCommands(hooks map[string]any) (int, bool) {
+	removedTotal := 0
+	for eventName, value := range hooks {
+		filtered, removed := filterAgentVCSHookCommandsWithCount(normalizeHookGroups(value))
+		if removed == 0 {
+			continue
+		}
+		removedTotal += removed
+		if len(filtered) == 0 {
+			delete(hooks, eventName)
+			continue
+		}
+		hooks[eventName] = filtered
+	}
+	return removedTotal, removedTotal > 0
 }
 
 func normalizeHookArray(value any) ([]any, bool) {
@@ -236,7 +412,13 @@ func normalizeHookGroups(value any) []any {
 }
 
 func filterAgentVCSHookCommands(groups []any) []any {
+	filtered, _ := filterAgentVCSHookCommandsWithCount(groups)
+	return filtered
+}
+
+func filterAgentVCSHookCommandsWithCount(groups []any) ([]any, int) {
 	filtered := make([]any, 0, len(groups))
+	removed := 0
 	for _, group := range groups {
 		groupMap, ok := group.(map[string]any)
 		if !ok {
@@ -259,6 +441,7 @@ func filterAgentVCSHookCommands(groups []any) []any {
 			}
 			command, _ := hookMap["command"].(string)
 			if IsAgentVCSHookCommand(command) {
+				removed++
 				continue
 			}
 			nextHookEntries = append(nextHookEntries, hookEntry)
@@ -274,7 +457,7 @@ func filterAgentVCSHookCommands(groups []any) []any {
 		nextGroup["hooks"] = nextHookEntries
 		filtered = append(filtered, nextGroup)
 	}
-	return filtered
+	return filtered, removed
 }
 
 func hookGroup(command string) map[string]any {
