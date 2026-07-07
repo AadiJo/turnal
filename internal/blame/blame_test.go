@@ -1,6 +1,7 @@
 package blame
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"os"
@@ -10,6 +11,7 @@ import (
 
 	"agent-vcs-again/internal/checkpoint"
 	eventlog "agent-vcs-again/internal/events"
+	queryindex "agent-vcs-again/internal/index"
 	"agent-vcs-again/internal/primitives"
 )
 
@@ -217,6 +219,63 @@ func TestComputeBlameEmptyFileHasNoEntries(t *testing.T) {
 	_, err = New(repo).Compute(Query{Path: path, Line: 1})
 	if !errors.Is(err, ErrLineNotFound) {
 		t.Fatalf("line 1 error = %v, want ErrLineNotFound", err)
+	}
+}
+
+func TestComputeBlameUsesSQLiteCacheAndInvalidatesOnHistoryChange(t *testing.T) {
+	root, repo := newBlameRepo(t)
+	sessionID := blameSessionID(t, "demo")
+	captureBlameTurn(t, repo, root, sessionID, 1, "cache.txt", "first\nsecond\n", "cache fill")
+
+	if _, err := queryindex.Rebuild(repo); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+	path, _ := primitives.ParseRepoPath("cache.txt")
+	first, err := New(repo).Compute(Query{Path: path, Line: 1})
+	if err != nil {
+		t.Fatalf("initial Compute: %v", err)
+	}
+	if first.Entries[0].Text != "first" {
+		t.Fatalf("initial line text = %q, want first", first.Entries[0].Text)
+	}
+
+	db, err := sql.Open("sqlite", queryindex.PathsForMetadata(repo.MetadataDir).DBPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+	var rows int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM blame_cache WHERE path = ?`, "cache.txt").Scan(&rows); err != nil {
+		t.Fatalf("count blame cache: %v", err)
+	}
+	if rows != 3 {
+		t.Fatalf("blame cache rows = %d, want sentinel + 2 lines", rows)
+	}
+	if _, err := db.Exec(`UPDATE blame_cache SET line_text = ?, origin_prompt = ? WHERE path = ? AND line_no = 1`, "from cache", "stale prompt", "cache.txt"); err != nil {
+		t.Fatalf("mutate blame cache: %v", err)
+	}
+
+	cached, err := New(repo).Compute(Query{Path: path, Line: 1})
+	if err != nil {
+		t.Fatalf("cached Compute: %v", err)
+	}
+	if cached.Entries[0].Text != "from cache" {
+		t.Fatalf("cached line text = %q, want from cache", cached.Entries[0].Text)
+	}
+	if cached.Entries[0].Origin.Prompt != "cache fill" {
+		t.Fatalf("cached origin prompt = %q, want current event summary", cached.Entries[0].Origin.Prompt)
+	}
+
+	captureBlameTurn(t, repo, root, sessionID, 2, "cache.txt", "fresh\nsecond\n", "new history")
+	updated, err := New(repo).Compute(Query{Path: path, Line: 1})
+	if err != nil {
+		t.Fatalf("updated Compute: %v", err)
+	}
+	if updated.Entries[0].Text != "fresh" {
+		t.Fatalf("updated line text = %q, want fresh after history change", updated.Entries[0].Text)
+	}
+	if updated.Entries[0].Origin.TurnID.Uint64() != 2 {
+		t.Fatalf("updated origin = %#v, want turn 2", updated.Entries[0].Origin)
 	}
 }
 

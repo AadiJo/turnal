@@ -21,8 +21,10 @@ func blameCmd() *cobra.Command {
 		Short: "Show which completed turn last changed a line",
 		Long: `Show which completed turn last changed lines in a file.
 
-Blame is computed lazily from completed pre/post checkpoint pairs. It does not
-use Git commit ancestry, and it does not inspect uncheckpointed workspace edits.
+Blame uses the disposable SQLite index as a line cache when available. Cache
+misses are computed lazily from completed pre/post checkpoint pairs. It does
+not use Git commit ancestry, and it does not inspect uncheckpointed workspace
+edits.
 
 Without :line, all lines in the latest completed post checkpoint are shown.
 Lines marked "baseline" existed before the scoped completed turn history. The

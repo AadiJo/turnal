@@ -91,7 +91,33 @@ CREATE VIRTUAL TABLE turn_search USING fts5(
 	tokenize = 'unicode61'
 );
 
+CREATE TABLE blame_cache (
+	scope_session_id       TEXT    NOT NULL,
+	path                   TEXT    NOT NULL,
+	history_key            TEXT    NOT NULL,
+	latest_ref             TEXT    NOT NULL,
+	latest_commit_sha      TEXT    NOT NULL,
+	latest_committed_at    TEXT    NOT NULL,
+	complete_turn_count    INTEGER NOT NULL,
+	line_count             INTEGER NOT NULL,
+	line_no                INTEGER NOT NULL,
+	line_text              TEXT    NOT NULL,
+	warnings_json          TEXT    NOT NULL DEFAULT '[]',
+	origin_kind            TEXT    NOT NULL,
+	origin_session_id      TEXT,
+	origin_turn_id         INTEGER,
+	origin_checkpoint_ref  TEXT,
+	origin_commit_sha      TEXT,
+	origin_time            TEXT,
+	origin_adapter         TEXT,
+	origin_prompt          TEXT,
+	origin_tool_names_json TEXT    NOT NULL DEFAULT '[]',
+	cached_at              TEXT    NOT NULL,
+	PRIMARY KEY (scope_session_id, path, history_key, line_no)
+);
+
 CREATE INDEX idx_turns_session ON turns(session_id, turn_id DESC);
 CREATE INDEX idx_events_turn ON events(session_id, turn_id, seq);
 CREATE INDEX idx_checkpoints_session ON checkpoints(session_id, turn_id, phase);
+CREATE INDEX idx_blame_cache_lookup ON blame_cache(scope_session_id, path, history_key, line_no);
 `
