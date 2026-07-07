@@ -74,10 +74,21 @@ func initCmd() *cobra.Command {
 				fmt.Fprintln(cmd.OutOrStdout(), "gitignore update skipped")
 			}
 			if effective.GitSync.Enabled {
-				if err := enableWorkspaceGitSync(root.String()); err != nil {
+				if err := persistInitConfig(root.String(), initConfigPersistence{
+					Agent:        persistedString(cmd.Flags().Changed("agent"), agent),
+					InstallHooks: persistedBool(cmd.Flags().Changed("skip-hooks"), !skipHooks),
+					GitSync:      persistedBool(true, true),
+				}); err != nil {
 					return err
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "enabled git-sync capture: %s\n", agentconfig.WorkspacePath(root.String()))
+			} else if cmd.Flags().Changed("agent") || cmd.Flags().Changed("skip-hooks") {
+				if err := persistInitConfig(root.String(), initConfigPersistence{
+					Agent:        persistedString(cmd.Flags().Changed("agent"), agent),
+					InstallHooks: persistedBool(cmd.Flags().Changed("skip-hooks"), !skipHooks),
+				}); err != nil {
+					return err
+				}
 			}
 
 			targets, err := adapters.ResolveTargets(root.String(), adapters.Target(effective.Init.Agent))
@@ -111,16 +122,48 @@ func initCmd() *cobra.Command {
 	return cmd
 }
 
-func enableWorkspaceGitSync(root string) error {
+type initConfigPersistence struct {
+	Agent        *string
+	InstallHooks *bool
+	GitSync      *bool
+}
+
+func persistedString(enabled bool, value string) *string {
+	if !enabled {
+		return nil
+	}
+	return &value
+}
+
+func persistedBool(enabled bool, value bool) *bool {
+	if !enabled {
+		return nil
+	}
+	return &value
+}
+
+func persistInitConfig(root string, persistence initConfigPersistence) error {
 	path := agentconfig.WorkspacePath(root)
 	file, err := agentconfig.ReadFileLayer(path)
 	if err != nil {
 		return err
 	}
 	version := 1
-	enabled := true
 	file.Version = &version
-	file.GitSync = &agentconfig.GitSyncFile{Enabled: &enabled}
+	if persistence.Agent != nil || persistence.InstallHooks != nil {
+		if file.Init == nil {
+			file.Init = &agentconfig.InitFile{}
+		}
+		if persistence.Agent != nil {
+			file.Init.Agent = persistence.Agent
+		}
+		if persistence.InstallHooks != nil {
+			file.Init.InstallHooks = persistence.InstallHooks
+		}
+	}
+	if persistence.GitSync != nil {
+		file.GitSync = &agentconfig.GitSyncFile{Enabled: persistence.GitSync}
+	}
 	data, err := toml.Marshal(file)
 	if err != nil {
 		return fmt.Errorf("marshal workspace config: %w", err)

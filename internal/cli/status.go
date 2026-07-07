@@ -52,7 +52,7 @@ func statusCmd() *cobra.Command {
 			hooksOK := false
 			if configErr == nil {
 				hooksOK = true
-				if effective.Init.InstallHooks || effective.Run.InstallHooks {
+				if effective.Init.InstallHooks {
 					targets, err := adapters.ResolveTargets(root.String(), adapters.Target(effective.Init.Agent))
 					if err != nil {
 						hooksOK = false
