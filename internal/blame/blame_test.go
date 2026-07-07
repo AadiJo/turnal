@@ -88,6 +88,45 @@ func TestComputeBlameDeletedLineShiftsOlderOrigin(t *testing.T) {
 	}
 }
 
+func TestComputeBlameAppendedLineBelongsToAppendingTurn(t *testing.T) {
+	root, repo := newBlameRepo(t)
+	sessionID := blameSessionID(t, "demo")
+
+	writeBlameFile(t, root, "notes.txt", "alpha\nbeta\n")
+	captureBlameTurn(t, repo, root, sessionID, 1, "notes.txt", "alpha\nbeta\ngamma\n", "append gamma")
+
+	path, _ := primitives.ParseRepoPath("notes.txt")
+	result, err := New(repo).Compute(Query{Path: path, SessionID: sessionID})
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	if len(result.Entries) != 3 {
+		t.Fatalf("entries len = %d, want 3", len(result.Entries))
+	}
+
+	want := []struct {
+		text string
+		kind string
+		turn uint64
+	}{
+		{text: "alpha", kind: "baseline"},
+		{text: "beta", kind: "baseline"},
+		{text: "gamma", kind: "turn", turn: 1},
+	}
+	for index, wantEntry := range want {
+		entry := result.Entries[index]
+		if entry.Text != wantEntry.text {
+			t.Fatalf("line %d text = %q, want %q", index+1, entry.Text, wantEntry.text)
+		}
+		if entry.Origin.Kind != wantEntry.kind {
+			t.Fatalf("line %d origin kind = %q, want %q; entry=%#v", index+1, entry.Origin.Kind, wantEntry.kind, entry)
+		}
+		if wantEntry.turn != 0 && entry.Origin.TurnID.Uint64() != wantEntry.turn {
+			t.Fatalf("line %d origin turn = %s, want %d; entry=%#v", index+1, entry.Origin.TurnID, wantEntry.turn, entry)
+		}
+	}
+}
+
 func TestComputeBlameFollowsRenamedPath(t *testing.T) {
 	root, repo := newBlameRepo(t)
 	sessionID := blameSessionID(t, "demo")
@@ -345,6 +384,31 @@ func TestParseAndApplyUnifiedHunks(t *testing.T) {
 	for index, got := range applied {
 		if got.Kind != "turn" {
 			t.Fatalf("origin %d = %#v, want turn", index, got)
+		}
+	}
+}
+
+func TestApplyUnifiedHunksAppendPreservesExistingOrigins(t *testing.T) {
+	patch := []byte(`diff --git a/app.txt b/app.txt
+--- a/app.txt
++++ b/app.txt
+@@ -2,0 +3 @@ beta
++gamma
+`)
+	hunks, err := parseUnifiedHunks(patch)
+	if err != nil {
+		t.Fatalf("parseUnifiedHunks: %v", err)
+	}
+
+	applied, err := applyHunks([]Origin{{Kind: "first"}, {Kind: "second"}}, hunks, Origin{Kind: "turn"})
+	if err != nil {
+		t.Fatalf("applyHunks: %v", err)
+	}
+	gotKinds := []string{applied[0].Kind, applied[1].Kind, applied[2].Kind}
+	wantKinds := []string{"first", "second", "turn"}
+	for index := range wantKinds {
+		if gotKinds[index] != wantKinds[index] {
+			t.Fatalf("origin kinds = %#v, want %#v", gotKinds, wantKinds)
 		}
 	}
 }

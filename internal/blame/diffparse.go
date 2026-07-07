@@ -148,10 +148,7 @@ func applyHunks(origins []Origin, hunks []hunk, origin Origin) ([]Origin, error)
 
 	delta := 0
 	for _, hunk := range hunks {
-		index := 0
-		if hunk.OldStart > 0 {
-			index = hunk.OldStart - 1
-		}
+		index := hunkApplyIndex(hunk)
 		index += delta
 		if index < 0 || index > len(applied) {
 			return nil, fmt.Errorf("hunk start %d maps outside %d tracked lines", hunk.OldStart, len(applied))
@@ -197,6 +194,16 @@ func applyHunks(origins []Origin, hunks []hunk, origin Origin) ([]Origin, error)
 		delta += hunk.NewCount - hunk.OldCount
 	}
 	return applied, nil
+}
+
+func hunkApplyIndex(hunk hunk) int {
+	if hunk.OldCount == 0 {
+		return hunk.OldStart
+	}
+	if hunk.OldStart > 0 {
+		return hunk.OldStart - 1
+	}
+	return 0
 }
 
 func movedOriginPool(origins []Origin, hunks []hunk) (map[string][]Origin, error) {
