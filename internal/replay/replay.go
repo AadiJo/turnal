@@ -11,13 +11,13 @@ import (
 	"strings"
 	"time"
 
-	"agent-vcs-again/internal/checkpoint"
-	"agent-vcs-again/internal/primitives"
+	"github.com/AadiJo/turnal/internal/checkpoint"
+	"github.com/AadiJo/turnal/internal/primitives"
 )
 
 const (
 	sessionVersion = 1
-	markerFileName = ".agent-vcs-replay.json"
+	markerFileName = ".turnal-replay.json"
 )
 
 type Manager struct {

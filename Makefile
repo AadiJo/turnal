@@ -5,11 +5,10 @@ BIN_DIR ?= bin
 
 build:
 	mkdir -p $(BIN_DIR)
-	$(GO) build -o $(BIN_DIR)/agent-vcs ./cmd/agent-vcs
-	$(GO) build -o $(BIN_DIR)/acs ./cmd/acs
+	$(GO) build -o $(BIN_DIR)/turnal ./cmd/turnal
 
 test:
 	$(GO) test ./...
 
 install:
-	$(GO) install ./cmd/agent-vcs ./cmd/acs
+	$(GO) install ./cmd/turnal

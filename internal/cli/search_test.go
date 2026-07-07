@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	eventlog "agent-vcs-again/internal/events"
-	"agent-vcs-again/internal/primitives"
+	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/primitives"
 )
 
 func TestSearchCommandUsesRebuiltIndex(t *testing.T) {

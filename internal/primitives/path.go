@@ -72,7 +72,7 @@ func ParseRepoPath(value string) (RepoPath, error) {
 			return "", invalid("repo path", value, "must not contain empty, . or .. segments")
 		}
 		switch lowerSegment {
-		case ".git", ".agent-vcs":
+		case ".git", ".turnal":
 			return "", invalid("repo path", value, "must not point inside tool metadata directories")
 		}
 	}

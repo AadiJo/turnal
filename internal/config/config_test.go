@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"agent-vcs-again/internal/primitives"
+	"github.com/AadiJo/turnal/internal/primitives"
 )
 
 func TestResolveDefaultsWhenFilesAreMissing(t *testing.T) {
@@ -43,7 +43,7 @@ func TestResolveDefaultsWhenFilesAreMissing(t *testing.T) {
 func TestResolveMergesWorkspaceOverGlobal(t *testing.T) {
 	root := t.TempDir()
 	userConfigDir := t.TempDir()
-	writeConfig(t, filepath.Join(userConfigDir, "agent-vcs", "config.toml"), `
+	writeConfig(t, filepath.Join(userConfigDir, "turnal", "config.toml"), `
 version = 1
 
 [init]
@@ -54,7 +54,7 @@ install_hooks = true
 quiet = true
 
 [hooks]
-command = "global-agent-vcs"
+command = "global-turnal"
 
 [bootstrap]
 init_workspace_git = false
@@ -73,7 +73,7 @@ version = 1
 install_hooks = false
 
 [hooks]
-command = "workspace-agent-vcs"
+command = "workspace-turnal"
 
 [bootstrap]
 update_gitignore = false
@@ -101,7 +101,7 @@ enabled = false
 	if !effective.Run.Quiet {
 		t.Fatal("global run.quiet=true was not applied")
 	}
-	if effective.Hooks.Command != "workspace-agent-vcs" {
+	if effective.Hooks.Command != "workspace-turnal" {
 		t.Fatalf("hooks command = %q, want workspace command", effective.Hooks.Command)
 	}
 	if effective.Bootstrap.InitWorkspaceGit {
@@ -123,7 +123,7 @@ enabled = false
 
 func TestResolveEnvAndOverridesWin(t *testing.T) {
 	loader := testLoader(t, map[string]string{
-		HookCommandEnvVar: "env-agent-vcs",
+		HookCommandEnvVar: "env-turnal",
 	})
 	installHooks := false
 	quiet := false
@@ -141,7 +141,7 @@ func TestResolveEnvAndOverridesWin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if effective.Hooks.Command != "env-agent-vcs" {
+	if effective.Hooks.Command != "env-turnal" {
 		t.Fatalf("hooks command = %q, want env", effective.Hooks.Command)
 	}
 	if effective.Init.Agent != "none" {
@@ -172,14 +172,14 @@ func TestResolveEnvAndOverridesWin(t *testing.T) {
 
 func TestGlobalPathUsesEnvOverride(t *testing.T) {
 	loader := testLoader(t, map[string]string{
-		ConfigEnvVar: "/tmp/agent-vcs-test.toml",
+		ConfigEnvVar: "/tmp/turnal-test.toml",
 	})
 
 	path, err := loader.GlobalPath()
 	if err != nil {
 		t.Fatalf("GlobalPath: %v", err)
 	}
-	if path != "/tmp/agent-vcs-test.toml" {
+	if path != "/tmp/turnal-test.toml" {
 		t.Fatalf("GlobalPath = %q, want env override", path)
 	}
 }
@@ -200,7 +200,7 @@ func TestGlobalPathPropagatesUserConfigDirError(t *testing.T) {
 
 func TestResolveReportsInvalidTOMLWithPath(t *testing.T) {
 	userConfigDir := t.TempDir()
-	path := filepath.Join(userConfigDir, "agent-vcs", "config.toml")
+	path := filepath.Join(userConfigDir, "turnal", "config.toml")
 	writeConfig(t, path, "[broken\n")
 	loader := Loader{
 		UserConfigDir: func() (string, error) { return userConfigDir, nil },
@@ -219,7 +219,7 @@ func TestResolveReportsInvalidTOMLWithPath(t *testing.T) {
 
 func TestResolveRejectsUnknownAgent(t *testing.T) {
 	userConfigDir := t.TempDir()
-	path := filepath.Join(userConfigDir, "agent-vcs", "config.toml")
+	path := filepath.Join(userConfigDir, "turnal", "config.toml")
 	writeConfig(t, path, `
 version = 1
 
@@ -243,7 +243,7 @@ agent = "both"
 
 func TestResolveRejectsUnsupportedVersion(t *testing.T) {
 	userConfigDir := t.TempDir()
-	path := filepath.Join(userConfigDir, "agent-vcs", "config.toml")
+	path := filepath.Join(userConfigDir, "turnal", "config.toml")
 	writeConfig(t, path, "version = 2\n")
 	loader := Loader{
 		UserConfigDir: func() (string, error) { return userConfigDir, nil },

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"agent-vcs-again/internal/primitives"
+	"github.com/AadiJo/turnal/internal/primitives"
 )
 
 func TestBootstrapCreatesWorkspaceMetadataAndGitignore(t *testing.T) {
@@ -313,7 +313,7 @@ func TestEnsureGitignoreEntryAppendsAndPreservesMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read gitignore: %v", err)
 	}
-	want := "dist/\nnode_modules/\n.agent-vcs/\n"
+	want := "dist/\nnode_modules/\n.turnal/\n"
 	if string(content) != want {
 		t.Fatalf("gitignore = %q, want %q", content, want)
 	}
@@ -328,7 +328,7 @@ func TestEnsureGitignoreEntryAppendsAndPreservesMode(t *testing.T) {
 }
 
 func TestEnsureGitignoreEntryRecognizesExistingEntry(t *testing.T) {
-	for _, existing := range []string{".agent-vcs", ".agent-vcs/", "/.agent-vcs", "/.agent-vcs/"} {
+	for _, existing := range []string{".turnal", ".turnal/", "/.turnal", "/.turnal/"} {
 		t.Run(existing, func(t *testing.T) {
 			root := workspaceRoot(t)
 			gitignorePath := filepath.Join(root.String(), ".gitignore")

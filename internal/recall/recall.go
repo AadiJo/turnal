@@ -8,10 +8,10 @@ import (
 	"sort"
 	"strings"
 
-	"agent-vcs-again/internal/adapters"
-	eventlog "agent-vcs-again/internal/events"
-	"agent-vcs-again/internal/primitives"
-	"agent-vcs-again/internal/workspacegit"
+	"github.com/AadiJo/turnal/internal/adapters"
+	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/workspacegit"
 )
 
 type Options struct {

@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"agent-vcs-again/internal/checkpoint"
-	eventlog "agent-vcs-again/internal/events"
-	"agent-vcs-again/internal/primitives"
-	rollbackengine "agent-vcs-again/internal/rollback"
+	"github.com/AadiJo/turnal/internal/checkpoint"
+	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/primitives"
+	rollbackengine "github.com/AadiJo/turnal/internal/rollback"
 )
 
 func TestRollbackCommandRestoresCheckpoint(t *testing.T) {
@@ -46,7 +46,7 @@ func TestRollbackCommandRestoresCheckpoint(t *testing.T) {
 		t.Fatalf("extra.txt still exists or stat failed: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(repo.MetadataDir, "git")); err != nil {
-		t.Fatalf("agent-vcs metadata missing after rollback: %v", err)
+		t.Fatalf("turnal metadata missing after rollback: %v", err)
 	}
 	if !strings.Contains(out.String(), "rolled back to") {
 		t.Fatalf("rollback output = %q", out.String())

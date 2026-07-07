@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"agent-vcs-again/internal/checkpoint"
-	queryindex "agent-vcs-again/internal/index"
-	"agent-vcs-again/internal/primitives"
+	"github.com/AadiJo/turnal/internal/checkpoint"
+	queryindex "github.com/AadiJo/turnal/internal/index"
+	"github.com/AadiJo/turnal/internal/primitives"
 )
 
 func (engine Engine) Compute(query Query) (Result, error) {

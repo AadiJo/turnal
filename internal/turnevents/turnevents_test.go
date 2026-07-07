@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"agent-vcs-again/internal/checkpoint"
-	eventlog "agent-vcs-again/internal/events"
-	"agent-vcs-again/internal/primitives"
-	"agent-vcs-again/internal/turns"
+	"github.com/AadiJo/turnal/internal/checkpoint"
+	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/turns"
 )
 
 func TestRecoverCheckpointJournalsAppendsMissingCheckpointEvent(t *testing.T) {
@@ -162,8 +162,8 @@ func TestAppendCheckpointRecordsUserGitContext(t *testing.T) {
 		t.Fatalf("Bootstrap: %v", err)
 	}
 	repo := bootstrapped.Repo
-	runGit(t, root.String(), "config", "user.email", "agent-vcs@example.test")
-	runGit(t, root.String(), "config", "user.name", "agent-vcs")
+	runGit(t, root.String(), "config", "user.email", "turnal@example.test")
+	runGit(t, root.String(), "config", "user.name", "turnal")
 	writeFile(t, root, "README.md", "base\n")
 	runGit(t, root.String(), "add", ".gitignore", "README.md")
 	runGit(t, root.String(), "commit", "-q", "-m", "base")

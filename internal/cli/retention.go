@@ -3,8 +3,8 @@ package cli
 import (
 	"fmt"
 
-	"agent-vcs-again/internal/primitives"
-	"agent-vcs-again/internal/retention"
+	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/retention"
 	"github.com/spf13/cobra"
 )
 

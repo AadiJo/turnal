@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"agent-vcs-again/internal/hookcmd"
+	"github.com/AadiJo/turnal/internal/hookcmd"
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -215,7 +215,7 @@ func UninstallClaudeHookWithOptions(projectRoot string, opts UninstallOptions) (
 	if hooks == nil {
 		return result, nil
 	}
-	result.RemovedCommands, result.Changed = removeAgentVCSHookCommands(hooks)
+	result.RemovedCommands, result.Changed = removeTurnalHookCommands(hooks)
 	if !result.Changed {
 		return result, nil
 	}
@@ -325,7 +325,7 @@ func UninstallCodexHookWithOptions(projectRoot string, opts UninstallOptions) (U
 	if hooks == nil {
 		return result, nil
 	}
-	result.RemovedCommands, result.Changed = removeAgentVCSHookCommands(hooks)
+	result.RemovedCommands, result.Changed = removeTurnalHookCommands(hooks)
 	if !result.Changed {
 		return result, nil
 	}
@@ -363,14 +363,14 @@ func enableCodexHooksFeature(config map[string]any) {
 }
 
 func mergeHookCommand(hooks map[string]any, eventName, command string) {
-	groups := filterAgentVCSHookCommands(normalizeHookGroups(hooks[eventName]))
+	groups := filterTurnalHookCommands(normalizeHookGroups(hooks[eventName]))
 	hooks[eventName] = append(groups, hookGroup(command))
 }
 
-func removeAgentVCSHookCommands(hooks map[string]any) (int, bool) {
+func removeTurnalHookCommands(hooks map[string]any) (int, bool) {
 	removedTotal := 0
 	for eventName, value := range hooks {
-		filtered, removed := filterAgentVCSHookCommandsWithCount(normalizeHookGroups(value))
+		filtered, removed := filterTurnalHookCommandsWithCount(normalizeHookGroups(value))
 		if removed == 0 {
 			continue
 		}
@@ -411,12 +411,12 @@ func normalizeHookGroups(value any) []any {
 	return groups
 }
 
-func filterAgentVCSHookCommands(groups []any) []any {
-	filtered, _ := filterAgentVCSHookCommandsWithCount(groups)
+func filterTurnalHookCommands(groups []any) []any {
+	filtered, _ := filterTurnalHookCommandsWithCount(groups)
 	return filtered
 }
 
-func filterAgentVCSHookCommandsWithCount(groups []any) ([]any, int) {
+func filterTurnalHookCommandsWithCount(groups []any) ([]any, int) {
 	filtered := make([]any, 0, len(groups))
 	removed := 0
 	for _, group := range groups {
@@ -440,7 +440,7 @@ func filterAgentVCSHookCommandsWithCount(groups []any) ([]any, int) {
 				continue
 			}
 			command, _ := hookMap["command"].(string)
-			if IsAgentVCSHookCommand(command) {
+			if IsTurnalHookCommand(command) {
 				removed++
 				continue
 			}
@@ -472,7 +472,7 @@ func hookGroup(command string) map[string]any {
 	}
 }
 
-func IsAgentVCSHookCommand(command string) bool {
+func IsTurnalHookCommand(command string) bool {
 	fields := strings.Fields(command)
 	if len(fields) < 2 {
 		return false

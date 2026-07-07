@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"agent-vcs-again/internal/primitives"
+	"github.com/AadiJo/turnal/internal/primitives"
 )
 
 func requireGit(t *testing.T) {
@@ -91,9 +91,9 @@ func TestCreateCheckpointSnapshotsWorktreeAndExcludesMetadata(t *testing.T) {
 
 	writeFile(t, root, "src/app.txt", "hello\n")
 	writeFile(t, root, ".git/config", "user git metadata\n")
-	writeFile(t, root, ".agent-vcs/tmp/internal.txt", "tool metadata\n")
+	writeFile(t, root, ".turnal/tmp/internal.txt", "tool metadata\n")
 	writeFile(t, root, "nested/.git/config", "nested git metadata\n")
-	writeFile(t, root, "nested/.AGENT-VCS/tmp/internal.txt", "nested tool metadata\n")
+	writeFile(t, root, "nested/.TURNAL/tmp/internal.txt", "nested tool metadata\n")
 
 	sessionID, _ := primitives.ParseSessionID("Demo")
 	turnID, _ := primitives.NewTurnID(1)
@@ -113,14 +113,14 @@ func TestCreateCheckpointSnapshotsWorktreeAndExcludesMetadata(t *testing.T) {
 	if _, err := runHiddenGit(repo, "", "show", checkpoint.Commit.String()+":.git/config"); err == nil {
 		t.Fatal(".git/config was captured, want excluded")
 	}
-	if _, err := runHiddenGit(repo, "", "show", checkpoint.Commit.String()+":.agent-vcs/tmp/internal.txt"); err == nil {
-		t.Fatal(".agent-vcs metadata was captured, want excluded")
+	if _, err := runHiddenGit(repo, "", "show", checkpoint.Commit.String()+":.turnal/tmp/internal.txt"); err == nil {
+		t.Fatal(".turnal metadata was captured, want excluded")
 	}
 	if _, err := runHiddenGit(repo, "", "show", checkpoint.Commit.String()+":nested/.git/config"); err == nil {
 		t.Fatal("nested .git/config was captured, want excluded")
 	}
-	if _, err := runHiddenGit(repo, "", "show", checkpoint.Commit.String()+":nested/.AGENT-VCS/tmp/internal.txt"); err == nil {
-		t.Fatal("nested .AGENT-VCS metadata was captured, want excluded")
+	if _, err := runHiddenGit(repo, "", "show", checkpoint.Commit.String()+":nested/.TURNAL/tmp/internal.txt"); err == nil {
+		t.Fatal("nested .TURNAL metadata was captured, want excluded")
 	}
 }
 
@@ -586,7 +586,7 @@ func TestRestoreCommitPreservesBytesModesSymlinksAndMetadata(t *testing.T) {
 		t.Fatalf("remove link.bin: %v", err)
 	}
 	writeFile(t, root, "extra.txt", "remove me\n")
-	writeFile(t, root, ".agent-vcs/tmp/keep.txt", "metadata\n")
+	writeFile(t, root, ".turnal/tmp/keep.txt", "metadata\n")
 
 	if err := repo.RestoreCommit(target.Commit); err != nil {
 		t.Fatalf("RestoreCommit: %v", err)
@@ -626,7 +626,7 @@ func TestRestoreCommitPreservesBytesModesSymlinksAndMetadata(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root.String(), "extra.txt")); !os.IsNotExist(err) {
 		t.Fatalf("extra.txt still exists or stat failed: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(root.String(), ".agent-vcs/tmp/keep.txt")); err != nil {
+	if _, err := os.Stat(filepath.Join(root.String(), ".turnal/tmp/keep.txt")); err != nil {
 		t.Fatalf("metadata file was not preserved: %v", err)
 	}
 }

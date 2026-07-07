@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"agent-vcs-again/internal/primitives"
+	"github.com/AadiJo/turnal/internal/primitives"
 )
 
 func parseTurnTarget(value string) (primitives.SessionID, primitives.TurnID, error) {

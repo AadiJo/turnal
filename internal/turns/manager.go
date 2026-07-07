@@ -9,11 +9,11 @@ import (
 	"path/filepath"
 	"time"
 
-	"agent-vcs-again/internal/checkpoint"
-	"agent-vcs-again/internal/config"
-	"agent-vcs-again/internal/gitsync"
-	"agent-vcs-again/internal/primitives"
-	"agent-vcs-again/internal/workspacegit"
+	"github.com/AadiJo/turnal/internal/checkpoint"
+	"github.com/AadiJo/turnal/internal/config"
+	"github.com/AadiJo/turnal/internal/gitsync"
+	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/workspacegit"
 )
 
 const activeTurnStateVersion = 1
@@ -319,7 +319,7 @@ func (manager Manager) captureGitSyncIfEnabled(sessionID primitives.SessionID, t
 	if err != nil {
 		return nil, fmt.Errorf("capture workspace git state for %s: %w", ref, err)
 	}
-	snapshot, err := gitsync.Save(manager.Repo, ref, capture, fmt.Sprintf("agent-vcs git-sync %s turn %s %s", sessionID, turnID, phase))
+	snapshot, err := gitsync.Save(manager.Repo, ref, capture, fmt.Sprintf("turnal git-sync %s turn %s %s", sessionID, turnID, phase))
 	if err != nil {
 		return nil, err
 	}

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"agent-vcs-again/internal/adapters"
-	"agent-vcs-again/internal/checkpoint"
+	"github.com/AadiJo/turnal/internal/adapters"
+	"github.com/AadiJo/turnal/internal/checkpoint"
 )
 
 func TestDestroyCommandRemovesMetadataAndLeavesWorkspaceFiles(t *testing.T) {
@@ -24,8 +24,8 @@ func TestDestroyCommandRemovesMetadataAndLeavesWorkspaceFiles(t *testing.T) {
 	if !strings.Contains(output, "removed metadata:") {
 		t.Fatalf("destroy output missing removal summary:\n%s", output)
 	}
-	if _, err := os.Stat(filepath.Join(root.String(), ".agent-vcs")); !os.IsNotExist(err) {
-		t.Fatalf(".agent-vcs exists or could not be checked after destroy: %v", err)
+	if _, err := os.Stat(filepath.Join(root.String(), ".turnal")); !os.IsNotExist(err) {
+		t.Fatalf(".turnal exists or could not be checked after destroy: %v", err)
 	}
 	if data, err := os.ReadFile(filepath.Join(root.String(), "app.txt")); err != nil || string(data) != "content\n" {
 		t.Fatalf("workspace file changed after destroy: data=%q err=%v", data, err)
@@ -34,7 +34,7 @@ func TestDestroyCommandRemovesMetadataAndLeavesWorkspaceFiles(t *testing.T) {
 
 func TestDestroyCommandRemovesPartialMetadata(t *testing.T) {
 	root := workspaceRoot(t)
-	if err := os.MkdirAll(filepath.Join(root.String(), ".agent-vcs", "log"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root.String(), ".turnal", "log"), 0o755); err != nil {
 		t.Fatalf("mkdir partial metadata: %v", err)
 	}
 	nested := filepath.Join(root.String(), "nested")
@@ -47,8 +47,8 @@ func TestDestroyCommandRemovesPartialMetadata(t *testing.T) {
 	if !strings.Contains(output, "removed metadata:") {
 		t.Fatalf("destroy output missing removal summary:\n%s", output)
 	}
-	if _, err := os.Stat(filepath.Join(root.String(), ".agent-vcs")); !os.IsNotExist(err) {
-		t.Fatalf("partial .agent-vcs exists or could not be checked after destroy: %v", err)
+	if _, err := os.Stat(filepath.Join(root.String(), ".turnal")); !os.IsNotExist(err) {
+		t.Fatalf("partial .turnal exists or could not be checked after destroy: %v", err)
 	}
 }
 
@@ -59,7 +59,7 @@ func TestDestroyCommandDryRunKeepsMetadataAndHookConfig(t *testing.T) {
 	if _, err := checkpoint.Init(root); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	if _, err := adapters.InstallWithOptions(root.String(), []adapters.Target{adapters.TargetClaude, adapters.TargetCodex}, adapters.InstallOptions{HookCommand: "agent-vcs"}); err != nil {
+	if _, err := adapters.InstallWithOptions(root.String(), []adapters.Target{adapters.TargetClaude, adapters.TargetCodex}, adapters.InstallOptions{HookCommand: "turnal"}); err != nil {
 		t.Fatalf("InstallWithOptions: %v", err)
 	}
 	claudeSettings := filepath.Join(root.String(), ".claude", "settings.json")
@@ -80,8 +80,8 @@ func TestDestroyCommandDryRunKeepsMetadataAndHookConfig(t *testing.T) {
 			t.Fatalf("dry-run output missing %q:\n%s", want, output)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(root.String(), ".agent-vcs")); err != nil {
-		t.Fatalf(".agent-vcs missing after dry-run: %v", err)
+	if _, err := os.Stat(filepath.Join(root.String(), ".turnal")); err != nil {
+		t.Fatalf(".turnal missing after dry-run: %v", err)
 	}
 	afterClaude, err := os.ReadFile(claudeSettings)
 	if err != nil {
@@ -106,7 +106,7 @@ func TestDestroyCommandCanRemoveHooks(t *testing.T) {
 	if _, err := checkpoint.Init(root); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	if _, err := adapters.InstallWithOptions(root.String(), []adapters.Target{adapters.TargetClaude, adapters.TargetCodex}, adapters.InstallOptions{HookCommand: "agent-vcs"}); err != nil {
+	if _, err := adapters.InstallWithOptions(root.String(), []adapters.Target{adapters.TargetClaude, adapters.TargetCodex}, adapters.InstallOptions{HookCommand: "turnal"}); err != nil {
 		t.Fatalf("InstallWithOptions: %v", err)
 	}
 	t.Chdir(root.String())
@@ -117,8 +117,8 @@ func TestDestroyCommandCanRemoveHooks(t *testing.T) {
 			t.Fatalf("destroy output missing %q:\n%s", want, output)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(root.String(), ".agent-vcs")); !os.IsNotExist(err) {
-		t.Fatalf(".agent-vcs exists or could not be checked after destroy: %v", err)
+	if _, err := os.Stat(filepath.Join(root.String(), ".turnal")); !os.IsNotExist(err) {
+		t.Fatalf(".turnal exists or could not be checked after destroy: %v", err)
 	}
 	for _, path := range []string{
 		filepath.Join(root.String(), ".claude", "settings.json"),
@@ -128,8 +128,8 @@ func TestDestroyCommandCanRemoveHooks(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read hook config %s: %v", path, err)
 		}
-		if strings.Contains(string(data), "agent-vcs") {
-			t.Fatalf("hook config still contains agent-vcs command %s:\n%s", path, data)
+		if strings.Contains(string(data), "turnal") {
+			t.Fatalf("hook config still contains turnal command %s:\n%s", path, data)
 		}
 	}
 }
@@ -141,7 +141,7 @@ func TestDestroyCommandAgentNoneLeavesHooks(t *testing.T) {
 	if _, err := checkpoint.Init(root); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	if _, err := adapters.InstallWithOptions(root.String(), []adapters.Target{adapters.TargetClaude, adapters.TargetCodex}, adapters.InstallOptions{HookCommand: "agent-vcs"}); err != nil {
+	if _, err := adapters.InstallWithOptions(root.String(), []adapters.Target{adapters.TargetClaude, adapters.TargetCodex}, adapters.InstallOptions{HookCommand: "turnal"}); err != nil {
 		t.Fatalf("InstallWithOptions: %v", err)
 	}
 	t.Chdir(root.String())
@@ -150,8 +150,8 @@ func TestDestroyCommandAgentNoneLeavesHooks(t *testing.T) {
 	if strings.Contains(output, "hooks:") {
 		t.Fatalf("destroy output includes hook cleanup despite --agent none:\n%s", output)
 	}
-	if _, err := os.Stat(filepath.Join(root.String(), ".agent-vcs")); !os.IsNotExist(err) {
-		t.Fatalf(".agent-vcs exists or could not be checked after destroy: %v", err)
+	if _, err := os.Stat(filepath.Join(root.String(), ".turnal")); !os.IsNotExist(err) {
+		t.Fatalf(".turnal exists or could not be checked after destroy: %v", err)
 	}
 	for _, path := range []string{
 		filepath.Join(root.String(), ".claude", "settings.json"),
@@ -161,8 +161,8 @@ func TestDestroyCommandAgentNoneLeavesHooks(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read hook config %s: %v", path, err)
 		}
-		if !strings.Contains(string(data), "agent-vcs") {
-			t.Fatalf("hook config lost agent-vcs command despite --agent none %s:\n%s", path, data)
+		if !strings.Contains(string(data), "turnal") {
+			t.Fatalf("hook config lost turnal command despite --agent none %s:\n%s", path, data)
 		}
 	}
 }

@@ -10,12 +10,12 @@ import (
 	"strings"
 	"time"
 
-	"agent-vcs-again/internal/adapters"
-	"agent-vcs-again/internal/checkpoint"
-	agentconfig "agent-vcs-again/internal/config"
-	eventlog "agent-vcs-again/internal/events"
-	"agent-vcs-again/internal/primitives"
-	"agent-vcs-again/internal/turns"
+	"github.com/AadiJo/turnal/internal/adapters"
+	"github.com/AadiJo/turnal/internal/checkpoint"
+	agentconfig "github.com/AadiJo/turnal/internal/config"
+	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/turns"
 	"github.com/spf13/cobra"
 )
 
@@ -59,12 +59,12 @@ func runCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:          "run -- codex [args...]",
-		Short:        "Run Codex with agent-vcs safety checkpoints",
+		Short:        "Run Codex with turnal safety checkpoints",
 		SilenceUsage: true,
 		Args:         cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !isCodexCommand(args[0]) {
-				return fmt.Errorf("agent-vcs run currently supports Codex only; expected command %q to be codex", args[0])
+				return fmt.Errorf("turnal run currently supports Codex only; expected command %q to be codex", args[0])
 			}
 
 			repo, err := openCheckpointRepo()
@@ -117,9 +117,9 @@ func runCmd() *cobra.Command {
 			afterRawCount, countErr := codexRawRecordCount(repo.MetadataDir)
 
 			if !effective.Run.Quiet {
-				fmt.Fprintf(cmd.ErrOrStderr(), "agent-vcs: recorded wrapper checkpoints for %s:%s\n", sessionID, started.TurnID)
+				fmt.Fprintf(cmd.ErrOrStderr(), "turnal: recorded wrapper checkpoints for %s:%s\n", sessionID, started.TurnID)
 				if countErr == nil && afterRawCount == beforeRawCount {
-					fmt.Fprintln(cmd.ErrOrStderr(), "agent-vcs: no Codex hook payloads were observed; wrapper checkpoints are available, but prompt/tool/assistant capture depends on Codex hooks. Review /hooks in Codex, or rerun with --bypass-hook-trust after reviewing hook sources.")
+					fmt.Fprintln(cmd.ErrOrStderr(), "turnal: no Codex hook payloads were observed; wrapper checkpoints are available, but prompt/tool/assistant capture depends on Codex hooks. Review /hooks in Codex, or rerun with --bypass-hook-trust after reviewing hook sources.")
 				}
 			}
 			if finishErr != nil {
@@ -137,7 +137,7 @@ func runCmd() *cobra.Command {
 
 	cmd.Flags().BoolVar(&skipHookInstall, "skip-hook-install", false, "Do not update .codex/config.toml before running Codex")
 	cmd.Flags().BoolVar(&bypassHookTrust, "bypass-hook-trust", false, "Pass --dangerously-bypass-hook-trust to Codex for this invocation")
-	cmd.Flags().BoolVar(&quiet, "quiet", false, "Suppress agent-vcs wrapper status messages")
+	cmd.Flags().BoolVar(&quiet, "quiet", false, "Suppress turnal wrapper status messages")
 	return cmd
 }
 
@@ -228,7 +228,7 @@ func startRunTurn(repo *checkpoint.Repo, sessionID primitives.SessionID, command
 		SourceID:  fmt.Sprintf("codex-run:%s:session", sessionID),
 		Payload: mustJSON(runSessionPayload{
 			ProviderSessionID: sessionID.String(),
-			Source:            "agent-vcs run",
+			Source:            "turnal run",
 			Command:           command,
 		}),
 	}); err != nil {

@@ -3,8 +3,8 @@ package index
 import (
 	"encoding/json"
 
-	eventlog "agent-vcs-again/internal/events"
-	"agent-vcs-again/internal/primitives"
+	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/primitives"
 )
 
 func SummarizeTurnEvents(events []eventlog.Event) map[uint64]TurnEventSummary {

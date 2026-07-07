@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"agent-vcs-again/internal/checkpoint"
-	eventlog "agent-vcs-again/internal/events"
-	"agent-vcs-again/internal/primitives"
+	"github.com/AadiJo/turnal/internal/checkpoint"
+	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/primitives"
 )
 
 func TestRootHelpShowsPorcelainCommands(t *testing.T) {
@@ -67,7 +67,7 @@ func TestDiffHelpDocumentsTargetForm(t *testing.T) {
 	}
 
 	output := out.String()
-	if !strings.Contains(output, "agent-vcs diff [session:turn]") {
+	if !strings.Contains(output, "turnal diff [session:turn]") {
 		t.Fatalf("diff help missing target usage:\n%s", output)
 	}
 	for _, hidden := range []string{"--session", "--turn", "--pre-ref", "--post-ref"} {

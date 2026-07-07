@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"agent-vcs-again/internal/checkpoint"
-	eventlog "agent-vcs-again/internal/events"
-	"agent-vcs-again/internal/gitsync"
-	"agent-vcs-again/internal/primitives"
-	"agent-vcs-again/internal/turns"
-	"agent-vcs-again/internal/workspacegit"
+	"github.com/AadiJo/turnal/internal/checkpoint"
+	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/gitsync"
+	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/turns"
+	"github.com/AadiJo/turnal/internal/workspacegit"
 )
 
 func TestRunFinalizesRestoredJournal(t *testing.T) {
@@ -117,8 +117,8 @@ func TestRunFinalizesRestoredWorkspaceGitJournalWithChangeSummary(t *testing.T) 
 		t.Fatalf("Bootstrap: %v", err)
 	}
 	repo := bootstrapped.Repo
-	runWorkspaceGit(t, root, "config", "user.email", "agent-vcs@example.test")
-	runWorkspaceGit(t, root, "config", "user.name", "agent-vcs")
+	runWorkspaceGit(t, root, "config", "user.email", "turnal@example.test")
+	runWorkspaceGit(t, root, "config", "user.name", "turnal")
 
 	writeFile(t, root, "tracked.txt", "base\n")
 	runWorkspaceGit(t, root, "add", ".gitignore", "tracked.txt")
@@ -337,7 +337,7 @@ func TestRunRestoreFailureReturnsSafetyAndKeepsExtraFiles(t *testing.T) {
 	if err := os.Remove(filepath.Join(root.String(), "conflict")); err != nil {
 		t.Fatalf("remove conflict file: %v", err)
 	}
-	writeFile(t, root, "conflict/.agent-vcs/keep", "metadata\n")
+	writeFile(t, root, "conflict/.turnal/keep", "metadata\n")
 	writeFile(t, root, "extra.txt", "must remain after failed restore\n")
 
 	targetRef, err := primitives.NewTargetRef(sessionID, turnID, primitives.CheckpointPhasePre)
@@ -426,7 +426,7 @@ func TestRunDryRunAndRestoreIgnoreDeniedSecretsFromOldCheckpoints(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	writeFile(t, root, ".agent-vcs/config.toml", "version = 1\n[secrets]\nsnapshot_deny_globs = [\"never-match-secret\"]\n")
+	writeFile(t, root, ".turnal/config.toml", "version = 1\n[secrets]\nsnapshot_deny_globs = [\"never-match-secret\"]\n")
 
 	sessionID := sessionID(t, "demo")
 	turnID, _ := primitives.NewTurnID(1)
@@ -440,7 +440,7 @@ func TestRunDryRunAndRestoreIgnoreDeniedSecretsFromOldCheckpoints(t *testing.T) 
 		t.Fatalf("target checkpoint did not capture .env: %v", err)
 	}
 
-	writeFile(t, root, ".agent-vcs/config.toml", "version = 1\n[secrets]\nsnapshot_deny_globs = [\".env\"]\n")
+	writeFile(t, root, ".turnal/config.toml", "version = 1\n[secrets]\nsnapshot_deny_globs = [\".env\"]\n")
 	writeFile(t, root, "app.txt", "current\n")
 	writeFile(t, root, ".env", "SECRET=current\n")
 
@@ -479,8 +479,8 @@ func TestRunWorkspaceGitRestoresCapturedDirtyState(t *testing.T) {
 		t.Fatalf("Bootstrap: %v", err)
 	}
 	repo := bootstrapped.Repo
-	runWorkspaceGit(t, root, "config", "user.email", "agent-vcs@example.test")
-	runWorkspaceGit(t, root, "config", "user.name", "agent-vcs")
+	runWorkspaceGit(t, root, "config", "user.email", "turnal@example.test")
+	runWorkspaceGit(t, root, "config", "user.name", "turnal")
 
 	writeFile(t, root, "tracked.txt", "base\n")
 	runWorkspaceGit(t, root, "add", ".gitignore", "tracked.txt")

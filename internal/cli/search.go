@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	queryindex "agent-vcs-again/internal/index"
-	"agent-vcs-again/internal/primitives"
+	queryindex "github.com/AadiJo/turnal/internal/index"
+	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/spf13/cobra"
 )
 
@@ -77,7 +77,7 @@ func openHealthySearchIndex(metadataDir string) (*queryindex.Store, error) {
 		return nil, err
 	}
 	if !exists {
-		return nil, fmt.Errorf("search index is missing; run agent-vcs reindex")
+		return nil, fmt.Errorf("search index is missing; run turnal reindex")
 	}
 
 	store, err := queryindex.Open(metadataDir)
@@ -91,7 +91,7 @@ func openHealthySearchIndex(metadataDir string) (*queryindex.Store, error) {
 	}
 	if !healthy {
 		_ = store.Close()
-		return nil, fmt.Errorf("search index is stale; run agent-vcs reindex")
+		return nil, fmt.Errorf("search index is stale; run turnal reindex")
 	}
 	return store, nil
 }

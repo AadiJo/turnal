@@ -12,7 +12,7 @@ const version = "0.0.1"
 
 func NewRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
-		Use:           "agent-vcs",
+		Use:           "turnal",
 		Short:         "Local-first version control for AI agent activity",
 		Version:       version,
 		SilenceErrors: true,

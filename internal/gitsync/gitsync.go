@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"agent-vcs-again/internal/checkpoint"
-	"agent-vcs-again/internal/primitives"
+	"github.com/AadiJo/turnal/internal/checkpoint"
+	"github.com/AadiJo/turnal/internal/primitives"
 )
 
 const (
@@ -112,7 +112,7 @@ func SavePrivate(repo *checkpoint.Repo, ref string, capture Capture, message str
 		})
 	}
 	if message == "" {
-		message = "agent-vcs git-sync state"
+		message = "turnal git-sync state"
 	}
 	return repo.CreateSyntheticSnapshotRef(ref, message, entries)
 }

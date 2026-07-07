@@ -1,4 +1,4 @@
-module agent-vcs-again
+module github.com/AadiJo/turnal
 
 go 1.26.4
 

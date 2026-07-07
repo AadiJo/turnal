@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"agent-vcs-again/internal/primitives"
+	"github.com/AadiJo/turnal/internal/primitives"
 )
 
 func TestCaptureRequiresGitWorktree(t *testing.T) {
@@ -43,8 +43,8 @@ func TestCaptureRequiresWorkspaceRootAtGitRoot(t *testing.T) {
 
 	parent := workspaceRoot(t, t.TempDir())
 	runGit(t, parent.String(), "init", "-q")
-	runGit(t, parent.String(), "config", "user.email", "agent-vcs@example.test")
-	runGit(t, parent.String(), "config", "user.name", "agent-vcs")
+	runGit(t, parent.String(), "config", "user.email", "turnal@example.test")
+	runGit(t, parent.String(), "config", "user.name", "turnal")
 	writeFile(t, parent.String(), "README.md", "base\n")
 	runGit(t, parent.String(), "add", "README.md")
 	runGit(t, parent.String(), "commit", "-q", "-m", "base")
@@ -57,8 +57,8 @@ func TestCaptureRequiresWorkspaceRootAtGitRoot(t *testing.T) {
 	if err == nil {
 		t.Fatal("Capture succeeded from nested workspace root")
 	}
-	if !strings.Contains(err.Error(), "git-sync requires the agent-vcs workspace root to be the Git worktree root") ||
-		!strings.Contains(err.Error(), "Run agent-vcs init from the Git root") {
+	if !strings.Contains(err.Error(), "git-sync requires the turnal workspace root to be the Git worktree root") ||
+		!strings.Contains(err.Error(), "Run turnal init from the Git root") {
 		t.Fatalf("Capture error = %v, want Git root guidance", err)
 	}
 }
@@ -68,8 +68,8 @@ func TestContextCapturesWorkspaceGitState(t *testing.T) {
 
 	root := workspaceRoot(t, t.TempDir())
 	runGit(t, root.String(), "init", "-q")
-	runGit(t, root.String(), "config", "user.email", "agent-vcs@example.test")
-	runGit(t, root.String(), "config", "user.name", "agent-vcs")
+	runGit(t, root.String(), "config", "user.email", "turnal@example.test")
+	runGit(t, root.String(), "config", "user.name", "turnal")
 	writeFile(t, root.String(), "README.md", "base\n")
 	runGit(t, root.String(), "add", "README.md")
 	runGit(t, root.String(), "commit", "-q", "-m", "base")

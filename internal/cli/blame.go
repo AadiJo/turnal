@@ -6,8 +6,8 @@ import (
 	"io"
 	"strings"
 
-	"agent-vcs-again/internal/blame"
-	"agent-vcs-again/internal/primitives"
+	"github.com/AadiJo/turnal/internal/blame"
+	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/spf13/cobra"
 )
 

@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	eventlog "agent-vcs-again/internal/events"
-	"agent-vcs-again/internal/primitives"
+	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/primitives"
 )
 
 type TurnTarget struct {

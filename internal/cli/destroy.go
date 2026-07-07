@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"agent-vcs-again/internal/adapters"
-	"agent-vcs-again/internal/destroy"
+	"github.com/AadiJo/turnal/internal/adapters"
+	"github.com/AadiJo/turnal/internal/destroy"
 	"github.com/spf13/cobra"
 )
 
@@ -16,7 +16,7 @@ func destroyCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:          "destroy",
-		Short:        "Remove all agent-vcs metadata from this workspace",
+		Short:        "Remove all turnal metadata from this workspace",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cwd, err := os.Getwd()
@@ -62,7 +62,7 @@ func destroyCmd() *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show what would be removed without deleting it")
-	cmd.Flags().BoolVar(&removeHooks, "remove-hooks", false, "Remove agent-vcs commands from supported agent hook configs")
+	cmd.Flags().BoolVar(&removeHooks, "remove-hooks", false, "Remove turnal commands from supported agent hook configs")
 	cmd.Flags().StringVar(&agent, "agent", string(adapters.TargetAuto), "Agent hooks to remove: auto, claude, codex, all, or none")
 	return cmd
 }
@@ -77,7 +77,7 @@ func printDestroyHookResult(cmd *cobra.Command, result adapters.UninstallResult)
 		return
 	}
 	if result.RemovedCommands == 0 {
-		fmt.Fprintf(cmd.OutOrStdout(), "no agent-vcs %s hooks: %s\n", result.Target, result.ConfigPath)
+		fmt.Fprintf(cmd.OutOrStdout(), "no turnal %s hooks: %s\n", result.Target, result.ConfigPath)
 		return
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "%s %s hooks: %s (%d commands)\n", prefix, result.Target, result.ConfigPath, result.RemovedCommands)

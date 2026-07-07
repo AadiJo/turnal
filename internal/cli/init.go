@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"os"
 
-	"agent-vcs-again/internal/adapters"
-	"agent-vcs-again/internal/checkpoint"
-	agentconfig "agent-vcs-again/internal/config"
-	"agent-vcs-again/internal/primitives"
+	"github.com/AadiJo/turnal/internal/adapters"
+	"github.com/AadiJo/turnal/internal/checkpoint"
+	agentconfig "github.com/AadiJo/turnal/internal/config"
+	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/pelletier/go-toml/v2"
 	"github.com/spf13/cobra"
 )
@@ -19,7 +19,7 @@ func initCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:          "init",
-		Short:        "Initialize agent-vcs metadata in this workspace",
+		Short:        "Initialize turnal metadata in this workspace",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cwd, err := os.Getwd()

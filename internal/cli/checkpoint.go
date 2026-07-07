@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"agent-vcs-again/internal/checkpoint"
-	"agent-vcs-again/internal/primitives"
+	"github.com/AadiJo/turnal/internal/checkpoint"
+	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/spf13/cobra"
 )
 

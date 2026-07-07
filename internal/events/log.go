@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"agent-vcs-again/internal/primitives"
+	"github.com/AadiJo/turnal/internal/primitives"
 )
 
 const eventLogDirName = "events"

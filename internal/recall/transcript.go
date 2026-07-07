@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	eventlog "agent-vcs-again/internal/events"
-	"agent-vcs-again/internal/primitives"
+	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/primitives"
 )
 
 const maxTranscriptBytes = 64 * 1024 * 1024

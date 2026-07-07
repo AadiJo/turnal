@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"agent-vcs-again/internal/primitives"
+	"github.com/AadiJo/turnal/internal/primitives"
 )
 
-const GitignoreEntry = ".agent-vcs/"
+const GitignoreEntry = ".turnal/"
 
 type BootstrapResult struct {
 	Repo                    *Repo
@@ -242,10 +242,10 @@ func Inspect(root primitives.WorkspaceRoot) Status {
 	if gitignore, err := os.ReadFile(status.GitignorePath); err == nil {
 		status.GitignoreHasEntry = gitignoreHasEntry(string(gitignore))
 		if !status.GitignoreHasEntry {
-			status.Problems = append(status.Problems, ".gitignore does not contain .agent-vcs/")
+			status.Problems = append(status.Problems, ".gitignore does not contain .turnal/")
 		}
 	} else if os.IsNotExist(err) {
-		status.Problems = append(status.Problems, ".gitignore missing .agent-vcs/ entry")
+		status.Problems = append(status.Problems, ".gitignore missing .turnal/ entry")
 	} else {
 		status.Problems = append(status.Problems, fmt.Sprintf("read .gitignore: %v", err))
 	}
@@ -272,7 +272,7 @@ func gitignoreHasEntry(content string) bool {
 			continue
 		}
 		switch line {
-		case ".agent-vcs", GitignoreEntry, "/.agent-vcs", "/.agent-vcs/":
+		case ".turnal", GitignoreEntry, "/.turnal", "/.turnal/":
 			return true
 		}
 	}

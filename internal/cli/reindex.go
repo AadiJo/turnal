@@ -3,7 +3,7 @@ package cli
 import (
 	"fmt"
 
-	queryindex "agent-vcs-again/internal/index"
+	queryindex "github.com/AadiJo/turnal/internal/index"
 	"github.com/spf13/cobra"
 )
 

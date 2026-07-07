@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"agent-vcs-again/internal/primitives"
+	"github.com/AadiJo/turnal/internal/primitives"
 )
 
 func TestAppendReadAndVerifyHashChain(t *testing.T) {

@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"io"
 
-	"agent-vcs-again/internal/primitives"
-	"agent-vcs-again/internal/recall"
-	replayengine "agent-vcs-again/internal/replay"
+	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/recall"
+	replayengine "github.com/AadiJo/turnal/internal/replay"
 	"github.com/spf13/cobra"
 )
 
@@ -352,13 +352,13 @@ func writeReplayResult(w io.Writer, result replayengine.Result) error {
 		return err
 	}
 	for _, command := range []string{
-		"agent-vcs replay next",
-		"agent-vcs replay prev",
-		"agent-vcs replay goto " + result.Current.Target,
-		"agent-vcs replay diff",
-		"agent-vcs replay show",
-		"agent-vcs replay keep",
-		"agent-vcs replay stop",
+		"turnal replay next",
+		"turnal replay prev",
+		"turnal replay goto " + result.Current.Target,
+		"turnal replay diff",
+		"turnal replay show",
+		"turnal replay keep",
+		"turnal replay stop",
 	} {
 		if _, err := fmt.Fprintf(w, "  %s\n", command); err != nil {
 			return err

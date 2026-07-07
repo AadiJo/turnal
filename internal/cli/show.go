@@ -3,7 +3,7 @@ package cli
 import (
 	"encoding/json"
 
-	"agent-vcs-again/internal/recall"
+	"github.com/AadiJo/turnal/internal/recall"
 	"github.com/spf13/cobra"
 )
 

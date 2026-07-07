@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"agent-vcs-again/internal/checkpoint"
-	"agent-vcs-again/internal/primitives"
+	"github.com/AadiJo/turnal/internal/checkpoint"
+	"github.com/AadiJo/turnal/internal/primitives"
 )
 
 func TestRecordHookPayloadAppendsRawAdapterLog(t *testing.T) {
@@ -30,7 +30,7 @@ func TestRecordHookPayloadAppendsRawAdapterLog(t *testing.T) {
 		t.Fatalf("raw ref = %q, want claude-code:1", rawRef)
 	}
 
-	records := readRecords(t, filepath.Join(root.String(), ".agent-vcs", "log", "adapter", "claude-code.jsonl"))
+	records := readRecords(t, filepath.Join(root.String(), ".turnal", "log", "adapter", "claude-code.jsonl"))
 	if len(records) != 1 {
 		t.Fatalf("records len = %d, want 1", len(records))
 	}
@@ -63,7 +63,7 @@ func TestRecordHookPayloadPreservesMalformedPayload(t *testing.T) {
 		t.Fatalf("raw ref = %q, want codex:1", rawRef)
 	}
 
-	records := readRecords(t, filepath.Join(root.String(), ".agent-vcs", "log", "adapter", "codex.jsonl"))
+	records := readRecords(t, filepath.Join(root.String(), ".turnal", "log", "adapter", "codex.jsonl"))
 	if len(records) != 1 {
 		t.Fatalf("records len = %d, want 1", len(records))
 	}
@@ -86,7 +86,7 @@ func TestRecordHookPayloadNoopsOutsideWorkspace(t *testing.T) {
 	if rawRef != "" {
 		t.Fatalf("raw ref outside workspace = %q, want empty", rawRef)
 	}
-	if _, err := os.Stat(filepath.Join(root, ".agent-vcs")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(root, ".turnal")); !os.IsNotExist(err) {
 		t.Fatalf("RecordHookPayload created workspace metadata, stat err=%v", err)
 	}
 }
@@ -113,11 +113,11 @@ func TestRecordHookPayloadUsesProcessWorkspaceBeforePayloadCWD(t *testing.T) {
 		t.Fatalf("raw ref = %q, want codex:1", rawRef)
 	}
 
-	rootRecords := filepath.Join(root.String(), ".agent-vcs", "log", "adapter", "codex.jsonl")
+	rootRecords := filepath.Join(root.String(), ".turnal", "log", "adapter", "codex.jsonl")
 	if _, err := os.Stat(rootRecords); err != nil {
 		t.Fatalf("expected process workspace record: %v", err)
 	}
-	otherRecords := filepath.Join(other.String(), ".agent-vcs", "log", "adapter", "codex.jsonl")
+	otherRecords := filepath.Join(other.String(), ".turnal", "log", "adapter", "codex.jsonl")
 	if _, err := os.Stat(otherRecords); !os.IsNotExist(err) {
 		t.Fatalf("payload cwd workspace should not receive record, stat err=%v", err)
 	}

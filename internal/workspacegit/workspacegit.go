@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"agent-vcs-again/internal/gitsync"
-	"agent-vcs-again/internal/primitives"
+	"github.com/AadiJo/turnal/internal/gitsync"
+	"github.com/AadiJo/turnal/internal/primitives"
 )
 
 type Git struct {
@@ -118,7 +118,7 @@ func (git Git) Restore(target gitsync.Capture) error {
 	if err := git.run("reset", "--hard", "HEAD"); err != nil {
 		return fmt.Errorf("normalize current worktree: %w", err)
 	}
-	if err := git.run("clean", "-fd", "-e", ".agent-vcs", "-e", ".agent-vcs/", "--", "."); err != nil {
+	if err := git.run("clean", "-fd", "-e", ".turnal", "-e", ".turnal/", "--", "."); err != nil {
 		return fmt.Errorf("clean current untracked files: %w", err)
 	}
 	if err := git.restoreHead(target.State.Head); err != nil {
@@ -149,12 +149,12 @@ func (git Git) Restore(target gitsync.Capture) error {
 func (git Git) ensureSupportedWorktree() error {
 	toplevel, err := git.runOutput("rev-parse", "--show-toplevel")
 	if err != nil {
-		return fmt.Errorf("git-sync requires an initialized Git worktree at the agent-vcs workspace root %s; run git init from that root and create an initial commit, or disable git-sync: %w", git.Root, err)
+		return fmt.Errorf("git-sync requires an initialized Git worktree at the turnal workspace root %s; run git init from that root and create an initial commit, or disable git-sync: %w", git.Root, err)
 	}
 	root := filepath.Clean(git.Root.String())
 	got := filepath.Clean(strings.TrimSpace(toplevel))
 	if got != root {
-		return fmt.Errorf("git-sync requires the agent-vcs workspace root to be the Git worktree root; workspace=%s git_toplevel=%s. Run agent-vcs init from the Git root, or disable git-sync for this workspace", root, got)
+		return fmt.Errorf("git-sync requires the turnal workspace root to be the Git worktree root; workspace=%s git_toplevel=%s. Run turnal init from the Git root, or disable git-sync for this workspace", root, got)
 	}
 	if _, err := git.currentHead(); err != nil {
 		return err

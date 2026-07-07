@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"agent-vcs-again/internal/checkpoint"
-	"agent-vcs-again/internal/primitives"
+	"github.com/AadiJo/turnal/internal/checkpoint"
+	"github.com/AadiJo/turnal/internal/primitives"
 )
 
 func requireGit(t *testing.T) {
@@ -57,8 +57,8 @@ func TestStartFinishCreatesTurnDiffAndAdvancesTurn(t *testing.T) {
 			t.Fatalf("diff missing %q:\n%s", want, diffText)
 		}
 	}
-	if strings.Contains(diffText, ".agent-vcs") {
-		t.Fatalf("turn diff includes agent-vcs metadata:\n%s", diffText)
+	if strings.Contains(diffText, ".turnal") {
+		t.Fatalf("turn diff includes turnal metadata:\n%s", diffText)
 	}
 
 	next, err := manager.Start(sessionID, 0)

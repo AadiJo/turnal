@@ -16,12 +16,12 @@ import (
 	"syscall"
 	"time"
 
-	agentconfig "agent-vcs-again/internal/config"
-	"agent-vcs-again/internal/primitives"
+	agentconfig "github.com/AadiJo/turnal/internal/config"
+	"github.com/AadiJo/turnal/internal/primitives"
 )
 
 const (
-	metadataDirName = ".agent-vcs"
+	metadataDirName = ".turnal"
 	gitDirName      = "git"
 	tmpDirName      = "tmp"
 	logDirName      = "log"
@@ -30,11 +30,11 @@ const (
 	configFileName  = "config.toml"
 )
 
-const workspaceConfigTemplate = `# agent-vcs workspace configuration
+const workspaceConfigTemplate = `# turnal workspace configuration
 version = 1
 
 # Workspace-specific overrides go here. Global defaults live in:
-#   ~/.config/agent-vcs/config.toml
+#   ~/.config/turnal/config.toml
 #
 # [init]
 # agent = "auto"
@@ -46,7 +46,7 @@ version = 1
 # bypass_hook_trust = false
 #
 # [hooks]
-# command = "agent-vcs"
+# command = "turnal"
 #
 # [bootstrap]
 # init_workspace_git = true
@@ -60,12 +60,12 @@ version = 1
 #
 # [retention]
 # Hidden Git objects are retained while private refs exist. Use
-# agent-vcs session drop, agent-vcs retention prune, then explicit
-# agent-vcs maintenance gc to delete refs first and garbage-collect later.
+# turnal session drop, turnal retention prune, then explicit
+# turnal maintenance gc to delete refs first and garbage-collect later.
 #
 # [secrets]
-# agent-vcs stores local snapshots byte-exact unless paths are denied here.
-# Metadata stays local to this workspace unless you copy or sync .agent-vcs.
+# turnal stores local snapshots byte-exact unless paths are denied here.
+# Metadata stays local to this workspace unless you copy or sync .turnal.
 # store_prompts = true
 # store_tool_io = true
 # snapshot_deny_globs = [".env", ".env.*", "**/.env", "**/.env.*", "**/credentials.*"]
@@ -220,7 +220,7 @@ func FindRoot(start string) (primitives.WorkspaceRoot, error) {
 		abs = parent
 	}
 
-	return "", fmt.Errorf("not an agent-vcs workspace: run agent-vcs init")
+	return "", fmt.Errorf("not a turnal workspace: run turnal init")
 }
 
 func (repo *Repo) CreateCheckpoint(sessionID primitives.SessionID, turnID primitives.TurnID, phase primitives.CheckpointPhase) (Checkpoint, error) {
@@ -239,7 +239,7 @@ func (repo *Repo) createCheckpoint(sessionID primitives.SessionID, turnID primit
 		return Checkpoint{}, err
 	}
 
-	message := fmt.Sprintf("agent-vcs checkpoint %s turn %s", sessionID, turnID)
+	message := fmt.Sprintf("turnal checkpoint %s turn %s", sessionID, turnID)
 	if phase != "" {
 		message += " " + phase.String()
 	}
@@ -271,7 +271,7 @@ func (repo *Repo) createSnapshotRef(ref string, message string) (Snapshot, error
 		return Snapshot{}, err
 	}
 	if strings.TrimSpace(message) == "" {
-		message = "agent-vcs snapshot"
+		message = "turnal snapshot"
 	}
 
 	commit, err := repo.createSnapshotCommit(message)
@@ -300,7 +300,7 @@ func (repo *Repo) createSyntheticSnapshotRef(ref string, message string, entries
 		return Snapshot{}, err
 	}
 	if strings.TrimSpace(message) == "" {
-		message = "agent-vcs snapshot"
+		message = "turnal snapshot"
 	}
 	commit, err := repo.createSyntheticCommit(message, entries)
 	if err != nil {
@@ -1401,7 +1401,7 @@ func (repo *Repo) restoreRegularFile(absPath string, entry TreeEntry) error {
 	}
 
 	dir := filepath.Dir(absPath)
-	tmpFile, err := os.CreateTemp(dir, ".agent-vcs-restore-*")
+	tmpFile, err := os.CreateTemp(dir, ".turnal-restore-*")
 	if err != nil {
 		return fmt.Errorf("create temp file for %s: %w", entry.Path, err)
 	}
@@ -1783,10 +1783,10 @@ func runHiddenGitCommand(repo *Repo, indexPath string, stdin io.Reader, args ...
 		"GIT_DIR="+repo.GitDir,
 		"GIT_WORK_TREE="+repo.WorkspaceRoot.String(),
 		"GIT_INDEX_FILE="+indexPath,
-		"GIT_AUTHOR_NAME=agent-vcs",
-		"GIT_AUTHOR_EMAIL=agent-vcs@localhost",
-		"GIT_COMMITTER_NAME=agent-vcs",
-		"GIT_COMMITTER_EMAIL=agent-vcs@localhost",
+		"GIT_AUTHOR_NAME=turnal",
+		"GIT_AUTHOR_EMAIL=turnal@localhost",
+		"GIT_COMMITTER_NAME=turnal",
+		"GIT_COMMITTER_EMAIL=turnal@localhost",
 	)
 
 	output, err := cmd.CombinedOutput()

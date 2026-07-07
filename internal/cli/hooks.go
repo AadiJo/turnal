@@ -6,8 +6,8 @@ import (
 	"io"
 	"os"
 
-	"agent-vcs-again/internal/adapters"
-	"agent-vcs-again/internal/primitives"
+	"github.com/AadiJo/turnal/internal/adapters"
+	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/spf13/cobra"
 )
 

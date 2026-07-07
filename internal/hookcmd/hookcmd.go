@@ -10,19 +10,19 @@ import (
 func Default() string {
 	executable, err := os.Executable()
 	if err != nil {
-		return "agent-vcs"
+		return "turnal"
 	}
 	executable, err = filepath.EvalSymlinks(executable)
 	if err != nil {
-		return "agent-vcs"
+		return "turnal"
 	}
 	switch filepath.Base(executable) {
-	case "agent-vcs", "acs":
+	case "turnal":
 	default:
-		return "agent-vcs"
+		return "turnal"
 	}
 	if isUnderTempDir(executable) {
-		return "agent-vcs"
+		return "turnal"
 	}
 	return shellQuote(executable)
 }

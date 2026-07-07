@@ -7,14 +7,14 @@ import (
 	"path/filepath"
 	"strings"
 
-	"agent-vcs-again/internal/hookcmd"
-	"agent-vcs-again/internal/primitives"
+	"github.com/AadiJo/turnal/internal/hookcmd"
+	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/pelletier/go-toml/v2"
 )
 
 const (
-	ConfigEnvVar      = "AGENT_VCS_CONFIG"
-	HookCommandEnvVar = "AGENT_VCS_HOOK_COMMAND"
+	ConfigEnvVar      = "TURNAL_CONFIG"
+	HookCommandEnvVar = "TURNAL_HOOK_COMMAND"
 )
 
 type Origin string
@@ -194,11 +194,11 @@ func (l Loader) GlobalPath() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("locate user config dir: %w", err)
 	}
-	return filepath.Join(userConfigDir, "agent-vcs", "config.toml"), nil
+	return filepath.Join(userConfigDir, "turnal", "config.toml"), nil
 }
 
 func WorkspacePath(workspaceRoot string) string {
-	return filepath.Join(workspaceRoot, ".agent-vcs", "config.toml")
+	return filepath.Join(workspaceRoot, ".turnal", "config.toml")
 }
 
 func ReadFileLayer(path string) (File, error) {

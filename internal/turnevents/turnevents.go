@@ -6,11 +6,11 @@ import (
 	"os"
 	"path/filepath"
 
-	"agent-vcs-again/internal/checkpoint"
-	eventlog "agent-vcs-again/internal/events"
-	"agent-vcs-again/internal/primitives"
-	"agent-vcs-again/internal/turns"
-	"agent-vcs-again/internal/workspacegit"
+	"github.com/AadiJo/turnal/internal/checkpoint"
+	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/turns"
+	"github.com/AadiJo/turnal/internal/workspacegit"
 )
 
 type Recorder struct {

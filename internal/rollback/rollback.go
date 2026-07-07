@@ -9,11 +9,11 @@ import (
 	"path/filepath"
 	"time"
 
-	"agent-vcs-again/internal/checkpoint"
-	eventlog "agent-vcs-again/internal/events"
-	"agent-vcs-again/internal/gitsync"
-	"agent-vcs-again/internal/primitives"
-	"agent-vcs-again/internal/workspacegit"
+	"github.com/AadiJo/turnal/internal/checkpoint"
+	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/gitsync"
+	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/workspacegit"
 )
 
 const journalFileName = "rollback-journal.json"
@@ -253,7 +253,7 @@ func (engine Engine) runCheckpointUnlocked(request Request) (Result, error) {
 	}
 
 	safetyRef := safetyRef(target, time.Now().UTC())
-	safety, err := engine.Repo.CreateSnapshotRef(safetyRef, fmt.Sprintf("agent-vcs rollback safety %s", target.Target))
+	safety, err := engine.Repo.CreateSnapshotRef(safetyRef, fmt.Sprintf("turnal rollback safety %s", target.Target))
 	if err != nil {
 		return result, err
 	}
@@ -356,7 +356,7 @@ func (engine Engine) runWorkspaceGitUnlocked(request Request) (Result, error) {
 		return result, fmt.Errorf("write rollback journal: %w", err)
 	}
 
-	safety, err := engine.Repo.CreateSnapshotRef(safetyRef(target, now), fmt.Sprintf("agent-vcs rollback safety %s", target.Target))
+	safety, err := engine.Repo.CreateSnapshotRef(safetyRef(target, now), fmt.Sprintf("turnal rollback safety %s", target.Target))
 	if err != nil {
 		return result, err
 	}
@@ -367,7 +367,7 @@ func (engine Engine) runWorkspaceGitUnlocked(request Request) (Result, error) {
 		return result, engine.safetyError("capture workspace git safety state", safety, err)
 	}
 	gitSafetyRef := gitSafetyRef(target, now)
-	gitSafety, err := gitsync.SavePrivate(engine.Repo, gitSafetyRef, currentCapture, fmt.Sprintf("agent-vcs workspace git rollback safety %s", target.Target))
+	gitSafety, err := gitsync.SavePrivate(engine.Repo, gitSafetyRef, currentCapture, fmt.Sprintf("turnal workspace git rollback safety %s", target.Target))
 	if err != nil {
 		return result, engine.safetyError("save workspace git safety state", safety, err)
 	}
@@ -707,7 +707,7 @@ func rollbackEventSourceID(target ResolvedTarget, safety checkpoint.Snapshot) st
 }
 
 func rollbackEventSourceIDForMode(target ResolvedTarget, safety checkpoint.Snapshot, mode primitives.RollbackMode) string {
-	return fmt.Sprintf("agent-vcs:rollback:%s:%s:%s", mode, target.Target, safety.Commit)
+	return fmt.Sprintf("turnal:rollback:%s:%s:%s", mode, target.Target, safety.Commit)
 }
 
 func readJournal(path string) (Journal, bool, error) {

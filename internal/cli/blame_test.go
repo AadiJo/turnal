@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	blameengine "agent-vcs-again/internal/blame"
-	eventlog "agent-vcs-again/internal/events"
-	"agent-vcs-again/internal/primitives"
+	blameengine "github.com/AadiJo/turnal/internal/blame"
+	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/primitives"
 )
 
 func TestBlameCommandShowsLineAttribution(t *testing.T) {

@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"agent-vcs-again/internal/primitives"
+	"github.com/AadiJo/turnal/internal/primitives"
 )
 
 const checkpointJournalVersion = 1

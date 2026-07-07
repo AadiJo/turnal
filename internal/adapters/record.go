@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"agent-vcs-again/internal/checkpoint"
-	agentconfig "agent-vcs-again/internal/config"
-	"agent-vcs-again/internal/primitives"
+	"github.com/AadiJo/turnal/internal/checkpoint"
+	agentconfig "github.com/AadiJo/turnal/internal/config"
+	"github.com/AadiJo/turnal/internal/primitives"
 )
 
 type RawHookRecord struct {

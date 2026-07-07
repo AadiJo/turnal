@@ -10,7 +10,7 @@ import (
 )
 
 func TestInstallClaudeHookPreservesExistingHooksAndIsIdempotent(t *testing.T) {
-	t.Setenv("AGENT_VCS_HOOK_COMMAND", "agent-vcs")
+	t.Setenv("TURNAL_HOOK_COMMAND", "turnal")
 
 	root := t.TempDir()
 	claudeDir := filepath.Join(root, ".claude")
@@ -25,7 +25,7 @@ func TestInstallClaudeHookPreservesExistingHooksAndIsIdempotent(t *testing.T) {
         "matcher": "",
         "hooks": [
           {"type": "command", "command": "echo keep"},
-          {"type": "command", "command": "agent-vcs claude-hook assistant"}
+          {"type": "command", "command": "turnal claude-hook assistant"}
         ]
       }
     ]
@@ -50,12 +50,12 @@ func TestInstallClaudeHookPreservesExistingHooksAndIsIdempotent(t *testing.T) {
 	if countCommand(stopCommands, "echo keep") != 1 {
 		t.Fatalf("existing Stop hook not preserved once: %#v", stopCommands)
 	}
-	if countCommand(stopCommands, claudeAssistantHook("agent-vcs")) != 1 {
-		t.Fatalf("assistant hook count = %d, commands=%#v", countCommand(stopCommands, claudeAssistantHook("agent-vcs")), stopCommands)
+	if countCommand(stopCommands, claudeAssistantHook("turnal")) != 1 {
+		t.Fatalf("assistant hook count = %d, commands=%#v", countCommand(stopCommands, claudeAssistantHook("turnal")), stopCommands)
 	}
 	for eventName, command := range map[string]string{
-		"UserPromptSubmit": claudeUserHook("agent-vcs"),
-		"PostToolUse":      claudeToolUseHook("agent-vcs"),
+		"UserPromptSubmit": claudeUserHook("turnal"),
+		"PostToolUse":      claudeToolUseHook("turnal"),
 	} {
 		commands := hookCommands(t, hooks[eventName])
 		if countCommand(commands, command) != 1 {
@@ -65,7 +65,7 @@ func TestInstallClaudeHookPreservesExistingHooksAndIsIdempotent(t *testing.T) {
 }
 
 func TestInstallCodexHookMergesConfigAndEnablesHooksFeature(t *testing.T) {
-	t.Setenv("AGENT_VCS_HOOK_COMMAND", "agent-vcs")
+	t.Setenv("TURNAL_HOOK_COMMAND", "turnal")
 
 	root := t.TempDir()
 	codexDir := filepath.Join(root, ".codex")
@@ -110,8 +110,8 @@ command = "echo keep"
 	hooks := config["hooks"].(map[string]any)
 	for _, eventName := range []string{"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"} {
 		commands := hookCommands(t, hooks[eventName])
-		if countCommand(commands, codexHookCommand("agent-vcs")) != 1 {
-			t.Fatalf("%s hook count = %d, commands=%#v", eventName, countCommand(commands, codexHookCommand("agent-vcs")), commands)
+		if countCommand(commands, codexHookCommand("turnal")) != 1 {
+			t.Fatalf("%s hook count = %d, commands=%#v", eventName, countCommand(commands, codexHookCommand("turnal")), commands)
 		}
 	}
 
@@ -121,7 +121,7 @@ command = "echo keep"
 	}
 }
 
-func TestUninstallHooksRemovesAgentVCSCommandsAndPreservesOthers(t *testing.T) {
+func TestUninstallHooksRemovesTurnalCommandsAndPreservesOthers(t *testing.T) {
 	root := t.TempDir()
 
 	claudeDir := filepath.Join(root, ".claude")
@@ -136,7 +136,7 @@ func TestUninstallHooksRemovesAgentVCSCommandsAndPreservesOthers(t *testing.T) {
         "matcher": "",
         "hooks": [
           {"type": "command", "command": "echo keep"},
-          {"type": "command", "command": "agent-vcs claude-hook assistant"}
+          {"type": "command", "command": "turnal claude-hook assistant"}
         ]
       }
     ],
@@ -144,7 +144,7 @@ func TestUninstallHooksRemovesAgentVCSCommandsAndPreservesOthers(t *testing.T) {
       {
         "matcher": "",
         "hooks": [
-          {"type": "command", "command": "agent-vcs claude-hook user"}
+          {"type": "command", "command": "turnal claude-hook user"}
         ]
       }
     ]
@@ -173,13 +173,13 @@ type = "command"
 command = "echo keep"
 [[hooks.PostToolUse.hooks]]
 type = "command"
-command = "agent-vcs codex-hook"
+command = "turnal codex-hook"
 
 [[hooks.Stop]]
 matcher = ""
 [[hooks.Stop.hooks]]
 type = "command"
-command = "agent-vcs codex-hook"
+command = "turnal codex-hook"
 `), 0o644); err != nil {
 		t.Fatalf("write Codex config: %v", err)
 	}
@@ -199,8 +199,8 @@ command = "agent-vcs codex-hook"
 	if countCommand(stopCommands, "echo keep") != 1 {
 		t.Fatalf("Claude Stop hook was not preserved: %#v", stopCommands)
 	}
-	if countCommand(stopCommands, "agent-vcs claude-hook assistant") != 0 {
-		t.Fatalf("Claude agent-vcs hook was preserved: %#v", stopCommands)
+	if countCommand(stopCommands, "turnal claude-hook assistant") != 0 {
+		t.Fatalf("Claude turnal hook was preserved: %#v", stopCommands)
 	}
 	if _, ok := claudeHooks["UserPromptSubmit"]; ok {
 		t.Fatalf("empty Claude UserPromptSubmit hook group was preserved: %#v", claudeHooks["UserPromptSubmit"])
@@ -220,8 +220,8 @@ command = "agent-vcs codex-hook"
 	if countCommand(postToolUseCommands, "echo keep") != 1 {
 		t.Fatalf("Codex PostToolUse hook was not preserved: %#v", postToolUseCommands)
 	}
-	if countCommand(postToolUseCommands, "agent-vcs codex-hook") != 0 {
-		t.Fatalf("Codex agent-vcs hook was preserved: %#v", postToolUseCommands)
+	if countCommand(postToolUseCommands, "turnal codex-hook") != 0 {
+		t.Fatalf("Codex turnal hook was preserved: %#v", postToolUseCommands)
 	}
 	if _, ok := codexHooks["Stop"]; ok {
 		t.Fatalf("empty Codex Stop hook group was preserved: %#v", codexHooks["Stop"])
@@ -230,7 +230,7 @@ command = "agent-vcs codex-hook"
 
 func TestUninstallHooksDryRunDoesNotWriteConfig(t *testing.T) {
 	root := t.TempDir()
-	if _, err := InstallWithOptions(root, []Target{TargetClaude, TargetCodex}, InstallOptions{HookCommand: "agent-vcs"}); err != nil {
+	if _, err := InstallWithOptions(root, []Target{TargetClaude, TargetCodex}, InstallOptions{HookCommand: "turnal"}); err != nil {
 		t.Fatalf("InstallWithOptions: %v", err)
 	}
 
@@ -270,7 +270,7 @@ func TestUninstallHooksDryRunDoesNotWriteConfig(t *testing.T) {
 }
 
 func TestInstallHooksBackUpInvalidConfig(t *testing.T) {
-	t.Setenv("AGENT_VCS_HOOK_COMMAND", "agent-vcs")
+	t.Setenv("TURNAL_HOOK_COMMAND", "turnal")
 
 	root := t.TempDir()
 
@@ -309,7 +309,7 @@ func TestInstallHooksBackUpInvalidConfig(t *testing.T) {
 
 func TestInstallHooksCanUseConfiguredCommandPrefix(t *testing.T) {
 	root := t.TempDir()
-	opts := InstallOptions{HookCommand: "/tmp/agent-vcs-live"}
+	opts := InstallOptions{HookCommand: "/tmp/turnal-live"}
 	if _, err := InstallCodexHookWithOptions(root, opts); err != nil {
 		t.Fatalf("InstallCodexHook: %v", err)
 	}
@@ -320,14 +320,14 @@ func TestInstallHooksCanUseConfiguredCommandPrefix(t *testing.T) {
 	var config map[string]any
 	readTOMLFile(t, filepath.Join(root, ".codex", "config.toml"), &config)
 	commands := hookCommands(t, config["hooks"].(map[string]any)["Stop"])
-	if countCommand(commands, "/tmp/agent-vcs-live codex-hook") != 1 {
+	if countCommand(commands, "/tmp/turnal-live codex-hook") != 1 {
 		t.Fatalf("configured command not used: %#v", commands)
 	}
 }
 
 func TestInspectHooksReportsInstalledHooks(t *testing.T) {
 	root := t.TempDir()
-	opts := InstallOptions{HookCommand: "/tmp/agent-vcs-live"}
+	opts := InstallOptions{HookCommand: "/tmp/turnal-live"}
 	if _, err := InstallWithOptions(root, []Target{TargetClaude, TargetCodex}, opts); err != nil {
 		t.Fatalf("InstallWithOptions: %v", err)
 	}
@@ -339,7 +339,7 @@ func TestInspectHooksReportsInstalledHooks(t *testing.T) {
 		}
 	}
 
-	health = InspectHooks(root, "agent-vcs")
+	health = InspectHooks(root, "turnal")
 	var problems []string
 	for _, item := range health {
 		problems = append(problems, item.Problems...)

@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"sort"
 
-	"agent-vcs-again/internal/checkpoint"
-	eventlog "agent-vcs-again/internal/events"
-	queryindex "agent-vcs-again/internal/index"
-	"agent-vcs-again/internal/primitives"
+	"github.com/AadiJo/turnal/internal/checkpoint"
+	eventlog "github.com/AadiJo/turnal/internal/events"
+	queryindex "github.com/AadiJo/turnal/internal/index"
+	"github.com/AadiJo/turnal/internal/primitives"
 )
 
 type completeTurn struct {

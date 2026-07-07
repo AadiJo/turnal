@@ -4,11 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 
-	eventlog "agent-vcs-again/internal/events"
-	"agent-vcs-again/internal/primitives"
-	"agent-vcs-again/internal/recall"
-	"agent-vcs-again/internal/turnevents"
-	"agent-vcs-again/internal/turns"
+	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/recall"
+	"github.com/AadiJo/turnal/internal/turnevents"
+	"github.com/AadiJo/turnal/internal/turns"
 	"github.com/spf13/cobra"
 )
 

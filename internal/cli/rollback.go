@@ -5,10 +5,10 @@ import (
 	"io"
 	"strings"
 
-	"agent-vcs-again/internal/checkpoint"
-	agentconfig "agent-vcs-again/internal/config"
-	"agent-vcs-again/internal/primitives"
-	rollbackengine "agent-vcs-again/internal/rollback"
+	"github.com/AadiJo/turnal/internal/checkpoint"
+	agentconfig "github.com/AadiJo/turnal/internal/config"
+	"github.com/AadiJo/turnal/internal/primitives"
+	rollbackengine "github.com/AadiJo/turnal/internal/rollback"
 	"github.com/spf13/cobra"
 )
 

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"agent-vcs-again/internal/checkpoint"
+	"github.com/AadiJo/turnal/internal/checkpoint"
 )
 
 func TestInitCommandInitializesWorkspaceGitAndGitignore(t *testing.T) {
@@ -119,7 +119,7 @@ enabled = true
 		t.Fatalf("init command: %v\n%s", err, out.String())
 	}
 
-	configData, err := os.ReadFile(filepath.Join(root.String(), ".agent-vcs", "config.toml"))
+	configData, err := os.ReadFile(filepath.Join(root.String(), ".turnal", "config.toml"))
 	if err != nil {
 		t.Fatalf("read workspace config: %v", err)
 	}

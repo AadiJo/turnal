@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"agent-vcs-again/internal/checkpoint"
-	"agent-vcs-again/internal/primitives"
+	"github.com/AadiJo/turnal/internal/checkpoint"
+	"github.com/AadiJo/turnal/internal/primitives"
 )
 
 func TestReplayCheckoutCreatesIsolatedWorktree(t *testing.T) {
@@ -23,13 +23,13 @@ func TestReplayCheckoutCreatesIsolatedWorktree(t *testing.T) {
 	for _, want := range []string{
 		"replay worktree: " + replayPath,
 		"state: demo turn 1 post",
-		"agent-vcs replay next",
-		"agent-vcs replay prev",
-		"agent-vcs replay goto demo:turn:1:post",
-		"agent-vcs replay diff",
-		"agent-vcs replay show",
-		"agent-vcs replay keep",
-		"agent-vcs replay stop",
+		"turnal replay next",
+		"turnal replay prev",
+		"turnal replay goto demo:turn:1:post",
+		"turnal replay diff",
+		"turnal replay show",
+		"turnal replay keep",
+		"turnal replay stop",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("replay output missing %q:\n%s", want, output)
@@ -39,10 +39,10 @@ func TestReplayCheckoutCreatesIsolatedWorktree(t *testing.T) {
 	assertFileContent(t, replayPath, "app.txt", "after 1\n")
 	assertFileContent(t, root.String(), "app.txt", "working copy\n")
 	assertFileContent(t, root.String(), "extra.txt", "do not copy\n")
-	if _, err := os.Stat(filepath.Join(replayPath, ".agent-vcs")); !os.IsNotExist(err) {
-		t.Fatalf("replay worktree contains .agent-vcs or stat failed: %v", err)
+	if _, err := os.Stat(filepath.Join(replayPath, ".turnal")); !os.IsNotExist(err) {
+		t.Fatalf("replay worktree contains .turnal or stat failed: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(replayPath, ".agent-vcs-replay.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(replayPath, ".turnal-replay.json")); err != nil {
 		t.Fatalf("replay marker missing: %v", err)
 	}
 }
@@ -181,7 +181,7 @@ func TestReplayKeepCopiesCurrentState(t *testing.T) {
 		t.Fatalf("keep output = %s", output)
 	}
 	assertFileContent(t, keepPath, "app.txt", "after 1\n")
-	if _, err := os.Stat(filepath.Join(keepPath, ".agent-vcs-replay.json")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(keepPath, ".turnal-replay.json")); !os.IsNotExist(err) {
 		t.Fatalf("keep copy contains replay marker or stat failed: %v", err)
 	}
 }
@@ -249,7 +249,7 @@ func TestReplayKeepWithoutPathMakesStopPreserveWorktree(t *testing.T) {
 		t.Fatalf("stop output = %s", output)
 	}
 	assertFileContent(t, replayPath, "app.txt", "after 1\n")
-	if _, err := os.Stat(filepath.Join(replayPath, ".agent-vcs-replay.json")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(replayPath, ".turnal-replay.json")); !os.IsNotExist(err) {
 		t.Fatalf("kept stopped worktree still has replay marker or stat failed: %v", err)
 	}
 }

@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"agent-vcs-again/internal/checkpoint"
-	eventlog "agent-vcs-again/internal/events"
-	queryindex "agent-vcs-again/internal/index"
-	"agent-vcs-again/internal/primitives"
+	"github.com/AadiJo/turnal/internal/checkpoint"
+	eventlog "github.com/AadiJo/turnal/internal/events"
+	queryindex "github.com/AadiJo/turnal/internal/index"
+	"github.com/AadiJo/turnal/internal/primitives"
 )
 
 func TestGraphCommandShowsCheckpointGraph(t *testing.T) {
@@ -333,10 +333,10 @@ func runRootStdout(t *testing.T, args ...string) string {
 	cmd.SetErr(&stderr)
 	cmd.SetArgs(args)
 	if err := cmd.Execute(); err != nil {
-		t.Fatalf("agent-vcs %s: %v\nstdout=%s\nstderr=%s", strings.Join(args, " "), err, out.String(), stderr.String())
+		t.Fatalf("turnal %s: %v\nstdout=%s\nstderr=%s", strings.Join(args, " "), err, out.String(), stderr.String())
 	}
 	if stderr.Len() > 0 {
-		t.Fatalf("agent-vcs %s wrote stderr:\n%s", strings.Join(args, " "), stderr.String())
+		t.Fatalf("turnal %s wrote stderr:\n%s", strings.Join(args, " "), stderr.String())
 	}
 	return out.String()
 }

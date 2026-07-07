@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"agent-vcs-again/internal/checkpoint"
+	"github.com/AadiJo/turnal/internal/checkpoint"
 )
 
 func TestRunCodexWrapperCreatesCheckpointsAndEnablesHooks(t *testing.T) {
@@ -25,7 +25,7 @@ func TestRunCodexWrapperCreatesCheckpointsAndEnablesHooks(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 	t.Chdir(root.String())
-	t.Setenv("AGENT_VCS_HOOK_COMMAND", "agent-vcs")
+	t.Setenv("TURNAL_HOOK_COMMAND", "turnal")
 
 	argsPath := installFakeCodex(t, root.String(), 0)
 	writeFile(t, root, "app.txt", "before\n")
@@ -81,7 +81,7 @@ func TestRunCodexWrapperCreatesCheckpointsAndEnablesHooks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read Codex config: %v", err)
 	}
-	if !strings.Contains(string(configData), "hooks = true") || !strings.Contains(string(configData), "agent-vcs codex-hook") {
+	if !strings.Contains(string(configData), "hooks = true") || !strings.Contains(string(configData), "turnal codex-hook") {
 		t.Fatalf("Codex config missing hook setup:\n%s", configData)
 	}
 }
@@ -96,7 +96,7 @@ quiet = true
 bypass_hook_trust = true
 
 [hooks]
-command = "/tmp/custom-agent-vcs"
+command = "/tmp/custom-turnal"
 `)
 
 	root := workspaceRoot(t)
@@ -125,7 +125,7 @@ command = "/tmp/custom-agent-vcs"
 	if !strings.Contains(string(argsData), "--dangerously-bypass-hook-trust\n") {
 		t.Fatalf("fake codex args missing bypass hook trust:\n%s", argsData)
 	}
-	if strings.Contains(stderr.String(), "agent-vcs: recorded wrapper checkpoints") {
+	if strings.Contains(stderr.String(), "turnal: recorded wrapper checkpoints") {
 		t.Fatalf("quiet global config did not suppress wrapper status:\n%s", stderr.String())
 	}
 
@@ -133,7 +133,7 @@ command = "/tmp/custom-agent-vcs"
 	if err != nil {
 		t.Fatalf("read Codex config: %v", err)
 	}
-	if !strings.Contains(string(configData), "/tmp/custom-agent-vcs codex-hook") {
+	if !strings.Contains(string(configData), "/tmp/custom-turnal codex-hook") {
 		t.Fatalf("Codex config missing custom hook command:\n%s", configData)
 	}
 }
@@ -192,11 +192,11 @@ func TestRunCodexLiveEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("module root: %v", err)
 	}
-	bin := filepath.Join(t.TempDir(), "agent-vcs")
-	build := exec.Command("go", "build", "-o", bin, "./cmd/agent-vcs")
+	bin := filepath.Join(t.TempDir(), "turnal")
+	build := exec.Command("go", "build", "-o", bin, "./cmd/turnal")
 	build.Dir = moduleRoot
 	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build agent-vcs: %v\n%s", err, output)
+		t.Fatalf("build turnal: %v\n%s", err, output)
 	}
 
 	root := workspaceRoot(t)
@@ -208,9 +208,9 @@ func TestRunCodexLiveEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	codexHome := liveCodexHome(t, root.String())
-	live := exec.CommandContext(ctx, bin, "run", "--quiet", "--bypass-hook-trust", "--", "codex", "--ask-for-approval", "never", "exec", "--sandbox", "read-only", "Reply with exactly: agent-vcs-live")
+	live := exec.CommandContext(ctx, bin, "run", "--quiet", "--bypass-hook-trust", "--", "codex", "--ask-for-approval", "never", "exec", "--sandbox", "read-only", "Reply with exactly: turnal-live")
 	live.Dir = root.String()
-	live.Env = append(os.Environ(), "AGENT_VCS_HOOK_COMMAND="+bin, "CODEX_HOME="+codexHome)
+	live.Env = append(os.Environ(), "TURNAL_HOOK_COMMAND="+bin, "CODEX_HOME="+codexHome)
 	output, err := live.CombinedOutput()
 	if ctx.Err() != nil {
 		t.Fatalf("live Codex test timed out:\n%s", output)

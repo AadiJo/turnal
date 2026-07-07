@@ -4,18 +4,18 @@ import (
 	"fmt"
 	"os"
 
-	"agent-vcs-again/internal/adapters"
-	"agent-vcs-again/internal/checkpoint"
-	agentconfig "agent-vcs-again/internal/config"
-	"agent-vcs-again/internal/integrity"
-	"agent-vcs-again/internal/primitives"
+	"github.com/AadiJo/turnal/internal/adapters"
+	"github.com/AadiJo/turnal/internal/checkpoint"
+	agentconfig "github.com/AadiJo/turnal/internal/config"
+	"github.com/AadiJo/turnal/internal/integrity"
+	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/spf13/cobra"
 )
 
 func statusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:          "status",
-		Short:        "Show agent-vcs workspace status",
+		Short:        "Show turnal workspace status",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cwd, err := os.Getwd()
@@ -93,7 +93,7 @@ func statusCmd() *cobra.Command {
 			for _, problem := range status.Problems {
 				fmt.Fprintf(out, "- %s\n", problem)
 			}
-			return fmt.Errorf("agent-vcs workspace has %d problem(s)", len(status.Problems))
+			return fmt.Errorf("turnal workspace has %d problem(s)", len(status.Problems))
 		},
 	}
 }

@@ -5,12 +5,12 @@ import (
 	"os"
 	"path/filepath"
 
-	"agent-vcs-again/internal/adapters"
-	"agent-vcs-again/internal/checkpoint"
-	"agent-vcs-again/internal/primitives"
+	"github.com/AadiJo/turnal/internal/adapters"
+	"github.com/AadiJo/turnal/internal/checkpoint"
+	"github.com/AadiJo/turnal/internal/primitives"
 )
 
-const metadataDirName = ".agent-vcs"
+const metadataDirName = ".turnal"
 
 type Options struct {
 	DryRun         bool
@@ -85,7 +85,7 @@ func FindRoot(start string) (primitives.WorkspaceRoot, string, error) {
 		info, err := os.Lstat(candidate)
 		if err == nil {
 			if !info.IsDir() {
-				return "", "", fmt.Errorf("agent-vcs metadata path is not a directory: %s", candidate)
+				return "", "", fmt.Errorf("turnal metadata path is not a directory: %s", candidate)
 			}
 			root, err := primitives.ParseWorkspaceRoot(abs)
 			if err != nil {
@@ -94,7 +94,7 @@ func FindRoot(start string) (primitives.WorkspaceRoot, string, error) {
 			return root, candidate, nil
 		}
 		if !os.IsNotExist(err) {
-			return "", "", fmt.Errorf("stat agent-vcs metadata path %s: %w", candidate, err)
+			return "", "", fmt.Errorf("stat turnal metadata path %s: %w", candidate, err)
 		}
 
 		parent := filepath.Dir(abs)
@@ -104,7 +104,7 @@ func FindRoot(start string) (primitives.WorkspaceRoot, string, error) {
 		abs = parent
 	}
 
-	return "", "", fmt.Errorf("not an agent-vcs workspace: no .agent-vcs directory found")
+	return "", "", fmt.Errorf("not a turnal workspace: no .turnal directory found")
 }
 
 func uninstallHooks(projectRoot string, opts Options) ([]adapters.UninstallResult, error) {

@@ -8,10 +8,10 @@ import (
 	"sync"
 	"testing"
 
-	"agent-vcs-again/internal/checkpoint"
-	eventlog "agent-vcs-again/internal/events"
-	"agent-vcs-again/internal/primitives"
-	"agent-vcs-again/internal/turns"
+	"github.com/AadiJo/turnal/internal/checkpoint"
+	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/turns"
 )
 
 type checkpointEventPayload struct {
@@ -145,7 +145,7 @@ func TestHandleHookPayloadAppliesSecretsRedactionPolicy(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 	t.Chdir(root.String())
-	writeFile(t, root, ".agent-vcs/config.toml", `
+	writeFile(t, root, ".turnal/config.toml", `
 version = 1
 
 [secrets]

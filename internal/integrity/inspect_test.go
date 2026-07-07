@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"agent-vcs-again/internal/checkpoint"
-	eventlog "agent-vcs-again/internal/events"
-	"agent-vcs-again/internal/primitives"
-	rollbackengine "agent-vcs-again/internal/rollback"
+	"github.com/AadiJo/turnal/internal/checkpoint"
+	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/primitives"
+	rollbackengine "github.com/AadiJo/turnal/internal/rollback"
 )
 
 func TestInspectReportsCheckpointEventCommitMismatch(t *testing.T) {

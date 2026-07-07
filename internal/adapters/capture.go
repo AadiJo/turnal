@@ -9,12 +9,12 @@ import (
 	"path/filepath"
 	"strings"
 
-	"agent-vcs-again/internal/checkpoint"
-	agentconfig "agent-vcs-again/internal/config"
-	eventlog "agent-vcs-again/internal/events"
-	"agent-vcs-again/internal/primitives"
-	"agent-vcs-again/internal/turnevents"
-	"agent-vcs-again/internal/turns"
+	"github.com/AadiJo/turnal/internal/checkpoint"
+	agentconfig "github.com/AadiJo/turnal/internal/config"
+	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/turnevents"
+	"github.com/AadiJo/turnal/internal/turns"
 )
 
 type hookPayload struct {
@@ -543,14 +543,14 @@ func redactedText(value string, store bool) string {
 	if store {
 		return value
 	}
-	return "[redacted by agent-vcs secrets policy]"
+	return "[redacted by turnal secrets policy]"
 }
 
 func redactedJSON(value json.RawMessage, store bool) json.RawMessage {
 	if store {
 		return defaultRawJSON(value)
 	}
-	return json.RawMessage(`{"redacted":true,"policy":"agent-vcs.secrets"}`)
+	return json.RawMessage(`{"redacted":true,"policy":"turnal.secrets"}`)
 }
 
 func redactRawHookPayload(raw []byte, secrets agentconfig.Secrets) []byte {
@@ -574,7 +574,7 @@ func redactRawHookPayload(raw []byte, secrets agentconfig.Secrets) []byte {
 	if !secrets.StoreToolIO {
 		for _, key := range []string{"tool_input", "tool_response"} {
 			if _, ok := payload[key]; ok {
-				payload[key] = map[string]any{"redacted": true, "policy": "agent-vcs.secrets"}
+				payload[key] = map[string]any{"redacted": true, "policy": "turnal.secrets"}
 			}
 		}
 	}
