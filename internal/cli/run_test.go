@@ -182,9 +182,6 @@ func TestRunCodexWrapperPropagatesChildExitCodeAndFinishesTurn(t *testing.T) {
 }
 
 func TestRunCodexLiveEndToEnd(t *testing.T) {
-	if os.Getenv("AGENT_VCS_LIVE_CODEX") != "1" {
-		t.Skip("set AGENT_VCS_LIVE_CODEX=1 to run live Codex end-to-end test")
-	}
 	isolateAgentConfig(t)
 	if _, err := exec.LookPath("codex"); err != nil {
 		t.Skip("codex executable not found")
@@ -210,9 +207,10 @@ func TestRunCodexLiveEndToEnd(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	live := exec.CommandContext(ctx, bin, "run", "--quiet", "--bypass-hook-trust", "--", "codex", "exec", "--ask-for-approval", "never", "--sandbox", "read-only", "Reply with exactly: agent-vcs-live")
+	codexHome := liveCodexHome(t, root.String())
+	live := exec.CommandContext(ctx, bin, "run", "--quiet", "--bypass-hook-trust", "--", "codex", "--ask-for-approval", "never", "exec", "--sandbox", "read-only", "Reply with exactly: agent-vcs-live")
 	live.Dir = root.String()
-	live.Env = append(os.Environ(), "AGENT_VCS_HOOK_COMMAND="+bin)
+	live.Env = append(os.Environ(), "AGENT_VCS_HOOK_COMMAND="+bin, "CODEX_HOME="+codexHome)
 	output, err := live.CombinedOutput()
 	if ctx.Err() != nil {
 		t.Fatalf("live Codex test timed out:\n%s", output)
@@ -235,6 +233,36 @@ func TestRunCodexLiveEndToEnd(t *testing.T) {
 	if len(infos) < 2 {
 		t.Fatalf("checkpoint refs = %d, want at least wrapper pre/post", len(infos))
 	}
+}
+
+func liveCodexHome(t *testing.T, trustedProjectRoot string) string {
+	t.Helper()
+	sourceHome := os.Getenv("CODEX_HOME")
+	if sourceHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			t.Skipf("resolve home directory for Codex auth: %v", err)
+		}
+		sourceHome = filepath.Join(home, ".codex")
+	}
+
+	authData, err := os.ReadFile(filepath.Join(sourceHome, "auth.json"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			t.Skip("Codex auth file not found")
+		}
+		t.Fatalf("read Codex auth file: %v", err)
+	}
+
+	codexHome := t.TempDir()
+	if err := os.WriteFile(filepath.Join(codexHome, "auth.json"), authData, 0o600); err != nil {
+		t.Fatalf("write isolated Codex auth file: %v", err)
+	}
+	config := "[projects." + strconv.Quote(trustedProjectRoot) + "]\ntrust_level = \"trusted\"\n"
+	if err := os.WriteFile(filepath.Join(codexHome, "config.toml"), []byte(config), 0o600); err != nil {
+		t.Fatalf("write isolated Codex config: %v", err)
+	}
+	return codexHome
 }
 
 func installFakeCodex(t *testing.T, root string, exitCode int) string {
