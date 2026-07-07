@@ -22,7 +22,7 @@ func TestRootHelpShowsPorcelainCommands(t *testing.T) {
 	}
 
 	output := out.String()
-	for _, want := range []string{"init", "status", "log", "show", "diff", "blame", "replay"} {
+	for _, want := range []string{"init", "destroy", "status", "log", "show", "diff", "blame", "replay"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("help output missing %q:\n%s", want, output)
 		}

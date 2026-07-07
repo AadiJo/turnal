@@ -121,6 +121,154 @@ command = "echo keep"
 	}
 }
 
+func TestUninstallHooksRemovesAgentVCSCommandsAndPreservesOthers(t *testing.T) {
+	root := t.TempDir()
+
+	claudeDir := filepath.Join(root, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatalf("mkdir .claude: %v", err)
+	}
+	claudeSettings := filepath.Join(claudeDir, "settings.json")
+	if err := os.WriteFile(claudeSettings, []byte(`{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {"type": "command", "command": "echo keep"},
+          {"type": "command", "command": "agent-vcs claude-hook assistant"}
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {"type": "command", "command": "agent-vcs claude-hook user"}
+        ]
+      }
+    ]
+  }
+}`), 0o644); err != nil {
+		t.Fatalf("write Claude settings: %v", err)
+	}
+
+	codexDir := filepath.Join(root, ".codex")
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		t.Fatalf("mkdir .codex: %v", err)
+	}
+	codexConfig := filepath.Join(codexDir, "config.toml")
+	if err := os.WriteFile(codexConfig, []byte(`
+model = "gpt-5"
+
+[features]
+web_search = true
+hooks = true
+
+[hooks]
+[[hooks.PostToolUse]]
+matcher = "Bash"
+[[hooks.PostToolUse.hooks]]
+type = "command"
+command = "echo keep"
+[[hooks.PostToolUse.hooks]]
+type = "command"
+command = "agent-vcs codex-hook"
+
+[[hooks.Stop]]
+matcher = ""
+[[hooks.Stop.hooks]]
+type = "command"
+command = "agent-vcs codex-hook"
+`), 0o644); err != nil {
+		t.Fatalf("write Codex config: %v", err)
+	}
+
+	results, err := Uninstall(root, []Target{TargetClaude, TargetCodex})
+	if err != nil {
+		t.Fatalf("Uninstall: %v", err)
+	}
+	if len(results) != 2 || results[0].RemovedCommands != 2 || results[1].RemovedCommands != 2 {
+		t.Fatalf("uninstall results = %#v, want two removed commands per target", results)
+	}
+
+	var settings map[string]any
+	readJSONFile(t, claudeSettings, &settings)
+	claudeHooks := settings["hooks"].(map[string]any)
+	stopCommands := hookCommands(t, claudeHooks["Stop"])
+	if countCommand(stopCommands, "echo keep") != 1 {
+		t.Fatalf("Claude Stop hook was not preserved: %#v", stopCommands)
+	}
+	if countCommand(stopCommands, "agent-vcs claude-hook assistant") != 0 {
+		t.Fatalf("Claude agent-vcs hook was preserved: %#v", stopCommands)
+	}
+	if _, ok := claudeHooks["UserPromptSubmit"]; ok {
+		t.Fatalf("empty Claude UserPromptSubmit hook group was preserved: %#v", claudeHooks["UserPromptSubmit"])
+	}
+
+	var config map[string]any
+	readTOMLFile(t, codexConfig, &config)
+	if config["model"] != "gpt-5" {
+		t.Fatalf("Codex model was not preserved: %#v", config["model"])
+	}
+	features := config["features"].(map[string]any)
+	if features["web_search"] != true || features["hooks"] != true {
+		t.Fatalf("Codex features were not preserved: %#v", features)
+	}
+	codexHooks := config["hooks"].(map[string]any)
+	postToolUseCommands := hookCommands(t, codexHooks["PostToolUse"])
+	if countCommand(postToolUseCommands, "echo keep") != 1 {
+		t.Fatalf("Codex PostToolUse hook was not preserved: %#v", postToolUseCommands)
+	}
+	if countCommand(postToolUseCommands, "agent-vcs codex-hook") != 0 {
+		t.Fatalf("Codex agent-vcs hook was preserved: %#v", postToolUseCommands)
+	}
+	if _, ok := codexHooks["Stop"]; ok {
+		t.Fatalf("empty Codex Stop hook group was preserved: %#v", codexHooks["Stop"])
+	}
+}
+
+func TestUninstallHooksDryRunDoesNotWriteConfig(t *testing.T) {
+	root := t.TempDir()
+	if _, err := InstallWithOptions(root, []Target{TargetClaude, TargetCodex}, InstallOptions{HookCommand: "agent-vcs"}); err != nil {
+		t.Fatalf("InstallWithOptions: %v", err)
+	}
+
+	claudeSettings := filepath.Join(root, ".claude", "settings.json")
+	codexConfig := filepath.Join(root, ".codex", "config.toml")
+	beforeClaude, err := os.ReadFile(claudeSettings)
+	if err != nil {
+		t.Fatalf("read Claude settings: %v", err)
+	}
+	beforeCodex, err := os.ReadFile(codexConfig)
+	if err != nil {
+		t.Fatalf("read Codex config: %v", err)
+	}
+
+	results, err := UninstallWithOptions(root, []Target{TargetClaude, TargetCodex}, UninstallOptions{DryRun: true})
+	if err != nil {
+		t.Fatalf("UninstallWithOptions dry run: %v", err)
+	}
+	if len(results) != 2 || results[0].RemovedCommands == 0 || results[1].RemovedCommands == 0 {
+		t.Fatalf("dry-run results = %#v, want planned removals", results)
+	}
+
+	afterClaude, err := os.ReadFile(claudeSettings)
+	if err != nil {
+		t.Fatalf("read Claude settings after dry-run: %v", err)
+	}
+	afterCodex, err := os.ReadFile(codexConfig)
+	if err != nil {
+		t.Fatalf("read Codex config after dry-run: %v", err)
+	}
+	if string(afterClaude) != string(beforeClaude) {
+		t.Fatalf("Claude settings changed during dry-run:\nbefore=%s\nafter=%s", beforeClaude, afterClaude)
+	}
+	if string(afterCodex) != string(beforeCodex) {
+		t.Fatalf("Codex config changed during dry-run:\nbefore=%s\nafter=%s", beforeCodex, afterCodex)
+	}
+}
+
 func TestInstallHooksBackUpInvalidConfig(t *testing.T) {
 	t.Setenv("AGENT_VCS_HOOK_COMMAND", "agent-vcs")
 
