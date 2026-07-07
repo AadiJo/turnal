@@ -34,6 +34,47 @@ func TestRootHelpShowsPorcelainCommands(t *testing.T) {
 	}
 }
 
+func TestRootHelpCommandShowsRootHelp(t *testing.T) {
+	cmd := NewRootCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"help"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("help command: %v", err)
+	}
+
+	output := out.String()
+	for _, want := range []string{"Usage:", "Available Commands:", "--help"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("help output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestUnknownCommandGuidesUserToHelp(t *testing.T) {
+	cmd := NewRootCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"bogus"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("unknown command succeeded")
+	}
+
+	output := out.String()
+	for _, want := range []string{
+		`Error: unknown command "bogus" for "turnal"`,
+		"Run 'turnal --help' for usage.",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("unknown command output missing %q:\n%s", want, output)
+		}
+	}
+}
+
 func TestDiffCommandAcceptsTurnTarget(t *testing.T) {
 	root, repo, sessionID, turnID := createTurnWithDiff(t)
 	t.Chdir(root.String())

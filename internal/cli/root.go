@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -12,10 +13,9 @@ const version = "0.0.1"
 
 func NewRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
-		Use:           "turnal",
-		Short:         "Local-first version control for AI agent activity",
-		Version:       version,
-		SilenceErrors: true,
+		Use:     "turnal",
+		Short:   "Local-first version control for AI agent activity",
+		Version: version,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return cmd.Help()
 		},
@@ -41,8 +41,16 @@ func NewRootCmd() *cobra.Command {
 	rootCmd.AddCommand(versionCmd())
 	rootCmd.AddCommand(claudeHookCmd())
 	rootCmd.AddCommand(codexHookCmd())
+	silenceSubcommandErrors(rootCmd)
 
 	return rootCmd
+}
+
+func silenceSubcommandErrors(cmd *cobra.Command) {
+	for _, subcommand := range cmd.Commands() {
+		subcommand.SilenceErrors = true
+		silenceSubcommandErrors(subcommand)
+	}
 }
 
 func Execute() {
@@ -55,7 +63,9 @@ func Execute() {
 		if code, ok := commandExitCode(err); ok {
 			os.Exit(code)
 		}
-		fmt.Fprintln(os.Stderr, err)
+		if !isUnknownCommandError(err) {
+			fmt.Fprintln(os.Stderr, err)
+		}
 		os.Exit(1)
 	}
 }
@@ -66,4 +76,8 @@ func commandExitCode(err error) (int, bool) {
 		return childErr.ExitCode(), true
 	}
 	return 0, false
+}
+
+func isUnknownCommandError(err error) bool {
+	return strings.HasPrefix(err.Error(), "unknown command ")
 }
