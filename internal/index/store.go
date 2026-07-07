@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"strings"
 	"time"
 
 	"agent-vcs-again/internal/checkpoint"
@@ -64,6 +65,103 @@ func (s *Store) Healthy() (bool, error) {
 		return false, fmt.Errorf("read index metadata: %w", err)
 	}
 	return rebuiltAt != "", nil
+}
+
+func (s *Store) Search(query SearchQuery) ([]SearchResult, error) {
+	if query.Limit < 0 {
+		return nil, fmt.Errorf("limit must be zero or greater")
+	}
+	match, err := buildFTSMatchQuery(query.Query)
+	if err != nil {
+		return nil, err
+	}
+
+	args := []any{match}
+	sqlText := `
+		SELECT session_id, turn_id, first_at, last_at, adapter, prompt, assistant, tools, paths,
+		       snippet(turn_search, -1, '[', ']', ' ... ', 16), bm25(turn_search) AS rank
+		FROM turn_search
+		WHERE turn_search MATCH ?`
+	if query.Session != "" {
+		sqlText += ` AND session_id = ?`
+		args = append(args, query.Session.String())
+	}
+	sqlText += ` ORDER BY rank, session_id, CAST(turn_id AS INTEGER)`
+	if query.Limit > 0 {
+		sqlText += ` LIMIT ?`
+		args = append(args, query.Limit)
+	}
+
+	rows, err := s.db.QueryContext(context.Background(), sqlText, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query search index: %w", err)
+	}
+	defer rows.Close()
+
+	var results []SearchResult
+	for rows.Next() {
+		var sessionText string
+		var turnText string
+		var firstText sql.NullString
+		var lastText sql.NullString
+		var adapter sql.NullString
+		var prompt sql.NullString
+		var assistant sql.NullString
+		var tools sql.NullString
+		var paths sql.NullString
+		var snippet sql.NullString
+		var rank float64
+		if err := rows.Scan(
+			&sessionText,
+			&turnText,
+			&firstText,
+			&lastText,
+			&adapter,
+			&prompt,
+			&assistant,
+			&tools,
+			&paths,
+			&snippet,
+			&rank,
+		); err != nil {
+			return nil, fmt.Errorf("scan search result: %w", err)
+		}
+
+		sessionID, err := primitives.ParseSessionID(sessionText)
+		if err != nil {
+			return nil, fmt.Errorf("index search session invariant failed: %w", err)
+		}
+		turnID, err := primitives.ParseTurnID(turnText)
+		if err != nil {
+			return nil, fmt.Errorf("index search turn invariant failed for session %s: %w", sessionID, err)
+		}
+		first, err := parseOptionalTime(firstText)
+		if err != nil {
+			return nil, fmt.Errorf("parse indexed search first event time for %s:%s: %w", sessionID, turnID, err)
+		}
+		last, err := parseOptionalTime(lastText)
+		if err != nil {
+			return nil, fmt.Errorf("parse indexed search last event time for %s:%s: %w", sessionID, turnID, err)
+		}
+
+		results = append(results, SearchResult{
+			SessionID: sessionID,
+			TurnID:    turnID,
+			First:     first,
+			Last:      last,
+			Adapter:   nullableString(adapter),
+			Prompt:    nullableString(prompt),
+			Assistant: nullableString(assistant),
+			ToolNames: splitSearchList(nullableString(tools)),
+			Paths:     splitSearchList(nullableString(paths)),
+			Snippet:   nullableString(snippet),
+			Rank:      rank,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate search results: %w", err)
+	}
+	return results, nil
 }
 
 func (s *Store) LoadGraph(query GraphQuery) ([]GraphSession, error) {
@@ -381,6 +479,41 @@ func nullableString(value sql.NullString) string {
 		return ""
 	}
 	return value.String
+}
+
+func buildFTSMatchQuery(query string) (string, error) {
+	fields := strings.Fields(query)
+	if len(fields) == 0 {
+		return "", fmt.Errorf("search query must not be empty")
+	}
+
+	terms := make([]string, 0, len(fields))
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		terms = append(terms, `"`+strings.ReplaceAll(field, `"`, `""`)+`"`)
+	}
+	if len(terms) == 0 {
+		return "", fmt.Errorf("search query must include at least one searchable term")
+	}
+	return strings.Join(terms, " AND "), nil
+}
+
+func splitSearchList(value string) []string {
+	if value == "" {
+		return nil
+	}
+	lines := strings.Split(value, "\n")
+	result := lines[:0]
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			result = append(result, line)
+		}
+	}
+	return result
 }
 
 func parseOptionalTime(value sql.NullString) (time.Time, error) {

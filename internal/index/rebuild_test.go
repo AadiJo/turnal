@@ -64,8 +64,8 @@ func TestRebuildPopulatesGraphRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
-	if stats.Sessions != 1 || stats.Turns != 1 || stats.Events != 3 || stats.Checkpoints != 2 || stats.FileTouches != 2 {
-		t.Fatalf("stats = %#v, want 1 session, 1 turn, 3 events, 2 checkpoints, 2 file touches", stats)
+	if stats.Sessions != 1 || stats.Turns != 1 || stats.Events != 3 || stats.Checkpoints != 2 || stats.FileTouches != 2 || stats.SearchDocuments != 1 {
+		t.Fatalf("stats = %#v, want 1 session, 1 turn, 3 events, 2 checkpoints, 2 file touches, 1 search doc", stats)
 	}
 
 	store, err := Open(repo.MetadataDir)

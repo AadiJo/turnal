@@ -24,13 +24,14 @@ func reindexCmd() *cobra.Command {
 				return err
 			}
 			if !quiet {
-				fmt.Fprintf(cmd.OutOrStdout(), "reindexed %s: %d sessions, %d turns, %d events, %d checkpoints, %d file touches\n",
+				fmt.Fprintf(cmd.OutOrStdout(), "reindexed %s: %d sessions, %d turns, %d events, %d checkpoints, %d file touches, %d search docs\n",
 					stats.DBPath,
 					stats.Sessions,
 					stats.Turns,
 					stats.Events,
 					stats.Checkpoints,
 					stats.FileTouches,
+					stats.SearchDocuments,
 				)
 			}
 			return nil

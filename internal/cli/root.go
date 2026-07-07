@@ -29,6 +29,7 @@ func NewRootCmd() *cobra.Command {
 	rootCmd.AddCommand(retentionCmd())
 	rootCmd.AddCommand(maintenanceCmd())
 	rootCmd.AddCommand(showCmd())
+	rootCmd.AddCommand(searchCmd())
 	rootCmd.AddCommand(turnCmd())
 	rootCmd.AddCommand(checkpointCmd())
 	rootCmd.AddCommand(diffCmd())

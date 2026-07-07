@@ -77,6 +77,20 @@ CREATE TABLE file_touches (
 	FOREIGN KEY (session_id, turn_id) REFERENCES turns(session_id, turn_id) ON DELETE CASCADE
 );
 
+CREATE VIRTUAL TABLE turn_search USING fts5(
+	session_id UNINDEXED,
+	turn_id UNINDEXED,
+	first_at UNINDEXED,
+	last_at UNINDEXED,
+	adapter,
+	prompt,
+	assistant,
+	tools,
+	paths,
+	event_text,
+	tokenize = 'unicode61'
+);
+
 CREATE INDEX idx_turns_session ON turns(session_id, turn_id DESC);
 CREATE INDEX idx_events_turn ON events(session_id, turn_id, seq);
 CREATE INDEX idx_checkpoints_session ON checkpoints(session_id, turn_id, phase);

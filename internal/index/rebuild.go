@@ -8,6 +8,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"agent-vcs-again/internal/checkpoint"
@@ -16,11 +17,12 @@ import (
 )
 
 type rebuildData struct {
-	Sessions    []sessionRecord
-	Events      []eventRecord
-	Turns       []turnRecord
-	Checkpoints []checkpointRecord
-	FileTouches []fileTouchRecord
+	Sessions        []sessionRecord
+	Events          []eventRecord
+	Turns           []turnRecord
+	Checkpoints     []checkpointRecord
+	FileTouches     []fileTouchRecord
+	SearchDocuments []searchDocumentRecord
 }
 
 type sessionRecord struct {
@@ -57,6 +59,14 @@ type fileTouchRecord struct {
 	File      checkpoint.DiffFileStat
 }
 
+type searchDocumentRecord struct {
+	SessionID primitives.SessionID
+	TurnID    primitives.TurnID
+	Events    TurnEventSummary
+	Paths     []string
+	EventText string
+}
+
 func Rebuild(repo *checkpoint.Repo) (RebuildStats, error) {
 	if repo == nil {
 		return RebuildStats{}, fmt.Errorf("rebuild index requires checkpoint repo")
@@ -68,12 +78,13 @@ func Rebuild(repo *checkpoint.Repo) (RebuildStats, error) {
 		return RebuildStats{DBPath: paths.DBPath}, err
 	}
 	stats := RebuildStats{
-		DBPath:      paths.DBPath,
-		Sessions:    len(data.Sessions),
-		Turns:       len(data.Turns),
-		Events:      len(data.Events),
-		Checkpoints: len(data.Checkpoints),
-		FileTouches: len(data.FileTouches),
+		DBPath:          paths.DBPath,
+		Sessions:        len(data.Sessions),
+		Turns:           len(data.Turns),
+		Events:          len(data.Events),
+		Checkpoints:     len(data.Checkpoints),
+		FileTouches:     len(data.FileTouches),
+		SearchDocuments: len(data.SearchDocuments),
 	}
 	if err := writeRebuiltDatabase(paths, data, stats); err != nil {
 		return stats, err
@@ -136,6 +147,7 @@ func collectRebuildData(repo *checkpoint.Repo) (rebuildData, error) {
 	})
 
 	summariesBySession := make(map[string]map[uint64]TurnEventSummary)
+	eventTextBySessionTurn := make(map[string]map[uint64][]string)
 	eventStatsBySession := make(map[string]sessionRecord)
 	var eventRows []eventRecord
 	for _, sessionID := range sessionIDs {
@@ -155,6 +167,14 @@ func collectRebuildData(repo *checkpoint.Repo) (rebuildData, error) {
 				stats.PrimaryAdapter = event.Adapter.String()
 			}
 			eventRows = append(eventRows, eventRecord{Event: event})
+			if event.TurnID != nil {
+				sessionKey := sessionID.String()
+				turnKey := event.TurnID.Uint64()
+				if eventTextBySessionTurn[sessionKey] == nil {
+					eventTextBySessionTurn[sessionKey] = make(map[uint64][]string)
+				}
+				eventTextBySessionTurn[sessionKey][turnKey] = append(eventTextBySessionTurn[sessionKey][turnKey], eventSearchText(event))
+			}
 		}
 		summariesBySession[sessionID.String()] = SummarizeTurnEvents(events)
 		eventStatsBySession[sessionID.String()] = stats
@@ -163,6 +183,7 @@ func collectRebuildData(repo *checkpoint.Repo) (rebuildData, error) {
 	var sessionRows []sessionRecord
 	var turnRows []turnRecord
 	var fileTouchRows []fileTouchRecord
+	pathsBySessionTurn := make(map[string]map[uint64][]string)
 	for _, sessionID := range sessionIDs {
 		sessionKey := sessionID.String()
 		turnMap := turnsBySession[sessionKey]
@@ -196,6 +217,10 @@ func collectRebuildData(repo *checkpoint.Repo) (rebuildData, error) {
 							TurnID:    turn.TurnID,
 							File:      file,
 						})
+						if pathsBySessionTurn[sessionKey] == nil {
+							pathsBySessionTurn[sessionKey] = make(map[uint64][]string)
+						}
+						pathsBySessionTurn[sessionKey][turn.TurnID.Uint64()] = append(pathsBySessionTurn[sessionKey][turn.TurnID.Uint64()], file.Path)
 					}
 				}
 			}
@@ -217,14 +242,138 @@ func collectRebuildData(repo *checkpoint.Repo) (rebuildData, error) {
 		}
 		return left.File.Path < right.File.Path
 	})
+	searchDocuments := buildSearchDocuments(sessionIDs, summariesBySession, pathsBySessionTurn, eventTextBySessionTurn)
 
 	return rebuildData{
-		Sessions:    sessionRows,
-		Events:      eventRows,
-		Turns:       turnRows,
-		Checkpoints: checkpointRows,
-		FileTouches: fileTouchRows,
+		Sessions:        sessionRows,
+		Events:          eventRows,
+		Turns:           turnRows,
+		Checkpoints:     checkpointRows,
+		FileTouches:     fileTouchRows,
+		SearchDocuments: searchDocuments,
 	}, nil
+}
+
+func buildSearchDocuments(
+	sessionIDs []primitives.SessionID,
+	summariesBySession map[string]map[uint64]TurnEventSummary,
+	pathsBySessionTurn map[string]map[uint64][]string,
+	eventTextBySessionTurn map[string]map[uint64][]string,
+) []searchDocumentRecord {
+	var documents []searchDocumentRecord
+	for _, sessionID := range sessionIDs {
+		sessionKey := sessionID.String()
+		turnSet := make(map[uint64]struct{})
+		for turnKey := range summariesBySession[sessionKey] {
+			turnSet[turnKey] = struct{}{}
+		}
+		for turnKey := range pathsBySessionTurn[sessionKey] {
+			turnSet[turnKey] = struct{}{}
+		}
+		for turnKey := range eventTextBySessionTurn[sessionKey] {
+			turnSet[turnKey] = struct{}{}
+		}
+
+		turnKeys := make([]uint64, 0, len(turnSet))
+		for turnKey := range turnSet {
+			turnKeys = append(turnKeys, turnKey)
+		}
+		sort.Slice(turnKeys, func(i, j int) bool {
+			return turnKeys[i] < turnKeys[j]
+		})
+
+		for _, turnKey := range turnKeys {
+			turnID, err := primitives.NewTurnID(turnKey)
+			if err != nil {
+				continue
+			}
+			paths := uniqueSortedStrings(pathsBySessionTurn[sessionKey][turnKey])
+			documents = append(documents, searchDocumentRecord{
+				SessionID: sessionID,
+				TurnID:    turnID,
+				Events:    summariesBySession[sessionKey][turnKey],
+				Paths:     paths,
+				EventText: strings.Join(nonEmptyStrings(eventTextBySessionTurn[sessionKey][turnKey]), "\n"),
+			})
+		}
+	}
+	return documents
+}
+
+func eventSearchText(event eventlog.Event) string {
+	parts := []string{
+		event.Type.String(),
+		event.Adapter.String(),
+		event.SourceID,
+		event.RawRef,
+	}
+	appendPayloadSearchText(&parts, event.Payload)
+	return strings.Join(nonEmptyStrings(parts), " ")
+}
+
+func appendPayloadSearchText(parts *[]string, payload json.RawMessage) {
+	var decoded any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		*parts = append(*parts, string(payload))
+		return
+	}
+	appendJSONSearchValue(parts, decoded)
+}
+
+func appendJSONSearchValue(parts *[]string, value any) {
+	switch typed := value.(type) {
+	case nil:
+		return
+	case string:
+		*parts = append(*parts, typed)
+	case bool:
+		*parts = append(*parts, strconv.FormatBool(typed))
+	case float64:
+		*parts = append(*parts, strconv.FormatFloat(typed, 'f', -1, 64))
+	case []any:
+		for _, item := range typed {
+			appendJSONSearchValue(parts, item)
+		}
+	case map[string]any:
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			*parts = append(*parts, key)
+			appendJSONSearchValue(parts, typed[key])
+		}
+	}
+}
+
+func uniqueSortedStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	var unique []string
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		unique = append(unique, value)
+	}
+	sort.Strings(unique)
+	return unique
+}
+
+func nonEmptyStrings(values []string) []string {
+	filtered := values[:0]
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			filtered = append(filtered, value)
+		}
+	}
+	return filtered
 }
 
 func writeRebuiltDatabase(paths Paths, data rebuildData, stats RebuildStats) error {
@@ -314,6 +463,9 @@ func insertRebuildData(ctx context.Context, tx *sql.Tx, data rebuildData, stats 
 	if err := insertFileTouches(ctx, tx, data.FileTouches); err != nil {
 		return err
 	}
+	if err := insertSearchDocuments(ctx, tx, data.SearchDocuments); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -332,6 +484,7 @@ func insertMeta(ctx context.Context, tx *sql.Tx, stats RebuildStats) error {
 		"event_row_count":      strconv.Itoa(stats.Events),
 		"checkpoint_ref_count": strconv.Itoa(stats.Checkpoints),
 		"file_touch_count":     strconv.Itoa(stats.FileTouches),
+		"search_doc_count":     strconv.Itoa(stats.SearchDocuments),
 	}
 	keys := make([]string, 0, len(values))
 	for key := range values {
@@ -518,6 +671,38 @@ func insertFileTouches(ctx context.Context, tx *sql.Tx, files []fileTouchRecord)
 			boolInt(row.File.Binary),
 		); err != nil {
 			return fmt.Errorf("insert file touch %s:%s:%s: %w", row.SessionID, row.TurnID, row.File.Path, err)
+		}
+	}
+	return nil
+}
+
+func insertSearchDocuments(ctx context.Context, tx *sql.Tx, documents []searchDocumentRecord) error {
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO turn_search (session_id, turn_id, first_at, last_at, adapter, prompt, assistant, tools, paths, event_text)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("prepare search document insert: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, document := range documents {
+		turnNumber, err := int64FromUint64(document.TurnID.Uint64())
+		if err != nil {
+			return fmt.Errorf("search document %s:%s: %w", document.SessionID, document.TurnID, err)
+		}
+		if _, err := stmt.ExecContext(ctx,
+			document.SessionID.String(),
+			strconv.FormatInt(turnNumber, 10),
+			nullableTime(document.Events.First),
+			nullableTime(document.Events.Last),
+			nullableText(document.Events.Adapter),
+			nullableText(document.Events.Prompt),
+			nullableText(document.Events.Assistant),
+			nullableText(strings.Join(document.Events.ToolNames, "\n")),
+			nullableText(strings.Join(document.Paths, "\n")),
+			nullableText(document.EventText),
+		); err != nil {
+			return fmt.Errorf("insert search document %s:%s: %w", document.SessionID, document.TurnID, err)
 		}
 	}
 	return nil

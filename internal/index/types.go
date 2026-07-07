@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	SchemaVersion = 1
+	SchemaVersion = 2
 	DBFileName    = "index.sqlite"
 )
 
@@ -27,12 +27,13 @@ func PathsForMetadata(metadataDir string) Paths {
 }
 
 type RebuildStats struct {
-	DBPath      string
-	Sessions    int
-	Turns       int
-	Events      int
-	Checkpoints int
-	FileTouches int
+	DBPath          string
+	Sessions        int
+	Turns           int
+	Events          int
+	Checkpoints     int
+	FileTouches     int
+	SearchDocuments int
 }
 
 type GraphQuery struct {
@@ -66,4 +67,24 @@ type TurnEventSummary struct {
 	TypeCounts map[primitives.EventType]int
 	First      time.Time
 	Last       time.Time
+}
+
+type SearchQuery struct {
+	Query   string
+	Session primitives.SessionID
+	Limit   int
+}
+
+type SearchResult struct {
+	SessionID primitives.SessionID `json:"session_id"`
+	TurnID    primitives.TurnID    `json:"turn_id"`
+	First     time.Time            `json:"first,omitempty"`
+	Last      time.Time            `json:"last,omitempty"`
+	Adapter   string               `json:"adapter,omitempty"`
+	Prompt    string               `json:"prompt,omitempty"`
+	Assistant string               `json:"assistant,omitempty"`
+	ToolNames []string             `json:"tool_names,omitempty"`
+	Paths     []string             `json:"paths,omitempty"`
+	Snippet   string               `json:"snippet,omitempty"`
+	Rank      float64              `json:"rank"`
 }
