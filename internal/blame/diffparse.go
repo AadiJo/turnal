@@ -18,6 +18,7 @@ type hunk struct {
 
 type diffLine struct {
 	Kind byte
+	Text string
 }
 
 var hunkHeaderPattern = regexp.MustCompile(`^@@ -([0-9]+)(?:,([0-9]+))? \+([0-9]+)(?:,([0-9]+))? @@`)
@@ -92,7 +93,7 @@ func collectHunkLine(current *hunk, line string, oldSeen *int, newSeen *int) (bo
 	default:
 		return false, fmt.Errorf("unexpected diff line %q inside hunk starting at -%d +%d", line, current.OldStart, current.NewStart)
 	}
-	current.Lines = append(current.Lines, diffLine{Kind: kind})
+	current.Lines = append(current.Lines, diffLine{Kind: kind, Text: line[1:]})
 
 	if *oldSeen > current.OldCount || *newSeen > current.NewCount {
 		return false, fmt.Errorf("hunk starting at -%d +%d exceeded declared size", current.OldStart, current.NewStart)
@@ -140,6 +141,11 @@ func parseHunkCount(value string) (int, error) {
 
 func applyHunks(origins []Origin, hunks []hunk, origin Origin) ([]Origin, error) {
 	applied := append([]Origin(nil), origins...)
+	moved, err := movedOriginPool(origins, hunks)
+	if err != nil {
+		return nil, err
+	}
+
 	delta := 0
 	for _, hunk := range hunks {
 		index := 0
@@ -173,7 +179,11 @@ func applyHunks(origins []Origin, hunks []hunk, origin Origin) ([]Origin, error)
 				cursor++
 				oldSeen++
 			case '+':
-				next = append(next, origin)
+				if movedOrigin, ok := popMovedOrigin(moved, line.Text); ok {
+					next = append(next, movedOrigin)
+				} else {
+					next = append(next, origin)
+				}
 				newSeen++
 			default:
 				return nil, fmt.Errorf("unsupported diff line kind %q", line.Kind)
@@ -187,4 +197,50 @@ func applyHunks(origins []Origin, hunks []hunk, origin Origin) ([]Origin, error)
 		delta += hunk.NewCount - hunk.OldCount
 	}
 	return applied, nil
+}
+
+func movedOriginPool(origins []Origin, hunks []hunk) (map[string][]Origin, error) {
+	moved := make(map[string][]Origin)
+	for _, hunk := range hunks {
+		index := 0
+		if hunk.OldStart > 0 {
+			index = hunk.OldStart - 1
+		}
+		oldSeen := 0
+		for _, line := range hunk.Lines {
+			switch line.Kind {
+			case ' ':
+				index++
+				oldSeen++
+			case '-':
+				if index < 0 || index >= len(origins) {
+					return nil, fmt.Errorf("hunk removes line %d outside %d tracked lines", index+1, len(origins))
+				}
+				moved[line.Text] = append(moved[line.Text], origins[index])
+				index++
+				oldSeen++
+			case '+':
+			default:
+				return nil, fmt.Errorf("unsupported diff line kind %q", line.Kind)
+			}
+		}
+		if oldSeen != hunk.OldCount {
+			return nil, fmt.Errorf("hunk line counts old=%d/%d", oldSeen, hunk.OldCount)
+		}
+	}
+	return moved, nil
+}
+
+func popMovedOrigin(moved map[string][]Origin, text string) (Origin, bool) {
+	origins := moved[text]
+	if len(origins) == 0 {
+		return Origin{}, false
+	}
+	origin := origins[0]
+	if len(origins) == 1 {
+		delete(moved, text)
+	} else {
+		moved[text] = origins[1:]
+	}
+	return origin, true
 }

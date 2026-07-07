@@ -111,6 +111,13 @@ type DiffFileStat struct {
 	Binary    bool
 }
 
+type DiffFileChange struct {
+	Status     string
+	Path       string
+	OldPath    string
+	Similarity int
+}
+
 type DiffSummary struct {
 	Files       []DiffFileStat
 	Additions   int
@@ -465,6 +472,46 @@ func (repo *Repo) DiffRefsPath(preRef, postRef primitives.CheckpointRef, repoPat
 	return []byte(output), nil
 }
 
+func (repo *Repo) DiffRefsPathWithRenames(preRef, postRef primitives.CheckpointRef, prePath, postPath string) ([]byte, error) {
+	parsedPrePath, err := primitives.ParseRepoPath(prePath)
+	if err != nil {
+		return nil, err
+	}
+	parsedPostPath, err := primitives.ParseRepoPath(postPath)
+	if err != nil {
+		return nil, err
+	}
+
+	indexPath, cleanup, err := repo.tempIndex()
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+
+	args := []string{
+		"diff",
+		"--patch",
+		"--unified=0",
+		"-M",
+		"--no-color",
+		"--no-ext-diff",
+		"--no-textconv",
+		preRef.String() + "^{commit}",
+		postRef.String() + "^{commit}",
+		"--",
+		parsedPrePath.String(),
+	}
+	if parsedPostPath != parsedPrePath {
+		args = append(args, parsedPostPath.String())
+	}
+
+	output, err := runHiddenGit(repo, indexPath, args...)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(output), nil
+}
+
 func (repo *Repo) DiffTurn(sessionID primitives.SessionID, turnID primitives.TurnID) ([]byte, error) {
 	preRef, err := primitives.NewCheckpointRef(sessionID, turnID, primitives.CheckpointPhasePre)
 	if err != nil {
@@ -627,6 +674,23 @@ func (repo *Repo) DiffStatRefs(preRef, postRef primitives.CheckpointRef) (DiffSu
 	return summary, nil
 }
 
+func (repo *Repo) DiffNameStatusRefs(preRef, postRef primitives.CheckpointRef) ([]DiffFileChange, error) {
+	output, err := runHiddenGit(repo, "",
+		"diff",
+		"--name-status",
+		"-z",
+		"-M",
+		"--no-ext-diff",
+		"--no-textconv",
+		preRef.String()+"^{commit}",
+		postRef.String()+"^{commit}",
+	)
+	if err != nil {
+		return nil, err
+	}
+	return parseDiffNameStatus(output)
+}
+
 func (repo *Repo) DiffStatTurn(sessionID primitives.SessionID, turnID primitives.TurnID) (DiffSummary, error) {
 	preRef, err := primitives.NewCheckpointRef(sessionID, turnID, primitives.CheckpointPhasePre)
 	if err != nil {
@@ -637,6 +701,50 @@ func (repo *Repo) DiffStatTurn(sessionID primitives.SessionID, turnID primitives
 		return DiffSummary{}, err
 	}
 	return repo.DiffStatRefs(preRef, postRef)
+}
+
+func parseDiffNameStatus(output string) ([]DiffFileChange, error) {
+	if output == "" {
+		return nil, nil
+	}
+
+	fields := strings.Split(output, "\x00")
+	var changes []DiffFileChange
+	for index := 0; index < len(fields); {
+		statusText := fields[index]
+		index++
+		if statusText == "" {
+			continue
+		}
+
+		status := statusText[:1]
+		change := DiffFileChange{Status: status}
+		if len(statusText) > 1 {
+			similarity, err := strconv.Atoi(statusText[1:])
+			if err != nil {
+				return nil, fmt.Errorf("parse diff status similarity for %q: %w", statusText, err)
+			}
+			change.Similarity = similarity
+		}
+
+		switch status {
+		case "R", "C":
+			if index+1 >= len(fields) {
+				return nil, fmt.Errorf("diff name-status invariant failed for %q: expected old and new path", statusText)
+			}
+			change.OldPath = fields[index]
+			change.Path = fields[index+1]
+			index += 2
+		default:
+			if index >= len(fields) {
+				return nil, fmt.Errorf("diff name-status invariant failed for %q: expected path", statusText)
+			}
+			change.Path = fields[index]
+			index++
+		}
+		changes = append(changes, change)
+	}
+	return changes, nil
 }
 
 func (repo *Repo) DeleteCheckpointRef(ref primitives.CheckpointRef) error {
