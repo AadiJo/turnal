@@ -1,0 +1,45 @@
+{
+  "name": "@aadijo/turnal",
+  "version": "0.0.1",
+  "description": "Local-first CLI for recording AI coding agent history, file changes, diffs, and safe rollbacks.",
+  "bin": {
+    "turnal": "npm/turnal.js"
+  },
+  "files": [
+    "cmd/",
+    "internal/",
+    "npm/",
+    "go.mod",
+    "go.sum",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "go build -o bin/turnal ./cmd/turnal",
+    "test": "go test ./...",
+    "pack:dry-run": "npm pack --dry-run",
+    "prepublishOnly": "go test ./..."
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AadiJo/turnal.git"
+  },
+  "bugs": {
+    "url": "https://github.com/AadiJo/turnal/issues"
+  },
+  "homepage": "https://github.com/AadiJo/turnal#readme",
+  "keywords": [
+    "agent",
+    "cli",
+    "git",
+    "history",
+    "rollback"
+  ],
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
