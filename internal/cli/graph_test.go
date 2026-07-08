@@ -115,6 +115,27 @@ func TestReindexThenIndexedLogMatchesDurableAndFallsBack(t *testing.T) {
 	}
 }
 
+func TestLogCommandShowsRollbackEventRow(t *testing.T) {
+	root, _, sessionID, turnID := createTurnWithDiff(t)
+	t.Chdir(root.String())
+
+	writeFile(t, root, "app.txt", "working copy\n")
+	_ = runRootStdout(t, "rollback", "--to", sessionID.String()+":turn:"+turnID.String()+":pre")
+
+	output := stripANSI(runRootStdout(t, "log", "--durable", "--session", sessionID.String(), "--verbose"))
+	for _, want := range []string{
+		"checkpoint graph: 1 session, 1 turn, 1 rollback",
+		"------------ reverted to [demo] turn 1 pre",
+		"target: demo:turn:1:pre",
+		"mode: checkpoint",
+		"safety: refs/agent-vcs/rollback-safety/demo/turn/000001/pre/",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("rollback log output missing %q:\n%s", want, output)
+		}
+	}
+}
+
 func TestRenderCheckpointGraphShowsLimitTruncation(t *testing.T) {
 	sessionID := sessionID(t, "demo")
 	firstTurn, _ := primitives.NewTurnID(1)
@@ -183,6 +204,117 @@ func TestRenderCheckpointGraphShowsOverlappingSessionLanes(t *testing.T) {
 		if !strings.Contains(output, want) {
 			t.Fatalf("overlap graph output missing %q:\n%s", want, output)
 		}
+	}
+}
+
+func TestRenderCheckpointGraphShowsRollbackRowsAcrossSessions(t *testing.T) {
+	sessionA := sessionID(t, "codex-sess_aaaaaaaa")
+	sessionB := sessionID(t, "session-b")
+	turn1, _ := primitives.NewTurnID(1)
+	turn2, _ := primitives.NewTurnID(2)
+	turn3, _ := primitives.NewTurnID(3)
+	base := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	target, err := primitives.NewTargetRef(sessionA, turn1, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("target ref: %v", err)
+	}
+
+	var out bytes.Buffer
+	err = renderCheckpointGraph(&out, []graphSession{
+		{
+			ID:         sessionA,
+			TotalTurns: 3,
+			Turns: []graphTurn{
+				{TurnID: turn3, Post: checkpointInfo(sessionA, turn3, base.Add(30*time.Minute), "3")},
+				{TurnID: turn2, Post: checkpointInfo(sessionA, turn2, base.Add(10*time.Minute), "2")},
+				{TurnID: turn1, Post: checkpointInfo(sessionA, turn1, base, "1"), Events: turnEventSummary{Adapter: "codex"}},
+			},
+			Rollbacks: []graphRollback{
+				{
+					Time:            base.Add(20 * time.Minute),
+					Seq:             mustEventSeq(t, 4),
+					Target:          target,
+					CheckpointRef:   "refs/agent-vcs/checkpoints/codex-sess_aaaaaaaa/turn/000001/pre",
+					CommitSHA:       primitives.CommitSHA(strings.Repeat("9", 40)),
+					SafetyRef:       "refs/agent-vcs/rollback-safety/codex-sess_aaaaaaaa/turn/000001/pre/example",
+					SafetyCommitSHA: strings.Repeat("8", 40),
+					Mode:            primitives.RollbackModeCheckpoint.String(),
+					SourceID:        "turnal:rollback:checkpoint:codex-sess_aaaaaaaa:turn:1:pre",
+				},
+			},
+		},
+		{
+			ID:         sessionB,
+			TotalTurns: 2,
+			Turns: []graphTurn{
+				{TurnID: turn2, Post: checkpointInfo(sessionB, turn2, base.Add(25*time.Minute), "5")},
+				{TurnID: turn1, Post: checkpointInfo(sessionB, turn1, base.Add(5*time.Minute), "4")},
+			},
+		},
+	}, graphRenderOptions{Verbose: true})
+	if err != nil {
+		t.Fatalf("renderCheckpointGraph: %v", err)
+	}
+
+	output := stripANSI(out.String())
+	for _, want := range []string{
+		"\ncheckpoint graph: 2 sessions, 5 turns, 1 rollback",
+		"sessions: [codex 12:00] [session-b]",
+		"*   333333333333 - 12:30 [codex 12:00] turn 3",
+		"| * 555555555555 - 12:25 [session-b] turn 2",
+		"! ! ------------ reverted to [codex 12:00] turn 1 pre 999999999999",
+		"| | rollback: 2026-07-06 12:20:00 UTC",
+		"| | target: codex-sess_aaaaaaaa:turn:1:pre",
+		"| | safety: refs/agent-vcs/rollback-safety/codex-sess_aaaaaaaa/turn/000001/pre/example 8888888888888888888888888888888888888888",
+		"* | 222222222222 - 12:10 [codex 12:00] turn 2",
+		"| * 444444444444 - 12:05 [session-b] turn 1",
+		"*   111111111111 - 12:00 [codex 12:00] turn 1",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("rollback graph output missing %q:\n%s", want, output)
+		}
+	}
+	if !strings.HasPrefix(output, "\n") || !strings.HasSuffix(output, "\n\n") {
+		t.Fatalf("graph output should have leading and trailing spacing:\n%q", output)
+	}
+}
+
+func TestRenderCheckpointGraphOmitsPostRollbackPhase(t *testing.T) {
+	sessionID := sessionID(t, "codex")
+	turnID, _ := primitives.NewTurnID(1)
+	target, err := primitives.NewTargetRef(sessionID, turnID, primitives.CheckpointPhasePost)
+	if err != nil {
+		t.Fatalf("target ref: %v", err)
+	}
+
+	var out bytes.Buffer
+	err = renderCheckpointGraph(&out, []graphSession{
+		{
+			ID:         sessionID,
+			TotalTurns: 1,
+			Turns: []graphTurn{
+				{TurnID: turnID, Post: checkpointInfo(sessionID, turnID, time.Now().UTC(), "1")},
+			},
+			Rollbacks: []graphRollback{
+				{
+					Time:      time.Now().UTC().Add(time.Minute),
+					Seq:       mustEventSeq(t, 2),
+					Target:    target,
+					CommitSHA: primitives.CommitSHA(strings.Repeat("2", 40)),
+				},
+			},
+		},
+	}, graphRenderOptions{})
+	if err != nil {
+		t.Fatalf("renderCheckpointGraph: %v", err)
+	}
+
+	output := stripANSI(out.String())
+	if !strings.Contains(output, "------------ reverted to [codex] turn 1 222222222222") {
+		t.Fatalf("post rollback row should omit phase:\n%s", output)
+	}
+	if strings.Contains(output, "turn 1 post") {
+		t.Fatalf("post rollback row should not include post phase:\n%s", output)
 	}
 }
 
@@ -316,6 +448,15 @@ func checkpointInfo(sessionID primitives.SessionID, turnID primitives.TurnID, at
 		Commit:    commit,
 		Time:      at,
 	}
+}
+
+func mustEventSeq(t *testing.T, value uint64) primitives.EventSeq {
+	t.Helper()
+	seq, err := primitives.NewEventSeq(value)
+	if err != nil {
+		t.Fatalf("event seq: %v", err)
+	}
+	return seq
 }
 
 var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -68,6 +69,7 @@ func logCmd() *cobra.Command {
 					return err
 				}
 			}
+			attachGraphRollbackEvents(repo, sessions)
 
 			options := graphRenderOptions{
 				Verbose: verbose,
@@ -100,6 +102,7 @@ type graphRenderOptions struct {
 type graphSession struct {
 	ID         primitives.SessionID
 	Turns      []graphTurn
+	Rollbacks  []graphRollback
 	TotalTurns int
 	Warnings   []string
 }
@@ -114,12 +117,26 @@ type graphTurn struct {
 	Warnings   []string
 }
 
+type graphRollback struct {
+	Time            time.Time
+	Seq             primitives.EventSeq
+	Target          primitives.TargetRef
+	CheckpointRef   string
+	CommitSHA       primitives.CommitSHA
+	SafetyRef       string
+	SafetyCommitSHA string
+	Mode            string
+	SourceID        string
+	Warnings        []string
+}
+
 type turnEventSummary = queryindex.TurnEventSummary
 
 type graphTimelineRow struct {
 	SessionID    primitives.SessionID
 	SessionIndex int
-	Turn         graphTurn
+	Turn         *graphTurn
+	Rollback     *graphRollback
 }
 
 type laneSpan struct {
@@ -312,9 +329,92 @@ func attachGraphEventSummaries(repo *checkpoint.Repo, sessions []graphSession) {
 	}
 }
 
+func attachGraphRollbackEvents(repo *checkpoint.Repo, sessions []graphSession) {
+	log := eventlog.Open(repo.MetadataDir)
+	for sessionIndex := range sessions {
+		events, err := log.Read(sessions[sessionIndex].ID)
+		if err != nil {
+			sessions[sessionIndex].Warnings = append(sessions[sessionIndex].Warnings, fmt.Sprintf("rollback events unavailable: %v", err))
+			continue
+		}
+		for _, event := range events {
+			if event.Type != primitives.EventTypeRollback {
+				continue
+			}
+			rollback, err := graphRollbackFromEvent(event)
+			if err != nil {
+				sessions[sessionIndex].Warnings = append(sessions[sessionIndex].Warnings, fmt.Sprintf("rollback event %s unavailable: %v", event.Seq, err))
+				continue
+			}
+			sessions[sessionIndex].Rollbacks = append(sessions[sessionIndex].Rollbacks, rollback)
+		}
+	}
+}
+
+type graphRollbackPayload struct {
+	Target          string `json:"target"`
+	Ref             string `json:"ref"`
+	CommitSHA       string `json:"commit_sha"`
+	SafetyRef       string `json:"safety_ref"`
+	SafetyCommitSHA string `json:"safety_commit_sha"`
+	Mode            string `json:"mode"`
+}
+
+func graphRollbackFromEvent(event eventlog.Event) (graphRollback, error) {
+	var payload graphRollbackPayload
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		return graphRollback{}, fmt.Errorf("payload invariant failed: %w", err)
+	}
+
+	targetText := payload.Target
+	if targetText == "" {
+		targetText = event.RawRef
+	}
+	if targetText == "" {
+		return graphRollback{}, fmt.Errorf("target invariant failed: must not be empty")
+	}
+	target, err := primitives.ParseTargetRef(targetText)
+	if err != nil {
+		return graphRollback{}, fmt.Errorf("target invariant failed: %w", err)
+	}
+	target, err = targetWithDefaultPhase(target)
+	if err != nil {
+		return graphRollback{}, err
+	}
+
+	commit, err := primitives.ParseCommitSHA(payload.CommitSHA)
+	if err != nil {
+		return graphRollback{}, fmt.Errorf("commit invariant failed: %w", err)
+	}
+
+	rollback := graphRollback{
+		Time:            event.Time.Time,
+		Seq:             event.Seq,
+		Target:          target,
+		CheckpointRef:   payload.Ref,
+		CommitSHA:       commit,
+		SafetyRef:       payload.SafetyRef,
+		SafetyCommitSHA: payload.SafetyCommitSHA,
+		Mode:            payload.Mode,
+		SourceID:        event.SourceID,
+	}
+	if rollback.Mode == "" {
+		rollback.Mode = primitives.RollbackModeCheckpoint.String()
+	}
+	if rollback.CheckpointRef == "" {
+		rollback.Warnings = append(rollback.Warnings, "checkpoint ref missing from rollback payload")
+	}
+	if rollback.SafetyRef == "" || rollback.SafetyCommitSHA == "" {
+		rollback.Warnings = append(rollback.Warnings, "safety checkpoint missing from rollback payload")
+	}
+	return rollback, nil
+}
+
 func renderCheckpointGraph(w io.Writer, sessions []graphSession, options graphRenderOptions) error {
+	fmt.Fprintln(w)
 	if len(sessions) == 0 {
 		fmt.Fprintln(w, "No checkpoints recorded yet.")
+		fmt.Fprintln(w)
 		return nil
 	}
 
@@ -323,18 +423,22 @@ func renderCheckpointGraph(w io.Writer, sessions []graphSession, options graphRe
 	labels := buildGraphSessionLabels(sessions)
 	totalTurns := 0
 	totalShownTurns := 0
+	totalRollbacks := 0
 	for _, session := range sessions {
 		totalTurns += session.TotalTurns
 		totalShownTurns += len(session.Turns)
+		totalRollbacks += len(session.Rollbacks)
 	}
 	if totalShownTurns == totalTurns {
-		fmt.Fprintf(w, "checkpoint graph: %d %s, %d %s\n\n",
+		fmt.Fprintf(w, "checkpoint graph: %d %s, %d %s%s\n\n",
 			len(sessions), pluralWord(len(sessions), "session", "sessions"),
-			totalTurns, pluralWord(totalTurns, "turn", "turns"))
+			totalTurns, pluralWord(totalTurns, "turn", "turns"),
+			formatRollbackCountSuffix(totalRollbacks))
 	} else {
-		fmt.Fprintf(w, "checkpoint graph: %d %s, showing %d of %d %s\n\n",
+		fmt.Fprintf(w, "checkpoint graph: %d %s, showing %d of %d %s%s\n\n",
 			len(sessions), pluralWord(len(sessions), "session", "sessions"),
-			totalShownTurns, totalTurns, pluralWord(totalTurns, "turn", "turns"))
+			totalShownTurns, totalTurns, pluralWord(totalTurns, "turn", "turns"),
+			formatRollbackCountSuffix(totalRollbacks))
 	}
 
 	fmt.Fprintf(w, "sessions:")
@@ -354,39 +458,51 @@ func renderCheckpointGraph(w io.Writer, sessions []graphSession, options graphRe
 		}
 	}
 	if len(rows) == 0 {
+		fmt.Fprintln(w)
 		return nil
 	}
 	fmt.Fprintln(w)
 
 	for rowIndex, row := range rows {
-		turn := row.Turn
-		linePrefix := renderLanePrefix(rowIndex, row.SessionIndex, len(sessions), spans, true, options)
-		detailPrefix := renderLanePrefix(rowIndex, row.SessionIndex, len(sessions), spans, false, options)
-		fmt.Fprintf(w, "%s%s - %s %s turn %-6s %s %s %s\n",
-			linePrefix,
-			styleHash(formatDisplayCommit(turn), options),
-			formatDisplayTime(turn),
-			formatSessionLabel(labels[row.SessionIndex], row.SessionIndex, options),
-			turn.TurnID,
-			styleTool(formatTurnAction(turn), options),
-			styleDim(turnStatus(turn), options),
-			formatTurnHeadlineSummary(turn, options),
-		)
+		detailPrefix := renderTimelineDetailPrefix(rowIndex, row, len(sessions), spans, options)
+		if row.Rollback != nil {
+			renderRollbackRow(w, *row.Rollback, sessions, labels, options)
+			if options.Verbose {
+				renderVerboseRollbackDetails(w, detailPrefix, *row.Rollback, options)
+			}
+			for _, warning := range row.Rollback.Warnings {
+				fmt.Fprintf(w, "%swarning: %s\n", detailPrefix, warning)
+			}
+		} else if row.Turn != nil {
+			turn := *row.Turn
+			linePrefix := renderLanePrefix(rowIndex, row.SessionIndex, len(sessions), spans, true, options)
+			fmt.Fprintf(w, "%s%s - %s %s turn %-6s %s %s %s\n",
+				linePrefix,
+				styleHash(formatDisplayCommit(turn), options),
+				formatDisplayTime(turn),
+				formatSessionLabel(labels[row.SessionIndex], row.SessionIndex, options),
+				turn.TurnID,
+				styleTool(formatTurnAction(turn), options),
+				styleDim(turnStatus(turn), options),
+				formatTurnHeadlineSummary(turn, options),
+			)
 
-		if prompt := truncateText(turn.Events.Prompt, 140); prompt != "" {
-			fmt.Fprintf(w, "%s%s %q\n", detailPrefix, styleDim("Prompt:", options), prompt)
-		}
-		if options.Verbose {
-			renderVerboseTurnDetails(w, detailPrefix, row.SessionID, turn, options)
-		}
-		for _, warning := range turn.Warnings {
-			fmt.Fprintf(w, "%swarning: %s\n", detailPrefix, warning)
+			if prompt := truncateText(turn.Events.Prompt, 140); prompt != "" {
+				fmt.Fprintf(w, "%s%s %q\n", detailPrefix, styleDim("Prompt:", options), prompt)
+			}
+			if options.Verbose {
+				renderVerboseTurnDetails(w, detailPrefix, row.SessionID, turn, options)
+			}
+			for _, warning := range turn.Warnings {
+				fmt.Fprintf(w, "%swarning: %s\n", detailPrefix, warning)
+			}
 		}
 		if rowIndex < len(rows)-1 {
-			fmt.Fprintln(w, renderLanePrefix(rowIndex, row.SessionIndex, len(sessions), spans, false, options))
+			fmt.Fprintln(w, detailPrefix)
 		}
 	}
 
+	fmt.Fprintln(w)
 	return nil
 }
 
@@ -394,25 +510,56 @@ func buildGraphTimelineRows(sessions []graphSession) []graphTimelineRow {
 	var rows []graphTimelineRow
 	for sessionIndex, session := range sessions {
 		for _, turn := range session.Turns {
+			turnCopy := turn
 			rows = append(rows, graphTimelineRow{
 				SessionID:    session.ID,
 				SessionIndex: sessionIndex,
-				Turn:         turn,
+				Turn:         &turnCopy,
+			})
+		}
+		for _, rollback := range session.Rollbacks {
+			rollbackCopy := rollback
+			rows = append(rows, graphTimelineRow{
+				SessionID:    session.ID,
+				SessionIndex: sessionIndex,
+				Rollback:     &rollbackCopy,
 			})
 		}
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
-		leftTime := turnDisplayTime(rows[i].Turn)
-		rightTime := turnDisplayTime(rows[j].Turn)
+		leftTime := rowDisplayTime(rows[i])
+		rightTime := rowDisplayTime(rows[j])
 		if !leftTime.Equal(rightTime) {
 			return leftTime.After(rightTime)
+		}
+		if rows[i].Rollback != nil && rows[j].Rollback == nil {
+			return true
+		}
+		if rows[i].Rollback == nil && rows[j].Rollback != nil {
+			return false
 		}
 		if rows[i].SessionIndex != rows[j].SessionIndex {
 			return rows[i].SessionIndex < rows[j].SessionIndex
 		}
-		return rows[i].Turn.TurnID.Uint64() > rows[j].Turn.TurnID.Uint64()
+		if rows[i].Turn != nil && rows[j].Turn != nil {
+			return rows[i].Turn.TurnID.Uint64() > rows[j].Turn.TurnID.Uint64()
+		}
+		if rows[i].Rollback != nil && rows[j].Rollback != nil {
+			return rows[i].Rollback.Seq.Uint64() > rows[j].Rollback.Seq.Uint64()
+		}
+		return false
 	})
 	return rows
+}
+
+func rowDisplayTime(row graphTimelineRow) time.Time {
+	if row.Rollback != nil {
+		return row.Rollback.Time
+	}
+	if row.Turn != nil {
+		return turnDisplayTime(*row.Turn)
+	}
+	return time.Time{}
 }
 
 func buildGraphSessionLabels(sessions []graphSession) []string {
@@ -495,6 +642,9 @@ func shortSessionID(sessionID string) string {
 func buildLaneSpans(rows []graphTimelineRow) map[int]laneSpan {
 	spans := make(map[int]laneSpan)
 	for rowIndex, row := range rows {
+		if row.Turn == nil {
+			continue
+		}
 		span, ok := spans[row.SessionIndex]
 		if !ok {
 			spans[row.SessionIndex] = laneSpan{First: rowIndex, Last: rowIndex}
@@ -529,6 +679,82 @@ func renderLanePrefix(rowIndex, currentSessionIndex, sessionCount int, spans map
 		line.WriteString(styleSession(token, sessionIndex, options))
 	}
 	return line.String()
+}
+
+func renderTimelineDetailPrefix(rowIndex int, row graphTimelineRow, sessionCount int, spans map[int]laneSpan, options graphRenderOptions) string {
+	if row.Rollback != nil {
+		return renderAllLanePrefix(sessionCount, options)
+	}
+	return renderLanePrefix(rowIndex, row.SessionIndex, sessionCount, spans, false, options)
+}
+
+func renderAllLanePrefix(sessionCount int, options graphRenderOptions) string {
+	var line strings.Builder
+	for sessionIndex := 0; sessionIndex < sessionCount; sessionIndex++ {
+		line.WriteString(styleSession("| ", sessionIndex, options))
+	}
+	return line.String()
+}
+
+func renderRollbackLanePrefix(sessionCount int, options graphRenderOptions) string {
+	var line strings.Builder
+	for range sessionCount {
+		line.WriteString(styleRollback("! ", options))
+	}
+	return line.String()
+}
+
+func renderRollbackRow(w io.Writer, rollback graphRollback, sessions []graphSession, labels []string, options graphRenderOptions) {
+	sessionIndex := graphSessionIndex(sessions, rollback.Target.SessionID())
+	targetLabel := "[" + rollback.Target.SessionID().String() + "]"
+	if sessionIndex >= 0 {
+		targetLabel = formatSessionLabel(labels[sessionIndex], sessionIndex, options)
+	}
+	phase := formatRollbackPhase(rollback, options)
+	if phase != "" {
+		phase += " "
+	}
+	fmt.Fprintf(w, "%s%s %s %s turn %s %s%s\n",
+		renderRollbackLanePrefix(len(sessions), options),
+		styleRollback("------------", options),
+		styleRollback("reverted to", options),
+		targetLabel,
+		rollback.Target.TurnID(),
+		phase,
+		styleHash(formatCommit(rollback.CommitSHA, false), options),
+	)
+}
+
+func renderVerboseRollbackDetails(w io.Writer, prefix string, rollback graphRollback, options graphRenderOptions) {
+	if !rollback.Time.IsZero() {
+		fmt.Fprintf(w, "%srollback: %s\n", prefix, formatGraphTime(rollback.Time))
+	}
+	fmt.Fprintf(w, "%starget: %s\n", prefix, rollback.Target)
+	if rollback.Mode != "" {
+		fmt.Fprintf(w, "%smode: %s\n", prefix, rollback.Mode)
+	}
+	if rollback.CheckpointRef != "" {
+		fmt.Fprintf(w, "%scheckpoint: %s\n", prefix, rollback.CheckpointRef)
+	}
+	if rollback.SafetyRef != "" {
+		fmt.Fprintf(w, "%ssafety: %s", prefix, rollback.SafetyRef)
+		if rollback.SafetyCommitSHA != "" {
+			fmt.Fprintf(w, " %s", rollback.SafetyCommitSHA)
+		}
+		fmt.Fprintln(w)
+	}
+	if rollback.SourceID != "" {
+		fmt.Fprintf(w, "%ssource: %s\n", prefix, rollback.SourceID)
+	}
+}
+
+func graphSessionIndex(sessions []graphSession, sessionID primitives.SessionID) int {
+	for index, session := range sessions {
+		if session.ID == sessionID {
+			return index
+		}
+	}
+	return -1
 }
 
 func renderVerboseTurnDetails(w io.Writer, prefix string, sessionID primitives.SessionID, turn graphTurn, options graphRenderOptions) {
@@ -616,6 +842,14 @@ func formatTurnHeadlineSummary(turn graphTurn, options graphRenderOptions) strin
 		}
 	}
 	return strings.Join(parts, "  ")
+}
+
+func formatRollbackPhase(rollback graphRollback, options graphRenderOptions) string {
+	phase, ok := rollback.Target.Phase()
+	if !ok || phase != primitives.CheckpointPhasePre {
+		return ""
+	}
+	return styleRollbackPhase(phase.String(), options)
 }
 
 func turnStatus(turn graphTurn) string {
@@ -707,6 +941,13 @@ func formatDiffSummary(summary checkpoint.DiffSummary) string {
 	return strings.Join(parts, " ")
 }
 
+func formatRollbackCountSuffix(count int) string {
+	if count == 0 {
+		return ""
+	}
+	return fmt.Sprintf(", %d %s", count, pluralWord(count, "rollback", "rollbacks"))
+}
+
 func formatDiffFileStat(file checkpoint.DiffFileStat) string {
 	if file.Binary {
 		return file.Path + " binary"
@@ -777,6 +1018,7 @@ const (
 	ansiReset = "\x1b[0m"
 	ansiDim   = "\x1b[2m"
 	ansiBlue  = "\x1b[38;5;111m"
+	ansiRed   = "\x1b[38;5;203m"
 )
 
 var graphSessionColors = []string{
@@ -801,6 +1043,14 @@ func styleHash(value string, options graphRenderOptions) string {
 }
 
 func styleTool(value string, options graphRenderOptions) string {
+	return ansiBlue + value + ansiReset
+}
+
+func styleRollback(value string, options graphRenderOptions) string {
+	return ansiRed + value + ansiReset
+}
+
+func styleRollbackPhase(value string, options graphRenderOptions) string {
 	return ansiBlue + value + ansiReset
 }
 
