@@ -1,0 +1,96 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+      - "!v*-nightly.*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - id: nightly_date
+        if: github.event_name == 'workflow_dispatch'
+        name: Resolve nightly date
+        run: echo "value=$(date -u -d '${{ github.run_started_at }}' +%Y%m%d)" >> "$GITHUB_OUTPUT"
+
+      - id: release_meta
+        name: Resolve release metadata
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            node scripts/resolve-release.js nightly \
+              "${{ steps.nightly_date.outputs.value }}" \
+              "${{ github.run_number }}" \
+              "${{ github.sha }}"
+          else
+            node scripts/resolve-release.js stable "${GITHUB_REF_NAME}"
+          fi
+
+      - name: Align package version
+        run: node scripts/set-release-version.js "${{ steps.release_meta.outputs.version }}"
+
+      - name: Verify package version
+        if: github.event_name == 'push'
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          package_version="$(node -p "require('./package.json').version")"
+          if [[ "$tag_version" != "$package_version" ]]; then
+            echo "release invariant failed: tag v$tag_version does not match package.json version $package_version" >&2
+            exit 1
+          fi
+
+      - name: Test
+        run: npm test
+
+      - name: Pack dry run
+        run: npm run pack:dry-run
+
+      - name: Publish npm package
+        run: npm publish --access public --tag "${{ steps.release_meta.outputs.npm_tag }}"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          args=(
+            "${{ steps.release_meta.outputs.tag }}"
+            --target "${{ github.sha }}"
+            --title "${{ steps.release_meta.outputs.name }}"
+            --generate-notes
+          )
+          if [[ "${{ steps.release_meta.outputs.prerelease }}" == "true" ]]; then
+            args+=(--prerelease)
+          fi
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            args+=(--verify-tag)
+          fi
+          if [[ "${{ steps.release_meta.outputs.make_latest }}" == "false" ]]; then
+            args+=(--latest=false)
+          fi
+          gh release create "${args[@]}"
