@@ -48,11 +48,14 @@ func TestRollbackCommandRestoresCheckpoint(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(repo.MetadataDir, "git")); err != nil {
 		t.Fatalf("turnal metadata missing after rollback: %v", err)
 	}
-	if !strings.Contains(out.String(), "rolled back to") {
+	if !strings.Contains(out.String(), "Rollback complete") {
 		t.Fatalf("rollback output = %q", out.String())
 	}
-	if !strings.Contains(out.String(), "safety checkpoint") {
-		t.Fatalf("rollback output missing safety checkpoint: %q", out.String())
+	if !strings.Contains(out.String(), "Previous workspace saved") {
+		t.Fatalf("rollback output missing safety checkpoint block: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "  id:") {
+		t.Fatalf("rollback output missing id label: %q", out.String())
 	}
 	if _, err := os.Stat(rollbackengine.JournalPath(repo)); !os.IsNotExist(err) {
 		t.Fatalf("rollback journal still exists or stat failed: %v", err)
@@ -141,7 +144,7 @@ func TestRollbackCommandDefaultsToPostWhenPhaseOmitted(t *testing.T) {
 	}
 }
 
-func TestRollbackCommandAcceptsCheckpointCommitHashTarget(t *testing.T) {
+func TestRollbackCommandAcceptsCheckpointIDTarget(t *testing.T) {
 	root, repo, sessionID, turnID := createTurnWithDiff(t)
 	t.Chdir(root.String())
 
@@ -149,15 +152,15 @@ func TestRollbackCommandAcceptsCheckpointCommitHashTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListCheckpointRefInfos: %v", err)
 	}
-	var postCommit primitives.CommitSHA
+	var postID primitives.CommitSHA
 	for _, info := range infos {
 		if info.TurnID == turnID && info.Phase == primitives.CheckpointPhasePost {
-			postCommit = info.Commit
+			postID = info.Commit
 			break
 		}
 	}
-	if postCommit == "" {
-		t.Fatal("post checkpoint commit not found")
+	if postID == "" {
+		t.Fatal("post checkpoint id not found")
 	}
 
 	if err := os.WriteFile(filepath.Join(root.String(), "app.txt"), []byte("working copy\n"), 0o644); err != nil {
@@ -168,7 +171,7 @@ func TestRollbackCommandAcceptsCheckpointCommitHashTarget(t *testing.T) {
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)
-	cmd.SetArgs([]string{"rollback", "--to", postCommit.String()[:12]})
+	cmd.SetArgs([]string{"rollback", "--to", postID.String()[:12]})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("rollback command: %v\n%s", err, out.String())
 	}
@@ -180,8 +183,8 @@ func TestRollbackCommandAcceptsCheckpointCommitHashTarget(t *testing.T) {
 	if string(content) != "after\n" {
 		t.Fatalf("app.txt = %q, want post-checkpoint content", content)
 	}
-	if !strings.Contains(out.String(), "rolled back to "+postCommit.String()) {
-		t.Fatalf("rollback output missing resolved commit:\n%s", out.String())
+	if !strings.Contains(out.String(), "  id:     "+formatObjectID(postID, false)) {
+		t.Fatalf("rollback output missing resolved id:\n%s", out.String())
 	}
 
 	events, err := eventlog.Open(repo.MetadataDir).Read(sessionID)
@@ -214,7 +217,7 @@ mode = "workspace-git"
 	}
 
 	output := out.String()
-	if !strings.Contains(output, "rolled back to") {
+	if !strings.Contains(output, "Rollback complete") {
 		t.Fatalf("rollback output missing checkpoint mode:\n%s", output)
 	}
 	if strings.Contains(output, "workspace git") {
@@ -256,7 +259,8 @@ func TestRollbackCommandDryRunShowsPlannedChangesWithoutMutating(t *testing.T) {
 
 	output := out.String()
 	for _, want := range []string{
-		"dry-run rollback to",
+		"Dry-run rollback",
+		"  id:",
 		"added:",
 		"  added.txt",
 		"modified:",

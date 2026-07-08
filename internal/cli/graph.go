@@ -88,7 +88,7 @@ func logCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&session, "session", "", "Session id to show; defaults to all sessions")
 	cmd.Flags().IntVarP(&limit, "limit", "n", 0, "Maximum turns per session; 0 shows all")
-	cmd.Flags().BoolVar(&verbose, "verbose", false, "Show full refs, commit ids, event counts, and per-file stats")
+	cmd.Flags().BoolVar(&verbose, "verbose", false, "Show full refs, checkpoint ids, event counts, and per-file stats")
 	cmd.Flags().BoolVar(&noPager, "no-pager", false, "Print directly instead of opening a pager")
 	cmd.Flags().BoolVar(&useIndex, "index", false, "Read from the disposable SQLite index when available")
 	cmd.Flags().BoolVar(&durable, "durable", false, "Read directly from durable logs and checkpoints")
@@ -384,7 +384,7 @@ func graphRollbackFromEvent(event eventlog.Event) (graphRollback, error) {
 
 	commit, err := primitives.ParseCommitSHA(payload.CommitSHA)
 	if err != nil {
-		return graphRollback{}, fmt.Errorf("commit invariant failed: %w", err)
+		return graphRollback{}, fmt.Errorf("checkpoint id invariant failed: %w", err)
 	}
 
 	rollback := graphRollback{
@@ -405,7 +405,7 @@ func graphRollbackFromEvent(event eventlog.Event) (graphRollback, error) {
 		rollback.Warnings = append(rollback.Warnings, "checkpoint ref missing from rollback payload")
 	}
 	if rollback.SafetyRef == "" || rollback.SafetyCommitSHA == "" {
-		rollback.Warnings = append(rollback.Warnings, "safety checkpoint missing from rollback payload")
+		rollback.Warnings = append(rollback.Warnings, "safety id missing from rollback payload")
 	}
 	return rollback, nil
 }
@@ -478,7 +478,7 @@ func renderCheckpointGraph(w io.Writer, sessions []graphSession, options graphRe
 			linePrefix := renderLanePrefix(rowIndex, row.SessionIndex, len(sessions), spans, true, options)
 			fmt.Fprintf(w, "%s%s - %s %s turn %-6s %s %s %s\n",
 				linePrefix,
-				styleHash(formatDisplayCommit(turn), options),
+				styleHash(formatDisplayID(turn), options),
 				formatDisplayTime(turn),
 				formatSessionLabel(labels[row.SessionIndex], row.SessionIndex, options),
 				turn.TurnID,
@@ -721,7 +721,7 @@ func renderRollbackRow(w io.Writer, rollback graphRollback, sessions []graphSess
 		targetLabel,
 		rollback.Target.TurnID(),
 		phase,
-		styleHash(formatCommit(rollback.CommitSHA, false), options),
+		styleHash(formatObjectID(rollback.CommitSHA, false), options),
 	)
 }
 
@@ -734,14 +734,16 @@ func renderVerboseRollbackDetails(w io.Writer, prefix string, rollback graphRoll
 		fmt.Fprintf(w, "%smode: %s\n", prefix, rollback.Mode)
 	}
 	if rollback.CheckpointRef != "" {
-		fmt.Fprintf(w, "%scheckpoint: %s\n", prefix, rollback.CheckpointRef)
+		fmt.Fprintf(w, "%scheckpoint:\n", prefix)
+		fmt.Fprintf(w, "%s  id:  %s\n", prefix, rollback.CommitSHA)
+		fmt.Fprintf(w, "%s  ref: %s\n", prefix, rollback.CheckpointRef)
 	}
 	if rollback.SafetyRef != "" {
-		fmt.Fprintf(w, "%ssafety: %s", prefix, rollback.SafetyRef)
+		fmt.Fprintf(w, "%ssafety:\n", prefix)
 		if rollback.SafetyCommitSHA != "" {
-			fmt.Fprintf(w, " %s", rollback.SafetyCommitSHA)
+			fmt.Fprintf(w, "%s  id:  %s\n", prefix, rollback.SafetyCommitSHA)
 		}
-		fmt.Fprintln(w)
+		fmt.Fprintf(w, "%s  ref: %s\n", prefix, rollback.SafetyRef)
 	}
 	if rollback.SourceID != "" {
 		fmt.Fprintf(w, "%ssource: %s\n", prefix, rollback.SourceID)
@@ -772,22 +774,28 @@ func renderVerboseTurnDetails(w io.Writer, prefix string, sessionID primitives.S
 		fmt.Fprintf(w, "%sevent types: %s\n", prefix, typeCounts)
 	}
 	if turn.Pre != nil {
-		fmt.Fprintf(w, "%spre:  %s  %s\n", prefix, turn.Pre.Commit, turn.Pre.Ref)
+		renderVerboseCheckpointDetails(w, prefix, "pre", turn.Pre)
 	}
 	if turn.Post != nil {
-		fmt.Fprintf(w, "%spost: %s  %s\n", prefix, turn.Post.Commit, turn.Post.Ref)
+		renderVerboseCheckpointDetails(w, prefix, "post", turn.Post)
 	}
 	for _, file := range turn.Diff.Files {
 		fmt.Fprintf(w, "%sfile: %s\n", prefix, formatDiffFileStat(file))
 	}
 }
 
-func formatDisplayCommit(turn graphTurn) string {
+func renderVerboseCheckpointDetails(w io.Writer, prefix string, label string, info *checkpoint.CheckpointRefInfo) {
+	fmt.Fprintf(w, "%s%s:\n", prefix, label)
+	fmt.Fprintf(w, "%s  id:  %s\n", prefix, info.Commit)
+	fmt.Fprintf(w, "%s  ref: %s\n", prefix, info.Ref)
+}
+
+func formatDisplayID(turn graphTurn) string {
 	switch {
 	case turn.Post != nil:
-		return formatCommit(turn.Post.Commit, false)
+		return formatObjectID(turn.Post.Commit, false)
 	case turn.Pre != nil:
-		return formatCommit(turn.Pre.Commit, false)
+		return formatObjectID(turn.Pre.Commit, false)
 	default:
 		return "unknown"
 	}
@@ -868,17 +876,17 @@ func turnStatus(turn graphTurn) string {
 func formatTurnRefs(turn graphTurn, full bool) string {
 	pre := "pre missing"
 	if turn.Pre != nil {
-		pre = "pre " + formatCommit(turn.Pre.Commit, full)
+		pre = "pre " + formatObjectID(turn.Pre.Commit, full)
 	}
 	post := "post pending"
 	if turn.Post != nil {
-		post = "post " + formatCommit(turn.Post.Commit, full)
+		post = "post " + formatObjectID(turn.Post.Commit, full)
 	}
 	return pre + " -> " + post
 }
 
-func formatCommit(commit primitives.CommitSHA, full bool) string {
-	value := commit.String()
+func formatObjectID(id primitives.CommitSHA, full bool) string {
+	value := id.String()
 	if full || len(value) <= 12 {
 		return value
 	}

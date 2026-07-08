@@ -36,7 +36,7 @@ func rollbackCmd() *cobra.Command {
 			target, parseErr := parseRollbackTarget(targetText)
 			var repo *checkpoint.Repo
 			var err error
-			if parseErr != nil && !looksLikeRollbackCheckpointCommit(targetText) {
+			if parseErr != nil && !looksLikeRollbackCheckpointID(targetText) {
 				return parseErr
 			}
 			repo, err = openCheckpointRepo()
@@ -44,7 +44,7 @@ func rollbackCmd() *cobra.Command {
 				return err
 			}
 			if parseErr != nil {
-				target, err = parseRollbackCheckpointCommitTarget(repo, targetText)
+				target, err = parseRollbackCheckpointIDTarget(repo, targetText)
 				if err != nil {
 					return err
 				}
@@ -75,7 +75,7 @@ func rollbackCmd() *cobra.Command {
 			return writeRollbackResult(cmd.OutOrStdout(), result)
 		},
 	}
-	cmd.Flags().StringVar(&targetText, "to", "", "Checkpoint target or checkpoint commit hash; targets without a phase default to post")
+	cmd.Flags().StringVar(&targetText, "to", "", "Checkpoint target or checkpoint id; targets without a phase default to post")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show changes without modifying the workspace")
 	cmd.Flags().BoolVar(&workspaceGit, "workspace-git", false, "Restore captured workspace Git HEAD, index, dirty tracked files, and untracked files")
 	return cmd
@@ -97,7 +97,7 @@ func parseRollbackTarget(value string) (primitives.TargetRef, error) {
 
 	parts := strings.Split(value, ":")
 	if len(parts) != 2 && len(parts) != 3 {
-		return primitives.TargetRef{}, fmt.Errorf("target must be <session>:<turn>[:pre|post], <session>:turn:<turn>[:pre|post], or a checkpoint commit hash")
+		return primitives.TargetRef{}, fmt.Errorf("target must be <session>:<turn>[:pre|post], <session>:turn:<turn>[:pre|post], or a checkpoint id")
 	}
 	sessionID, err := primitives.ParseSessionID(parts[0])
 	if err != nil {
@@ -124,20 +124,20 @@ func targetWithDefaultPhase(target primitives.TargetRef) (primitives.TargetRef, 
 	return primitives.NewTargetRef(target.SessionID(), target.TurnID(), rollbackengine.DefaultTargetPhase)
 }
 
-const minRollbackCheckpointCommitPrefixLength = 7
+const minRollbackCheckpointIDPrefixLength = 7
 
-func looksLikeRollbackCheckpointCommit(value string) bool {
+func looksLikeRollbackCheckpointID(value string) bool {
 	value = strings.TrimSpace(value)
-	return len(value) >= minRollbackCheckpointCommitPrefixLength && len(value) <= 64 && isHexText(value)
+	return len(value) >= minRollbackCheckpointIDPrefixLength && len(value) <= 64 && isHexText(value)
 }
 
-func parseRollbackCheckpointCommitTarget(repo *checkpoint.Repo, value string) (primitives.TargetRef, error) {
+func parseRollbackCheckpointIDTarget(repo *checkpoint.Repo, value string) (primitives.TargetRef, error) {
 	prefix := strings.ToLower(strings.TrimSpace(value))
-	if len(prefix) < minRollbackCheckpointCommitPrefixLength {
-		return primitives.TargetRef{}, fmt.Errorf("checkpoint commit hash prefix must be at least %d hex characters", minRollbackCheckpointCommitPrefixLength)
+	if len(prefix) < minRollbackCheckpointIDPrefixLength {
+		return primitives.TargetRef{}, fmt.Errorf("checkpoint id prefix must be at least %d hex characters", minRollbackCheckpointIDPrefixLength)
 	}
 	if len(prefix) > 64 || !isHexText(prefix) {
-		return primitives.TargetRef{}, fmt.Errorf("checkpoint commit hash must be a hex SHA prefix")
+		return primitives.TargetRef{}, fmt.Errorf("checkpoint id must be a hex SHA prefix")
 	}
 
 	infos, err := repo.ListAllCheckpointRefInfos()
@@ -157,15 +157,15 @@ func parseRollbackCheckpointCommitTarget(repo *checkpoint.Repo, value string) (p
 
 	switch len(matches) {
 	case 0:
-		return primitives.TargetRef{}, fmt.Errorf("checkpoint commit %s not found", prefix)
+		return primitives.TargetRef{}, fmt.Errorf("checkpoint id %s not found", prefix)
 	case 1:
 		return primitives.NewTargetRef(matches[0].SessionID, matches[0].TurnID, matches[0].Phase)
 	default:
-		return primitives.TargetRef{}, fmt.Errorf("checkpoint commit %s is ambiguous; matches %s", prefix, formatRollbackCommitMatches(matches))
+		return primitives.TargetRef{}, fmt.Errorf("checkpoint id %s is ambiguous; matches %s", prefix, formatRollbackIDMatches(matches))
 	}
 }
 
-func formatRollbackCommitMatches(matches []checkpoint.CheckpointRefInfo) string {
+func formatRollbackIDMatches(matches []checkpoint.CheckpointRefInfo) string {
 	const limit = 5
 	count := len(matches)
 	if count > limit {
@@ -202,30 +202,31 @@ func writeRollbackResult(w io.Writer, result rollbackengine.Result) error {
 		return writeWorkspaceGitRollbackResult(w, result)
 	}
 	if result.DryRun {
-		if _, err := fmt.Fprintf(w, "dry-run rollback to %s %s\n", result.Target.Commit, result.Target.CheckpointRef); err != nil {
+		if err := writeRollbackTargetBlock(w, "Dry-run rollback", result); err != nil {
 			return err
 		}
 		return writeRestoreChanges(w, result.Plan.Changes)
 	}
 
-	if _, err := fmt.Fprintf(w, "rolled back to %s %s\n", result.Target.Commit, result.Target.CheckpointRef); err != nil {
+	if err := writeRollbackTargetBlock(w, "Rollback complete", result); err != nil {
 		return err
 	}
 	if result.Safety != nil {
-		if _, err := fmt.Fprintf(w, "safety checkpoint %s %s\n", result.Safety.Commit, result.Safety.Ref); err != nil {
+		if _, err := fmt.Fprintln(w); err != nil {
 			return err
 		}
+		return writeHiddenSnapshotBlock(w, "Previous workspace saved", *result.Safety)
 	}
 	return nil
 }
 
 func writeWorkspaceGitRollbackResult(w io.Writer, result rollbackengine.Result) error {
 	if result.DryRun {
-		if _, err := fmt.Fprintf(w, "dry-run workspace-git rollback to %s %s\n", result.Target.Target, result.GitSyncRef); err != nil {
+		if err := writeWorkspaceGitTargetBlock(w, "Dry-run workspace-git rollback", result); err != nil {
 			return err
 		}
 		if result.GitPlan != nil {
-			if _, err := fmt.Fprintf(w, "head: %s -> %s\n", result.GitPlan.CurrentHead.Commit, result.GitPlan.TargetHead.Commit); err != nil {
+			if _, err := fmt.Fprintf(w, "  commits:      %s -> %s\n", formatObjectID(result.GitPlan.CurrentHead.Commit, false), formatObjectID(result.GitPlan.TargetHead.Commit, false)); err != nil {
 				return err
 			}
 			if err := writeRepoPathGroup(w, "staged", result.GitPlan.StagedPaths); err != nil {
@@ -241,20 +242,79 @@ func writeWorkspaceGitRollbackResult(w io.Writer, result rollbackengine.Result) 
 		return nil
 	}
 
-	if _, err := fmt.Fprintf(w, "rolled back workspace git to %s %s\n", result.Target.Target, result.GitSyncRef); err != nil {
+	if err := writeWorkspaceGitTargetBlock(w, "Workspace Git rollback complete", result); err != nil {
 		return err
 	}
+	if result.GitPlan != nil {
+		if _, err := fmt.Fprintf(w, "  commits:      %s -> %s\n", formatObjectID(result.GitPlan.CurrentHead.Commit, false), formatObjectID(result.GitPlan.TargetHead.Commit, false)); err != nil {
+			return err
+		}
+	}
 	if result.Safety != nil {
-		if _, err := fmt.Fprintf(w, "safety checkpoint %s %s\n", result.Safety.Commit, result.Safety.Ref); err != nil {
+		if _, err := fmt.Fprintln(w); err != nil {
+			return err
+		}
+		if err := writeHiddenSnapshotBlock(w, "Previous workspace snapshot saved", *result.Safety); err != nil {
 			return err
 		}
 	}
 	if result.GitSafety != nil {
-		if _, err := fmt.Fprintf(w, "safety git-sync state %s %s\n", result.GitSafety.Commit, result.GitSafety.Ref); err != nil {
+		if _, err := fmt.Fprintln(w); err != nil {
+			return err
+		}
+		return writeHiddenSnapshotBlock(w, "Previous workspace Git state saved", *result.GitSafety)
+	}
+	return nil
+}
+
+func writeRollbackTargetBlock(w io.Writer, title string, result rollbackengine.Result) error {
+	if _, err := fmt.Fprintln(w, title); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "  target: %s\n", result.Target.Target); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "  id:     %s\n", formatObjectID(result.Target.Commit, false)); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintf(w, "  ref:    %s\n", result.Target.CheckpointRef)
+	return err
+}
+
+func writeWorkspaceGitTargetBlock(w io.Writer, title string, result rollbackengine.Result) error {
+	if _, err := fmt.Fprintln(w, title); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "  target:       %s\n", result.Target.Target); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "  checkpoint id:  %s\n", formatObjectID(result.Target.Commit, false)); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "  checkpoint ref: %s\n", result.Target.CheckpointRef); err != nil {
+		return err
+	}
+	if result.GitSyncRef != "" {
+		if _, err := fmt.Fprintf(w, "  git-sync ref: %s\n", result.GitSyncRef); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func writeHiddenSnapshotBlock(w io.Writer, title string, snapshot checkpoint.Snapshot) error {
+	return writeHiddenIDRefBlock(w, title, snapshot.Commit, snapshot.Ref)
+}
+
+func writeHiddenIDRefBlock(w io.Writer, title string, id primitives.CommitSHA, ref string) error {
+	if _, err := fmt.Fprintln(w, title); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "  id:  %s\n", formatObjectID(id, false)); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintf(w, "  ref: %s\n", ref)
+	return err
 }
 
 func writeRepoPathGroup(w io.Writer, label string, paths []primitives.RepoPath) error {

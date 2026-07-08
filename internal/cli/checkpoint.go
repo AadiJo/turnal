@@ -26,7 +26,7 @@ func checkpointCreateCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:          "create",
-		Short:        "Create a hidden Git checkpoint commit",
+		Short:        "Create a hidden Git checkpoint id",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if session == "" {
@@ -61,8 +61,7 @@ func checkpointCreateCmd() *cobra.Command {
 				return err
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "%s %s\n", created.Commit, created.Ref)
-			return nil
+			return writeHiddenIDRefBlock(cmd.OutOrStdout(), "Checkpoint created", created.Commit, created.Ref.String())
 		},
 	}
 

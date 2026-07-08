@@ -128,7 +128,8 @@ func TestLogCommandShowsRollbackEventRow(t *testing.T) {
 		"------------ reverted to [demo] turn 1 pre",
 		"target: demo:turn:1:pre",
 		"mode: checkpoint",
-		"safety: refs/agent-vcs/rollback-safety/demo/turn/000001/pre/",
+		"safety:",
+		"ref: refs/agent-vcs/rollback-safety/demo/turn/000001/pre/",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("rollback log output missing %q:\n%s", want, output)
@@ -265,7 +266,9 @@ func TestRenderCheckpointGraphShowsRollbackRowsAcrossSessions(t *testing.T) {
 		"! ! ------------ reverted to [codex 12:00] turn 1 pre 999999999999",
 		"| | rollback: 2026-07-06 12:20:00 UTC",
 		"| | target: codex-sess_aaaaaaaa:turn:1:pre",
-		"| | safety: refs/agent-vcs/rollback-safety/codex-sess_aaaaaaaa/turn/000001/pre/example 8888888888888888888888888888888888888888",
+		"| | safety:",
+		"| |   id:  8888888888888888888888888888888888888888",
+		"| |   ref: refs/agent-vcs/rollback-safety/codex-sess_aaaaaaaa/turn/000001/pre/example",
 		"* | 222222222222 - 12:10 [codex 12:00] turn 2",
 		"| * 444444444444 - 12:05 [session-b] turn 1",
 		"*   111111111111 - 12:00 [codex 12:00] turn 1",

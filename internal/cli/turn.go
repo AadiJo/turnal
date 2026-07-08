@@ -61,8 +61,7 @@ func turnStartCmd() *cobra.Command {
 
 			out := cmd.OutOrStdout()
 			fmt.Fprintf(out, "started turn %s\n", result.TurnID)
-			fmt.Fprintf(out, "pre %s %s\n", result.Pre.Commit, result.Pre.Ref)
-			return nil
+			return writeHiddenIDRefBlock(out, "Pre checkpoint", result.Pre.Commit, result.Pre.Ref.String())
 		},
 	}
 
@@ -108,8 +107,7 @@ func turnFinishCmd() *cobra.Command {
 
 			out := cmd.OutOrStdout()
 			fmt.Fprintf(out, "finished turn %s\n", result.TurnID)
-			fmt.Fprintf(out, "post %s %s\n", result.Post.Commit, result.Post.Ref)
-			return nil
+			return writeHiddenIDRefBlock(out, "Post checkpoint", result.Post.Commit, result.Post.Ref.String())
 		},
 	}
 

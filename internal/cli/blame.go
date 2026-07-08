@@ -75,7 +75,7 @@ matched exactly.`,
 
 	cmd.Flags().StringVar(&session, "session", "", "Restrict blame to one session id")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit structured JSON")
-	cmd.Flags().BoolVar(&verbose, "verbose", false, "Show prompt, tool, checkpoint, and commit metadata")
+	cmd.Flags().BoolVar(&verbose, "verbose", false, "Show prompt, tool, and checkpoint id metadata")
 	return cmd
 }
 
@@ -149,7 +149,7 @@ func writeBlameOriginDetails(w io.Writer, origin blame.Origin) error {
 		}
 	}
 	if origin.Commit != "" {
-		if _, err := fmt.Fprintf(w, "  commit: %s\n", origin.Commit); err != nil {
+		if _, err := fmt.Fprintf(w, "  id: %s\n", origin.Commit); err != nil {
 			return err
 		}
 	}
