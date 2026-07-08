@@ -8,7 +8,7 @@ Turnal is a local-first flight recorder for AI coding agents. It records what ha
 npm install -g @aadijo/turnal
 ```
 
-The npm package builds the Go CLI locally on first run, so Go must be installed on the machine running `turnal`.
+The npm package ships prebuilt binaries for macOS, Linux, and Windows on x64 and arm64. Go is only required when installing from source or when using an unsupported npm platform.
 
 ## Usage
 

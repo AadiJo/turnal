@@ -9,8 +9,10 @@ const path = require('node:path');
 const packageRoot = path.resolve(__dirname, '..');
 const packageJson = require(path.join(packageRoot, 'package.json'));
 const exeName = process.platform === 'win32' ? 'turnal.exe' : 'turnal';
+const platformKey = `${process.platform}-${process.arch}`;
+const packagedBinaryPath = path.join(packageRoot, 'npm', 'bin', platformKey, exeName);
 const cacheRoot = process.env.TURNAL_NPM_CACHE || defaultCacheRoot();
-const binaryPath = path.join(cacheRoot, packageJson.version, `${process.platform}-${process.arch}`, exeName);
+const cachedBinaryPath = path.join(cacheRoot, packageJson.version, platformKey, exeName);
 
 function defaultCacheRoot() {
   const home = os.homedir();
@@ -20,19 +22,27 @@ function defaultCacheRoot() {
   return path.join(os.tmpdir(), 'turnal-npm-cache');
 }
 
-function ensureBinary() {
-  if (fs.existsSync(binaryPath)) {
-    return;
+function resolveBinary() {
+  if (!process.env.TURNAL_NPM_FORCE_BUILD && fs.existsSync(packagedBinaryPath)) {
+    return packagedBinaryPath;
   }
 
-  fs.mkdirSync(path.dirname(binaryPath), { recursive: true });
+  return ensureBuiltBinary();
+}
+
+function ensureBuiltBinary() {
+  if (fs.existsSync(cachedBinaryPath)) {
+    return cachedBinaryPath;
+  }
+
+  fs.mkdirSync(path.dirname(cachedBinaryPath), { recursive: true });
   const result = spawnSync('go', [
     'build',
     '-buildvcs=false',
     '-ldflags',
     `-X github.com/AadiJo/turnal/internal/cli.version=${packageJson.version}`,
     '-o',
-    binaryPath,
+    cachedBinaryPath,
     './cmd/turnal'
   ], {
     cwd: packageRoot,
@@ -42,7 +52,8 @@ function ensureBinary() {
 
   if (result.error) {
     if (result.error.code === 'ENOENT') {
-      console.error('turnal installed from npm builds the Go CLI locally. Install Go, then run turnal again.');
+      console.error(`turnal does not include a prebuilt binary for ${platformKey}, and Go is not installed for a local fallback build.`);
+      console.error('Install Go, then run turnal again, or install a turnal release that supports this platform.');
       process.exit(1);
     }
     console.error(`failed to build turnal: ${result.error.message}`);
@@ -52,9 +63,11 @@ function ensureBinary() {
   if (result.status !== 0) {
     process.exit(result.status || 1);
   }
+
+  return cachedBinaryPath;
 }
 
-ensureBinary();
+const binaryPath = resolveBinary();
 
 const child = spawn(binaryPath, process.argv.slice(2), {
   stdio: 'inherit',

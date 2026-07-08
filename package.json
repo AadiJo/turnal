@@ -16,8 +16,10 @@
   ],
   "scripts": {
     "build": "go build -o bin/turnal ./cmd/turnal",
+    "build:npm-binaries": "node scripts/build-npm-binaries.js",
     "test": "go test ./...",
     "pack:dry-run": "npm pack --dry-run",
+    "prepack": "node scripts/build-npm-binaries.js",
     "prepublishOnly": "go test ./..."
   },
   "repository": {
