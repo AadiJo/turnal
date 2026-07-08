@@ -13,7 +13,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	agentconfig "github.com/AadiJo/turnal/internal/config"
@@ -1523,10 +1522,6 @@ func (repo *Repo) validatePrivateRef(ref string) (string, error) {
 		return "", err
 	}
 	return ref, nil
-}
-
-func isDirectoryNotEmpty(err error) bool {
-	return errors.Is(err, syscall.ENOTEMPTY) || errors.Is(err, syscall.EEXIST)
 }
 
 func (repo *Repo) snapshotWorktree(indexPath string) error {

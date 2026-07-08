@@ -26,7 +26,7 @@ function ensureBinary() {
   }
 
   fs.mkdirSync(path.dirname(binaryPath), { recursive: true });
-  const result = spawnSync('go', ['build', '-o', binaryPath, './cmd/turnal'], {
+  const result = spawnSync('go', ['build', '-buildvcs=false', '-o', binaryPath, './cmd/turnal'], {
     cwd: packageRoot,
     stdio: 'inherit',
     env: process.env

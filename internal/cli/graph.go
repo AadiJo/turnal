@@ -8,10 +8,8 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 	"unicode/utf8"
-	"unsafe"
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
@@ -830,22 +828,6 @@ func shouldPageOutput(w io.Writer, noPager bool, data []byte) bool {
 		return false
 	}
 	return shouldPageRenderedOutput(noPager, data, height, width)
-}
-
-type terminalWindowSize struct {
-	Rows    uint16
-	Cols    uint16
-	XPixels uint16
-	YPixels uint16
-}
-
-func terminalSize(file *os.File) (height int, width int, ok bool) {
-	var size terminalWindowSize
-	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, file.Fd(), uintptr(syscall.TIOCGWINSZ), uintptr(unsafe.Pointer(&size)))
-	if errno != 0 || size.Rows == 0 {
-		return 0, 0, false
-	}
-	return int(size.Rows), int(size.Cols), true
 }
 
 func renderedLineCount(data []byte, width int) int {
