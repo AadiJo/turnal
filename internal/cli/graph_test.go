@@ -115,6 +115,132 @@ func TestReindexThenIndexedLogMatchesDurableAndFallsBack(t *testing.T) {
 	}
 }
 
+func TestLogCommandTranscriptShowsEventOnlyTurn(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+
+	sessionID := sessionID(t, "demo")
+	turnID, _ := primitives.NewTurnID(1)
+	log := eventlog.Open(repo.MetadataDir)
+	events := []eventlog.AppendInput{
+		{
+			SessionID: sessionID,
+			TurnID:    &turnID,
+			Type:      primitives.EventTypePromptUser,
+			Adapter:   primitives.AdapterCodex,
+			Time:      testTimestamp(t, time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)),
+			Payload:   json.RawMessage(`{"text":"update app.txt and run tests"}`),
+		},
+		{
+			SessionID: sessionID,
+			TurnID:    &turnID,
+			Type:      primitives.EventTypeToolCall,
+			Adapter:   primitives.AdapterCodex,
+			Time:      testTimestamp(t, time.Date(2026, 7, 6, 12, 1, 0, 0, time.UTC)),
+			Payload:   json.RawMessage(`{"tool_name":"Write","input":{"file_path":"app.txt","content":"hidden"}}`),
+		},
+		{
+			SessionID: sessionID,
+			TurnID:    &turnID,
+			Type:      primitives.EventTypeToolCall,
+			Adapter:   primitives.AdapterCodex,
+			Time:      testTimestamp(t, time.Date(2026, 7, 6, 12, 2, 0, 0, time.UTC)),
+			Payload:   json.RawMessage(`{"tool_name":"Bash","input":{"command":"go test ./..."}}`),
+		},
+		{
+			SessionID: sessionID,
+			TurnID:    &turnID,
+			Type:      primitives.EventTypeAssistantMessage,
+			Adapter:   primitives.AdapterCodex,
+			Time:      testTimestamp(t, time.Date(2026, 7, 6, 12, 3, 0, 0, time.UTC)),
+			Payload:   json.RawMessage(`{"text":"I updated app.txt and ran the test suite."}`),
+		},
+	}
+	for _, event := range events {
+		if _, err := log.Append(event); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+
+	output := stripANSI(runRootStdout(t, "log", "--transcript", "--session", "demo", "--no-pager"))
+	for _, want := range []string{
+		"transcript log: 1 session, 1 turn",
+		"sessions: [codex 12:03]",
+		"Session: [codex 12:03]",
+		"* Write +1 - 12:03 - turn 1",
+		"Human: update app.txt and run tests",
+		"    ↓",
+		"Agent: I updated app.txt and ran the test suite.",
+		"├─ Write (file_path: app.txt)",
+		"└─ Bash (command: go test ./...)",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("transcript output missing %q:\n%s", want, output)
+		}
+	}
+	if !strings.HasPrefix(output, "\n") || !strings.HasSuffix(output, "\n\n") {
+		t.Fatalf("transcript output should have leading and trailing spacing:\n%q", output)
+	}
+}
+
+func TestLogCommandTranscriptShowsFileDiffs(t *testing.T) {
+	root, repo, sessionID, turnID := createTurnWithDiff(t)
+	t.Chdir(root.String())
+
+	log := eventlog.Open(repo.MetadataDir)
+	if _, err := log.Append(eventlog.AppendInput{
+		SessionID: sessionID,
+		TurnID:    &turnID,
+		Type:      primitives.EventTypePromptUser,
+		Adapter:   primitives.AdapterCodex,
+		Time:      testTimestamp(t, time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)),
+		Payload:   json.RawMessage(`{"text":"change app.txt"}`),
+	}); err != nil {
+		t.Fatalf("Append prompt: %v", err)
+	}
+	if _, err := log.Append(eventlog.AppendInput{
+		SessionID: sessionID,
+		TurnID:    &turnID,
+		Type:      primitives.EventTypeToolCall,
+		Adapter:   primitives.AdapterCodex,
+		Time:      testTimestamp(t, time.Date(2026, 7, 6, 12, 1, 0, 0, time.UTC)),
+		Payload:   json.RawMessage(`{"tool_name":"Edit","input":{"file_path":"app.txt"}}`),
+	}); err != nil {
+		t.Fatalf("Append tool: %v", err)
+	}
+	if _, err := log.Append(eventlog.AppendInput{
+		SessionID: sessionID,
+		TurnID:    &turnID,
+		Type:      primitives.EventTypeAssistantMessage,
+		Adapter:   primitives.AdapterCodex,
+		Time:      testTimestamp(t, time.Date(2026, 7, 6, 12, 2, 0, 0, time.UTC)),
+		Payload:   json.RawMessage(`{"text":"changed app.txt"}`),
+	}); err != nil {
+		t.Fatalf("Append assistant: %v", err)
+	}
+
+	output := stripANSI(runRootStdout(t, "log", "--transcript", "--session", sessionID.String(), "--no-pager"))
+	for _, want := range []string{
+		"* ",
+		"Edit",
+		"turn 1",
+		"app.txt +1 -1",
+		"Human: change app.txt",
+		"Agent: changed app.txt",
+		"└─ Edit (file_path: app.txt)",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("transcript diff output missing %q:\n%s", want, output)
+		}
+	}
+}
+
 func TestLogCommandShowsRollbackEventRow(t *testing.T) {
 	root, _, sessionID, turnID := createTurnWithDiff(t)
 	t.Chdir(root.String())
@@ -460,6 +586,15 @@ func mustEventSeq(t *testing.T, value uint64) primitives.EventSeq {
 		t.Fatalf("event seq: %v", err)
 	}
 	return seq
+}
+
+func testTimestamp(t *testing.T, value time.Time) primitives.Timestamp {
+	t.Helper()
+	timestamp, err := primitives.NewTimestamp(value)
+	if err != nil {
+		t.Fatalf("NewTimestamp: %v", err)
+	}
+	return timestamp
 }
 
 var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)

@@ -26,6 +26,7 @@ func logCmd() *cobra.Command {
 	var noPager bool
 	var useIndex bool
 	var durable bool
+	var transcript bool
 
 	cmd := &cobra.Command{
 		Use:          "log",
@@ -50,33 +51,48 @@ func logCmd() *cobra.Command {
 				return err
 			}
 
+			graphLimit := limit
+			if transcript {
+				graphLimit = 0
+			}
+
 			var sessions []graphSession
 			if useIndex {
 				var loaded bool
-				sessions, loaded, err = tryLoadIndexedGraph(repo, session, limit)
+				sessions, loaded, err = tryLoadIndexedGraph(repo, session, graphLimit)
 				if err != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "warning: index unavailable: %v\n", err)
 				}
 				if !loaded {
-					sessions, err = loadDurableGraph(repo, session, limit)
+					sessions, err = loadDurableGraph(repo, session, graphLimit)
 					if err != nil {
 						return err
 					}
 				}
 			} else {
-				sessions, err = loadDurableGraph(repo, session, limit)
+				sessions, err = loadDurableGraph(repo, session, graphLimit)
 				if err != nil {
 					return err
 				}
 			}
-			attachGraphRollbackEvents(repo, sessions)
 
 			options := graphRenderOptions{
 				Verbose: verbose,
 			}
 			var buf bytes.Buffer
-			if err := renderCheckpointGraph(&buf, sessions, options); err != nil {
-				return err
+			if transcript {
+				sessions, err = attachTranscriptEvents(repo, sessions, session, limit)
+				if err != nil {
+					return err
+				}
+				if err := renderTranscriptLog(&buf, sessions, options); err != nil {
+					return err
+				}
+			} else {
+				attachGraphRollbackEvents(repo, sessions)
+				if err := renderCheckpointGraph(&buf, sessions, options); err != nil {
+					return err
+				}
 			}
 			if shouldPageOutput(cmd.OutOrStdout(), noPager, buf.Bytes()) {
 				return pageOutput(cmd.OutOrStdout(), buf.Bytes())
@@ -92,6 +108,7 @@ func logCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&noPager, "no-pager", false, "Print directly instead of opening a pager")
 	cmd.Flags().BoolVar(&useIndex, "index", false, "Read from the disposable SQLite index when available")
 	cmd.Flags().BoolVar(&durable, "durable", false, "Read directly from durable logs and checkpoints")
+	cmd.Flags().BoolVar(&transcript, "transcript", false, "Show a readable prompt, assistant, and tool-call transcript")
 	return cmd
 }
 
@@ -114,6 +131,7 @@ type graphTurn struct {
 	Diff       checkpoint.DiffSummary
 	DiffLoaded bool
 	Events     turnEventSummary
+	EventLog   []eventlog.Event
 	Warnings   []string
 }
 
@@ -504,6 +522,425 @@ func renderCheckpointGraph(w io.Writer, sessions []graphSession, options graphRe
 
 	fmt.Fprintln(w)
 	return nil
+}
+
+func attachTranscriptEvents(repo *checkpoint.Repo, sessions []graphSession, sessionFilter string, limit int) ([]graphSession, error) {
+	log := eventlog.Open(repo.MetadataDir)
+	sessionIDs := make([]primitives.SessionID, 0, len(sessions))
+	sessionIndexes := make(map[string]int, len(sessions))
+	for index, session := range sessions {
+		sessionIDs = append(sessionIDs, session.ID)
+		sessionIndexes[session.ID.String()] = index
+	}
+
+	if sessionFilter != "" {
+		sessionID, err := primitives.ParseSessionID(sessionFilter)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := sessionIndexes[sessionID.String()]; !ok {
+			sessions = append(sessions, graphSession{ID: sessionID})
+			sessionIndexes[sessionID.String()] = len(sessions) - 1
+			sessionIDs = append(sessionIDs, sessionID)
+		}
+	} else {
+		logSessions, err := log.ListSessions()
+		if err != nil {
+			return nil, fmt.Errorf("list event log sessions: %w", err)
+		}
+		for _, sessionID := range logSessions {
+			if _, ok := sessionIndexes[sessionID.String()]; ok {
+				continue
+			}
+			sessions = append(sessions, graphSession{ID: sessionID})
+			sessionIndexes[sessionID.String()] = len(sessions) - 1
+			sessionIDs = append(sessionIDs, sessionID)
+		}
+	}
+
+	for _, sessionID := range sessionIDs {
+		sessionIndex := sessionIndexes[sessionID.String()]
+		events, err := log.Read(sessionID)
+		if err != nil {
+			sessions[sessionIndex].Warnings = append(sessions[sessionIndex].Warnings, fmt.Sprintf("event log unavailable: %v", err))
+			continue
+		}
+
+		turnIndexes := make(map[uint64]int, len(sessions[sessionIndex].Turns))
+		for turnIndex := range sessions[sessionIndex].Turns {
+			turnIndexes[sessions[sessionIndex].Turns[turnIndex].TurnID.Uint64()] = turnIndex
+		}
+		summaries := queryindex.SummarizeTurnEvents(events)
+		for _, event := range events {
+			if event.TurnID == nil {
+				continue
+			}
+			turnKey := event.TurnID.Uint64()
+			turnIndex, ok := turnIndexes[turnKey]
+			if !ok {
+				sessions[sessionIndex].Turns = append(sessions[sessionIndex].Turns, graphTurn{TurnID: *event.TurnID})
+				turnIndex = len(sessions[sessionIndex].Turns) - 1
+				turnIndexes[turnKey] = turnIndex
+			}
+			sessions[sessionIndex].Turns[turnIndex].EventLog = append(sessions[sessionIndex].Turns[turnIndex].EventLog, event)
+		}
+		for turnKey, summary := range summaries {
+			turnID, err := primitives.NewTurnID(turnKey)
+			if err != nil {
+				continue
+			}
+			turnIndex, ok := turnIndexes[turnKey]
+			if !ok {
+				sessions[sessionIndex].Turns = append(sessions[sessionIndex].Turns, graphTurn{TurnID: turnID})
+				turnIndex = len(sessions[sessionIndex].Turns) - 1
+				turnIndexes[turnKey] = turnIndex
+			}
+			sessions[sessionIndex].Turns[turnIndex].Events = summary
+		}
+
+		sort.Slice(sessions[sessionIndex].Turns, func(i, j int) bool {
+			leftTime := turnDisplayTime(sessions[sessionIndex].Turns[i])
+			rightTime := turnDisplayTime(sessions[sessionIndex].Turns[j])
+			if !leftTime.Equal(rightTime) {
+				return leftTime.After(rightTime)
+			}
+			return sessions[sessionIndex].Turns[i].TurnID.Uint64() > sessions[sessionIndex].Turns[j].TurnID.Uint64()
+		})
+		sessions[sessionIndex].TotalTurns = len(sessions[sessionIndex].Turns)
+		if limit > 0 && len(sessions[sessionIndex].Turns) > limit {
+			sessions[sessionIndex].Turns = sessions[sessionIndex].Turns[:limit]
+		}
+	}
+
+	filtered := sessions[:0]
+	for _, session := range sessions {
+		if len(session.Turns) == 0 && len(session.Warnings) == 0 {
+			continue
+		}
+		filtered = append(filtered, session)
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		return filtered[i].ID.String() < filtered[j].ID.String()
+	})
+	return filtered, nil
+}
+
+func renderTranscriptLog(w io.Writer, sessions []graphSession, options graphRenderOptions) error {
+	fmt.Fprintln(w)
+	if len(sessions) == 0 {
+		fmt.Fprintln(w, "No transcript events recorded yet.")
+		fmt.Fprintln(w)
+		return nil
+	}
+
+	labels := buildGraphSessionLabels(sessions)
+	totalTurns := 0
+	totalShownTurns := 0
+	for _, session := range sessions {
+		totalTurns += session.TotalTurns
+		totalShownTurns += len(session.Turns)
+	}
+	if totalShownTurns == totalTurns {
+		fmt.Fprintf(w, "transcript log: %d %s, %d %s\n\n",
+			len(sessions), pluralWord(len(sessions), "session", "sessions"),
+			totalTurns, pluralWord(totalTurns, "turn", "turns"))
+	} else {
+		fmt.Fprintf(w, "transcript log: %d %s, showing %d of %d %s\n\n",
+			len(sessions), pluralWord(len(sessions), "session", "sessions"),
+			totalShownTurns, totalTurns, pluralWord(totalTurns, "turn", "turns"))
+	}
+
+	fmt.Fprintf(w, "sessions:")
+	for sessionIndex, session := range sessions {
+		label := formatSessionLabel(labels[sessionIndex], sessionIndex, options)
+		if len(session.Turns) == session.TotalTurns {
+			fmt.Fprintf(w, " %s", label)
+		} else {
+			fmt.Fprintf(w, " %s(%d/%d)", label, len(session.Turns), session.TotalTurns)
+		}
+	}
+	fmt.Fprintln(w)
+
+	for sessionIndex, session := range sessions {
+		for _, warning := range session.Warnings {
+			fmt.Fprintf(w, "warning %s: %s\n", session.ID, warning)
+		}
+		if len(session.Turns) == 0 {
+			continue
+		}
+		fmt.Fprintln(w)
+		fmt.Fprintf(w, "Session: %s\n", formatSessionLabel(labels[sessionIndex], sessionIndex, options))
+		for turnIndex := len(session.Turns) - 1; turnIndex >= 0; turnIndex-- {
+			if err := renderTranscriptTurn(w, session.Turns[turnIndex], options); err != nil {
+				return err
+			}
+			if turnIndex > 0 {
+				fmt.Fprintln(w)
+			}
+		}
+	}
+
+	fmt.Fprintln(w)
+	return nil
+}
+
+func renderTranscriptTurn(w io.Writer, turn graphTurn, options graphRenderOptions) error {
+	fmt.Fprintf(w, "* %s\n", formatTranscriptTurnHeader(turn, options))
+	if turn.DiffLoaded && len(turn.Diff.Files) > 0 {
+		for _, file := range turn.Diff.Files {
+			fmt.Fprintf(w, "  %s\n", formatTranscriptDiffFileStat(file, options))
+		}
+		fmt.Fprintln(w)
+	}
+	transcript := transcriptFromEvents(turn.EventLog)
+	if len(transcript.Prompts) == 0 && len(transcript.Assistant) == 0 && len(transcript.Tools) == 0 && len(transcript.Errors) == 0 {
+		fmt.Fprintln(w, "  No normalized transcript events.")
+		for _, warning := range turn.Warnings {
+			fmt.Fprintf(w, "  warning: %s\n", warning)
+		}
+		return nil
+	}
+
+	for _, prompt := range transcript.Prompts {
+		writeTranscriptText(w, "  ", "Human:", prompt)
+	}
+	if len(transcript.Prompts) > 0 && (len(transcript.Assistant) > 0 || len(transcript.Tools) > 0) {
+		fmt.Fprintln(w, "    ↓")
+	}
+	for _, assistant := range transcript.Assistant {
+		writeTranscriptText(w, "  ", "Agent:", assistant)
+	}
+	if len(transcript.Tools) > 0 {
+		if len(transcript.Assistant) == 0 {
+			fmt.Fprintln(w, "  Tools:")
+		}
+		for index, tool := range transcript.Tools {
+			prefix := "├─"
+			if index == len(transcript.Tools)-1 {
+				prefix = "└─"
+			}
+			fmt.Fprintf(w, "      %s %s\n", prefix, formatTranscriptTool(tool, options))
+		}
+	}
+	for _, message := range transcript.Errors {
+		writeTranscriptText(w, "  ", "Error:", message)
+	}
+	for _, warning := range turn.Warnings {
+		fmt.Fprintf(w, "  warning: %s\n", warning)
+	}
+	return nil
+}
+
+func formatTranscriptTurnHeader(turn graphTurn, options graphRenderOptions) string {
+	parts := []string{}
+	if id := formatDisplayID(turn); id != "unknown" {
+		parts = append(parts, styleHash(id, options))
+	}
+	if action := formatTurnAction(turn); action != "Turn" {
+		parts = append(parts, styleTool(action, options))
+	}
+	if at := formatDisplayTime(turn); at != "--:--" {
+		parts = append(parts, at)
+	}
+	parts = append(parts, "turn "+turn.TurnID.String())
+	return strings.Join(parts, " - ")
+}
+
+type transcriptTurn struct {
+	Prompts   []string
+	Assistant []string
+	Tools     []transcriptTool
+	Errors    []string
+}
+
+type transcriptTool struct {
+	Name  string
+	Input json.RawMessage
+}
+
+func transcriptFromEvents(events []eventlog.Event) transcriptTurn {
+	var transcript transcriptTurn
+	for _, event := range events {
+		switch event.Type {
+		case primitives.EventTypePromptUser:
+			if text := payloadText(event.Payload, "text"); text != "" {
+				transcript.Prompts = append(transcript.Prompts, text)
+			}
+		case primitives.EventTypeAssistantMessage:
+			if text := payloadText(event.Payload, "text"); text != "" {
+				transcript.Assistant = append(transcript.Assistant, text)
+			}
+		case primitives.EventTypeToolCall:
+			var payload struct {
+				ToolName string          `json:"tool_name"`
+				Input    json.RawMessage `json:"input"`
+			}
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				transcript.Errors = append(transcript.Errors, fmt.Sprintf("malformed tool call event %s", event.Seq))
+				continue
+			}
+			if payload.ToolName == "" {
+				payload.ToolName = "Tool"
+			}
+			transcript.Tools = append(transcript.Tools, transcriptTool{Name: payload.ToolName, Input: payload.Input})
+		case primitives.EventTypeError:
+			message := payloadText(event.Payload, "message")
+			if message == "" {
+				message = string(event.Payload)
+			}
+			transcript.Errors = append(transcript.Errors, message)
+		}
+	}
+	return transcript
+}
+
+func payloadText(payload json.RawMessage, key string) string {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &object); err != nil {
+		return ""
+	}
+	raw, ok := object[key]
+	if !ok {
+		return ""
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(value)
+}
+
+func writeTranscriptText(w io.Writer, prefix, label, text string) {
+	lines := wrapTranscriptText(text, 90)
+	if len(lines) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "%s%s %s\n", prefix, label, lines[0])
+	continuation := prefix + strings.Repeat(" ", len(label)+1)
+	for _, line := range lines[1:] {
+		fmt.Fprintf(w, "%s%s\n", continuation, line)
+	}
+}
+
+func wrapTranscriptText(text string, limit int) []string {
+	text = strings.Join(strings.Fields(text), " ")
+	if text == "" {
+		return nil
+	}
+	if limit <= 0 {
+		return []string{text}
+	}
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return nil
+	}
+	var lines []string
+	var current strings.Builder
+	for _, word := range words {
+		if current.Len() == 0 {
+			current.WriteString(word)
+			continue
+		}
+		if current.Len()+1+len(word) <= limit {
+			current.WriteString(" ")
+			current.WriteString(word)
+			continue
+		}
+		lines = append(lines, current.String())
+		current.Reset()
+		current.WriteString(word)
+	}
+	if current.Len() > 0 {
+		lines = append(lines, current.String())
+	}
+	return lines
+}
+
+func formatTranscriptTool(tool transcriptTool, options graphRenderOptions) string {
+	if strings.TrimSpace(tool.Name) == "" {
+		tool.Name = "Tool"
+	}
+	args := formatTranscriptToolArgs(tool.Input)
+	if args == "" {
+		return styleTranscriptToolName(tool.Name, options)
+	}
+	return styleTranscriptToolName(tool.Name, options) + " (" + args + ")"
+}
+
+func formatTranscriptToolArgs(input json.RawMessage) string {
+	if len(input) == 0 || strings.TrimSpace(string(input)) == "null" {
+		return ""
+	}
+	var object map[string]any
+	if err := json.Unmarshal(input, &object); err != nil {
+		return ""
+	}
+
+	keys := transcriptToolArgKeys(object)
+	args := make([]string, 0, len(keys))
+	for _, key := range keys {
+		value, ok := object[key]
+		if !ok {
+			continue
+		}
+		if formatted := formatTranscriptToolArgValue(value); formatted != "" {
+			args = append(args, key+": "+formatted)
+		}
+	}
+	return strings.Join(args, ", ")
+}
+
+func transcriptToolArgKeys(object map[string]any) []string {
+	priority := []string{"file_path", "path", "command", "query", "description", "prompt"}
+	seen := make(map[string]struct{}, len(priority))
+	var keys []string
+	for _, key := range priority {
+		if _, ok := object[key]; ok {
+			keys = append(keys, key)
+			seen[key] = struct{}{}
+		}
+	}
+
+	var rest []string
+	for key := range object {
+		if key == "content" || key == "input" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		rest = append(rest, key)
+	}
+	sort.Strings(rest)
+	for _, key := range rest {
+		if len(keys) >= 3 {
+			break
+		}
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+func formatTranscriptToolArgValue(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return truncateText(typed, 80)
+	case bool:
+		if typed {
+			return "true"
+		}
+		return "false"
+	case float64:
+		return fmt.Sprintf("%v", typed)
+	default:
+		data, err := json.Marshal(typed)
+		if err != nil {
+			return ""
+		}
+		return truncateText(string(data), 80)
+	}
 }
 
 func buildGraphTimelineRows(sessions []graphSession) []graphTimelineRow {
@@ -963,6 +1400,17 @@ func formatDiffFileStat(file checkpoint.DiffFileStat) string {
 	return fmt.Sprintf("%s +%d -%d", file.Path, file.Additions, file.Deletions)
 }
 
+func formatTranscriptDiffFileStat(file checkpoint.DiffFileStat, options graphRenderOptions) string {
+	if file.Binary {
+		return fmt.Sprintf("%s %s", file.Path, styleDim("(binary)", options))
+	}
+	return fmt.Sprintf("%s %s %s",
+		file.Path,
+		styleAddition(fmt.Sprintf("+%d", file.Additions), options),
+		styleDeletion(fmt.Sprintf("-%d", file.Deletions), options),
+	)
+}
+
 func formatEventSummary(summary turnEventSummary, verbose bool) string {
 	if summary.Count == 0 {
 		return ""
@@ -1023,10 +1471,12 @@ func pluralWord(count int, singular, plural string) string {
 }
 
 const (
-	ansiReset = "\x1b[0m"
-	ansiDim   = "\x1b[2m"
-	ansiBlue  = "\x1b[38;5;111m"
-	ansiRed   = "\x1b[38;5;203m"
+	ansiReset  = "\x1b[0m"
+	ansiDim    = "\x1b[2m"
+	ansiBlue   = "\x1b[38;5;111m"
+	ansiRed    = "\x1b[38;5;203m"
+	ansiGreen  = "\x1b[38;5;48m"
+	ansiYellow = "\x1b[38;5;220m"
 )
 
 var graphSessionColors = []string{
@@ -1054,6 +1504,19 @@ func styleTool(value string, options graphRenderOptions) string {
 	return ansiBlue + value + ansiReset
 }
 
+func styleTranscriptToolName(value string, options graphRenderOptions) string {
+	switch value {
+	case "Edit":
+		return ansiYellow + value + ansiReset
+	case "Write":
+		return ansiGreen + value + ansiReset
+	case "Bash", "Read", "VectorSearch":
+		return ansiBlue + value + ansiReset
+	default:
+		return styleTool(value, options)
+	}
+}
+
 func styleRollback(value string, options graphRenderOptions) string {
 	return ansiRed + value + ansiReset
 }
@@ -1064,6 +1527,14 @@ func styleRollbackPhase(value string, options graphRenderOptions) string {
 
 func styleDim(value string, options graphRenderOptions) string {
 	return ansiDim + value + ansiReset
+}
+
+func styleAddition(value string, options graphRenderOptions) string {
+	return ansiGreen + value + ansiReset
+}
+
+func styleDeletion(value string, options graphRenderOptions) string {
+	return ansiRed + value + ansiReset
 }
 
 func shouldPageOutput(w io.Writer, noPager bool, data []byte) bool {
