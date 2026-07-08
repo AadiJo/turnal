@@ -68,6 +68,30 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Check Go formatting
+        if: steps.release_meta.outputs.channel == 'stable'
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [[ -n "$unformatted" ]]; then
+            echo "Go files need formatting:" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi
+
+      - name: Check Go modules are tidy
+        if: steps.release_meta.outputs.channel == 'stable'
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Vet
+        if: steps.release_meta.outputs.channel == 'stable'
+        run: go vet ./...
+
+      - name: Build
+        if: steps.release_meta.outputs.channel == 'stable'
+        run: npm run build
+
       - name: Pack dry run
         run: npm run pack:dry-run
 
