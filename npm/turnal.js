@@ -13,6 +13,8 @@ const platformKey = `${process.platform}-${process.arch}`;
 const packagedBinaryPath = path.join(packageRoot, 'npm', 'bin', platformKey, exeName);
 const cacheRoot = process.env.TURNAL_NPM_CACHE || defaultCacheRoot();
 const cachedBinaryPath = path.join(cacheRoot, packageJson.version, platformKey, exeName);
+const buildChannel = process.env.TURNAL_RELEASE_CHANNEL || inferChannel(packageJson.version);
+const buildCommit = process.env.TURNAL_COMMIT || process.env.GITHUB_SHA || '';
 
 function defaultCacheRoot() {
   const home = os.homedir();
@@ -20,6 +22,19 @@ function defaultCacheRoot() {
     return path.join(home, '.cache', 'turnal', 'npm');
   }
   return path.join(os.tmpdir(), 'turnal-npm-cache');
+}
+
+function inferChannel(version) {
+  return String(version).includes('-nightly.') ? 'nightly' : 'stable';
+}
+
+function ldflags() {
+  return [
+    `-X github.com/AadiJo/turnal/internal/cli.version=${packageJson.version}`,
+    `-X github.com/AadiJo/turnal/internal/cli.channel=${buildChannel}`,
+    `-X github.com/AadiJo/turnal/internal/cli.commit=${buildCommit}`,
+    '-X github.com/AadiJo/turnal/internal/cli.installSource=npm',
+  ].join(' ');
 }
 
 function resolveBinary() {
@@ -40,7 +55,7 @@ function ensureBuiltBinary() {
     'build',
     '-buildvcs=false',
     '-ldflags',
-    `-X github.com/AadiJo/turnal/internal/cli.version=${packageJson.version}`,
+    ldflags(),
     '-o',
     cachedBinaryPath,
     './cmd/turnal'

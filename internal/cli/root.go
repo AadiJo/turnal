@@ -10,6 +10,9 @@ import (
 )
 
 var version = "0.0.0"
+var channel = "dev"
+var commit = ""
+var installSource = "unknown"
 
 func NewRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
@@ -39,6 +42,7 @@ func NewRootCmd() *cobra.Command {
 	rootCmd.AddCommand(replayCmd())
 	rootCmd.AddCommand(runCmd())
 	rootCmd.AddCommand(versionCmd())
+	rootCmd.AddCommand(upgradeCmd())
 	rootCmd.AddCommand(claudeHookCmd())
 	rootCmd.AddCommand(codexHookCmd())
 	silenceSubcommandErrors(rootCmd)
@@ -59,7 +63,8 @@ func Execute() {
 	rootCmd.SetErr(os.Stderr)
 	rootCmd.SetVersionTemplate("{{.Version}}\n")
 
-	if err := rootCmd.Execute(); err != nil {
+	executedCmd, err := rootCmd.ExecuteC()
+	if err != nil {
 		if code, ok := commandExitCode(err); ok {
 			os.Exit(code)
 		}
@@ -68,14 +73,34 @@ func Execute() {
 		}
 		os.Exit(1)
 	}
+	maybeShowUpdateNotice(rootCmd, executedCmd)
 }
 
 func commandExitCode(err error) (int, bool) {
+	var commandErr commandExitError
+	if errors.As(err, &commandErr) {
+		return commandErr.ExitCode(), true
+	}
 	var childErr childExitError
 	if errors.As(err, &childErr) {
 		return childErr.ExitCode(), true
 	}
 	return 0, false
+}
+
+type commandExitError struct {
+	code int
+}
+
+func (err commandExitError) Error() string {
+	return fmt.Sprintf("command exited with status %d", err.code)
+}
+
+func (err commandExitError) ExitCode() int {
+	if err.code < 0 {
+		return 1
+	}
+	return err.code
 }
 
 func isUnknownCommandError(err error) bool {
