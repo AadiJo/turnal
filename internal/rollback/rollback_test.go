@@ -18,6 +18,46 @@ import (
 	"github.com/AadiJo/turnal/internal/workspacegit"
 )
 
+func TestResolveTargetDefaultsToPost(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	sessionID := sessionID(t, "demo")
+	turnID, _ := primitives.NewTurnID(1)
+	writeFile(t, root, "app.txt", "before\n")
+	if _, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre); err != nil {
+		t.Fatalf("pre checkpoint: %v", err)
+	}
+	writeFile(t, root, "app.txt", "after\n")
+	post, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePost)
+	if err != nil {
+		t.Fatalf("post checkpoint: %v", err)
+	}
+
+	targetRef, err := primitives.NewTargetRef(sessionID, turnID, "")
+	if err != nil {
+		t.Fatalf("NewTargetRef: %v", err)
+	}
+	resolved, err := ResolveTarget(repo, targetRef)
+	if err != nil {
+		t.Fatalf("ResolveTarget: %v", err)
+	}
+	if resolved.Phase != primitives.CheckpointPhasePost {
+		t.Fatalf("resolved phase = %q, want post", resolved.Phase)
+	}
+	if resolved.Commit != post.Commit {
+		t.Fatalf("resolved commit = %s, want post %s", resolved.Commit, post.Commit)
+	}
+	if resolved.Target.String() != "demo:turn:1:post" {
+		t.Fatalf("resolved target = %q, want demo:turn:1:post", resolved.Target)
+	}
+}
+
 func TestRunFinalizesRestoredJournal(t *testing.T) {
 	requireGit(t)
 

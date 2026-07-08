@@ -92,6 +92,108 @@ func TestRollbackCommandRestoresCheckpoint(t *testing.T) {
 	}
 }
 
+func TestRollbackCommandDefaultsToPostWhenPhaseOmitted(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		target func(primitives.SessionID, primitives.TurnID) string
+	}{
+		{
+			name: "long target",
+			target: func(sessionID primitives.SessionID, turnID primitives.TurnID) string {
+				return sessionID.String() + ":turn:" + turnID.String()
+			},
+		},
+		{
+			name: "short target",
+			target: func(sessionID primitives.SessionID, turnID primitives.TurnID) string {
+				return sessionID.String() + ":" + turnID.String()
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root, _, sessionID, turnID := createTurnWithDiff(t)
+			t.Chdir(root.String())
+
+			if err := os.WriteFile(filepath.Join(root.String(), "app.txt"), []byte("working copy\n"), 0o644); err != nil {
+				t.Fatalf("write app.txt: %v", err)
+			}
+
+			cmd := NewRootCmd()
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&out)
+			cmd.SetArgs([]string{"rollback", "--to", test.target(sessionID, turnID)})
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("rollback command: %v\n%s", err, out.String())
+			}
+
+			content, err := os.ReadFile(filepath.Join(root.String(), "app.txt"))
+			if err != nil {
+				t.Fatalf("read app.txt: %v", err)
+			}
+			if string(content) != "after\n" {
+				t.Fatalf("app.txt = %q, want post-checkpoint content", content)
+			}
+			if !strings.Contains(out.String(), "refs/agent-vcs/checkpoints/demo/turn/000001/post") {
+				t.Fatalf("rollback output should identify post checkpoint:\n%s", out.String())
+			}
+		})
+	}
+}
+
+func TestRollbackCommandAcceptsCheckpointCommitHashTarget(t *testing.T) {
+	root, repo, sessionID, turnID := createTurnWithDiff(t)
+	t.Chdir(root.String())
+
+	infos, err := repo.ListCheckpointRefInfos(sessionID)
+	if err != nil {
+		t.Fatalf("ListCheckpointRefInfos: %v", err)
+	}
+	var postCommit primitives.CommitSHA
+	for _, info := range infos {
+		if info.TurnID == turnID && info.Phase == primitives.CheckpointPhasePost {
+			postCommit = info.Commit
+			break
+		}
+	}
+	if postCommit == "" {
+		t.Fatal("post checkpoint commit not found")
+	}
+
+	if err := os.WriteFile(filepath.Join(root.String(), "app.txt"), []byte("working copy\n"), 0o644); err != nil {
+		t.Fatalf("write app.txt: %v", err)
+	}
+
+	cmd := NewRootCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"rollback", "--to", postCommit.String()[:12]})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("rollback command: %v\n%s", err, out.String())
+	}
+
+	content, err := os.ReadFile(filepath.Join(root.String(), "app.txt"))
+	if err != nil {
+		t.Fatalf("read app.txt: %v", err)
+	}
+	if string(content) != "after\n" {
+		t.Fatalf("app.txt = %q, want post-checkpoint content", content)
+	}
+	if !strings.Contains(out.String(), "rolled back to "+postCommit.String()) {
+		t.Fatalf("rollback output missing resolved commit:\n%s", out.String())
+	}
+
+	events, err := eventlog.Open(repo.MetadataDir).Read(sessionID)
+	if err != nil {
+		t.Fatalf("read events: %v", err)
+	}
+	rollbackEvent := lastCLIEvent(events, primitives.EventTypeRollback)
+	if rollbackEvent.RawRef != "demo:turn:1:post" {
+		t.Fatalf("rollback raw ref = %q, want demo:turn:1:post", rollbackEvent.RawRef)
+	}
+}
+
 func TestRollbackCommandWorkspaceGitFlagCanDisableConfigDefault(t *testing.T) {
 	writeGlobalAgentConfig(t, `
 version = 1

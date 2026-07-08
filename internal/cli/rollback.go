@@ -18,7 +18,7 @@ func rollbackCmd() *cobra.Command {
 	var workspaceGit bool
 
 	cmd := &cobra.Command{
-		Use:          "rollback --to <session:turn:<turn>:pre|post>",
+		Use:          "rollback --to <target|checkpoint-hash>",
 		Short:        "Restore the workspace to a checkpoint",
 		SilenceUsage: true,
 		Args:         cobra.MaximumNArgs(1),
@@ -32,15 +32,24 @@ func rollbackCmd() *cobra.Command {
 				}
 				targetText = args[0]
 			}
-			target, err := parseRollbackTarget(targetText)
+
+			target, parseErr := parseRollbackTarget(targetText)
+			var repo *checkpoint.Repo
+			var err error
+			if parseErr != nil && !looksLikeRollbackCheckpointCommit(targetText) {
+				return parseErr
+			}
+			repo, err = openCheckpointRepo()
 			if err != nil {
 				return err
+			}
+			if parseErr != nil {
+				target, err = parseRollbackCheckpointCommitTarget(repo, targetText)
+				if err != nil {
+					return err
+				}
 			}
 
-			repo, err := openCheckpointRepo()
-			if err != nil {
-				return err
-			}
 			overrides := agentconfig.Overrides{}
 			if cmd.Flags().Changed("workspace-git") {
 				mode := primitives.RollbackModeCheckpoint
@@ -66,7 +75,7 @@ func rollbackCmd() *cobra.Command {
 			return writeRollbackResult(cmd.OutOrStdout(), result)
 		},
 	}
-	cmd.Flags().StringVar(&targetText, "to", "", "Checkpoint target, for example demo:turn:1:pre")
+	cmd.Flags().StringVar(&targetText, "to", "", "Checkpoint target or checkpoint commit hash; targets without a phase default to post")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show changes without modifying the workspace")
 	cmd.Flags().BoolVar(&workspaceGit, "workspace-git", false, "Restore captured workspace Git HEAD, index, dirty tracked files, and untracked files")
 	return cmd
@@ -88,7 +97,7 @@ func parseRollbackTarget(value string) (primitives.TargetRef, error) {
 
 	parts := strings.Split(value, ":")
 	if len(parts) != 2 && len(parts) != 3 {
-		return primitives.TargetRef{}, fmt.Errorf("target must be <session>:<turn>[:pre|post] or <session>:turn:<turn>[:pre|post]")
+		return primitives.TargetRef{}, fmt.Errorf("target must be <session>:<turn>[:pre|post], <session>:turn:<turn>[:pre|post], or a checkpoint commit hash")
 	}
 	sessionID, err := primitives.ParseSessionID(parts[0])
 	if err != nil {
@@ -98,7 +107,7 @@ func parseRollbackTarget(value string) (primitives.TargetRef, error) {
 	if err != nil {
 		return primitives.TargetRef{}, err
 	}
-	phase := primitives.CheckpointPhasePre
+	phase := rollbackengine.DefaultTargetPhase
 	if len(parts) == 3 {
 		phase, err = primitives.ParseCheckpointPhase(parts[2])
 		if err != nil {
@@ -112,7 +121,80 @@ func targetWithDefaultPhase(target primitives.TargetRef) (primitives.TargetRef, 
 	if _, ok := target.Phase(); ok {
 		return target, nil
 	}
-	return primitives.NewTargetRef(target.SessionID(), target.TurnID(), primitives.CheckpointPhasePre)
+	return primitives.NewTargetRef(target.SessionID(), target.TurnID(), rollbackengine.DefaultTargetPhase)
+}
+
+const minRollbackCheckpointCommitPrefixLength = 7
+
+func looksLikeRollbackCheckpointCommit(value string) bool {
+	value = strings.TrimSpace(value)
+	return len(value) >= minRollbackCheckpointCommitPrefixLength && len(value) <= 64 && isHexText(value)
+}
+
+func parseRollbackCheckpointCommitTarget(repo *checkpoint.Repo, value string) (primitives.TargetRef, error) {
+	prefix := strings.ToLower(strings.TrimSpace(value))
+	if len(prefix) < minRollbackCheckpointCommitPrefixLength {
+		return primitives.TargetRef{}, fmt.Errorf("checkpoint commit hash prefix must be at least %d hex characters", minRollbackCheckpointCommitPrefixLength)
+	}
+	if len(prefix) > 64 || !isHexText(prefix) {
+		return primitives.TargetRef{}, fmt.Errorf("checkpoint commit hash must be a hex SHA prefix")
+	}
+
+	infos, err := repo.ListAllCheckpointRefInfos()
+	if err != nil {
+		return primitives.TargetRef{}, err
+	}
+
+	var matches []checkpoint.CheckpointRefInfo
+	for _, info := range infos {
+		if !info.HasPhase {
+			continue
+		}
+		if strings.HasPrefix(info.Commit.String(), prefix) {
+			matches = append(matches, info)
+		}
+	}
+
+	switch len(matches) {
+	case 0:
+		return primitives.TargetRef{}, fmt.Errorf("checkpoint commit %s not found", prefix)
+	case 1:
+		return primitives.NewTargetRef(matches[0].SessionID, matches[0].TurnID, matches[0].Phase)
+	default:
+		return primitives.TargetRef{}, fmt.Errorf("checkpoint commit %s is ambiguous; matches %s", prefix, formatRollbackCommitMatches(matches))
+	}
+}
+
+func formatRollbackCommitMatches(matches []checkpoint.CheckpointRefInfo) string {
+	const limit = 5
+	count := len(matches)
+	if count > limit {
+		count = limit
+	}
+	parts := make([]string, 0, count+1)
+	for _, match := range matches[:count] {
+		parts = append(parts, fmt.Sprintf("%s:turn:%s:%s (%s)", match.SessionID, match.TurnID, match.Phase, match.Commit))
+	}
+	if len(matches) > limit {
+		parts = append(parts, fmt.Sprintf("+%d more", len(matches)-limit))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func isHexText(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		switch {
+		case r >= '0' && r <= '9':
+		case r >= 'a' && r <= 'f':
+		case r >= 'A' && r <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func writeRollbackResult(w io.Writer, result rollbackengine.Result) error {

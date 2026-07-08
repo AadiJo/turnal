@@ -16,7 +16,13 @@ import (
 	"github.com/AadiJo/turnal/internal/workspacegit"
 )
 
-const journalFileName = "rollback-journal.json"
+const (
+	journalFileName = "rollback-journal.json"
+
+	// DefaultTargetPhase is used when rollback callers identify a turn without
+	// saying whether they want the pre or post checkpoint.
+	DefaultTargetPhase primitives.CheckpointPhase = primitives.CheckpointPhasePost
+)
 
 type Engine struct {
 	Repo *checkpoint.Repo
@@ -171,7 +177,7 @@ func InspectJournal(repo *checkpoint.Repo) []string {
 func ResolveTarget(repo *checkpoint.Repo, target primitives.TargetRef) (ResolvedTarget, error) {
 	phase, ok := target.Phase()
 	if !ok {
-		phase = primitives.CheckpointPhasePre
+		phase = DefaultTargetPhase
 		var err error
 		target, err = primitives.NewTargetRef(target.SessionID(), target.TurnID(), phase)
 		if err != nil {
@@ -595,7 +601,7 @@ func journalRollback(journal Journal) (ResolvedTarget, checkpoint.Snapshot, chec
 	}
 	phase, ok := targetRef.Phase()
 	if !ok {
-		phase = primitives.CheckpointPhasePre
+		phase = DefaultTargetPhase
 		targetRef, err = primitives.NewTargetRef(targetRef.SessionID(), targetRef.TurnID(), phase)
 		if err != nil {
 			return ResolvedTarget{}, checkpoint.Snapshot{}, checkpoint.RestorePlan{}, "", err
