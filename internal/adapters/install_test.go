@@ -74,7 +74,7 @@ func TestInstallCodexHookMergesConfigAndEnablesHooksFeature(t *testing.T) {
 	}
 	configPath := filepath.Join(codexDir, "config.toml")
 	existing := `
-model = "gpt-5"
+model = "gpt-5.5"
 
 [features]
 web_search = true
@@ -99,7 +99,7 @@ command = "echo keep"
 
 	var config map[string]any
 	readTOMLFile(t, configPath, &config)
-	if config["model"] != "gpt-5" {
+	if config["model"] != "gpt-5.5" {
 		t.Fatalf("model was not preserved: %#v", config["model"])
 	}
 	features := config["features"].(map[string]any)
@@ -159,7 +159,7 @@ func TestUninstallHooksRemovesTurnalCommandsAndPreservesOthers(t *testing.T) {
 	}
 	codexConfig := filepath.Join(codexDir, "config.toml")
 	if err := os.WriteFile(codexConfig, []byte(`
-model = "gpt-5"
+model = "gpt-5.5"
 
 [features]
 web_search = true
@@ -208,7 +208,7 @@ command = "turnal codex-hook"
 
 	var config map[string]any
 	readTOMLFile(t, codexConfig, &config)
-	if config["model"] != "gpt-5" {
+	if config["model"] != "gpt-5.5" {
 		t.Fatalf("Codex model was not preserved: %#v", config["model"])
 	}
 	features := config["features"].(map[string]any)

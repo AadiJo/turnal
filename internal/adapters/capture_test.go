@@ -278,7 +278,7 @@ func TestHandleCodexDocumentedHookPayloads(t *testing.T) {
 		"session_id":      "codex-session",
 		"hook_event_name": "SessionStart",
 		"transcript_path": nil,
-		"model":           "gpt-5",
+		"model":           "gpt-5.5",
 		"permission_mode": "default",
 		"source":          "startup",
 	})
