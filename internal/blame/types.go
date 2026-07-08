@@ -27,9 +27,16 @@ type Result struct {
 	LatestRef     primitives.CheckpointRef `json:"latest_ref"`
 	LatestCommit  primitives.CommitSHA     `json:"latest_commit"`
 	LatestTime    time.Time                `json:"latest_time"`
+	Sessions      []SessionSummary         `json:"sessions,omitempty"`
 	Entries       []Entry                  `json:"entries"`
 	Warnings      []string                 `json:"warnings,omitempty"`
 	CompleteTurns int                      `json:"complete_turns"`
+}
+
+type SessionSummary struct {
+	ID        primitives.SessionID `json:"id"`
+	Adapter   string               `json:"adapter,omitempty"`
+	StartedAt time.Time            `json:"started_at,omitempty"`
 }
 
 type Entry struct {

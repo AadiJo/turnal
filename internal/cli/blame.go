@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/AadiJo/turnal/internal/blame"
+	"github.com/AadiJo/turnal/internal/checkpoint"
 	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/spf13/cobra"
 )
@@ -83,17 +85,23 @@ func writeBlameText(w io.Writer, result blame.Result, verbose bool) error {
 		return err
 	}
 
+	sessionLabels := blameSessionLabels(result.Sessions)
 	labelWidth := 8
 	for _, entry := range result.Entries {
-		if width := len(originLabel(entry.Origin)); width > labelWidth {
+		if width := len(originLabel(entry.Origin, sessionLabels)); width > labelWidth {
 			labelWidth = width
 		}
 	}
 
 	for _, entry := range result.Entries {
-		label := originLabel(entry.Origin)
+		label := originLabel(entry.Origin, sessionLabels)
 		if _, err := fmt.Fprintf(w, "%-*s %6d | %s\n", labelWidth, label, entry.Line, entry.Text); err != nil {
 			return err
+		}
+		if prompt := truncateText(entry.Origin.Prompt, 140); prompt != "" {
+			if _, err := fmt.Fprintf(w, "  Prompt: %q\n", prompt); err != nil {
+				return err
+			}
 		}
 		if verbose {
 			if err := writeBlameOriginDetails(w, entry.Origin); err != nil {
@@ -111,17 +119,22 @@ func writeBlameText(w io.Writer, result blame.Result, verbose bool) error {
 
 func writeBlameOriginDetails(w io.Writer, origin blame.Origin) error {
 	if !origin.Time.IsZero() {
-		if _, err := fmt.Fprintf(w, "  time: %s\n", origin.Time.Format("2006-01-02 15:04:05 MST")); err != nil {
+		if _, err := fmt.Fprintf(w, "  time: %s\n", formatGraphTime(origin.Time)); err != nil {
+			return err
+		}
+	}
+	if origin.SessionID != "" {
+		if _, err := fmt.Fprintf(w, "  session: %s\n", origin.SessionID); err != nil {
+			return err
+		}
+	}
+	if origin.TurnID != 0 {
+		if _, err := fmt.Fprintf(w, "  turn: %s\n", origin.TurnID); err != nil {
 			return err
 		}
 	}
 	if origin.Adapter != "" {
 		if _, err := fmt.Fprintf(w, "  adapter: %s\n", origin.Adapter); err != nil {
-			return err
-		}
-	}
-	if origin.Prompt != "" {
-		if _, err := fmt.Fprintf(w, "  prompt: %s\n", origin.Prompt); err != nil {
 			return err
 		}
 	}
@@ -143,12 +156,54 @@ func writeBlameOriginDetails(w io.Writer, origin blame.Origin) error {
 	return nil
 }
 
-func originLabel(origin blame.Origin) string {
+func originLabel(origin blame.Origin, sessionLabels map[primitives.SessionID]string) string {
 	if origin.Kind == "turn" && origin.SessionID != "" && origin.TurnID != 0 {
-		return fmt.Sprintf("%s:turn:%s", origin.SessionID, origin.TurnID)
+		return fmt.Sprintf("%s %s turn %s", formatBlameDisplayTime(origin.Time), blameOriginSessionLabel(origin, sessionLabels), origin.TurnID)
 	}
 	if origin.Kind != "" {
 		return origin.Kind
 	}
 	return "unknown"
+}
+
+func blameSessionLabels(sessions []blame.SessionSummary) map[primitives.SessionID]string {
+	graphSessions := make([]graphSession, 0, len(sessions))
+	for _, session := range sessions {
+		graphSessions = append(graphSessions, graphSession{
+			ID:         session.ID,
+			TotalTurns: 1,
+			Turns: []graphTurn{
+				{
+					Post: &checkpoint.CheckpointRefInfo{Time: session.StartedAt},
+					Events: turnEventSummary{
+						Adapter: session.Adapter,
+					},
+				},
+			},
+		})
+	}
+
+	labels := buildGraphSessionLabels(graphSessions)
+	bySession := make(map[primitives.SessionID]string, len(labels))
+	for index, label := range labels {
+		bySession[graphSessions[index].ID] = "[" + label + "]"
+	}
+	return bySession
+}
+
+func blameOriginSessionLabel(origin blame.Origin, sessionLabels map[primitives.SessionID]string) string {
+	if label := sessionLabels[origin.SessionID]; label != "" {
+		return label
+	}
+	if origin.Adapter != "" && !origin.Time.IsZero() {
+		return "[" + normalizeSessionAgent(origin.Adapter) + " " + origin.Time.UTC().Format("15:04") + "]"
+	}
+	return "[" + origin.SessionID.String() + "]"
+}
+
+func formatBlameDisplayTime(value time.Time) string {
+	if value.IsZero() {
+		return "--:--"
+	}
+	return value.UTC().Format("15:04")
 }

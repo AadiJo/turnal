@@ -374,7 +374,7 @@ func renderCheckpointGraph(w io.Writer, sessions []graphSession, options graphRe
 		)
 
 		if prompt := truncateText(turn.Events.Prompt, 140); prompt != "" {
-			fmt.Fprintf(w, "%s%s %q\n", detailPrefix, styleDim("Human:", options), prompt)
+			fmt.Fprintf(w, "%s%s %q\n", detailPrefix, styleDim("Prompt:", options), prompt)
 		}
 		if options.Verbose {
 			renderVerboseTurnDetails(w, detailPrefix, row.SessionID, turn, options)

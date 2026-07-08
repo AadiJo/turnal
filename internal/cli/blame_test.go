@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	blameengine "github.com/AadiJo/turnal/internal/blame"
 	eventlog "github.com/AadiJo/turnal/internal/events"
@@ -57,14 +59,61 @@ func TestBlameCommandShowsLineAttribution(t *testing.T) {
 
 	textOutput := runRootStdout(t, "blame", "app.txt:1", "--verbose")
 	for _, want := range []string{
-		"demo:turn:1",
+		"[codex ",
+		"] turn 1",
 		"1 | after",
 		"adapter: codex",
-		"prompt: change app.txt",
+		"Prompt: \"change app.txt\"",
 		"tools: apply_patch",
 	} {
 		if !strings.Contains(textOutput, want) {
 			t.Fatalf("text output missing %q:\n%s", want, textOutput)
+		}
+	}
+}
+
+func TestBlameTextUsesLogStyleTurnLabelAndPrompt(t *testing.T) {
+	sessionID := sessionID(t, "codex-sess_7f3a9c2d")
+	turnID, _ := primitives.NewTurnID(2)
+	sessionStartedAt := time.Date(2026, 7, 6, 3, 12, 0, 0, time.UTC)
+	turnAt := time.Date(2026, 7, 6, 3, 15, 0, 0, time.UTC)
+
+	var out bytes.Buffer
+	err := writeBlameText(&out, blameengine.Result{
+		Path: "hello_world.py",
+		Sessions: []blameengine.SessionSummary{
+			{
+				ID:        sessionID,
+				Adapter:   "codex",
+				StartedAt: sessionStartedAt,
+			},
+		},
+		Entries: []blameengine.Entry{
+			{
+				Line: 2,
+				Text: "    for _ in range(5):",
+				Origin: blameengine.Origin{
+					Kind:      "turn",
+					SessionID: sessionID,
+					TurnID:    turnID,
+					Time:      turnAt,
+					Adapter:   "codex",
+					Prompt:    "make a python script to say hello world",
+				},
+			},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("writeBlameText: %v", err)
+	}
+
+	output := out.String()
+	for _, want := range []string{
+		"03:15 [codex 03:12] turn 2      2 |     for _ in range(5):",
+		"Prompt: \"make a python script to say hello world\"",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("blame text missing %q:\n%s", want, output)
 		}
 	}
 }

@@ -67,7 +67,7 @@ func TestGraphCommandShowsCheckpointGraph(t *testing.T) {
 		"1 file +1 -1",
 		"| session: demo",
 		"events: 1 event; codex",
-		"Human: \"change app.txt\"",
+		"Prompt: \"change app.txt\"",
 		"| pre:",
 		"| post:",
 		"| file: app.txt +1 -1",

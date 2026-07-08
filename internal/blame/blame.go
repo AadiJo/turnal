@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -99,6 +100,7 @@ func (engine Engine) Compute(query Query) (Result, error) {
 		LatestRef:     latest.Ref,
 		LatestCommit:  latest.Commit,
 		LatestTime:    latest.Time,
+		Sessions:      sessionSummariesForTurns(turns),
 		Entries:       filterEntries(allEntries, query.Line),
 		Warnings:      warnings,
 		CompleteTurns: len(turns),
@@ -141,10 +143,67 @@ func (engine Engine) resultFromCache(query Query, cached queryindex.BlameCacheSn
 		LatestRef:     cached.LatestRef,
 		LatestCommit:  cached.LatestCommit,
 		LatestTime:    cached.LatestTime,
+		Sessions:      sessionSummariesForTurns(turns),
 		Entries:       entries,
 		Warnings:      cached.Warnings,
 		CompleteTurns: cached.CompleteTurns,
 	}, nil
+}
+
+func sessionSummariesForTurns(turns []completeTurn) []SessionSummary {
+	type builder struct {
+		id          primitives.SessionID
+		adapter     string
+		adapterTurn uint64
+		startedAt   time.Time
+	}
+
+	builders := make(map[string]*builder)
+	for _, turn := range turns {
+		key := turn.SessionID.String()
+		current := builders[key]
+		if current == nil {
+			current = &builder{id: turn.SessionID}
+			builders[key] = current
+		}
+
+		at := completeTurnDisplayTime(turn)
+		if !at.IsZero() && (current.startedAt.IsZero() || at.Before(current.startedAt)) {
+			current.startedAt = at
+		}
+		if turn.Events.Adapter != "" && turn.TurnID.Uint64() >= current.adapterTurn {
+			current.adapter = turn.Events.Adapter
+			current.adapterTurn = turn.TurnID.Uint64()
+		}
+	}
+
+	summaries := make([]SessionSummary, 0, len(builders))
+	for _, current := range builders {
+		summaries = append(summaries, SessionSummary{
+			ID:        current.id,
+			Adapter:   current.adapter,
+			StartedAt: current.startedAt,
+		})
+	}
+	sort.Slice(summaries, func(i, j int) bool {
+		return summaries[i].ID.String() < summaries[j].ID.String()
+	})
+	return summaries
+}
+
+func completeTurnDisplayTime(turn completeTurn) time.Time {
+	switch {
+	case !turn.Post.Time.IsZero():
+		return turn.Post.Time
+	case !turn.Pre.Time.IsZero():
+		return turn.Pre.Time
+	case !turn.Events.Last.IsZero():
+		return turn.Events.Last
+	case !turn.Events.First.IsZero():
+		return turn.Events.First
+	default:
+		return time.Time{}
+	}
 }
 
 func (engine Engine) hydrateCachedOrigin(origin Origin, turns []completeTurn) Origin {
