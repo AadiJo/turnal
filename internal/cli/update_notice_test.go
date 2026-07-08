@@ -8,6 +8,7 @@ import (
 )
 
 func TestShouldShowUpdateNoticeAllowsInteractiveNPMReleaseCommand(t *testing.T) {
+	withoutUpdateNoticeEnv(t)
 	withUpdateNoticeDisplay(t, true)
 	root := &cobra.Command{Use: "turnal"}
 	status := &cobra.Command{Use: "status"}
@@ -19,6 +20,7 @@ func TestShouldShowUpdateNoticeAllowsInteractiveNPMReleaseCommand(t *testing.T) 
 }
 
 func TestShouldShowUpdateNoticeSkipsJSONCommand(t *testing.T) {
+	withoutUpdateNoticeEnv(t)
 	withUpdateNoticeDisplay(t, true)
 	root := &cobra.Command{Use: "turnal"}
 	show := &cobra.Command{Use: "show"}
@@ -34,6 +36,7 @@ func TestShouldShowUpdateNoticeSkipsJSONCommand(t *testing.T) {
 }
 
 func TestShouldShowUpdateNoticeSkipsUpgradeVersionAndHiddenCommands(t *testing.T) {
+	withoutUpdateNoticeEnv(t)
 	withUpdateNoticeDisplay(t, true)
 	root := &cobra.Command{Use: "turnal"}
 	upgradeCmd := &cobra.Command{Use: "upgrade"}
@@ -68,6 +71,7 @@ func TestShouldShowUpdateNoticeSkipsCIAndOptOut(t *testing.T) {
 }
 
 func TestShouldShowUpdateNoticeSkipsNonNPMOrDevBuilds(t *testing.T) {
+	withoutUpdateNoticeEnv(t)
 	withUpdateNoticeDisplay(t, true)
 	root := &cobra.Command{Use: "turnal"}
 	status := &cobra.Command{Use: "status"}
@@ -87,6 +91,7 @@ func TestShouldShowUpdateNoticeSkipsNonNPMOrDevBuilds(t *testing.T) {
 }
 
 func TestShouldShowUpdateNoticeSkipsNonInteractiveTerminal(t *testing.T) {
+	withoutUpdateNoticeEnv(t)
 	withUpdateNoticeDisplay(t, false)
 	root := &cobra.Command{Use: "turnal"}
 	status := &cobra.Command{Use: "status"}
@@ -114,4 +119,10 @@ func withUpdateNoticeDisplay(t *testing.T, enabled bool) {
 	t.Cleanup(func() {
 		updateNoticeCanDisplay = old
 	})
+}
+
+func withoutUpdateNoticeEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("CI", "")
+	t.Setenv("TURNAL_NO_UPDATE_CHECK", "")
 }
