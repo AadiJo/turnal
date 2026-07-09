@@ -181,10 +181,15 @@ func (phase CheckpointPhase) String() string {
 type CheckpointRef string
 
 type CheckpointRefParts struct {
-	SessionID SessionID
-	TurnID    TurnID
-	Phase     CheckpointPhase
-	HasPhase  bool
+	SessionID    SessionID
+	TurnID       TurnID
+	Phase        CheckpointPhase
+	HasPhase     bool
+	WorktreeID   WorktreeID
+	StreamID     EventStreamID
+	CheckpointID CheckpointID
+	Scoped       bool
+	Canonical    bool
 }
 
 const checkpointRefPrefix = "refs/agent-vcs/checkpoints"
@@ -229,6 +234,49 @@ func NewCheckpointRef(sessionID SessionID, turnID TurnID, phase CheckpointPhase)
 	return CheckpointRef(ref), nil
 }
 
+func NewScopedCheckpointRef(worktreeID WorktreeID, streamID EventStreamID, sessionID SessionID, turnID TurnID, phase CheckpointPhase) (CheckpointRef, error) {
+	parsedWorktreeID, err := ParseWorktreeID(worktreeID.String())
+	if err != nil {
+		return "", err
+	}
+	parsedStreamID, err := ParseEventStreamID(streamID.String())
+	if err != nil {
+		return "", err
+	}
+	parsedSessionID, err := ParseSessionID(sessionID.String())
+	if err != nil {
+		return "", err
+	}
+	parsedTurnID, err := NewTurnID(turnID.Uint64())
+	if err != nil {
+		return "", err
+	}
+	parsedPhase := phase
+	if phase != "" {
+		parsedPhase, err = ParseCheckpointPhase(phase.String())
+		if err != nil {
+			return "", err
+		}
+	}
+	ref := buildScopedCheckpointRef(parsedWorktreeID, parsedStreamID, parsedSessionID, parsedTurnID, parsedPhase, parsedPhase != "")
+	if err := validateGitRefName(ref); err != nil {
+		return "", err
+	}
+	return CheckpointRef(ref), nil
+}
+
+func NewCheckpointIDRef(checkpointID CheckpointID) (CheckpointRef, error) {
+	parsed, err := ParseCheckpointID(checkpointID.String())
+	if err != nil {
+		return "", err
+	}
+	ref := checkpointRefPrefix + "/by-id/" + parsed.String()
+	if err := validateGitRefName(ref); err != nil {
+		return "", err
+	}
+	return CheckpointRef(ref), nil
+}
+
 func ParseCheckpointRef(value string) (CheckpointRef, error) {
 	parts, err := parseCheckpointRefParts(value)
 	if err != nil {
@@ -236,6 +284,12 @@ func ParseCheckpointRef(value string) (CheckpointRef, error) {
 	}
 
 	expected := buildCheckpointRef(parts.SessionID, parts.TurnID, parts.Phase, parts.HasPhase)
+	if parts.Scoped {
+		expected = buildScopedCheckpointRef(parts.WorktreeID, parts.StreamID, parts.SessionID, parts.TurnID, parts.Phase, parts.HasPhase)
+	}
+	if parts.Canonical {
+		expected = checkpointRefPrefix + "/by-id/" + parts.CheckpointID.String()
+	}
 	if value = strings.TrimSpace(value); value != expected {
 		return "", invalid("checkpoint ref", value, fmt.Sprintf("must be canonical %q", expected))
 	}
@@ -278,8 +332,46 @@ func parseCheckpointRefParts(value string) (CheckpointRefParts, error) {
 	}
 
 	segments := strings.Split(value, "/")
+	if len(segments) == 5 && strings.Join(segments[:4], "/") == checkpointRefPrefix+"/by-id" {
+		checkpointID, err := ParseCheckpointID(segments[4])
+		if err != nil {
+			return CheckpointRefParts{}, err
+		}
+		return CheckpointRefParts{CheckpointID: checkpointID, Canonical: true}, nil
+	}
+	if (len(segments) == 9 || len(segments) == 10) && strings.Join(segments[:4], "/") == checkpointRefPrefix+"/by-worktree" {
+		worktreeID, err := ParseWorktreeID(segments[4])
+		if err != nil {
+			return CheckpointRefParts{}, err
+		}
+		streamID, err := ParseEventStreamID(segments[5])
+		if err != nil {
+			return CheckpointRefParts{}, err
+		}
+		sessionID, err := ParseSessionID(segments[6])
+		if err != nil {
+			return CheckpointRefParts{}, err
+		}
+		if segments[7] != "turn" {
+			return CheckpointRefParts{}, invalid("checkpoint ref", value, "scoped checkpoint ref must contain /turn/")
+		}
+		turnID, err := parseCheckpointTurnSegment(value, segments[8])
+		if err != nil {
+			return CheckpointRefParts{}, err
+		}
+		parts := CheckpointRefParts{SessionID: sessionID, TurnID: turnID, WorktreeID: worktreeID, StreamID: streamID, Scoped: true}
+		if len(segments) == 10 {
+			phase, err := ParseCheckpointPhase(segments[9])
+			if err != nil {
+				return CheckpointRefParts{}, err
+			}
+			parts.Phase = phase
+			parts.HasPhase = true
+		}
+		return parts, nil
+	}
 	if len(segments) != 6 && len(segments) != 7 {
-		return CheckpointRefParts{}, invalid("checkpoint ref", value, "must be refs/agent-vcs/checkpoints/<session>/turn/<turn>[/<phase>]")
+		return CheckpointRefParts{}, invalid("checkpoint ref", value, "must be a legacy, scoped, or by-id checkpoint ref")
 	}
 	if strings.Join(segments[:3], "/") != checkpointRefPrefix {
 		return CheckpointRefParts{}, invalid("checkpoint ref", value, "must be under refs/agent-vcs/checkpoints")
@@ -293,15 +385,7 @@ func parseCheckpointRefParts(value string) (CheckpointRefParts, error) {
 		return CheckpointRefParts{}, err
 	}
 
-	turnSegment := segments[5]
-	if len(turnSegment) < 6 || !isAllDigits(turnSegment) {
-		return CheckpointRefParts{}, invalid("checkpoint ref", value, "turn ref segment must be at least six digits")
-	}
-	turnNumber, err := strconv.ParseUint(turnSegment, 10, 64)
-	if err != nil {
-		return CheckpointRefParts{}, invalid("checkpoint ref", value, "turn ref segment overflows uint64")
-	}
-	turnID, err := NewTurnID(turnNumber)
+	turnID, err := parseCheckpointTurnSegment(value, segments[5])
 	if err != nil {
 		return CheckpointRefParts{}, err
 	}
@@ -322,8 +406,31 @@ func parseCheckpointRefParts(value string) (CheckpointRefParts, error) {
 	return refParts, nil
 }
 
+func parseCheckpointTurnSegment(value string, turnSegment string) (TurnID, error) {
+	if len(turnSegment) < 6 || !isAllDigits(turnSegment) {
+		return 0, invalid("checkpoint ref", value, "turn ref segment must be at least six digits")
+	}
+	turnNumber, err := strconv.ParseUint(turnSegment, 10, 64)
+	if err != nil {
+		return 0, invalid("checkpoint ref", value, "turn ref segment overflows uint64")
+	}
+	turnID, err := NewTurnID(turnNumber)
+	if err != nil {
+		return 0, err
+	}
+	return turnID, nil
+}
+
 func buildCheckpointRef(sessionID SessionID, turnID TurnID, phase CheckpointPhase, hasPhase bool) string {
 	ref := fmt.Sprintf("%s/%s/turn/%s", checkpointRefPrefix, sessionID, turnID.RefSegment())
+	if hasPhase {
+		ref += "/" + phase.String()
+	}
+	return ref
+}
+
+func buildScopedCheckpointRef(worktreeID WorktreeID, streamID EventStreamID, sessionID SessionID, turnID TurnID, phase CheckpointPhase, hasPhase bool) string {
+	ref := fmt.Sprintf("%s/by-worktree/%s/%s/%s/turn/%s", checkpointRefPrefix, worktreeID, streamID, sessionID, turnID.RefSegment())
 	if hasPhase {
 		ref += "/" + phase.String()
 	}

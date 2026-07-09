@@ -121,8 +121,8 @@ func TestManualTurnCommandsAppendEventLog(t *testing.T) {
 		if event.Adapter != primitives.AdapterManual {
 			t.Fatalf("event %d adapter = %s, want manual", i, event.Adapter)
 		}
-		if event.SourceID != wantSources[i] {
-			t.Fatalf("event %d source = %q, want %q", i, event.SourceID, wantSources[i])
+		if !strings.HasSuffix(event.SourceID, ":"+wantSources[i]) {
+			t.Fatalf("event %d source = %q, want stream-scoped suffix %q", i, event.SourceID, wantSources[i])
 		}
 		if event.RawRef != "" {
 			t.Fatalf("event %d raw ref = %q, want empty", i, event.RawRef)

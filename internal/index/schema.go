@@ -18,6 +18,9 @@ CREATE TABLE sessions (
 );
 
 CREATE TABLE events (
+	repo_id      TEXT,
+	worktree_id  TEXT,
+	stream_id    TEXT    NOT NULL,
 	session_id   TEXT    NOT NULL,
 	seq          INTEGER NOT NULL,
 	turn_id      INTEGER,
@@ -29,11 +32,13 @@ CREATE TABLE events (
 	prev_hash    TEXT    NOT NULL,
 	event_hash   TEXT    NOT NULL,
 	payload_json TEXT    NOT NULL,
-	PRIMARY KEY (session_id, seq),
+	PRIMARY KEY (stream_id, seq),
 	FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
 );
 
 CREATE TABLE turns (
+	stream_id               TEXT    NOT NULL,
+	worktree_id             TEXT,
 	session_id              TEXT    NOT NULL,
 	turn_id                 INTEGER NOT NULL,
 	status                  TEXT    NOT NULL,
@@ -51,33 +56,41 @@ CREATE TABLE turns (
 	diff_deletions          INTEGER NOT NULL DEFAULT 0,
 	diff_binary_files       INTEGER NOT NULL DEFAULT 0,
 	warnings_json           TEXT    NOT NULL DEFAULT '[]',
-	PRIMARY KEY (session_id, turn_id),
+	PRIMARY KEY (stream_id, turn_id),
 	FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
 );
 
 CREATE TABLE checkpoints (
 	ref          TEXT PRIMARY KEY,
+	checkpoint_id TEXT,
+	canonical_ref TEXT,
+	stream_id    TEXT    NOT NULL,
+	worktree_id  TEXT,
 	session_id   TEXT    NOT NULL,
 	turn_id      INTEGER NOT NULL,
 	phase        TEXT    NOT NULL,
 	commit_sha   TEXT    NOT NULL,
 	committed_at TEXT    NOT NULL,
-	UNIQUE (session_id, turn_id, phase),
-	FOREIGN KEY (session_id, turn_id) REFERENCES turns(session_id, turn_id) ON DELETE CASCADE
+	UNIQUE (stream_id, turn_id, phase),
+	FOREIGN KEY (stream_id, turn_id) REFERENCES turns(stream_id, turn_id) ON DELETE CASCADE
 );
 
 CREATE TABLE file_touches (
+	stream_id TEXT    NOT NULL,
+	worktree_id TEXT,
 	session_id TEXT    NOT NULL,
 	turn_id    INTEGER NOT NULL,
 	path       TEXT    NOT NULL,
 	additions  INTEGER NOT NULL,
 	deletions  INTEGER NOT NULL,
 	binary     INTEGER NOT NULL,
-	PRIMARY KEY (session_id, turn_id, path),
-	FOREIGN KEY (session_id, turn_id) REFERENCES turns(session_id, turn_id) ON DELETE CASCADE
+	PRIMARY KEY (stream_id, turn_id, path),
+	FOREIGN KEY (stream_id, turn_id) REFERENCES turns(stream_id, turn_id) ON DELETE CASCADE
 );
 
 CREATE VIRTUAL TABLE turn_search USING fts5(
+	stream_id UNINDEXED,
+	worktree_id UNINDEXED,
 	session_id UNINDEXED,
 	turn_id UNINDEXED,
 	first_at UNINDEXED,
@@ -116,8 +129,8 @@ CREATE TABLE blame_cache (
 	PRIMARY KEY (scope_session_id, path, history_key, line_no)
 );
 
-CREATE INDEX idx_turns_session ON turns(session_id, turn_id DESC);
-CREATE INDEX idx_events_turn ON events(session_id, turn_id, seq);
-CREATE INDEX idx_checkpoints_session ON checkpoints(session_id, turn_id, phase);
+CREATE INDEX idx_turns_session ON turns(session_id, worktree_id, turn_id DESC);
+CREATE INDEX idx_events_turn ON events(session_id, stream_id, turn_id, seq);
+CREATE INDEX idx_checkpoints_session ON checkpoints(session_id, worktree_id, turn_id, phase);
 CREATE INDEX idx_blame_cache_lookup ON blame_cache(scope_session_id, path, history_key, line_no);
 `

@@ -2,9 +2,6 @@ package recall
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
-	"sort"
 	"strings"
 
 	eventlog "github.com/AadiJo/turnal/internal/events"
@@ -64,7 +61,7 @@ func (reader Reader) resolveBareTurn(turnID primitives.TurnID) (TurnTarget, erro
 		if err != nil {
 			return TurnTarget{}, err
 		}
-		if turnExists(events, turnID) {
+		if turnExists(events, turnID, reader.WorktreeID) {
 			matches = append(matches, sessionID)
 		}
 	}
@@ -101,6 +98,9 @@ func (reader Reader) latestTurn(sessionFilter primitives.SessionID) (TurnTarget,
 			if event.TurnID == nil {
 				continue
 			}
+			if reader.WorktreeID != "" && event.WorktreeID != "" && event.WorktreeID != reader.WorktreeID {
+				continue
+			}
 			if latest.TurnID == 0 || event.Time.Time.After(latestTime.Time) || (event.Time.Time.Equal(latestTime.Time) && tieBreakTurn(sessionID, *event.TurnID, latest)) {
 				latest = TurnTarget{SessionID: sessionID, TurnID: *event.TurnID}
 				latestTime = event.Time
@@ -117,39 +117,19 @@ func (reader Reader) latestTurn(sessionFilter primitives.SessionID) (TurnTarget,
 }
 
 func (reader Reader) sessions() ([]primitives.SessionID, error) {
-	dir := eventlog.Open(reader.MetadataDir).Dir
-	entries, err := os.ReadDir(dir)
+	sessions, err := eventlog.Open(reader.MetadataDir).ListSessions()
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("no event logs found")
-		}
-		return nil, fmt.Errorf("read event log dir: %w", err)
+		return nil, err
 	}
-
-	var sessions []primitives.SessionID
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		if filepath.Ext(name) != ".jsonl" {
-			continue
-		}
-		sessionID, err := primitives.ParseSessionID(strings.TrimSuffix(name, ".jsonl"))
-		if err != nil {
-			return nil, fmt.Errorf("event log filename invariant failed for %s: %w", name, err)
-		}
-		sessions = append(sessions, sessionID)
+	if len(sessions) == 0 {
+		return nil, fmt.Errorf("no event logs found")
 	}
-	sort.Slice(sessions, func(i, j int) bool {
-		return sessions[i].String() < sessions[j].String()
-	})
 	return sessions, nil
 }
 
-func turnExists(events []eventlog.Event, turnID primitives.TurnID) bool {
+func turnExists(events []eventlog.Event, turnID primitives.TurnID, worktreeID primitives.WorktreeID) bool {
 	for _, event := range events {
-		if event.TurnID != nil && *event.TurnID == turnID {
+		if event.TurnID != nil && *event.TurnID == turnID && (worktreeID == "" || event.WorktreeID == "" || event.WorktreeID == worktreeID) {
 			return true
 		}
 	}

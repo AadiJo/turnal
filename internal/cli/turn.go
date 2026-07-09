@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 
-	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/AadiJo/turnal/internal/recall"
 	"github.com/AadiJo/turnal/internal/turnevents"
@@ -51,7 +50,7 @@ func turnStartCmd() *cobra.Command {
 				return err
 			}
 			result, err := turnevents.Recorder{
-				Log:     eventlog.Open(repo.MetadataDir),
+				Log:     repo.EventLog(),
 				Manager: turns.NewManager(repo),
 				Adapter: primitives.AdapterManual,
 			}.Start(sessionID, turnID)
@@ -97,7 +96,7 @@ func turnFinishCmd() *cobra.Command {
 				return err
 			}
 			result, err := turnevents.Recorder{
-				Log:     eventlog.Open(repo.MetadataDir),
+				Log:     repo.EventLog(),
 				Manager: turns.NewManager(repo),
 				Adapter: primitives.AdapterManual,
 			}.Finish(sessionID, turnID)
@@ -158,6 +157,7 @@ func turnRecallCmd() *cobra.Command {
 			recalled, err := recall.NewReader(repo.MetadataDir).RecallTurn(sessionID, turnID, recall.Options{
 				IncludeRaw:        includeRaw,
 				IncludeTranscript: includeTranscript,
+				WorktreeID:        repo.WorktreeID,
 			})
 			if err != nil {
 				return err

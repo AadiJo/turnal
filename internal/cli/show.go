@@ -29,7 +29,7 @@ func showCmd() *cobra.Command {
 				ref = args[0]
 			}
 
-			reader := recall.NewReader(repo.MetadataDir)
+			reader := recall.NewScopedReader(repo.MetadataDir, repo.WorktreeID)
 			target, err := reader.ResolveTurnRef(ref)
 			if err != nil {
 				return err
@@ -38,6 +38,7 @@ func showCmd() *cobra.Command {
 			options := recall.Options{
 				IncludeRaw:        includeRaw || full,
 				IncludeTranscript: includeTranscript || full,
+				WorktreeID:        repo.WorktreeID,
 			}
 			recalled, err := reader.RecallTurn(target.SessionID, target.TurnID, options)
 			if err != nil {

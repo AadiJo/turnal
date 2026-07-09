@@ -208,7 +208,7 @@ func TestRunCodexLiveEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	codexHome := liveCodexHome(t, root.String())
-	live := exec.CommandContext(ctx, bin, "run", "--quiet", "--bypass-hook-trust", "--", "codex", "--ask-for-approval", "never", "exec", "--sandbox", "read-only", "Reply with exactly: turnal-live")
+	live := exec.CommandContext(ctx, bin, "run", "--quiet", "--bypass-hook-trust", "--", "codex", "--ask-for-approval", "never", "exec", "--skip-git-repo-check", "--sandbox", "read-only", "Reply with exactly: turnal-live")
 	live.Dir = root.String()
 	live.Env = append(os.Environ(), "TURNAL_HOOK_COMMAND="+bin, "CODEX_HOME="+codexHome)
 	output, err := live.CombinedOutput()

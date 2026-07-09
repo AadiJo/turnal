@@ -27,6 +27,9 @@ func logCmd() *cobra.Command {
 	var useIndex bool
 	var durable bool
 	var transcript bool
+	var worktree string
+	var allWorktrees bool
+	var stream string
 
 	cmd := &cobra.Command{
 		Use:          "log",
@@ -45,10 +48,29 @@ func logCmd() *cobra.Command {
 					return err
 				}
 			}
+			if allWorktrees && worktree != "" {
+				return fmt.Errorf("--all-worktrees and --worktree cannot be combined")
+			}
 
 			repo, err := openCheckpointRepo()
 			if err != nil {
 				return err
+			}
+			scope := graphScope{AllWorktrees: allWorktrees}
+			if !allWorktrees {
+				scope.WorktreeID = repo.WorktreeID
+			}
+			if worktree != "" && worktree != "current" {
+				scope.WorktreeID, err = primitives.ParseWorktreeID(worktree)
+				if err != nil {
+					return err
+				}
+			}
+			if stream != "" {
+				scope.StreamID, err = primitives.ParseEventStreamID(stream)
+				if err != nil {
+					return err
+				}
 			}
 
 			graphLimit := limit
@@ -59,18 +81,18 @@ func logCmd() *cobra.Command {
 			var sessions []graphSession
 			if useIndex {
 				var loaded bool
-				sessions, loaded, err = tryLoadIndexedGraph(repo, session, graphLimit)
+				sessions, loaded, err = tryLoadIndexedGraph(repo, session, graphLimit, scope)
 				if err != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "warning: index unavailable: %v\n", err)
 				}
 				if !loaded {
-					sessions, err = loadDurableGraph(repo, session, graphLimit)
+					sessions, err = loadDurableGraph(repo, session, graphLimit, scope)
 					if err != nil {
 						return err
 					}
 				}
 			} else {
-				sessions, err = loadDurableGraph(repo, session, graphLimit)
+				sessions, err = loadDurableGraph(repo, session, graphLimit, scope)
 				if err != nil {
 					return err
 				}
@@ -81,7 +103,7 @@ func logCmd() *cobra.Command {
 			}
 			var buf bytes.Buffer
 			if transcript {
-				sessions, err = attachTranscriptEvents(repo, sessions, session, limit)
+				sessions, err = attachTranscriptEvents(repo, sessions, session, limit, scope)
 				if err != nil {
 					return err
 				}
@@ -89,7 +111,7 @@ func logCmd() *cobra.Command {
 					return err
 				}
 			} else {
-				attachGraphRollbackEvents(repo, sessions)
+				attachGraphRollbackEvents(repo, sessions, scope)
 				if err := renderCheckpointGraph(&buf, sessions, options); err != nil {
 					return err
 				}
@@ -109,7 +131,26 @@ func logCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&useIndex, "index", false, "Read from the disposable SQLite index when available")
 	cmd.Flags().BoolVar(&durable, "durable", false, "Read directly from durable logs and checkpoints")
 	cmd.Flags().BoolVar(&transcript, "transcript", false, "Show a readable prompt, assistant, and tool-call transcript")
+	cmd.Flags().StringVar(&worktree, "worktree", "", "Worktree id to show; defaults to current")
+	cmd.Flags().BoolVar(&allWorktrees, "all-worktrees", false, "Show history from every attached worktree")
+	cmd.Flags().StringVar(&stream, "stream", "", "Event stream id to show")
 	return cmd
+}
+
+type graphScope struct {
+	WorktreeID   primitives.WorktreeID
+	StreamID     primitives.EventStreamID
+	AllWorktrees bool
+}
+
+func (scope graphScope) matches(worktreeID primitives.WorktreeID, streamID primitives.EventStreamID) bool {
+	if scope.StreamID != "" && streamID != scope.StreamID {
+		return false
+	}
+	if !scope.AllWorktrees && scope.WorktreeID != "" && worktreeID != "" && worktreeID != scope.WorktreeID {
+		return false
+	}
+	return true
 }
 
 type graphRenderOptions struct {
@@ -125,6 +166,8 @@ type graphSession struct {
 }
 
 type graphTurn struct {
+	WorktreeID primitives.WorktreeID
+	StreamID   primitives.EventStreamID
 	TurnID     primitives.TurnID
 	Pre        *checkpoint.CheckpointRefInfo
 	Post       *checkpoint.CheckpointRefInfo
@@ -162,32 +205,39 @@ type laneSpan struct {
 	Last  int
 }
 
-func loadDurableGraph(repo *checkpoint.Repo, session string, limit int) ([]graphSession, error) {
-	var infos []checkpoint.CheckpointRefInfo
-	var err error
+func loadDurableGraph(repo *checkpoint.Repo, session string, limit int, scope graphScope) ([]graphSession, error) {
+	infos, err := repo.ListAllCheckpointRefInfos()
+	if err != nil {
+		return nil, err
+	}
+	var sessionID primitives.SessionID
 	if session != "" {
-		sessionID, err := primitives.ParseSessionID(session)
-		if err != nil {
-			return nil, err
-		}
-		infos, err = repo.ListCheckpointRefInfos(sessionID)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		infos, err = repo.ListAllCheckpointRefInfos()
+		sessionID, err = primitives.ParseSessionID(session)
 		if err != nil {
 			return nil, err
 		}
 	}
+	filtered := infos[:0]
+	for _, info := range infos {
+		if sessionID != "" && info.SessionID != sessionID {
+			continue
+		}
+		if !scope.matches(info.WorktreeID, info.StreamID) {
+			continue
+		}
+		filtered = append(filtered, info)
+	}
 
-	sessions := buildGraphSessions(infos, limit)
+	sessions := buildGraphSessions(filtered, limit)
 	attachGraphDiffs(repo, sessions)
 	attachGraphEventSummaries(repo, sessions)
 	return sessions, nil
 }
 
-func tryLoadIndexedGraph(repo *checkpoint.Repo, session string, limit int) ([]graphSession, bool, error) {
+func tryLoadIndexedGraph(repo *checkpoint.Repo, session string, limit int, scope graphScope) ([]graphSession, bool, error) {
+	if scope.StreamID != "" {
+		return nil, false, nil
+	}
 	var sessionID primitives.SessionID
 	var err error
 	if session != "" {
@@ -220,8 +270,9 @@ func tryLoadIndexedGraph(repo *checkpoint.Repo, session string, limit int) ([]gr
 	}
 
 	indexSessions, err := store.LoadGraph(queryindex.GraphQuery{
-		Session: sessionID,
-		Limit:   limit,
+		Session:    sessionID,
+		WorktreeID: scope.WorktreeID,
+		Limit:      limit,
 	})
 	if err != nil {
 		return nil, false, err
@@ -239,6 +290,8 @@ func graphSessionsFromIndex(indexSessions []queryindex.GraphSession) []graphSess
 		}
 		for _, indexTurn := range indexSession.Turns {
 			session.Turns = append(session.Turns, graphTurn{
+				WorktreeID: indexTurn.WorktreeID,
+				StreamID:   indexTurn.StreamID,
 				TurnID:     indexTurn.TurnID,
 				Pre:        indexTurn.Pre,
 				Post:       indexTurn.Post,
@@ -256,7 +309,7 @@ func graphSessionsFromIndex(indexSessions []queryindex.GraphSession) []graphSess
 func buildGraphSessions(infos []checkpoint.CheckpointRefInfo, limit int) []graphSession {
 	type sessionBuilder struct {
 		id    primitives.SessionID
-		turns map[uint64]*graphTurn
+		turns map[string]*graphTurn
 	}
 
 	builders := make(map[string]*sessionBuilder)
@@ -266,16 +319,18 @@ func buildGraphSessions(infos []checkpoint.CheckpointRefInfo, limit int) []graph
 		if builder == nil {
 			builder = &sessionBuilder{
 				id:    info.SessionID,
-				turns: make(map[uint64]*graphTurn),
+				turns: make(map[string]*graphTurn),
 			}
 			builders[sessionKey] = builder
 		}
 
-		turnKey := info.TurnID.Uint64()
+		turnKey := graphTurnKey(info.StreamID, info.TurnID)
 		turn := builder.turns[turnKey]
 		if turn == nil {
 			turn = &graphTurn{
-				TurnID: info.TurnID,
+				WorktreeID: info.WorktreeID,
+				StreamID:   info.StreamID,
+				TurnID:     info.TurnID,
 			}
 			builder.turns[turnKey] = turn
 		}
@@ -298,7 +353,10 @@ func buildGraphSessions(infos []checkpoint.CheckpointRefInfo, limit int) []graph
 			session.Turns = append(session.Turns, *turn)
 		}
 		sort.Slice(session.Turns, func(i, j int) bool {
-			return session.Turns[i].TurnID.Uint64() > session.Turns[j].TurnID.Uint64()
+			if session.Turns[i].TurnID != session.Turns[j].TurnID {
+				return session.Turns[i].TurnID.Uint64() > session.Turns[j].TurnID.Uint64()
+			}
+			return session.Turns[i].StreamID.String() < session.Turns[j].StreamID.String()
 		})
 		session.TotalTurns = len(session.Turns)
 		if limit > 0 && len(session.Turns) > limit {
@@ -311,6 +369,10 @@ func buildGraphSessions(infos []checkpoint.CheckpointRefInfo, limit int) []graph
 		return sessions[i].ID.String() < sessions[j].ID.String()
 	})
 	return sessions
+}
+
+func graphTurnKey(streamID primitives.EventStreamID, turnID primitives.TurnID) string {
+	return streamID.String() + ":" + turnID.String()
 }
 
 func attachGraphDiffs(repo *checkpoint.Repo, sessions []graphSession) {
@@ -339,15 +401,16 @@ func attachGraphEventSummaries(repo *checkpoint.Repo, sessions []graphSession) {
 			sessions[sessionIndex].Warnings = append(sessions[sessionIndex].Warnings, fmt.Sprintf("event log unavailable: %v", err))
 			continue
 		}
-		summaries := queryindex.SummarizeTurnEvents(events)
+		summaries := queryindex.SummarizeTurnEventsByStream(events)
 		for turnIndex := range sessions[sessionIndex].Turns {
-			turnID := sessions[sessionIndex].Turns[turnIndex].TurnID.Uint64()
-			sessions[sessionIndex].Turns[turnIndex].Events = summaries[turnID]
+			turn := &sessions[sessionIndex].Turns[turnIndex]
+			key := queryindex.StreamTurnKey{StreamID: turn.StreamID, TurnID: turn.TurnID.Uint64()}
+			turn.Events = summaries[key]
 		}
 	}
 }
 
-func attachGraphRollbackEvents(repo *checkpoint.Repo, sessions []graphSession) {
+func attachGraphRollbackEvents(repo *checkpoint.Repo, sessions []graphSession, scope graphScope) {
 	log := eventlog.Open(repo.MetadataDir)
 	for sessionIndex := range sessions {
 		events, err := log.Read(sessions[sessionIndex].ID)
@@ -356,6 +419,9 @@ func attachGraphRollbackEvents(repo *checkpoint.Repo, sessions []graphSession) {
 			continue
 		}
 		for _, event := range events {
+			if !scope.matches(event.WorktreeID, event.StreamID) {
+				continue
+			}
 			if event.Type != primitives.EventTypeRollback {
 				continue
 			}
@@ -524,7 +590,7 @@ func renderCheckpointGraph(w io.Writer, sessions []graphSession, options graphRe
 	return nil
 }
 
-func attachTranscriptEvents(repo *checkpoint.Repo, sessions []graphSession, sessionFilter string, limit int) ([]graphSession, error) {
+func attachTranscriptEvents(repo *checkpoint.Repo, sessions []graphSession, sessionFilter string, limit int, scope graphScope) ([]graphSession, error) {
 	log := eventlog.Open(repo.MetadataDir)
 	sessionIDs := make([]primitives.SessionID, 0, len(sessions))
 	sessionIndexes := make(map[string]int, len(sessions))
@@ -565,35 +631,44 @@ func attachTranscriptEvents(repo *checkpoint.Repo, sessions []graphSession, sess
 			sessions[sessionIndex].Warnings = append(sessions[sessionIndex].Warnings, fmt.Sprintf("event log unavailable: %v", err))
 			continue
 		}
-
-		turnIndexes := make(map[uint64]int, len(sessions[sessionIndex].Turns))
-		for turnIndex := range sessions[sessionIndex].Turns {
-			turnIndexes[sessions[sessionIndex].Turns[turnIndex].TurnID.Uint64()] = turnIndex
+		filteredEvents := events[:0]
+		for _, event := range events {
+			if scope.matches(event.WorktreeID, event.StreamID) {
+				filteredEvents = append(filteredEvents, event)
+			}
 		}
-		summaries := queryindex.SummarizeTurnEvents(events)
+		events = filteredEvents
+
+		turnIndexes := make(map[string]int, len(sessions[sessionIndex].Turns))
+		for turnIndex := range sessions[sessionIndex].Turns {
+			turn := sessions[sessionIndex].Turns[turnIndex]
+			turnIndexes[graphTurnKey(turn.StreamID, turn.TurnID)] = turnIndex
+		}
+		summaries := queryindex.SummarizeTurnEventsByStream(events)
 		for _, event := range events {
 			if event.TurnID == nil {
 				continue
 			}
-			turnKey := event.TurnID.Uint64()
+			turnKey := graphTurnKey(event.StreamID, *event.TurnID)
 			turnIndex, ok := turnIndexes[turnKey]
 			if !ok {
-				sessions[sessionIndex].Turns = append(sessions[sessionIndex].Turns, graphTurn{TurnID: *event.TurnID})
+				sessions[sessionIndex].Turns = append(sessions[sessionIndex].Turns, graphTurn{WorktreeID: event.WorktreeID, StreamID: event.StreamID, TurnID: *event.TurnID})
 				turnIndex = len(sessions[sessionIndex].Turns) - 1
 				turnIndexes[turnKey] = turnIndex
 			}
 			sessions[sessionIndex].Turns[turnIndex].EventLog = append(sessions[sessionIndex].Turns[turnIndex].EventLog, event)
 		}
 		for turnKey, summary := range summaries {
-			turnID, err := primitives.NewTurnID(turnKey)
+			turnID, err := primitives.NewTurnID(turnKey.TurnID)
 			if err != nil {
 				continue
 			}
-			turnIndex, ok := turnIndexes[turnKey]
+			key := graphTurnKey(turnKey.StreamID, turnID)
+			turnIndex, ok := turnIndexes[key]
 			if !ok {
-				sessions[sessionIndex].Turns = append(sessions[sessionIndex].Turns, graphTurn{TurnID: turnID})
+				sessions[sessionIndex].Turns = append(sessions[sessionIndex].Turns, graphTurn{StreamID: turnKey.StreamID, TurnID: turnID})
 				turnIndex = len(sessions[sessionIndex].Turns) - 1
-				turnIndexes[turnKey] = turnIndex
+				turnIndexes[key] = turnIndex
 			}
 			sessions[sessionIndex].Turns[turnIndex].Events = summary
 		}
@@ -1198,6 +1273,12 @@ func graphSessionIndex(sessions []graphSession, sessionID primitives.SessionID) 
 
 func renderVerboseTurnDetails(w io.Writer, prefix string, sessionID primitives.SessionID, turn graphTurn, options graphRenderOptions) {
 	fmt.Fprintf(w, "%ssession: %s\n", prefix, sessionID)
+	if turn.WorktreeID != "" {
+		fmt.Fprintf(w, "%sworktree: %s\n", prefix, turn.WorktreeID)
+	}
+	if turn.StreamID != "" {
+		fmt.Fprintf(w, "%sstream: %s\n", prefix, turn.StreamID)
+	}
 	if turn.DiffLoaded {
 		fmt.Fprintf(w, "%sdiff: %s\n", prefix, formatDiffSummary(turn.Diff))
 	}
@@ -1223,7 +1304,10 @@ func renderVerboseTurnDetails(w io.Writer, prefix string, sessionID primitives.S
 
 func renderVerboseCheckpointDetails(w io.Writer, prefix string, label string, info *checkpoint.CheckpointRefInfo) {
 	fmt.Fprintf(w, "%s%s:\n", prefix, label)
-	fmt.Fprintf(w, "%s  id:  %s\n", prefix, info.Commit)
+	if info.ID != "" {
+		fmt.Fprintf(w, "%s  checkpoint: %s\n", prefix, info.ID)
+	}
+	fmt.Fprintf(w, "%s  commit: %s\n", prefix, info.Commit)
 	fmt.Fprintf(w, "%s  ref: %s\n", prefix, info.Ref)
 }
 

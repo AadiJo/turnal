@@ -17,14 +17,19 @@ import (
 type Options struct {
 	IncludeRaw        bool
 	IncludeTranscript bool
+	WorktreeID        primitives.WorktreeID
+	StreamID          primitives.EventStreamID
 }
 
 type Reader struct {
 	MetadataDir string
+	WorktreeID  primitives.WorktreeID
 }
 
 type Turn struct {
 	SessionID       primitives.SessionID     `json:"session_id"`
+	WorktreeID      primitives.WorktreeID    `json:"worktree_id,omitempty"`
+	StreamID        primitives.EventStreamID `json:"stream_id,omitempty"`
 	TurnID          primitives.TurnID        `json:"turn_id"`
 	Adapters        []primitives.AdapterName `json:"adapters,omitempty"`
 	StartedAt       *primitives.Timestamp    `json:"started_at,omitempty"`
@@ -84,6 +89,10 @@ func NewReader(metadataDir string) Reader {
 	return Reader{MetadataDir: metadataDir}
 }
 
+func NewScopedReader(metadataDir string, worktreeID primitives.WorktreeID) Reader {
+	return Reader{MetadataDir: metadataDir, WorktreeID: worktreeID}
+}
+
 func (reader Reader) RecallTurn(sessionID primitives.SessionID, turnID primitives.TurnID, options Options) (Turn, error) {
 	if strings.TrimSpace(reader.MetadataDir) == "" {
 		return Turn{}, fmt.Errorf("recall requires metadata dir")
@@ -102,12 +111,45 @@ func (reader Reader) RecallTurn(sessionID primitives.SessionID, turnID primitive
 		return Turn{}, err
 	}
 
+	var candidateStreams = map[primitives.EventStreamID]primitives.WorktreeID{}
+	for _, event := range events {
+		if event.TurnID == nil || *event.TurnID != parsedTurnID {
+			continue
+		}
+		if options.StreamID != "" && event.StreamID != options.StreamID {
+			continue
+		}
+		if options.WorktreeID != "" && event.WorktreeID != "" && event.WorktreeID != options.WorktreeID {
+			continue
+		}
+		candidateStreams[event.StreamID] = event.WorktreeID
+	}
+	if len(candidateStreams) > 1 && options.StreamID == "" {
+		var choices []string
+		for streamID, worktreeID := range candidateStreams {
+			choices = append(choices, fmt.Sprintf("stream=%s worktree=%s", streamID, worktreeID))
+		}
+		sort.Strings(choices)
+		return Turn{}, fmt.Errorf("turn %s:%s is ambiguous across event streams: %s", parsedSessionID, parsedTurnID, strings.Join(choices, ", "))
+	}
+	var selectedStream primitives.EventStreamID
+	var selectedWorktree primitives.WorktreeID
+	for streamID, worktreeID := range candidateStreams {
+		selectedStream = streamID
+		selectedWorktree = worktreeID
+	}
+
 	turn := Turn{
-		SessionID: parsedSessionID,
-		TurnID:    parsedTurnID,
+		SessionID:  parsedSessionID,
+		WorktreeID: selectedWorktree,
+		StreamID:   selectedStream,
+		TurnID:     parsedTurnID,
 	}
 	adapterSet := map[primitives.AdapterName]struct{}{}
 	for _, event := range events {
+		if selectedStream != "" && event.StreamID != selectedStream {
+			continue
+		}
 		if event.Type == primitives.EventTypeSessionStart && event.TurnID == nil {
 			turn.SessionEvents = append(turn.SessionEvents, event)
 		}

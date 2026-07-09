@@ -39,12 +39,15 @@ func (engine Engine) completeTurns(sessionFilter primitives.SessionID) ([]comple
 		if sessionFilter != "" && info.SessionID != sessionFilter {
 			continue
 		}
+		if engine.Repo.WorktreeID != "" && info.WorktreeID != "" && info.WorktreeID != engine.Repo.WorktreeID {
+			continue
+		}
 		if info.Phase != primitives.CheckpointPhasePre && info.Phase != primitives.CheckpointPhasePost {
 			continue
 		}
 
 		sessionSet[info.SessionID.String()] = info.SessionID
-		key := turnKey(info.SessionID, info.TurnID)
+		key := info.StreamID.String() + ":" + turnKey(info.SessionID, info.TurnID)
 		if turnsByKey[key] == nil {
 			turnsByKey[key] = &partialTurn{}
 		}
@@ -57,14 +60,14 @@ func (engine Engine) completeTurns(sessionFilter primitives.SessionID) ([]comple
 		}
 	}
 
-	summaries := make(map[string]map[uint64]queryindex.TurnEventSummary)
+	summaries := make(map[string]map[queryindex.StreamTurnKey]queryindex.TurnEventSummary)
 	log := eventlog.Open(engine.Repo.MetadataDir)
 	for _, sessionID := range sessionSet {
 		events, err := log.Read(sessionID)
 		if err != nil {
 			return nil, err
 		}
-		summaries[sessionID.String()] = queryindex.SummarizeTurnEvents(events)
+		summaries[sessionID.String()] = queryindex.SummarizeTurnEventsByStream(events)
 	}
 
 	turns := make([]completeTurn, 0, len(turnsByKey))
@@ -79,7 +82,7 @@ func (engine Engine) completeTurns(sessionFilter primitives.SessionID) ([]comple
 			TurnID:    pre.TurnID,
 			Pre:       pre,
 			Post:      post,
-			Events:    summaries[pre.SessionID.String()][pre.TurnID.Uint64()],
+			Events:    summaries[pre.SessionID.String()][queryindex.StreamTurnKey{StreamID: pre.StreamID, TurnID: pre.TurnID.Uint64()}],
 		})
 	}
 

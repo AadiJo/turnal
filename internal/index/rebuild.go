@@ -40,6 +40,8 @@ type eventRecord struct {
 
 type turnRecord struct {
 	SessionID  primitives.SessionID
+	WorktreeID primitives.WorktreeID
+	StreamID   primitives.EventStreamID
 	TurnID     primitives.TurnID
 	Pre        *checkpoint.CheckpointRefInfo
 	Post       *checkpoint.CheckpointRefInfo
@@ -54,17 +56,21 @@ type checkpointRecord struct {
 }
 
 type fileTouchRecord struct {
-	SessionID primitives.SessionID
-	TurnID    primitives.TurnID
-	File      checkpoint.DiffFileStat
+	SessionID  primitives.SessionID
+	WorktreeID primitives.WorktreeID
+	StreamID   primitives.EventStreamID
+	TurnID     primitives.TurnID
+	File       checkpoint.DiffFileStat
 }
 
 type searchDocumentRecord struct {
-	SessionID primitives.SessionID
-	TurnID    primitives.TurnID
-	Events    TurnEventSummary
-	Paths     []string
-	EventText string
+	SessionID  primitives.SessionID
+	WorktreeID primitives.WorktreeID
+	StreamID   primitives.EventStreamID
+	TurnID     primitives.TurnID
+	Events     TurnEventSummary
+	Paths      []string
+	EventText  string
 }
 
 func Rebuild(repo *checkpoint.Repo) (RebuildStats, error) {
@@ -105,20 +111,22 @@ func collectRebuildData(repo *checkpoint.Repo) (rebuildData, error) {
 	}
 
 	sessionSet := make(map[string]primitives.SessionID)
-	turnsBySession := make(map[string]map[uint64]*turnRecord)
+	turnsBySession := make(map[string]map[StreamTurnKey]*turnRecord)
 	var checkpointRows []checkpointRecord
 	for _, info := range infos {
 		sessionKey := info.SessionID.String()
 		sessionSet[sessionKey] = info.SessionID
 		if turnsBySession[sessionKey] == nil {
-			turnsBySession[sessionKey] = make(map[uint64]*turnRecord)
+			turnsBySession[sessionKey] = make(map[StreamTurnKey]*turnRecord)
 		}
-		turnKey := info.TurnID.Uint64()
+		turnKey := StreamTurnKey{StreamID: info.StreamID, TurnID: info.TurnID.Uint64()}
 		turn := turnsBySession[sessionKey][turnKey]
 		if turn == nil {
 			turn = &turnRecord{
-				SessionID: info.SessionID,
-				TurnID:    info.TurnID,
+				SessionID:  info.SessionID,
+				WorktreeID: info.WorktreeID,
+				StreamID:   info.StreamID,
+				TurnID:     info.TurnID,
 			}
 			turnsBySession[sessionKey][turnKey] = turn
 		}
@@ -146,8 +154,9 @@ func collectRebuildData(repo *checkpoint.Repo) (rebuildData, error) {
 		return sessionIDs[i].String() < sessionIDs[j].String()
 	})
 
-	summariesBySession := make(map[string]map[uint64]TurnEventSummary)
-	eventTextBySessionTurn := make(map[string]map[uint64][]string)
+	summariesBySession := make(map[string]map[StreamTurnKey]TurnEventSummary)
+	eventTextBySessionTurn := make(map[string]map[StreamTurnKey][]string)
+	worktreeBySessionTurn := make(map[string]map[StreamTurnKey]primitives.WorktreeID)
 	eventStatsBySession := make(map[string]sessionRecord)
 	var eventRows []eventRecord
 	for _, sessionID := range sessionIDs {
@@ -157,6 +166,9 @@ func collectRebuildData(repo *checkpoint.Repo) (rebuildData, error) {
 		}
 		stats := sessionRecord{SessionID: sessionID, EventCount: len(events)}
 		for _, event := range events {
+			if event.WorktreeID == "" {
+				event.WorktreeID = repo.WorktreeID
+			}
 			if stats.FirstEventAt.IsZero() || event.Time.Time.Before(stats.FirstEventAt) {
 				stats.FirstEventAt = event.Time.Time
 			}
@@ -169,30 +181,37 @@ func collectRebuildData(repo *checkpoint.Repo) (rebuildData, error) {
 			eventRows = append(eventRows, eventRecord{Event: event})
 			if event.TurnID != nil {
 				sessionKey := sessionID.String()
-				turnKey := event.TurnID.Uint64()
+				turnKey := StreamTurnKey{StreamID: event.StreamID, TurnID: event.TurnID.Uint64()}
 				if eventTextBySessionTurn[sessionKey] == nil {
-					eventTextBySessionTurn[sessionKey] = make(map[uint64][]string)
+					eventTextBySessionTurn[sessionKey] = make(map[StreamTurnKey][]string)
 				}
 				eventTextBySessionTurn[sessionKey][turnKey] = append(eventTextBySessionTurn[sessionKey][turnKey], eventSearchText(event))
+				if worktreeBySessionTurn[sessionKey] == nil {
+					worktreeBySessionTurn[sessionKey] = make(map[StreamTurnKey]primitives.WorktreeID)
+				}
+				worktreeBySessionTurn[sessionKey][turnKey] = event.WorktreeID
 			}
 		}
-		summariesBySession[sessionID.String()] = SummarizeTurnEvents(events)
+		summariesBySession[sessionID.String()] = SummarizeTurnEventsByStream(events)
 		eventStatsBySession[sessionID.String()] = stats
 	}
 
 	var sessionRows []sessionRecord
 	var turnRows []turnRecord
 	var fileTouchRows []fileTouchRecord
-	pathsBySessionTurn := make(map[string]map[uint64][]string)
+	pathsBySessionTurn := make(map[string]map[StreamTurnKey][]string)
 	for _, sessionID := range sessionIDs {
 		sessionKey := sessionID.String()
 		turnMap := turnsBySession[sessionKey]
-		turnKeys := make([]uint64, 0, len(turnMap))
+		turnKeys := make([]StreamTurnKey, 0, len(turnMap))
 		for turnKey := range turnMap {
 			turnKeys = append(turnKeys, turnKey)
 		}
 		sort.Slice(turnKeys, func(i, j int) bool {
-			return turnKeys[i] < turnKeys[j]
+			if turnKeys[i].TurnID != turnKeys[j].TurnID {
+				return turnKeys[i].TurnID < turnKeys[j].TurnID
+			}
+			return turnKeys[i].StreamID.String() < turnKeys[j].StreamID.String()
 		})
 
 		stats := eventStatsBySession[sessionKey]
@@ -200,6 +219,10 @@ func collectRebuildData(repo *checkpoint.Repo) (rebuildData, error) {
 		stats.TurnCount = len(turnKeys)
 		for _, turnKey := range turnKeys {
 			turn := turnMap[turnKey]
+			if worktreeBySessionTurn[sessionKey] == nil {
+				worktreeBySessionTurn[sessionKey] = make(map[StreamTurnKey]primitives.WorktreeID)
+			}
+			worktreeBySessionTurn[sessionKey][turnKey] = turn.WorktreeID
 			turn.Events = summariesBySession[sessionKey][turnKey]
 			if stats.PrimaryAdapter == "" && turn.Events.Adapter != "" {
 				stats.PrimaryAdapter = turn.Events.Adapter
@@ -213,14 +236,16 @@ func collectRebuildData(repo *checkpoint.Repo) (rebuildData, error) {
 					turn.DiffLoaded = true
 					for _, file := range diff.Files {
 						fileTouchRows = append(fileTouchRows, fileTouchRecord{
-							SessionID: sessionID,
-							TurnID:    turn.TurnID,
-							File:      file,
+							SessionID:  sessionID,
+							WorktreeID: turn.WorktreeID,
+							StreamID:   turn.StreamID,
+							TurnID:     turn.TurnID,
+							File:       file,
 						})
 						if pathsBySessionTurn[sessionKey] == nil {
-							pathsBySessionTurn[sessionKey] = make(map[uint64][]string)
+							pathsBySessionTurn[sessionKey] = make(map[StreamTurnKey][]string)
 						}
-						pathsBySessionTurn[sessionKey][turn.TurnID.Uint64()] = append(pathsBySessionTurn[sessionKey][turn.TurnID.Uint64()], file.Path)
+						pathsBySessionTurn[sessionKey][turnKey] = append(pathsBySessionTurn[sessionKey][turnKey], file.Path)
 					}
 				}
 			}
@@ -237,12 +262,15 @@ func collectRebuildData(repo *checkpoint.Repo) (rebuildData, error) {
 		if left.SessionID != right.SessionID {
 			return left.SessionID.String() < right.SessionID.String()
 		}
+		if left.StreamID != right.StreamID {
+			return left.StreamID.String() < right.StreamID.String()
+		}
 		if left.TurnID != right.TurnID {
 			return left.TurnID.Uint64() < right.TurnID.Uint64()
 		}
 		return left.File.Path < right.File.Path
 	})
-	searchDocuments := buildSearchDocuments(sessionIDs, summariesBySession, pathsBySessionTurn, eventTextBySessionTurn)
+	searchDocuments := buildSearchDocuments(sessionIDs, summariesBySession, pathsBySessionTurn, eventTextBySessionTurn, worktreeBySessionTurn)
 
 	return rebuildData{
 		Sessions:        sessionRows,
@@ -256,14 +284,15 @@ func collectRebuildData(repo *checkpoint.Repo) (rebuildData, error) {
 
 func buildSearchDocuments(
 	sessionIDs []primitives.SessionID,
-	summariesBySession map[string]map[uint64]TurnEventSummary,
-	pathsBySessionTurn map[string]map[uint64][]string,
-	eventTextBySessionTurn map[string]map[uint64][]string,
+	summariesBySession map[string]map[StreamTurnKey]TurnEventSummary,
+	pathsBySessionTurn map[string]map[StreamTurnKey][]string,
+	eventTextBySessionTurn map[string]map[StreamTurnKey][]string,
+	worktreeBySessionTurn map[string]map[StreamTurnKey]primitives.WorktreeID,
 ) []searchDocumentRecord {
 	var documents []searchDocumentRecord
 	for _, sessionID := range sessionIDs {
 		sessionKey := sessionID.String()
-		turnSet := make(map[uint64]struct{})
+		turnSet := make(map[StreamTurnKey]struct{})
 		for turnKey := range summariesBySession[sessionKey] {
 			turnSet[turnKey] = struct{}{}
 		}
@@ -274,26 +303,31 @@ func buildSearchDocuments(
 			turnSet[turnKey] = struct{}{}
 		}
 
-		turnKeys := make([]uint64, 0, len(turnSet))
+		turnKeys := make([]StreamTurnKey, 0, len(turnSet))
 		for turnKey := range turnSet {
 			turnKeys = append(turnKeys, turnKey)
 		}
 		sort.Slice(turnKeys, func(i, j int) bool {
-			return turnKeys[i] < turnKeys[j]
+			if turnKeys[i].TurnID != turnKeys[j].TurnID {
+				return turnKeys[i].TurnID < turnKeys[j].TurnID
+			}
+			return turnKeys[i].StreamID.String() < turnKeys[j].StreamID.String()
 		})
 
 		for _, turnKey := range turnKeys {
-			turnID, err := primitives.NewTurnID(turnKey)
+			turnID, err := primitives.NewTurnID(turnKey.TurnID)
 			if err != nil {
 				continue
 			}
 			paths := uniqueSortedStrings(pathsBySessionTurn[sessionKey][turnKey])
 			documents = append(documents, searchDocumentRecord{
-				SessionID: sessionID,
-				TurnID:    turnID,
-				Events:    summariesBySession[sessionKey][turnKey],
-				Paths:     paths,
-				EventText: strings.Join(nonEmptyStrings(eventTextBySessionTurn[sessionKey][turnKey]), "\n"),
+				SessionID:  sessionID,
+				WorktreeID: worktreeBySessionTurn[sessionKey][turnKey],
+				StreamID:   turnKey.StreamID,
+				TurnID:     turnID,
+				Events:     summariesBySession[sessionKey][turnKey],
+				Paths:      paths,
+				EventText:  strings.Join(nonEmptyStrings(eventTextBySessionTurn[sessionKey][turnKey]), "\n"),
 			})
 		}
 	}
@@ -525,8 +559,8 @@ func insertSessions(ctx context.Context, tx *sql.Tx, sessions []sessionRecord) e
 
 func insertEvents(ctx context.Context, tx *sql.Tx, events []eventRecord) error {
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO events (session_id, seq, turn_id, event_type, adapter, event_time, source_id, raw_ref, prev_hash, event_hash, payload_json)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		INSERT INTO events (repo_id, worktree_id, stream_id, session_id, seq, turn_id, event_type, adapter, event_time, source_id, raw_ref, prev_hash, event_hash, payload_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare events insert: %w", err)
 	}
@@ -546,6 +580,9 @@ func insertEvents(ctx context.Context, tx *sql.Tx, events []eventRecord) error {
 			}
 		}
 		if _, err := stmt.ExecContext(ctx,
+			nullableText(event.RepoID.String()),
+			nullableText(event.WorktreeID.String()),
+			event.StreamID.String(),
 			event.SessionID.String(),
 			seq,
 			turnArg,
@@ -567,11 +604,11 @@ func insertEvents(ctx context.Context, tx *sql.Tx, events []eventRecord) error {
 func insertTurns(ctx context.Context, tx *sql.Tx, turns []turnRecord) error {
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO turns (
-			session_id, turn_id, status, event_count, adapter, prompt_preview, assistant_preview,
+			stream_id, worktree_id, session_id, turn_id, status, event_count, adapter, prompt_preview, assistant_preview,
 			tool_names_json, event_type_counts_json, events_first_at, events_last_at,
 			diff_loaded, diff_file_count, diff_additions, diff_deletions, diff_binary_files, warnings_json
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare turns insert: %w", err)
 	}
@@ -595,6 +632,8 @@ func insertTurns(ctx context.Context, tx *sql.Tx, turns []turnRecord) error {
 			return fmt.Errorf("encode warnings for %s:%s: %w", turn.SessionID, turn.TurnID, err)
 		}
 		if _, err := stmt.ExecContext(ctx,
+			turn.StreamID.String(),
+			nullableText(turn.WorktreeID.String()),
 			turn.SessionID.String(),
 			turnNumber,
 			turnStatus(turn),
@@ -621,8 +660,8 @@ func insertTurns(ctx context.Context, tx *sql.Tx, turns []turnRecord) error {
 
 func insertCheckpoints(ctx context.Context, tx *sql.Tx, checkpoints []checkpointRecord) error {
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO checkpoints (ref, session_id, turn_id, phase, commit_sha, committed_at)
-		VALUES (?, ?, ?, ?, ?, ?)`)
+		INSERT INTO checkpoints (ref, checkpoint_id, canonical_ref, stream_id, worktree_id, session_id, turn_id, phase, commit_sha, committed_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare checkpoints insert: %w", err)
 	}
@@ -636,6 +675,10 @@ func insertCheckpoints(ctx context.Context, tx *sql.Tx, checkpoints []checkpoint
 		}
 		if _, err := stmt.ExecContext(ctx,
 			info.Ref.String(),
+			nullableText(info.ID.String()),
+			nullableText(info.CanonicalRef.String()),
+			info.StreamID.String(),
+			nullableText(info.WorktreeID.String()),
 			info.SessionID.String(),
 			turnNumber,
 			info.Phase.String(),
@@ -650,8 +693,8 @@ func insertCheckpoints(ctx context.Context, tx *sql.Tx, checkpoints []checkpoint
 
 func insertFileTouches(ctx context.Context, tx *sql.Tx, files []fileTouchRecord) error {
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO file_touches (session_id, turn_id, path, additions, deletions, binary)
-		VALUES (?, ?, ?, ?, ?, ?)`)
+		INSERT INTO file_touches (stream_id, worktree_id, session_id, turn_id, path, additions, deletions, binary)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare file touches insert: %w", err)
 	}
@@ -663,6 +706,8 @@ func insertFileTouches(ctx context.Context, tx *sql.Tx, files []fileTouchRecord)
 			return fmt.Errorf("file touch %s:%s: %w", row.SessionID, row.TurnID, err)
 		}
 		if _, err := stmt.ExecContext(ctx,
+			row.StreamID.String(),
+			nullableText(row.WorktreeID.String()),
 			row.SessionID.String(),
 			turnNumber,
 			row.File.Path,
@@ -678,8 +723,8 @@ func insertFileTouches(ctx context.Context, tx *sql.Tx, files []fileTouchRecord)
 
 func insertSearchDocuments(ctx context.Context, tx *sql.Tx, documents []searchDocumentRecord) error {
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO turn_search (session_id, turn_id, first_at, last_at, adapter, prompt, assistant, tools, paths, event_text)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		INSERT INTO turn_search (stream_id, worktree_id, session_id, turn_id, first_at, last_at, adapter, prompt, assistant, tools, paths, event_text)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare search document insert: %w", err)
 	}
@@ -691,6 +736,8 @@ func insertSearchDocuments(ctx context.Context, tx *sql.Tx, documents []searchDo
 			return fmt.Errorf("search document %s:%s: %w", document.SessionID, document.TurnID, err)
 		}
 		if _, err := stmt.ExecContext(ctx,
+			document.StreamID.String(),
+			nullableText(document.WorktreeID.String()),
 			document.SessionID.String(),
 			strconv.FormatInt(turnNumber, 10),
 			nullableTime(document.Events.First),

@@ -229,6 +229,18 @@ func Resolve(workspaceRoot string, overrides Overrides) (Effective, map[string]O
 }
 
 func (l Loader) Resolve(workspaceRoot string, overrides Overrides) (Effective, map[string]Origin, error) {
+	workspacePath := ""
+	if strings.TrimSpace(workspaceRoot) != "" {
+		workspacePath = WorkspacePath(workspaceRoot)
+	}
+	return l.resolvePath(workspacePath, overrides)
+}
+
+func ResolvePath(workspaceConfigPath string, overrides Overrides) (Effective, map[string]Origin, error) {
+	return DefaultLoader().resolvePath(workspaceConfigPath, overrides)
+}
+
+func (l Loader) resolvePath(workspacePath string, overrides Overrides) (Effective, map[string]Origin, error) {
 	effective := Defaults()
 	origins := defaultOrigins()
 
@@ -244,8 +256,7 @@ func (l Loader) Resolve(workspaceRoot string, overrides Overrides) (Effective, m
 		return Effective{}, nil, fmt.Errorf("config %s: %w", globalPath, err)
 	}
 
-	if strings.TrimSpace(workspaceRoot) != "" {
-		workspacePath := WorkspacePath(workspaceRoot)
+	if strings.TrimSpace(workspacePath) != "" {
 		workspaceFile, err := l.ReadFileLayer(workspacePath)
 		if err != nil {
 			return Effective{}, nil, err

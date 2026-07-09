@@ -7,6 +7,38 @@ import (
 	"github.com/AadiJo/turnal/internal/primitives"
 )
 
+type StreamTurnKey struct {
+	StreamID primitives.EventStreamID
+	TurnID   uint64
+}
+
+func SummarizeTurnEventsByStream(events []eventlog.Event) map[StreamTurnKey]TurnEventSummary {
+	summaries := make(map[StreamTurnKey]TurnEventSummary)
+	seenTools := make(map[StreamTurnKey]map[string]struct{})
+	for _, event := range events {
+		if event.TurnID == nil {
+			continue
+		}
+		key := StreamTurnKey{StreamID: event.StreamID, TurnID: event.TurnID.Uint64()}
+		summary := summaries[key]
+		applyEventSummary(&summary, event, seenTools[key])
+		if seenTools[key] == nil {
+			seenTools[key] = make(map[string]struct{})
+		}
+		if event.Type == primitives.EventTypeToolCall {
+			toolName := payloadString(event.Payload, "tool_name")
+			if toolName != "" {
+				if _, ok := seenTools[key][toolName]; !ok {
+					seenTools[key][toolName] = struct{}{}
+					summary.ToolNames = append(summary.ToolNames, toolName)
+				}
+			}
+		}
+		summaries[key] = summary
+	}
+	return summaries
+}
+
 func SummarizeTurnEvents(events []eventlog.Event) map[uint64]TurnEventSummary {
 	summaries := make(map[uint64]TurnEventSummary)
 	seenTools := make(map[uint64]map[string]struct{})
@@ -18,31 +50,8 @@ func SummarizeTurnEvents(events []eventlog.Event) map[uint64]TurnEventSummary {
 
 		turnKey := event.TurnID.Uint64()
 		summary := summaries[turnKey]
-		summary.Count++
-		if summary.TypeCounts == nil {
-			summary.TypeCounts = make(map[primitives.EventType]int)
-		}
-		summary.TypeCounts[event.Type]++
-		if summary.Adapter == "" && event.Adapter != "" {
-			summary.Adapter = event.Adapter.String()
-		}
-		if summary.First.IsZero() || event.Time.Time.Before(summary.First) {
-			summary.First = event.Time.Time
-		}
-		if summary.Last.IsZero() || event.Time.Time.After(summary.Last) {
-			summary.Last = event.Time.Time
-		}
-
-		switch event.Type {
-		case primitives.EventTypePromptUser:
-			if summary.Prompt == "" {
-				summary.Prompt = payloadString(event.Payload, "text")
-			}
-		case primitives.EventTypeAssistantMessage:
-			if summary.Assistant == "" {
-				summary.Assistant = payloadString(event.Payload, "text")
-			}
-		case primitives.EventTypeToolCall:
+		applyEventSummary(&summary, event, seenTools[turnKey])
+		if event.Type == primitives.EventTypeToolCall {
 			toolName := payloadString(event.Payload, "tool_name")
 			if toolName != "" {
 				if seenTools[turnKey] == nil {
@@ -59,6 +68,33 @@ func SummarizeTurnEvents(events []eventlog.Event) map[uint64]TurnEventSummary {
 	}
 
 	return summaries
+}
+
+func applyEventSummary(summary *TurnEventSummary, event eventlog.Event, _ map[string]struct{}) {
+	summary.Count++
+	if summary.TypeCounts == nil {
+		summary.TypeCounts = make(map[primitives.EventType]int)
+	}
+	summary.TypeCounts[event.Type]++
+	if summary.Adapter == "" && event.Adapter != "" {
+		summary.Adapter = event.Adapter.String()
+	}
+	if summary.First.IsZero() || event.Time.Time.Before(summary.First) {
+		summary.First = event.Time.Time
+	}
+	if summary.Last.IsZero() || event.Time.Time.After(summary.Last) {
+		summary.Last = event.Time.Time
+	}
+	switch event.Type {
+	case primitives.EventTypePromptUser:
+		if summary.Prompt == "" {
+			summary.Prompt = payloadString(event.Payload, "text")
+		}
+	case primitives.EventTypeAssistantMessage:
+		if summary.Assistant == "" {
+			summary.Assistant = payloadString(event.Payload, "text")
+		}
+	}
 }
 
 func payloadString(payload json.RawMessage, key string) string {

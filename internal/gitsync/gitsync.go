@@ -125,9 +125,16 @@ func Load(repo *checkpoint.Repo, ref primitives.GitSyncRef) (Capture, error) {
 	if err != nil {
 		return Capture{}, err
 	}
-	commit, err := repo.RefCommit(parsedRef.String())
+	return LoadPrivate(repo, parsedRef.String())
+}
+
+func LoadPrivate(repo *checkpoint.Repo, ref string) (Capture, error) {
+	if repo == nil {
+		return Capture{}, fmt.Errorf("git-sync repo is required")
+	}
+	commit, err := repo.RefCommit(ref)
 	if err != nil {
-		return Capture{}, fmt.Errorf("load git-sync ref %s: %w", parsedRef, err)
+		return Capture{}, fmt.Errorf("load git-sync ref %s: %w", ref, err)
 	}
 
 	stateBytes, err := repo.CommitFileBytes(commit, statePath)

@@ -68,6 +68,73 @@ func TestAppendReadAndVerifyHashChain(t *testing.T) {
 	}
 }
 
+func TestIndependentV2StreamsCanReuseSessionAndSequence(t *testing.T) {
+	metadataDir := t.TempDir()
+	repoID, err := primitives.NewRepoID()
+	if err != nil {
+		t.Fatalf("NewRepoID: %v", err)
+	}
+	storeID, err := primitives.NewStoreID()
+	if err != nil {
+		t.Fatalf("NewStoreID: %v", err)
+	}
+	worktreeOne, _ := primitives.NewWorktreeID()
+	worktreeTwo, _ := primitives.NewWorktreeID()
+	producerOne, _ := primitives.NewEventProducerID()
+	producerTwo, _ := primitives.NewEventProducerID()
+	sessionID := sessionID(t, "shared-session")
+
+	logOne := OpenFor(metadataDir, "/workspace/one", repoID, storeID, worktreeOne, producerOne)
+	logTwo := OpenFor(metadataDir, "/workspace/two", repoID, storeID, worktreeTwo, producerTwo)
+	first, err := logOne.Append(AppendInput{SessionID: sessionID, Type: primitives.EventTypePromptUser, Payload: json.RawMessage(`{"text":"one"}`)})
+	if err != nil {
+		t.Fatalf("append stream one: %v", err)
+	}
+	second, err := logTwo.Append(AppendInput{SessionID: sessionID, Type: primitives.EventTypePromptUser, Payload: json.RawMessage(`{"text":"two"}`)})
+	if err != nil {
+		t.Fatalf("append stream two: %v", err)
+	}
+	if first.Seq.Uint64() != 1 || second.Seq.Uint64() != 1 {
+		t.Fatalf("independent sequences = %s and %s, want both 1", first.Seq, second.Seq)
+	}
+	if first.StreamID == second.StreamID || first.WorktreeID == second.WorktreeID {
+		t.Fatalf("stream identities collided: first=%#v second=%#v", first, second)
+	}
+
+	streams, err := ListDurableStreams(metadataDir)
+	if err != nil {
+		t.Fatalf("ListDurableStreams: %v", err)
+	}
+	if len(streams) != 2 {
+		t.Fatalf("durable streams = %d, want 2: %#v", len(streams), streams)
+	}
+	events, err := Open(metadataDir).Read(sessionID)
+	if err != nil {
+		t.Fatalf("aggregate Read: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("aggregate events = %d, want 2", len(events))
+	}
+}
+
+func TestListDurableStreamsRejectsSymlink(t *testing.T) {
+	metadataDir := t.TempDir()
+	dir := filepath.Join(metadataDir, "log", eventLogDirName)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir events: %v", err)
+	}
+	target := filepath.Join(t.TempDir(), "outside.jsonl")
+	if err := os.WriteFile(target, []byte("outside\n"), 0o644); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, "demo.jsonl")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	if _, err := ListDurableStreams(metadataDir); err == nil || !strings.Contains(err.Error(), "symlink is not allowed") {
+		t.Fatalf("ListDurableStreams error = %v, want symlink invariant", err)
+	}
+}
+
 func TestVerifyDetectsCorruption(t *testing.T) {
 	log := Open(t.TempDir())
 	sessionID := sessionID(t, "demo")

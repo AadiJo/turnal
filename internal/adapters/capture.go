@@ -151,12 +151,12 @@ func ProcessHookPayload(adapter primitives.AdapterName, hookName, rawRef string,
 	if err != nil {
 		return nil
 	}
-	effective, _, err := agentconfig.Resolve(root.String(), agentconfig.Overrides{})
+	effective, _, err := agentconfig.ResolvePath(filepath.Join(repo.MetadataDir, "config.toml"), agentconfig.Overrides{})
 	if err != nil {
 		return err
 	}
 
-	log := eventlog.Open(repo.MetadataDir)
+	log := repo.EventLog()
 	manager := turns.NewManager(repo)
 	unlock, err := acquireHookProcessLock(repo, sessionID)
 	if err != nil {
@@ -174,7 +174,11 @@ func ProcessHookPayload(adapter primitives.AdapterName, hookName, rawRef string,
 }
 
 func acquireHookProcessLock(repo *checkpoint.Repo, sessionID primitives.SessionID) (func(), error) {
-	lockDir := filepath.Join(repo.TmpDir, "hooks", sessionID.String()+".lock")
+	name := sessionID.String() + ".lock"
+	if streamID, err := repo.StreamID(sessionID); err == nil {
+		name = repo.WorktreeID.String() + "-" + streamID.String() + "-" + name
+	}
+	lockDir := filepath.Join(repo.TmpDir, "hooks", name)
 	if err := os.MkdirAll(filepath.Dir(lockDir), 0o755); err != nil {
 		return nil, fmt.Errorf("create hook lock dir: %w", err)
 	}

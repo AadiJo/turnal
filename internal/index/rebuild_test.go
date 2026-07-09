@@ -195,7 +195,11 @@ func TestRebuildFailureLeavesPreviousIndex(t *testing.T) {
 		t.Fatalf("initial Rebuild: %v", err)
 	}
 
-	logPath := filepath.Join(eventlog.Open(repo.MetadataDir).Dir, sessionID.String()+".jsonl")
+	streamID, err := repo.StreamID(sessionID)
+	if err != nil {
+		t.Fatalf("StreamID: %v", err)
+	}
+	logPath := eventlog.StreamPath(repo.MetadataDir, sessionID, streamID)
 	file, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
 		t.Fatalf("open event log: %v", err)

@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
@@ -16,6 +17,7 @@ func rollbackCmd() *cobra.Command {
 	var targetText string
 	var dryRun bool
 	var workspaceGit bool
+	var fromWorktree string
 
 	cmd := &cobra.Command{
 		Use:          "rollback --to <target|checkpoint-hash>",
@@ -33,21 +35,13 @@ func rollbackCmd() *cobra.Command {
 				targetText = args[0]
 			}
 
-			target, parseErr := parseRollbackTarget(targetText)
-			var repo *checkpoint.Repo
-			var err error
-			if parseErr != nil && !looksLikeRollbackCheckpointID(targetText) {
-				return parseErr
-			}
-			repo, err = openCheckpointRepo()
+			repo, err := openCheckpointRepo()
 			if err != nil {
 				return err
 			}
-			if parseErr != nil {
-				target, err = parseRollbackCheckpointIDTarget(repo, targetText)
-				if err != nil {
-					return err
-				}
+			target, resolved, err := resolveRollbackSelection(repo, targetText, fromWorktree)
+			if err != nil {
+				return err
 			}
 
 			overrides := agentconfig.Overrides{}
@@ -58,13 +52,14 @@ func rollbackCmd() *cobra.Command {
 				}
 				overrides.RollbackMode = &mode
 			}
-			effective, _, err := agentconfig.Resolve(repo.WorkspaceRoot.String(), overrides)
+			effective, _, err := agentconfig.ResolvePath(filepath.Join(repo.MetadataDir, "config.toml"), overrides)
 			if err != nil {
 				return err
 			}
 			useWorkspaceGit := effective.Rollback.Mode == primitives.RollbackModeWorkspaceGit
 			result, err := rollbackengine.New(repo).Run(rollbackengine.Request{
 				Target:       target,
+				Resolved:     resolved,
 				DryRun:       dryRun,
 				WorkspaceGit: useWorkspaceGit,
 			})
@@ -78,7 +73,78 @@ func rollbackCmd() *cobra.Command {
 	cmd.Flags().StringVar(&targetText, "to", "", "Checkpoint target or checkpoint id; targets without a phase default to post")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show changes without modifying the workspace")
 	cmd.Flags().BoolVar(&workspaceGit, "workspace-git", false, "Restore captured workspace Git HEAD, index, dirty tracked files, and untracked files")
+	cmd.Flags().StringVar(&fromWorktree, "from-worktree", "", "Explicit source worktree id for an otherwise ambiguous or cross-worktree target")
 	return cmd
+}
+
+func resolveRollbackSelection(repo *checkpoint.Repo, value string, fromWorktree string) (primitives.TargetRef, *rollbackengine.ResolvedTarget, error) {
+	selector := strings.ToLower(strings.TrimSpace(value))
+	var matches []checkpoint.CheckpointRefInfo
+	var target primitives.TargetRef
+	var err error
+	switch {
+	case strings.HasPrefix(selector, "chk_"):
+		if len(selector) < len("chk_")+minRollbackCheckpointIDPrefixLength {
+			return target, nil, fmt.Errorf("checkpoint id prefix must include at least %d hex characters", minRollbackCheckpointIDPrefixLength)
+		}
+		matches, err = repo.FindCheckpointIDPrefix(selector)
+	case looksLikeRollbackCheckpointID(selector):
+		infos, listErr := repo.ListAllCheckpointRefInfos()
+		if listErr != nil {
+			return target, nil, listErr
+		}
+		for _, info := range infos {
+			if strings.HasPrefix(info.Commit.String(), selector) {
+				matches = append(matches, info)
+			}
+		}
+	default:
+		target, err = parseRollbackTarget(selector)
+		if err == nil {
+			phase, _ := target.Phase()
+			matches, err = repo.FindCheckpointTargets(target.SessionID(), target.TurnID(), phase)
+		}
+	}
+	if err != nil {
+		return target, nil, err
+	}
+
+	wantedWorktree := repo.WorktreeID
+	if fromWorktree != "" && fromWorktree != "current" {
+		wantedWorktree, err = primitives.ParseWorktreeID(fromWorktree)
+		if err != nil {
+			return target, nil, err
+		}
+	}
+	allMatches := append([]checkpoint.CheckpointRefInfo(nil), matches...)
+	filtered := matches[:0]
+	for _, info := range matches {
+		if wantedWorktree == "" || info.WorktreeID == "" || info.WorktreeID == wantedWorktree {
+			filtered = append(filtered, info)
+		}
+	}
+	matches = filtered
+	if len(matches) == 0 {
+		if len(allMatches) > 0 {
+			return target, nil, fmt.Errorf("checkpoint exists in another worktree; use --from-worktree with one of: %s", formatRollbackIDMatches(allMatches))
+		}
+		return target, nil, fmt.Errorf("checkpoint %s not found", selector)
+	}
+	if len(matches) > 1 {
+		return target, nil, fmt.Errorf("checkpoint %s is ambiguous; matches %s", selector, formatRollbackIDMatches(matches))
+	}
+	info := matches[0]
+	if target.SessionID() == "" {
+		target, err = primitives.NewTargetRef(info.SessionID, info.TurnID, info.Phase)
+		if err != nil {
+			return target, nil, err
+		}
+	}
+	resolved, err := rollbackengine.ResolveCheckpointInfo(target, info)
+	if err != nil {
+		return target, nil, err
+	}
+	return target, &resolved, nil
 }
 
 func parseRollbackTarget(value string) (primitives.TargetRef, error) {
@@ -173,7 +239,11 @@ func formatRollbackIDMatches(matches []checkpoint.CheckpointRefInfo) string {
 	}
 	parts := make([]string, 0, count+1)
 	for _, match := range matches[:count] {
-		parts = append(parts, fmt.Sprintf("%s:turn:%s:%s (%s)", match.SessionID, match.TurnID, match.Phase, match.Commit))
+		identity := match.Commit.String()
+		if match.ID != "" {
+			identity = match.ID.String()
+		}
+		parts = append(parts, fmt.Sprintf("%s:turn:%s:%s worktree=%s (%s)", match.SessionID, match.TurnID, match.Phase, match.WorktreeID, identity))
 	}
 	if len(matches) > limit {
 		parts = append(parts, fmt.Sprintf("+%d more", len(matches)-limit))

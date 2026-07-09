@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/AadiJo/turnal/internal/adapters"
 	"github.com/AadiJo/turnal/internal/checkpoint"
@@ -16,6 +17,7 @@ func initCmd() *cobra.Command {
 	var agent string
 	var skipHooks bool
 	var enableGitSync bool
+	var storePath string
 
 	cmd := &cobra.Command{
 		Use:          "init",
@@ -50,11 +52,19 @@ func initCmd() *cobra.Command {
 			result, err := checkpoint.BootstrapWithOptions(root, checkpoint.BootstrapOptions{
 				InitWorkspaceGit: effective.Bootstrap.InitWorkspaceGit,
 				UpdateGitignore:  effective.Bootstrap.UpdateGitignore,
+				StorePath:        storePath,
 			})
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "initialized hidden git repo: %s\n", result.Repo.GitDir)
+			if result.Attached {
+				fmt.Fprintf(cmd.OutOrStdout(), "initialized worktree: %s\n", result.Repo.WorkspaceRoot)
+				fmt.Fprintf(cmd.OutOrStdout(), "attached turnal store: %s\n", result.Repo.MetadataDir)
+				fmt.Fprintf(cmd.OutOrStdout(), "worktree id: %s\n", result.Repo.WorktreeID)
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "initialized hidden git repo: %s\n", result.Repo.GitDir)
+				fmt.Fprintf(cmd.OutOrStdout(), "worktree id: %s\n", result.Repo.WorktreeID)
+			}
 			if effective.Bootstrap.InitWorkspaceGit {
 				if result.WorkspaceGitInitialized {
 					fmt.Fprintf(cmd.OutOrStdout(), "initialized workspace git repo: %s\n", result.WorkspaceGitPath)
@@ -74,16 +84,16 @@ func initCmd() *cobra.Command {
 				fmt.Fprintln(cmd.OutOrStdout(), "gitignore update skipped")
 			}
 			if effective.GitSync.Enabled {
-				if err := persistInitConfig(root.String(), initConfigPersistence{
+				if err := persistInitConfig(result.Repo.MetadataDir, initConfigPersistence{
 					Agent:        persistedString(cmd.Flags().Changed("agent"), agent),
 					InstallHooks: persistedBool(cmd.Flags().Changed("skip-hooks"), !skipHooks),
 					GitSync:      persistedBool(true, true),
 				}); err != nil {
 					return err
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "enabled git-sync capture: %s\n", agentconfig.WorkspacePath(root.String()))
+				fmt.Fprintf(cmd.OutOrStdout(), "enabled git-sync capture: %s\n", filepath.Join(result.Repo.MetadataDir, "config.toml"))
 			} else if cmd.Flags().Changed("agent") || cmd.Flags().Changed("skip-hooks") {
-				if err := persistInitConfig(root.String(), initConfigPersistence{
+				if err := persistInitConfig(result.Repo.MetadataDir, initConfigPersistence{
 					Agent:        persistedString(cmd.Flags().Changed("agent"), agent),
 					InstallHooks: persistedBool(cmd.Flags().Changed("skip-hooks"), !skipHooks),
 				}); err != nil {
@@ -119,6 +129,7 @@ func initCmd() *cobra.Command {
 	cmd.Flags().StringVar(&agent, "agent", string(adapters.TargetAuto), "Agent hooks to configure: auto, claude, codex, all, or none")
 	cmd.Flags().BoolVar(&skipHooks, "skip-hooks", false, "Skip automatic agent hook configuration")
 	cmd.Flags().BoolVar(&enableGitSync, "git-sync", false, "Enable opt-in workspace Git state capture for future workspace-git rollbacks")
+	cmd.Flags().StringVar(&storePath, "store", "", "Use or create a Turnal store at this explicit .turnal path")
 	return cmd
 }
 
@@ -142,8 +153,8 @@ func persistedBool(enabled bool, value bool) *bool {
 	return &value
 }
 
-func persistInitConfig(root string, persistence initConfigPersistence) error {
-	path := agentconfig.WorkspacePath(root)
+func persistInitConfig(metadataDir string, persistence initConfigPersistence) error {
+	path := filepath.Join(metadataDir, "config.toml")
 	file, err := agentconfig.ReadFileLayer(path)
 	if err != nil {
 		return err

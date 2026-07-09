@@ -16,6 +16,7 @@ func searchCmd() *cobra.Command {
 	var session string
 	var limit int
 	var jsonOutput bool
+	var allWorktrees bool
 
 	cmd := &cobra.Command{
 		Use:          "search [query]",
@@ -46,10 +47,15 @@ func searchCmd() *cobra.Command {
 			}
 			defer store.Close()
 
+			worktreeID := repo.WorktreeID
+			if allWorktrees {
+				worktreeID = ""
+			}
 			results, err := store.Search(queryindex.SearchQuery{
-				Query:   strings.Join(args, " "),
-				Session: sessionID,
-				Limit:   limit,
+				Query:      strings.Join(args, " "),
+				Session:    sessionID,
+				WorktreeID: worktreeID,
+				Limit:      limit,
 			})
 			if err != nil {
 				return err
@@ -68,6 +74,7 @@ func searchCmd() *cobra.Command {
 	cmd.Flags().StringVar(&session, "session", "", "Session id to search; defaults to all sessions")
 	cmd.Flags().IntVarP(&limit, "limit", "n", 20, "Maximum results; 0 shows all")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit structured JSON")
+	cmd.Flags().BoolVar(&allWorktrees, "all-worktrees", false, "Search every attached and imported worktree")
 	return cmd
 }
 
@@ -110,6 +117,11 @@ func writeSearchResults(w io.Writer, results []queryindex.SearchResult) error {
 		}
 		if _, err := fmt.Fprintf(w, "%s:%s", result.SessionID, result.TurnID); err != nil {
 			return err
+		}
+		if result.WorktreeID != "" {
+			if _, err := fmt.Fprintf(w, "  worktree=%s", result.WorktreeID); err != nil {
+				return err
+			}
 		}
 		if result.Adapter != "" {
 			if _, err := fmt.Fprintf(w, "  %s", result.Adapter); err != nil {

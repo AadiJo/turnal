@@ -37,6 +37,13 @@ func DropSession(repo *checkpoint.Repo, sessionID primitives.SessionID, dryRun b
 			}
 		}
 		for _, path := range result.DeletedFiles {
+			info, statErr := os.Stat(path)
+			if statErr == nil && info.IsDir() {
+				if err := os.RemoveAll(path); err != nil {
+					return fmt.Errorf("remove %s: %w", path, err)
+				}
+				continue
+			}
 			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 				return fmt.Errorf("remove %s: %w", path, err)
 			}
@@ -108,6 +115,19 @@ func planDropSession(repo *checkpoint.Repo, sessionID primitives.SessionID, dryR
 	}
 	result := Result{DryRun: dryRun}
 	seenRefs := map[string]struct{}{}
+	infos, err := repo.ListAllCheckpointRefInfos()
+	if err != nil {
+		return Result{}, err
+	}
+	for _, info := range infos {
+		if info.SessionID != sessionID {
+			continue
+		}
+		seenRefs[info.Ref.String()] = struct{}{}
+		if info.CanonicalRef != "" {
+			seenRefs[info.CanonicalRef.String()] = struct{}{}
+		}
+	}
 	for _, prefix := range refPrefixes {
 		refs, err := repo.ListPrivateRefs(prefix)
 		if err != nil {
@@ -118,8 +138,20 @@ func planDropSession(repo *checkpoint.Repo, sessionID primitives.SessionID, dryR
 				continue
 			}
 			seenRefs[ref] = struct{}{}
-			result.DeletedRefs = append(result.DeletedRefs, ref)
 		}
+	}
+	allRefs, err := repo.ListAllPrivateRefs()
+	if err != nil {
+		return Result{}, err
+	}
+	needle := "/" + sessionID.String() + "/turn/"
+	for _, ref := range allRefs {
+		if strings.Contains(ref, needle) {
+			seenRefs[ref] = struct{}{}
+		}
+	}
+	for ref := range seenRefs {
+		result.DeletedRefs = append(result.DeletedRefs, ref)
 	}
 	sort.Strings(result.DeletedRefs)
 
@@ -137,8 +169,25 @@ func planDropSession(repo *checkpoint.Repo, sessionID primitives.SessionID, dryR
 func sessionFiles(repo *checkpoint.Repo, sessionID primitives.SessionID) []string {
 	files := []string{
 		filepath.Join(repo.MetadataDir, "log", "events", sessionID.String()+".jsonl"),
+		filepath.Join(repo.MetadataDir, "log", "events", sessionID.String()),
 		filepath.Join(repo.TmpDir, "turns", sessionID.String()+".json"),
 		filepath.Join(repo.TmpDir, "hooks", sessionID.String()+".lock"),
+	}
+	if streams, err := eventlog.ListDurableStreams(repo.MetadataDir); err == nil {
+		for _, stream := range streams {
+			if stream.SessionID == sessionID {
+				files = append(files, filepath.Join(repo.MetadataDir, "log", "streams", stream.StreamID.String()+".json"))
+			}
+		}
+	}
+	for _, pattern := range []string{
+		filepath.Join(repo.TmpDir, "turns", "*-"+sessionID.String()+".json"),
+		filepath.Join(repo.TmpDir, "hooks", "*-"+sessionID.String()+".lock"),
+		filepath.Join(repo.TmpDir, "checkpoints", "*-"+sessionID.String()+"-turn-*.json"),
+	} {
+		if matches, err := filepath.Glob(pattern); err == nil {
+			files = append(files, matches...)
+		}
 	}
 	if matches, err := filepath.Glob(filepath.Join(repo.TmpDir, "checkpoints", sessionID.String()+"-turn-*.json")); err == nil {
 		files = append(files, matches...)
@@ -176,7 +225,49 @@ func referencedPrivateRefs(repo *checkpoint.Repo) (map[string]struct{}, error) {
 	}
 	collectActiveTurnRefs(repo, referenced)
 	collectRollbackJournalRefs(repo, referenced)
+	collectImportManifestRefs(repo, referenced)
+
+	infos, err := repo.ListAllCheckpointRefInfos()
+	if err != nil {
+		return nil, err
+	}
+	for _, info := range infos {
+		if _, ok := referenced[info.Ref.String()]; !ok {
+			continue
+		}
+		if info.CanonicalRef != "" {
+			referenced[info.CanonicalRef.String()] = struct{}{}
+		}
+	}
 	return referenced, nil
+}
+
+func collectImportManifestRefs(repo *checkpoint.Repo, referenced map[string]struct{}) {
+	dir := filepath.Join(repo.MetadataDir, "imports")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		var manifest struct {
+			RefMappings map[string]string `json:"ref_mappings"`
+		}
+		if err := json.Unmarshal(data, &manifest); err != nil {
+			continue
+		}
+		for _, ref := range manifest.RefMappings {
+			if strings.HasPrefix(ref, "refs/agent-vcs/") {
+				referenced[ref] = struct{}{}
+			}
+		}
+	}
 }
 
 func collectRollbackJournalRefs(repo *checkpoint.Repo, referenced map[string]struct{}) {

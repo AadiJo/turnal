@@ -204,10 +204,11 @@ func replayShowCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			reader := recall.NewReader(repo.MetadataDir)
+			reader := recall.NewScopedReader(repo.MetadataDir, repo.WorktreeID)
 			recalled, err := reader.RecallTurn(sessionID, turnID, recall.Options{
 				IncludeRaw:        includeRaw || full,
 				IncludeTranscript: includeTranscript || full,
+				WorktreeID:        repo.WorktreeID,
 			})
 			if err != nil {
 				return err

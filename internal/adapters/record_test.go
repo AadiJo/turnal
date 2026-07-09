@@ -91,7 +91,7 @@ func TestRecordHookPayloadNoopsOutsideWorkspace(t *testing.T) {
 	}
 }
 
-func TestRecordHookPayloadUsesProcessWorkspaceBeforePayloadCWD(t *testing.T) {
+func TestRecordHookPayloadUsesAbsolutePayloadCWDBeforeProcessWorkspace(t *testing.T) {
 	requireGit(t)
 
 	root := workspaceRoot(t)
@@ -114,12 +114,12 @@ func TestRecordHookPayloadUsesProcessWorkspaceBeforePayloadCWD(t *testing.T) {
 	}
 
 	rootRecords := filepath.Join(root.String(), ".turnal", "log", "adapter", "codex.jsonl")
-	if _, err := os.Stat(rootRecords); err != nil {
-		t.Fatalf("expected process workspace record: %v", err)
+	if _, err := os.Stat(rootRecords); !os.IsNotExist(err) {
+		t.Fatalf("process workspace should not receive payload for another workspace, stat err=%v", err)
 	}
 	otherRecords := filepath.Join(other.String(), ".turnal", "log", "adapter", "codex.jsonl")
-	if _, err := os.Stat(otherRecords); !os.IsNotExist(err) {
-		t.Fatalf("payload cwd workspace should not receive record, stat err=%v", err)
+	if _, err := os.Stat(otherRecords); err != nil {
+		t.Fatalf("expected payload cwd workspace record: %v", err)
 	}
 }
 

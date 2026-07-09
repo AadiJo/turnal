@@ -90,7 +90,21 @@ func inspectCheckpointEvent(repo *checkpoint.Repo, sessionID primitives.SessionI
 	}
 	refCommit, err := repo.CheckpointCommit(ref)
 	if err != nil {
-		return fmt.Sprintf("checkpoint event references missing checkpoint ref for session %s turn %s seq %s: %s: %v", sessionID, turnID, event.Seq, ref, err)
+		matches, findErr := repo.FindCheckpointTargets(sessionID, turnID, phase)
+		if findErr != nil {
+			return fmt.Sprintf("checkpoint event references missing checkpoint ref for session %s turn %s seq %s: %s: %v", sessionID, turnID, event.Seq, ref, err)
+		}
+		found := false
+		for _, match := range matches {
+			if match.StreamID == event.StreamID && match.Commit == commit {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Sprintf("checkpoint event references missing checkpoint ref for session %s turn %s seq %s: %s: %v", sessionID, turnID, event.Seq, ref, err)
+		}
+		return ""
 	}
 	if refCommit != commit {
 		return fmt.Sprintf("checkpoint event commit mismatch for session %s turn %s seq %s: ref %s points to %s, payload has %s", sessionID, turnID, event.Seq, ref, refCommit, commit)

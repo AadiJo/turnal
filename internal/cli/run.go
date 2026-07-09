@@ -83,7 +83,7 @@ func runCmd() *cobra.Command {
 			if cmd.Flags().Changed("quiet") {
 				overrides.RunQuiet = &quiet
 			}
-			effective, _, err := agentconfig.Resolve(repo.WorkspaceRoot.String(), overrides)
+			effective, _, err := agentconfig.ResolvePath(filepath.Join(repo.MetadataDir, "config.toml"), overrides)
 			if err != nil {
 				return err
 			}
@@ -220,7 +220,7 @@ func newRunSessionID(now time.Time) (primitives.SessionID, error) {
 }
 
 func startRunTurn(repo *checkpoint.Repo, sessionID primitives.SessionID, command []string) (turns.StartResult, error) {
-	log := eventlog.Open(repo.MetadataDir)
+	log := repo.EventLog()
 	if _, err := log.Append(eventlog.AppendInput{
 		SessionID: sessionID,
 		Type:      primitives.EventTypeSessionStart,
@@ -269,7 +269,7 @@ func startRunTurn(repo *checkpoint.Repo, sessionID primitives.SessionID, command
 }
 
 func finishRunTurn(repo *checkpoint.Repo, sessionID primitives.SessionID, turnID primitives.TurnID) error {
-	log := eventlog.Open(repo.MetadataDir)
+	log := repo.EventLog()
 	finished, err := turns.NewManager(repo).Finish(sessionID, turnID)
 	if err != nil {
 		return err

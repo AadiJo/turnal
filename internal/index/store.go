@@ -20,6 +20,11 @@ type Store struct {
 	paths Paths
 }
 
+type streamTurnDBKey struct {
+	StreamID primitives.EventStreamID
+	TurnID   uint64
+}
+
 func Exists(metadataDir string) (bool, error) {
 	paths := PathsForMetadata(metadataDir)
 	if _, err := os.Stat(paths.DBPath); err != nil {
@@ -78,13 +83,17 @@ func (s *Store) Search(query SearchQuery) ([]SearchResult, error) {
 
 	args := []any{match}
 	sqlText := `
-		SELECT session_id, turn_id, first_at, last_at, adapter, prompt, assistant, tools, paths,
+		SELECT stream_id, worktree_id, session_id, turn_id, first_at, last_at, adapter, prompt, assistant, tools, paths,
 		       snippet(turn_search, -1, '[', ']', ' ... ', 16), bm25(turn_search) AS rank
 		FROM turn_search
 		WHERE turn_search MATCH ?`
 	if query.Session != "" {
 		sqlText += ` AND session_id = ?`
 		args = append(args, query.Session.String())
+	}
+	if query.WorktreeID != "" {
+		sqlText += ` AND worktree_id = ?`
+		args = append(args, query.WorktreeID.String())
 	}
 	sqlText += ` ORDER BY rank, session_id, CAST(turn_id AS INTEGER)`
 	if query.Limit > 0 {
@@ -100,6 +109,8 @@ func (s *Store) Search(query SearchQuery) ([]SearchResult, error) {
 
 	var results []SearchResult
 	for rows.Next() {
+		var streamText string
+		var worktreeText sql.NullString
 		var sessionText string
 		var turnText string
 		var firstText sql.NullString
@@ -112,6 +123,8 @@ func (s *Store) Search(query SearchQuery) ([]SearchResult, error) {
 		var snippet sql.NullString
 		var rank float64
 		if err := rows.Scan(
+			&streamText,
+			&worktreeText,
 			&sessionText,
 			&turnText,
 			&firstText,
@@ -131,6 +144,17 @@ func (s *Store) Search(query SearchQuery) ([]SearchResult, error) {
 		if err != nil {
 			return nil, fmt.Errorf("index search session invariant failed: %w", err)
 		}
+		streamID, err := primitives.ParseEventStreamID(streamText)
+		if err != nil {
+			return nil, fmt.Errorf("index search stream invariant failed: %w", err)
+		}
+		var worktreeID primitives.WorktreeID
+		if worktreeText.Valid && worktreeText.String != "" {
+			worktreeID, err = primitives.ParseWorktreeID(worktreeText.String)
+			if err != nil {
+				return nil, fmt.Errorf("index search worktree invariant failed: %w", err)
+			}
+		}
 		turnID, err := primitives.ParseTurnID(turnText)
 		if err != nil {
 			return nil, fmt.Errorf("index search turn invariant failed for session %s: %w", sessionID, err)
@@ -145,17 +169,19 @@ func (s *Store) Search(query SearchQuery) ([]SearchResult, error) {
 		}
 
 		results = append(results, SearchResult{
-			SessionID: sessionID,
-			TurnID:    turnID,
-			First:     first,
-			Last:      last,
-			Adapter:   nullableString(adapter),
-			Prompt:    nullableString(prompt),
-			Assistant: nullableString(assistant),
-			ToolNames: splitSearchList(nullableString(tools)),
-			Paths:     splitSearchList(nullableString(paths)),
-			Snippet:   nullableString(snippet),
-			Rank:      rank,
+			SessionID:  sessionID,
+			WorktreeID: worktreeID,
+			StreamID:   streamID,
+			TurnID:     turnID,
+			First:      first,
+			Last:       last,
+			Adapter:    nullableString(adapter),
+			Prompt:     nullableString(prompt),
+			Assistant:  nullableString(assistant),
+			ToolNames:  splitSearchList(nullableString(tools)),
+			Paths:      splitSearchList(nullableString(paths)),
+			Snippet:    nullableString(snippet),
+			Rank:       rank,
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -172,13 +198,27 @@ func (s *Store) LoadGraph(query GraphQuery) ([]GraphSession, error) {
 	ctx := context.Background()
 	var rows *sql.Rows
 	var err error
-	if query.Session != "" {
+	if query.Session != "" && query.WorktreeID != "" {
+		rows, err = s.db.QueryContext(ctx, `
+			SELECT session_id, COUNT(*)
+			FROM turns
+			WHERE session_id = ? AND worktree_id = ?
+			GROUP BY session_id
+			ORDER BY session_id`, query.Session.String(), query.WorktreeID.String())
+	} else if query.Session != "" {
 		rows, err = s.db.QueryContext(ctx, `
 			SELECT session_id, COUNT(*)
 			FROM turns
 			WHERE session_id = ?
 			GROUP BY session_id
 			ORDER BY session_id`, query.Session.String())
+	} else if query.WorktreeID != "" {
+		rows, err = s.db.QueryContext(ctx, `
+			SELECT session_id, COUNT(*)
+			FROM turns
+			WHERE worktree_id = ?
+			GROUP BY session_id
+			ORDER BY session_id`, query.WorktreeID.String())
 	} else {
 		rows, err = s.db.QueryContext(ctx, `
 			SELECT session_id, COUNT(*)
@@ -217,7 +257,7 @@ func (s *Store) LoadGraph(query GraphQuery) ([]GraphSession, error) {
 
 	var sessions []GraphSession
 	for _, total := range totals {
-		turns, err := s.loadGraphTurns(ctx, total.sessionID, query.Limit)
+		turns, err := s.loadGraphTurns(ctx, total.sessionID, query)
 		if err != nil {
 			return nil, err
 		}
@@ -230,7 +270,7 @@ func (s *Store) LoadGraph(query GraphQuery) ([]GraphSession, error) {
 	return sessions, nil
 }
 
-func (s *Store) loadGraphTurns(ctx context.Context, sessionID primitives.SessionID, limit int) ([]GraphTurn, error) {
+func (s *Store) loadGraphTurns(ctx context.Context, sessionID primitives.SessionID, graphQuery GraphQuery) ([]GraphTurn, error) {
 	checkpoints, err := s.loadCheckpoints(ctx, sessionID)
 	if err != nil {
 		return nil, err
@@ -242,15 +282,19 @@ func (s *Store) loadGraphTurns(ctx context.Context, sessionID primitives.Session
 
 	args := []any{sessionID.String()}
 	query := `
-		SELECT turn_id, event_count, adapter, prompt_preview, assistant_preview,
+		SELECT stream_id, worktree_id, turn_id, event_count, adapter, prompt_preview, assistant_preview,
 		       tool_names_json, event_type_counts_json, events_first_at, events_last_at,
 		       diff_loaded, diff_additions, diff_deletions, diff_binary_files, warnings_json
 		FROM turns
-		WHERE session_id = ?
-		ORDER BY turn_id DESC`
-	if limit > 0 {
+		WHERE session_id = ?`
+	if graphQuery.WorktreeID != "" {
+		query += ` AND worktree_id = ?`
+		args = append(args, graphQuery.WorktreeID.String())
+	}
+	query += ` ORDER BY turn_id DESC, stream_id`
+	if graphQuery.Limit > 0 {
 		query += ` LIMIT ?`
-		args = append(args, limit)
+		args = append(args, graphQuery.Limit)
 	}
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -261,6 +305,8 @@ func (s *Store) loadGraphTurns(ctx context.Context, sessionID primitives.Session
 
 	var turns []GraphTurn
 	for rows.Next() {
+		var streamText string
+		var worktreeText sql.NullString
 		var turnNumber int64
 		var eventCount int
 		var adapter sql.NullString
@@ -276,6 +322,8 @@ func (s *Store) loadGraphTurns(ctx context.Context, sessionID primitives.Session
 		var binaryFiles int
 		var warningsJSON string
 		if err := rows.Scan(
+			&streamText,
+			&worktreeText,
 			&turnNumber,
 			&eventCount,
 			&adapter,
@@ -298,6 +346,18 @@ func (s *Store) loadGraphTurns(ctx context.Context, sessionID primitives.Session
 		if err != nil {
 			return nil, fmt.Errorf("index turn invariant failed for session %s: %w", sessionID, err)
 		}
+		streamID, err := primitives.ParseEventStreamID(streamText)
+		if err != nil {
+			return nil, fmt.Errorf("index stream invariant failed for session %s: %w", sessionID, err)
+		}
+		var worktreeID primitives.WorktreeID
+		if worktreeText.Valid && worktreeText.String != "" {
+			worktreeID, err = primitives.ParseWorktreeID(worktreeText.String)
+			if err != nil {
+				return nil, fmt.Errorf("index worktree invariant failed for session %s: %w", sessionID, err)
+			}
+		}
+		turnKey := streamTurnDBKey{StreamID: streamID, TurnID: turnID.Uint64()}
 		toolNames, err := decodeStringSlice(toolNamesJSON)
 		if err != nil {
 			return nil, fmt.Errorf("decode indexed tool names for %s:%s: %w", sessionID, turnID, err)
@@ -320,14 +380,16 @@ func (s *Store) loadGraphTurns(ctx context.Context, sessionID primitives.Session
 		}
 
 		diff := checkpoint.DiffSummary{
-			Files:       fileTouches[turnID.Uint64()],
+			Files:       fileTouches[turnKey],
 			Additions:   additions,
 			Deletions:   deletions,
 			BinaryFiles: binaryFiles,
 		}
 		graphTurn := GraphTurn{
-			TurnID: turnID,
-			Diff:   diff,
+			WorktreeID: worktreeID,
+			StreamID:   streamID,
+			TurnID:     turnID,
+			Diff:       diff,
 			Events: TurnEventSummary{
 				Count:      eventCount,
 				Adapter:    nullableString(adapter),
@@ -341,7 +403,7 @@ func (s *Store) loadGraphTurns(ctx context.Context, sessionID primitives.Session
 			DiffLoaded: diffLoadedInt != 0,
 			Warnings:   warnings,
 		}
-		if refs := checkpoints[turnID.Uint64()]; refs != nil {
+		if refs := checkpoints[turnKey]; refs != nil {
 			graphTurn.Pre = refs[primitives.CheckpointPhasePre]
 			graphTurn.Post = refs[primitives.CheckpointPhasePost]
 		}
@@ -353,9 +415,9 @@ func (s *Store) loadGraphTurns(ctx context.Context, sessionID primitives.Session
 	return turns, nil
 }
 
-func (s *Store) loadCheckpoints(ctx context.Context, sessionID primitives.SessionID) (map[uint64]map[primitives.CheckpointPhase]*checkpoint.CheckpointRefInfo, error) {
+func (s *Store) loadCheckpoints(ctx context.Context, sessionID primitives.SessionID) (map[streamTurnDBKey]map[primitives.CheckpointPhase]*checkpoint.CheckpointRefInfo, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT turn_id, phase, ref, commit_sha, committed_at
+		SELECT stream_id, worktree_id, checkpoint_id, canonical_ref, turn_id, phase, ref, commit_sha, committed_at
 		FROM checkpoints
 		WHERE session_id = ?`, sessionID.String())
 	if err != nil {
@@ -363,19 +425,48 @@ func (s *Store) loadCheckpoints(ctx context.Context, sessionID primitives.Sessio
 	}
 	defer rows.Close()
 
-	checkpoints := make(map[uint64]map[primitives.CheckpointPhase]*checkpoint.CheckpointRefInfo)
+	checkpoints := make(map[streamTurnDBKey]map[primitives.CheckpointPhase]*checkpoint.CheckpointRefInfo)
 	for rows.Next() {
+		var streamText string
+		var worktreeText sql.NullString
+		var checkpointIDText sql.NullString
+		var canonicalRefText sql.NullString
 		var turnNumber int64
 		var phaseText string
 		var refText string
 		var commitText string
 		var timeText string
-		if err := rows.Scan(&turnNumber, &phaseText, &refText, &commitText, &timeText); err != nil {
+		if err := rows.Scan(&streamText, &worktreeText, &checkpointIDText, &canonicalRefText, &turnNumber, &phaseText, &refText, &commitText, &timeText); err != nil {
 			return nil, fmt.Errorf("scan indexed checkpoint for session %s: %w", sessionID, err)
 		}
 		turnID, err := turnIDFromInt64(turnNumber)
 		if err != nil {
 			return nil, fmt.Errorf("index checkpoint invariant failed for session %s: %w", sessionID, err)
+		}
+		streamID, err := primitives.ParseEventStreamID(streamText)
+		if err != nil {
+			return nil, fmt.Errorf("index checkpoint stream invariant failed for %s:%s: %w", sessionID, turnID, err)
+		}
+		var worktreeID primitives.WorktreeID
+		if worktreeText.Valid && worktreeText.String != "" {
+			worktreeID, err = primitives.ParseWorktreeID(worktreeText.String)
+			if err != nil {
+				return nil, err
+			}
+		}
+		var checkpointID primitives.CheckpointID
+		if checkpointIDText.Valid && checkpointIDText.String != "" {
+			checkpointID, err = primitives.ParseCheckpointID(checkpointIDText.String)
+			if err != nil {
+				return nil, err
+			}
+		}
+		var canonicalRef primitives.CheckpointRef
+		if canonicalRefText.Valid && canonicalRefText.String != "" {
+			canonicalRef, err = primitives.ParseCheckpointRef(canonicalRefText.String)
+			if err != nil {
+				return nil, err
+			}
 		}
 		ref, err := primitives.ParseCheckpointRef(refText)
 		if err != nil {
@@ -402,19 +493,24 @@ func (s *Store) loadCheckpoints(ctx context.Context, sessionID primitives.Sessio
 			continue
 		}
 
-		if checkpoints[turnID.Uint64()] == nil {
-			checkpoints[turnID.Uint64()] = make(map[primitives.CheckpointPhase]*checkpoint.CheckpointRefInfo)
+		key := streamTurnDBKey{StreamID: streamID, TurnID: turnID.Uint64()}
+		if checkpoints[key] == nil {
+			checkpoints[key] = make(map[primitives.CheckpointPhase]*checkpoint.CheckpointRefInfo)
 		}
 		info := checkpoint.CheckpointRefInfo{
-			Ref:       ref,
-			SessionID: sessionID,
-			TurnID:    turnID,
-			Phase:     phase,
-			HasPhase:  hasPhase,
-			Commit:    commit,
-			Time:      committedAt,
+			ID:           checkpointID,
+			Ref:          ref,
+			CanonicalRef: canonicalRef,
+			SessionID:    sessionID,
+			WorktreeID:   worktreeID,
+			StreamID:     streamID,
+			TurnID:       turnID,
+			Phase:        phase,
+			HasPhase:     hasPhase,
+			Commit:       commit,
+			Time:         committedAt,
 		}
-		checkpoints[turnID.Uint64()][phase] = &info
+		checkpoints[key][phase] = &info
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate indexed checkpoints for session %s: %w", sessionID, err)
@@ -422,9 +518,9 @@ func (s *Store) loadCheckpoints(ctx context.Context, sessionID primitives.Sessio
 	return checkpoints, nil
 }
 
-func (s *Store) loadFileTouches(ctx context.Context, sessionID primitives.SessionID) (map[uint64][]checkpoint.DiffFileStat, error) {
+func (s *Store) loadFileTouches(ctx context.Context, sessionID primitives.SessionID) (map[streamTurnDBKey][]checkpoint.DiffFileStat, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT turn_id, path, additions, deletions, binary
+		SELECT stream_id, turn_id, path, additions, deletions, binary
 		FROM file_touches
 		WHERE session_id = ?
 		ORDER BY turn_id DESC, path`, sessionID.String())
@@ -433,21 +529,27 @@ func (s *Store) loadFileTouches(ctx context.Context, sessionID primitives.Sessio
 	}
 	defer rows.Close()
 
-	fileTouches := make(map[uint64][]checkpoint.DiffFileStat)
+	fileTouches := make(map[streamTurnDBKey][]checkpoint.DiffFileStat)
 	for rows.Next() {
+		var streamText string
 		var turnNumber int64
 		var path string
 		var additions int
 		var deletions int
 		var binaryInt int
-		if err := rows.Scan(&turnNumber, &path, &additions, &deletions, &binaryInt); err != nil {
+		if err := rows.Scan(&streamText, &turnNumber, &path, &additions, &deletions, &binaryInt); err != nil {
 			return nil, fmt.Errorf("scan indexed file touch for session %s: %w", sessionID, err)
 		}
 		turnID, err := turnIDFromInt64(turnNumber)
 		if err != nil {
 			return nil, fmt.Errorf("index file touch invariant failed for session %s: %w", sessionID, err)
 		}
-		fileTouches[turnID.Uint64()] = append(fileTouches[turnID.Uint64()], checkpoint.DiffFileStat{
+		streamID, err := primitives.ParseEventStreamID(streamText)
+		if err != nil {
+			return nil, fmt.Errorf("index file touch stream invariant failed for session %s: %w", sessionID, err)
+		}
+		key := streamTurnDBKey{StreamID: streamID, TurnID: turnID.Uint64()}
+		fileTouches[key] = append(fileTouches[key], checkpoint.DiffFileStat{
 			Path:      path,
 			Additions: additions,
 			Deletions: deletions,

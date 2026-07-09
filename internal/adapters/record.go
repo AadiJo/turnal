@@ -79,7 +79,7 @@ func RecordHookPayload(adapter primitives.AdapterName, hookName string, raw []by
 	if err != nil {
 		return "", nil
 	}
-	effective, _, err := agentconfig.Resolve(root.String(), agentconfig.Overrides{})
+	effective, _, err := agentconfig.ResolvePath(filepath.Join(repo.MetadataDir, "config.toml"), agentconfig.Overrides{})
 	if err != nil {
 		return "", err
 	}
@@ -196,18 +196,11 @@ func hookWorkspaceCWD(raw []byte) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("get working directory: %w", err)
 	}
-	if _, err := checkpoint.FindRoot(processCWD); err == nil {
-		return processCWD, nil
-	}
-
 	payloadCWD := cwdFromPayload(raw)
-	if payloadCWD == "" {
-		return processCWD, nil
+	if payloadCWD != "" && filepath.IsAbs(payloadCWD) {
+		return payloadCWD, nil
 	}
-	if !filepath.IsAbs(payloadCWD) {
-		return processCWD, nil
-	}
-	return payloadCWD, nil
+	return processCWD, nil
 }
 
 func cwdFromPayload(raw []byte) string {

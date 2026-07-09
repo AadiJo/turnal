@@ -3,7 +3,6 @@ package turnevents
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
@@ -27,8 +26,12 @@ type turnPayload struct {
 type checkpointPayload struct {
 	Turn          uint64               `json:"turn"`
 	Phase         string               `json:"phase"`
+	CheckpointID  string               `json:"checkpoint_id,omitempty"`
+	WorktreeID    string               `json:"worktree_id,omitempty"`
+	StreamID      string               `json:"stream_id,omitempty"`
 	CommitSHA     string               `json:"commit_sha"`
 	Ref           string               `json:"ref"`
+	CanonicalRef  string               `json:"canonical_ref,omitempty"`
 	GitSyncRef    string               `json:"git_sync_ref,omitempty"`
 	EventSeqStart uint64               `json:"event_seq_start"`
 	EventSeqEnd   uint64               `json:"event_seq_end"`
@@ -77,7 +80,7 @@ func AppendTurnStart(log eventlog.Log, adapter primitives.AdapterName, sessionID
 		TurnID:    &turnID,
 		Type:      primitives.EventTypeTurnStart,
 		Adapter:   adapter,
-		SourceID:  fmt.Sprintf("%s:turn:%s:start", adapter, turnID),
+		SourceID:  scopedSourceID(log, sessionID, fmt.Sprintf("%s:turn:%s:start", adapter, turnID)),
 		RawRef:    rawRef,
 		Payload:   mustJSON(turnPayload{Turn: turnID.Uint64()}),
 	})
@@ -90,7 +93,7 @@ func AppendTurnFinish(log eventlog.Log, adapter primitives.AdapterName, sessionI
 		TurnID:    &turnID,
 		Type:      primitives.EventTypeTurnFinish,
 		Adapter:   adapter,
-		SourceID:  fmt.Sprintf("%s:turn:%s:finish", adapter, turnID),
+		SourceID:  scopedSourceID(log, sessionID, fmt.Sprintf("%s:turn:%s:finish", adapter, turnID)),
 		RawRef:    rawRef,
 		Payload:   mustJSON(turnPayload{Turn: turnID.Uint64()}),
 	})
@@ -116,7 +119,7 @@ func AppendCheckpointWithGitSync(log eventlog.Log, adapter primitives.AdapterNam
 		TurnID:    &turnID,
 		Type:      primitives.EventTypeCheckpoint,
 		Adapter:   adapter,
-		SourceID:  fmt.Sprintf("%s:turn:%s:checkpoint:%s", adapter, turnID, phase),
+		SourceID:  scopedSourceID(log, sessionID, fmt.Sprintf("%s:turn:%s:checkpoint:%s", adapter, turnID, phase)),
 		RawRef:    rawRef,
 		BuildPayload: func(context eventlog.AppendContext) (json.RawMessage, error) {
 			eventSeqStart, err := checkpointEventSeqStart(context.PreviousEvents)
@@ -126,8 +129,12 @@ func AppendCheckpointWithGitSync(log eventlog.Log, adapter primitives.AdapterNam
 			return mustJSON(checkpointPayload{
 				Turn:          turnID.Uint64(),
 				Phase:         phase.String(),
+				CheckpointID:  created.ID.String(),
+				WorktreeID:    created.WorktreeID.String(),
+				StreamID:      created.StreamID.String(),
 				CommitSHA:     created.Commit.String(),
 				Ref:           created.Ref.String(),
+				CanonicalRef:  created.CanonicalRef.String(),
 				GitSyncRef:    gitSyncRef,
 				EventSeqStart: eventSeqStart.Uint64(),
 				EventSeqEnd:   context.Seq.Uint64(),
@@ -178,7 +185,7 @@ func RecoverCheckpointJournals(log eventlog.Log, repo *checkpoint.Repo) error {
 }
 
 func recoverIntentCheckpointJournal(log eventlog.Log, repo *checkpoint.Repo, journal checkpoint.CheckpointJournal) (bool, error) {
-	ref, err := primitives.NewCheckpointRef(journal.SessionID, journal.TurnID, journal.Phase)
+	ref, err := repo.CheckpointRefFor(journal.SessionID, journal.TurnID, journal.Phase)
 	if err != nil {
 		return false, err
 	}
@@ -186,11 +193,23 @@ func recoverIntentCheckpointJournal(log eventlog.Log, repo *checkpoint.Repo, jou
 	if err != nil {
 		return false, nil
 	}
-	created := checkpoint.Checkpoint{Ref: ref, Commit: commit}
+	checkpointID := journal.CheckpointID
+	if checkpointID == "" {
+		checkpointID, err = primitives.NewCheckpointID()
+		if err != nil {
+			return false, err
+		}
+	}
+	canonicalRef, err := repo.EnsureCanonicalCheckpointRef(checkpointID, commit)
+	if err != nil {
+		return false, err
+	}
+	created := checkpoint.Checkpoint{ID: checkpointID, Ref: ref, CanonicalRef: canonicalRef, Commit: commit, WorktreeID: journal.WorktreeID, StreamID: journal.StreamID}
 	if err := repo.MarkCheckpointJournalCommitted(journal.SessionID, journal.TurnID, journal.Phase, created); err != nil {
 		return false, err
 	}
 	journal.Ref = ref
+	journal.CanonicalRef = canonicalRef
 	journal.CommitSHA = commit
 	return true, recoverCheckpointJournal(log, repo, journal)
 }
@@ -204,6 +223,30 @@ func recoverCheckpointJournal(log eventlog.Log, repo *checkpoint.Repo, journal c
 	}
 	if _, err := repo.CheckpointCommit(journal.Ref); err != nil {
 		return fmt.Errorf("checkpoint invariant failed: checkpoint journal ref %s is not readable: %w", journal.Ref, err)
+	}
+	if journal.CheckpointID == "" {
+		checkpointID, err := primitives.NewCheckpointID()
+		if err != nil {
+			return err
+		}
+		journal.CheckpointID = checkpointID
+	}
+	if journal.CanonicalRef == "" {
+		canonicalRef, err := repo.EnsureCanonicalCheckpointRef(journal.CheckpointID, journal.CommitSHA)
+		if err != nil {
+			return err
+		}
+		journal.CanonicalRef = canonicalRef
+	}
+	if journal.WorktreeID == "" {
+		journal.WorktreeID = repo.WorktreeID
+	}
+	if journal.StreamID == "" {
+		streamID, err := repo.StreamID(journal.SessionID)
+		if err != nil {
+			return err
+		}
+		journal.StreamID = streamID
 	}
 
 	if journal.Phase == primitives.CheckpointPhasePre {
@@ -225,13 +268,17 @@ func recoverCheckpointJournal(log eventlog.Log, repo *checkpoint.Repo, journal c
 		gitSync = &checkpoint.Snapshot{Ref: journal.GitSyncRef, Commit: gitSyncCommit}
 	}
 	if err := AppendCheckpointWithGitSync(log, journal.Adapter, journal.SessionID, journal.TurnID, journal.Phase, checkpoint.Checkpoint{
-		Ref:    journal.Ref,
-		Commit: journal.CommitSHA,
+		ID:           journal.CheckpointID,
+		Ref:          journal.Ref,
+		CanonicalRef: journal.CanonicalRef,
+		Commit:       journal.CommitSHA,
+		WorktreeID:   journal.WorktreeID,
+		StreamID:     journal.StreamID,
 	}, gitSync, journal.RawRef); err != nil {
 		return err
 	}
 	if journal.Phase == primitives.CheckpointPhasePost {
-		if err := os.Remove(filepath.Join(repo.TmpDir, "turns", journal.SessionID.String()+".json")); err != nil && !os.IsNotExist(err) {
+		if err := turns.NewManager(repo).ClearActiveForRecovery(journal.SessionID); err != nil {
 			return fmt.Errorf("clear recovered active turn state: %w", err)
 		}
 	}
@@ -261,14 +308,32 @@ func appendPayloadEvent(log eventlog.Log, input eventlog.AppendInput) (eventlog.
 	return log.Append(input)
 }
 
+func scopedSourceID(log eventlog.Log, sessionID primitives.SessionID, sourceID string) string {
+	if log.ProducerID == "" {
+		return sourceID
+	}
+	streamID, err := primitives.DeriveEventStreamID(log.ProducerID, sessionID)
+	if err != nil {
+		return sourceID
+	}
+	return streamID.String() + ":" + sourceID
+}
+
 func checkpointRepoFromLog(log eventlog.Log) *checkpoint.Repo {
 	metadataDir := filepath.Clean(filepath.Join(log.Dir, "..", ".."))
-	root := filepath.Dir(metadataDir)
+	root := log.WorkspaceRoot
+	if root == "" {
+		root = filepath.Dir(metadataDir)
+	}
 	return &checkpoint.Repo{
-		WorkspaceRoot: primitives.WorkspaceRoot(root),
-		MetadataDir:   metadataDir,
-		GitDir:        filepath.Join(metadataDir, "git"),
-		TmpDir:        filepath.Join(metadataDir, "tmp"),
+		WorkspaceRoot:   primitives.WorkspaceRoot(root),
+		MetadataDir:     metadataDir,
+		GitDir:          filepath.Join(metadataDir, "git"),
+		TmpDir:          filepath.Join(metadataDir, "tmp"),
+		RepoID:          log.RepoID,
+		StoreID:         log.StoreID,
+		WorktreeID:      log.WorktreeID,
+		EventProducerID: log.ProducerID,
 	}
 }
 

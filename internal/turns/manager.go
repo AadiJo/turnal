@@ -72,6 +72,19 @@ func (manager Manager) Start(sessionID primitives.SessionID, requestedTurnID pri
 	if err := manager.validate(); err != nil {
 		return StartResult{}, err
 	}
+	var result StartResult
+	err := manager.Repo.WithWorkspaceLock("start turn", func() error {
+		var err error
+		result, err = manager.startUnlocked(sessionID, requestedTurnID)
+		return err
+	})
+	return result, err
+}
+
+func (manager Manager) startUnlocked(sessionID primitives.SessionID, requestedTurnID primitives.TurnID) (StartResult, error) {
+	if err := manager.validate(); err != nil {
+		return StartResult{}, err
+	}
 
 	active, err := manager.readActive(sessionID)
 	if err != nil {
@@ -153,6 +166,19 @@ func (manager Manager) Start(sessionID primitives.SessionID, requestedTurnID pri
 }
 
 func (manager Manager) Finish(sessionID primitives.SessionID, requestedTurnID primitives.TurnID) (FinishResult, error) {
+	if err := manager.validate(); err != nil {
+		return FinishResult{}, err
+	}
+	var result FinishResult
+	err := manager.Repo.WithWorkspaceLock("finish turn", func() error {
+		var err error
+		result, err = manager.finishUnlocked(sessionID, requestedTurnID)
+		return err
+	})
+	return result, err
+}
+
+func (manager Manager) finishUnlocked(sessionID primitives.SessionID, requestedTurnID primitives.TurnID) (FinishResult, error) {
 	if err := manager.validate(); err != nil {
 		return FinishResult{}, err
 	}
@@ -296,7 +322,7 @@ func (manager Manager) gitSyncEnabled() (bool, error) {
 	if manager.GitSyncEnabled != nil {
 		return *manager.GitSyncEnabled, nil
 	}
-	effective, _, err := config.Resolve(manager.Repo.WorkspaceRoot.String(), config.Overrides{})
+	effective, _, err := config.ResolvePath(filepath.Join(manager.Repo.MetadataDir, "config.toml"), config.Overrides{})
 	if err != nil {
 		return false, err
 	}
@@ -311,7 +337,7 @@ func (manager Manager) captureGitSyncIfEnabled(sessionID primitives.SessionID, t
 	if !enabled {
 		return nil, nil
 	}
-	ref, err := gitsync.Ref(sessionID, turnID, phase)
+	ref, err := manager.Repo.GitSyncRefFor(sessionID, turnID, phase)
 	if err != nil {
 		return nil, err
 	}
@@ -319,7 +345,7 @@ func (manager Manager) captureGitSyncIfEnabled(sessionID primitives.SessionID, t
 	if err != nil {
 		return nil, fmt.Errorf("capture workspace git state for %s: %w", ref, err)
 	}
-	snapshot, err := gitsync.Save(manager.Repo, ref, capture, fmt.Sprintf("turnal git-sync %s turn %s %s", sessionID, turnID, phase))
+	snapshot, err := gitsync.SavePrivate(manager.Repo, ref, capture, fmt.Sprintf("turnal git-sync %s turn %s %s", sessionID, turnID, phase))
 	if err != nil {
 		return nil, err
 	}
@@ -327,7 +353,18 @@ func (manager Manager) captureGitSyncIfEnabled(sessionID primitives.SessionID, t
 }
 
 func (manager Manager) activeStatePath(sessionID primitives.SessionID) string {
-	return filepath.Join(manager.Repo.TmpDir, "turns", sessionID.String()+".json")
+	name := sessionID.String() + ".json"
+	if manager.Repo.ScopedRefs {
+		streamID, err := manager.Repo.StreamID(sessionID)
+		if err == nil {
+			name = manager.Repo.WorktreeID.String() + "-" + streamID.String() + "-" + name
+		}
+	}
+	return filepath.Join(manager.Repo.TmpDir, "turns", name)
+}
+
+func (manager Manager) ClearActiveForRecovery(sessionID primitives.SessionID) error {
+	return manager.clearActive(sessionID)
 }
 
 func (manager Manager) readActive(sessionID primitives.SessionID) (*parsedActiveTurnState, error) {

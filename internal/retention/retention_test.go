@@ -33,8 +33,8 @@ func TestDropSessionDeletesEventLogAndPrivateRefs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DropSession: %v", err)
 	}
-	if len(result.DeletedRefs) != 1 || len(result.DeletedFiles) != 1 {
-		t.Fatalf("drop result = %#v, want one ref and one event log", result)
+	if len(result.DeletedRefs) < 2 || len(result.DeletedFiles) < 2 {
+		t.Fatalf("drop result = %#v, want friendly and canonical refs plus stream data and metadata", result)
 	}
 	refs, err := repo.ListCheckpointRefs(sessionID)
 	if err != nil {

@@ -13,6 +13,7 @@ const GitignoreEntry = ".turnal/"
 
 type BootstrapResult struct {
 	Repo                    *Repo
+	Attached                bool
 	WorkspaceGitPath        string
 	WorkspaceGitInitialized bool
 	GitignorePath           string
@@ -22,6 +23,7 @@ type BootstrapResult struct {
 type BootstrapOptions struct {
 	InitWorkspaceGit bool
 	UpdateGitignore  bool
+	StorePath        string
 }
 
 func DefaultBootstrapOptions() BootstrapOptions {
@@ -34,6 +36,10 @@ func DefaultBootstrapOptions() BootstrapOptions {
 type Status struct {
 	WorkspaceRoot     primitives.WorkspaceRoot
 	MetadataDir       string
+	RepoID            primitives.RepoID
+	StoreID           primitives.StoreID
+	WorktreeID        primitives.WorktreeID
+	Attached          bool
 	GitDir            string
 	LogDir            string
 	IndexDir          string
@@ -53,7 +59,7 @@ func Bootstrap(root primitives.WorkspaceRoot) (BootstrapResult, error) {
 }
 
 func BootstrapWithOptions(root primitives.WorkspaceRoot, opts BootstrapOptions) (BootstrapResult, error) {
-	repo, err := Init(root)
+	repo, attached, err := bootstrapRepo(root, opts.StorePath)
 	if err != nil {
 		return BootstrapResult{}, err
 	}
@@ -63,6 +69,11 @@ func BootstrapWithOptions(root primitives.WorkspaceRoot, opts BootstrapOptions) 
 	if opts.InitWorkspaceGit {
 		workspaceGitPath, workspaceGitInitialized, err = ensureWorkspaceGit(root)
 		if err != nil {
+			return BootstrapResult{}, err
+		}
+	}
+	if gitIdentity, identityErr := discoverUserGit(root.String()); identityErr == nil {
+		if err := repo.ensureIdentity(&gitIdentity); err != nil {
 			return BootstrapResult{}, err
 		}
 	}
@@ -78,11 +89,62 @@ func BootstrapWithOptions(root primitives.WorkspaceRoot, opts BootstrapOptions) 
 
 	return BootstrapResult{
 		Repo:                    repo,
+		Attached:                attached,
 		WorkspaceGitPath:        workspaceGitPath,
 		WorkspaceGitInitialized: workspaceGitInitialized,
 		GitignorePath:           gitignorePath,
 		GitignoreUpdated:        updated,
 	}, nil
+}
+
+func bootstrapRepo(root primitives.WorkspaceRoot, explicitStorePath string) (*Repo, bool, error) {
+	if strings.TrimSpace(explicitStorePath) != "" {
+		storePath, err := filepath.Abs(explicitStorePath)
+		if err != nil {
+			return nil, false, fmt.Errorf("resolve explicit store path: %w", err)
+		}
+		if info, err := os.Stat(filepath.Join(storePath, gitDirName)); err == nil && info.IsDir() {
+			repo, err := OpenAt(root, storePath)
+			return repo, !sameIdentityPath(storePath, filepath.Join(root.String(), metadataDirName)), err
+		}
+		repo, err := InitAt(root, storePath)
+		return repo, !sameIdentityPath(storePath, filepath.Join(root.String(), metadataDirName)), err
+	}
+
+	localMetadata := filepath.Join(root.String(), metadataDirName)
+	if info, err := os.Stat(filepath.Join(localMetadata, gitDirName)); err == nil && info.IsDir() {
+		repo, err := InitAt(root, localMetadata)
+		return repo, false, err
+	} else if err != nil && !os.IsNotExist(err) {
+		return nil, false, fmt.Errorf("stat local Turnal store: %w", err)
+	}
+
+	gitIdentity, err := discoverUserGit(root.String())
+	if err != nil {
+		if isNoGitRepository(err) {
+			repo, initErr := Init(root)
+			return repo, false, initErr
+		}
+		if ancestorPath, found, ancestorErr := findAncestorGitPath(root); ancestorErr != nil {
+			return nil, false, ancestorErr
+		} else if found {
+			return nil, false, fmt.Errorf("workspace git discovery failed under existing git metadata %s; refusing to initialize nested workspace git repo: %w", ancestorPath, err)
+		}
+		return nil, false, fmt.Errorf("discover workspace git identity: %w", err)
+	}
+	if store, ok, err := resolveRegisteredStore(gitIdentity); err != nil {
+		return nil, false, err
+	} else if ok {
+		repo, openErr := OpenAt(root, store.StorePath)
+		return repo, !sameIdentityPath(store.StorePath, localMetadata), openErr
+	}
+
+	storePath := filepath.Join(gitIdentity.PrimaryRoot, metadataDirName)
+	if gitIdentity.PrimaryRoot == "" {
+		return nil, false, fmt.Errorf("cannot choose Turnal store location: Git primary worktree is unavailable; pass --store <path>")
+	}
+	repo, err := InitAt(root, storePath)
+	return repo, !sameIdentityPath(storePath, localMetadata), err
 }
 
 func ensureWorkspaceGit(root primitives.WorkspaceRoot) (string, bool, error) {
@@ -178,9 +240,16 @@ func EnsureGitignoreEntry(root primitives.WorkspaceRoot) (string, bool, error) {
 
 func Inspect(root primitives.WorkspaceRoot) Status {
 	repo := paths(root)
+	if opened, err := Open(root); err == nil {
+		repo = opened
+	}
 	status := Status{
 		WorkspaceRoot: root,
 		MetadataDir:   repo.MetadataDir,
+		RepoID:        repo.RepoID,
+		StoreID:       repo.StoreID,
+		WorktreeID:    repo.WorktreeID,
+		Attached:      !sameIdentityPath(repo.MetadataDir, filepath.Join(root.String(), metadataDirName)),
 		GitDir:        repo.GitDir,
 		LogDir:        filepath.Join(repo.MetadataDir, logDirName),
 		IndexDir:      filepath.Join(repo.MetadataDir, indexDirName),

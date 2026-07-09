@@ -75,11 +75,27 @@ type Repo struct {
 	MetadataDir   string
 	GitDir        string
 	TmpDir        string
+
+	IdentityVersion int
+	RepoID          primitives.RepoID
+	StoreID         primitives.StoreID
+	WorktreeID      primitives.WorktreeID
+	EventProducerID primitives.EventProducerID
+	GitObjectFormat string
+	GitTopLevel     string
+	GitCommonDir    string
+	UserGitDir      string
+	PrimaryWorktree bool
+	ScopedRefs      bool
 }
 
 type Checkpoint struct {
-	Ref    primitives.CheckpointRef
-	Commit primitives.CommitSHA
+	ID           primitives.CheckpointID
+	Ref          primitives.CheckpointRef
+	CanonicalRef primitives.CheckpointRef
+	Commit       primitives.CommitSHA
+	WorktreeID   primitives.WorktreeID
+	StreamID     primitives.EventStreamID
 }
 
 type Snapshot struct {
@@ -94,13 +110,17 @@ type SyntheticTreeEntry struct {
 }
 
 type CheckpointRefInfo struct {
-	Ref       primitives.CheckpointRef
-	SessionID primitives.SessionID
-	TurnID    primitives.TurnID
-	Phase     primitives.CheckpointPhase
-	HasPhase  bool
-	Commit    primitives.CommitSHA
-	Time      time.Time
+	ID           primitives.CheckpointID
+	Ref          primitives.CheckpointRef
+	CanonicalRef primitives.CheckpointRef
+	SessionID    primitives.SessionID
+	TurnID       primitives.TurnID
+	Phase        primitives.CheckpointPhase
+	HasPhase     bool
+	WorktreeID   primitives.WorktreeID
+	StreamID     primitives.EventStreamID
+	Commit       primitives.CommitSHA
+	Time         time.Time
 }
 
 type DiffFileStat struct {
@@ -154,7 +174,15 @@ type MaterializeOptions struct {
 }
 
 func Init(root primitives.WorkspaceRoot) (*Repo, error) {
-	repo := paths(root)
+	return InitAt(root, filepath.Join(root.String(), metadataDirName))
+}
+
+func InitAt(root primitives.WorkspaceRoot, metadataDir string) (*Repo, error) {
+	metadataDir, err := filepath.Abs(metadataDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve metadata dir: %w", err)
+	}
+	repo := pathsAt(root, metadataDir)
 
 	for _, dir := range []string{repo.MetadataDir, repo.TmpDir, filepath.Join(repo.MetadataDir, logDirName), filepath.Join(repo.MetadataDir, indexDirName)} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -185,17 +213,61 @@ func Init(root primitives.WorkspaceRoot) (*Repo, error) {
 	if !bare {
 		return nil, fmt.Errorf("hidden git repo is not bare: %s", repo.GitDir)
 	}
+	var gitIdentity *UserGitIdentity
+	if discovered, discoverErr := discoverUserGit(root.String()); discoverErr == nil {
+		gitIdentity = &discovered
+	} else if !isNoGitRepository(discoverErr) {
+		return nil, fmt.Errorf("discover workspace git identity: %w", discoverErr)
+	}
+	if err := repo.ensureIdentity(gitIdentity); err != nil {
+		return nil, err
+	}
 
 	return repo, nil
 }
 
 func Open(root primitives.WorkspaceRoot) (*Repo, error) {
-	repo := paths(root)
+	local := paths(root)
+	if info, err := os.Stat(local.GitDir); err == nil && info.IsDir() {
+		return OpenAt(root, local.MetadataDir)
+	} else if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("stat hidden git repo: %w", err)
+	}
+
+	gitIdentity, err := discoverUserGit(root.String())
+	if err != nil {
+		return nil, fmt.Errorf("hidden git repo not initialized at %s and attached store discovery failed: %w", local.GitDir, err)
+	}
+	store, ok, err := resolveRegisteredStore(gitIdentity)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("hidden git repo not initialized at %s and no attached Turnal store is registered for %s", local.GitDir, gitIdentity.GitCommonDir)
+	}
+	return OpenAt(root, store.StorePath)
+}
+
+func OpenAt(root primitives.WorkspaceRoot, metadataDir string) (*Repo, error) {
+	metadataDir, err := filepath.Abs(metadataDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve metadata dir: %w", err)
+	}
+	repo := pathsAt(root, metadataDir)
 	if _, err := os.Stat(repo.GitDir); err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("hidden git repo not initialized at %s", repo.GitDir)
 		}
 		return nil, fmt.Errorf("stat hidden git repo: %w", err)
+	}
+	var gitIdentity *UserGitIdentity
+	if discovered, discoverErr := discoverUserGit(root.String()); discoverErr == nil {
+		gitIdentity = &discovered
+	} else if !isNoGitRepository(discoverErr) {
+		return nil, fmt.Errorf("discover workspace git identity: %w", discoverErr)
+	}
+	if err := repo.ensureIdentity(gitIdentity); err != nil {
+		return nil, err
 	}
 	return repo, nil
 }
@@ -219,6 +291,17 @@ func FindRoot(start string) (primitives.WorkspaceRoot, error) {
 		abs = parent
 	}
 
+	gitIdentity, err := discoverUserGit(start)
+	if err == nil {
+		if _, ok, resolveErr := resolveRegisteredStore(gitIdentity); resolveErr != nil {
+			return "", resolveErr
+		} else if ok {
+			return primitives.ParseWorkspaceRoot(gitIdentity.TopLevel)
+		}
+	} else if !isNoGitRepository(err) {
+		return "", fmt.Errorf("discover attached Turnal workspace: %w", err)
+	}
+
 	return "", fmt.Errorf("not a turnal workspace: run turnal init")
 }
 
@@ -233,12 +316,24 @@ func (repo *Repo) CreateCheckpoint(sessionID primitives.SessionID, turnID primit
 }
 
 func (repo *Repo) createCheckpoint(sessionID primitives.SessionID, turnID primitives.TurnID, phase primitives.CheckpointPhase) (Checkpoint, error) {
-	ref, err := primitives.NewCheckpointRef(sessionID, turnID, phase)
+	streamID, err := repo.StreamID(sessionID)
+	if err != nil {
+		return Checkpoint{}, err
+	}
+	ref, err := repo.friendlyCheckpointRef(sessionID, turnID, phase, streamID)
+	if err != nil {
+		return Checkpoint{}, err
+	}
+	checkpointID, err := repo.pendingCheckpointID(sessionID, turnID, phase)
+	if err != nil {
+		return Checkpoint{}, err
+	}
+	canonicalRef, err := primitives.NewCheckpointIDRef(checkpointID)
 	if err != nil {
 		return Checkpoint{}, err
 	}
 
-	message := fmt.Sprintf("turnal checkpoint %s turn %s", sessionID, turnID)
+	message := fmt.Sprintf("turnal checkpoint %s %s turn %s", checkpointID, sessionID, turnID)
 	if phase != "" {
 		message += " " + phase.String()
 	}
@@ -247,11 +342,82 @@ func (repo *Repo) createCheckpoint(sessionID primitives.SessionID, turnID primit
 		return Checkpoint{}, err
 	}
 
-	if _, err := runHiddenGit(repo, "", "update-ref", ref.String(), commit.String()); err != nil {
+	if _, err := runHiddenGit(repo, "", "update-ref", canonicalRef.String(), commit.String(), ""); err != nil {
+		return Checkpoint{}, err
+	}
+	if _, err := runHiddenGit(repo, "", "update-ref", ref.String(), commit.String(), ""); err != nil {
+		_, _ = runHiddenGit(repo, "", "update-ref", "-d", canonicalRef.String())
 		return Checkpoint{}, err
 	}
 
-	return Checkpoint{Ref: ref, Commit: commit}, nil
+	return Checkpoint{
+		ID:           checkpointID,
+		Ref:          ref,
+		CanonicalRef: canonicalRef,
+		Commit:       commit,
+		WorktreeID:   repo.WorktreeID,
+		StreamID:     streamID,
+	}, nil
+}
+
+func (repo *Repo) friendlyCheckpointRef(sessionID primitives.SessionID, turnID primitives.TurnID, phase primitives.CheckpointPhase, streamID primitives.EventStreamID) (primitives.CheckpointRef, error) {
+	if repo.ScopedRefs {
+		return primitives.NewScopedCheckpointRef(repo.WorktreeID, streamID, sessionID, turnID, phase)
+	}
+	return primitives.NewCheckpointRef(sessionID, turnID, phase)
+}
+
+func (repo *Repo) CheckpointRefFor(sessionID primitives.SessionID, turnID primitives.TurnID, phase primitives.CheckpointPhase) (primitives.CheckpointRef, error) {
+	streamID, err := repo.StreamID(sessionID)
+	if err != nil {
+		return "", err
+	}
+	return repo.friendlyCheckpointRef(sessionID, turnID, phase, streamID)
+}
+
+func (repo *Repo) GitSyncRefFor(sessionID primitives.SessionID, turnID primitives.TurnID, phase primitives.CheckpointPhase) (string, error) {
+	if !repo.ScopedRefs {
+		ref, err := primitives.NewGitSyncRef(sessionID, turnID, phase)
+		return ref.String(), err
+	}
+	streamID, err := repo.StreamID(sessionID)
+	if err != nil {
+		return "", err
+	}
+	if _, err := primitives.ParseCheckpointPhase(phase.String()); err != nil {
+		return "", err
+	}
+	ref := fmt.Sprintf("refs/agent-vcs/git-sync/by-worktree/%s/%s/%s/turn/%s/%s", repo.WorktreeID, streamID, sessionID, turnID.RefSegment(), phase)
+	if _, err := repo.validatePrivateRef(ref); err != nil {
+		return "", err
+	}
+	return ref, nil
+}
+
+func (repo *Repo) EnsureCanonicalCheckpointRef(checkpointID primitives.CheckpointID, commit primitives.CommitSHA) (primitives.CheckpointRef, error) {
+	ref, err := primitives.NewCheckpointIDRef(checkpointID)
+	if err != nil {
+		return "", err
+	}
+	if existing, resolveErr := repo.RefCommit(ref.String()); resolveErr == nil {
+		if existing != commit {
+			return "", fmt.Errorf("checkpoint identity collision: %s points to %s, want %s", ref, existing, commit)
+		}
+		return ref, nil
+	}
+	if _, err := runHiddenGit(repo, "", "update-ref", ref.String(), commit.String(), ""); err != nil {
+		return "", err
+	}
+	return ref, nil
+}
+
+func (repo *Repo) pendingCheckpointID(sessionID primitives.SessionID, turnID primitives.TurnID, phase primitives.CheckpointPhase) (primitives.CheckpointID, error) {
+	if journal, ok, err := repo.ReadCheckpointJournal(sessionID, turnID, phase); err != nil {
+		return "", err
+	} else if ok && journal.CheckpointID != "" {
+		return primitives.ParseCheckpointID(journal.CheckpointID.String())
+	}
+	return primitives.NewCheckpointID()
 }
 
 func (repo *Repo) CreateSnapshotRef(ref string, message string) (Snapshot, error) {
@@ -512,11 +678,11 @@ func (repo *Repo) DiffRefsPathWithRenames(preRef, postRef primitives.CheckpointR
 }
 
 func (repo *Repo) DiffTurn(sessionID primitives.SessionID, turnID primitives.TurnID) ([]byte, error) {
-	preRef, err := primitives.NewCheckpointRef(sessionID, turnID, primitives.CheckpointPhasePre)
+	preRef, err := repo.CheckpointRefFor(sessionID, turnID, primitives.CheckpointPhasePre)
 	if err != nil {
 		return nil, err
 	}
-	postRef, err := primitives.NewCheckpointRef(sessionID, turnID, primitives.CheckpointPhasePost)
+	postRef, err := repo.CheckpointRefFor(sessionID, turnID, primitives.CheckpointPhasePost)
 	if err != nil {
 		return nil, err
 	}
@@ -524,27 +690,13 @@ func (repo *Repo) DiffTurn(sessionID primitives.SessionID, turnID primitives.Tur
 }
 
 func (repo *Repo) ListCheckpointRefs(sessionID primitives.SessionID) ([]primitives.CheckpointRef, error) {
-	refPrefix, err := primitives.CheckpointSessionRefPrefix(sessionID)
+	infos, err := repo.ListCheckpointRefInfos(sessionID)
 	if err != nil {
 		return nil, err
 	}
-
-	output, err := runHiddenGit(repo, "", "for-each-ref", "--format=%(refname)", refPrefix)
-	if err != nil {
-		return nil, err
-	}
-
-	var refs []primitives.CheckpointRef
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		ref, err := primitives.ParseCheckpointRef(line)
-		if err != nil {
-			return nil, fmt.Errorf("checkpoint ref invariant failed for %q: %w", line, err)
-		}
-		refs = append(refs, ref)
+	refs := make([]primitives.CheckpointRef, 0, len(infos))
+	for _, info := range infos {
+		refs = append(refs, info.Ref)
 	}
 	return refs, nil
 }
@@ -554,11 +706,57 @@ func (repo *Repo) ListAllCheckpointRefInfos() ([]CheckpointRefInfo, error) {
 }
 
 func (repo *Repo) ListCheckpointRefInfos(sessionID primitives.SessionID) ([]CheckpointRefInfo, error) {
-	refPrefix, err := primitives.CheckpointSessionRefPrefix(sessionID)
+	parsed, err := primitives.ParseSessionID(sessionID.String())
 	if err != nil {
 		return nil, err
 	}
-	return repo.listCheckpointRefInfos(refPrefix)
+	infos, err := repo.listCheckpointRefInfos(primitives.CheckpointRefsPrefix())
+	if err != nil {
+		return nil, err
+	}
+	filtered := infos[:0]
+	for _, info := range infos {
+		if info.SessionID != parsed {
+			continue
+		}
+		if repo.WorktreeID != "" && info.WorktreeID != "" && info.WorktreeID != repo.WorktreeID {
+			continue
+		}
+		filtered = append(filtered, info)
+	}
+	return filtered, nil
+}
+
+func (repo *Repo) FindCheckpointIDPrefix(prefix string) ([]CheckpointRefInfo, error) {
+	prefix = strings.ToLower(strings.TrimSpace(prefix))
+	if !strings.HasPrefix(prefix, "chk_") {
+		return nil, fmt.Errorf("checkpoint id prefix must start with chk_")
+	}
+	infos, err := repo.ListAllCheckpointRefInfos()
+	if err != nil {
+		return nil, err
+	}
+	var matches []CheckpointRefInfo
+	for _, info := range infos {
+		if info.ID != "" && strings.HasPrefix(info.ID.String(), prefix) {
+			matches = append(matches, info)
+		}
+	}
+	return matches, nil
+}
+
+func (repo *Repo) FindCheckpointTargets(sessionID primitives.SessionID, turnID primitives.TurnID, phase primitives.CheckpointPhase) ([]CheckpointRefInfo, error) {
+	infos, err := repo.ListAllCheckpointRefInfos()
+	if err != nil {
+		return nil, err
+	}
+	var matches []CheckpointRefInfo
+	for _, info := range infos {
+		if info.SessionID == sessionID && info.TurnID == turnID && info.Phase == phase {
+			matches = append(matches, info)
+		}
+	}
+	return matches, nil
 }
 
 func (repo *Repo) listCheckpointRefInfos(refPrefix string) ([]CheckpointRefInfo, error) {
@@ -568,6 +766,10 @@ func (repo *Repo) listCheckpointRefInfos(refPrefix string) ([]CheckpointRefInfo,
 	}
 
 	var infos []CheckpointRefInfo
+	canonicalByCommit := make(map[string]struct {
+		id  primitives.CheckpointID
+		ref primitives.CheckpointRef
+	})
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -595,15 +797,51 @@ func (repo *Repo) listCheckpointRefInfos(refPrefix string) ([]CheckpointRefInfo,
 			return nil, fmt.Errorf("checkpoint ref %s time invariant failed: %w", ref, err)
 		}
 
+		if refParts.Canonical {
+			canonicalByCommit[commit.String()] = struct {
+				id  primitives.CheckpointID
+				ref primitives.CheckpointRef
+			}{id: refParts.CheckpointID, ref: ref}
+			continue
+		}
+		worktreeID := refParts.WorktreeID
+		streamID := refParts.StreamID
+		if worktreeID == "" {
+			if primary, ok := repo.primaryWorktreeBinding(); ok {
+				worktreeID = primary.WorktreeID
+			} else {
+				worktreeID = repo.WorktreeID
+			}
+		}
+		if streamID == "" && repo.StoreID != "" {
+			streamID, _ = primitives.DeriveLegacyEventStreamID(repo.StoreID, refParts.SessionID)
+		}
 		infos = append(infos, CheckpointRefInfo{
-			Ref:       ref,
-			SessionID: refParts.SessionID,
-			TurnID:    refParts.TurnID,
-			Phase:     refParts.Phase,
-			HasPhase:  refParts.HasPhase,
-			Commit:    commit,
-			Time:      createdAt,
+			Ref:        ref,
+			SessionID:  refParts.SessionID,
+			TurnID:     refParts.TurnID,
+			Phase:      refParts.Phase,
+			HasPhase:   refParts.HasPhase,
+			WorktreeID: worktreeID,
+			StreamID:   streamID,
+			Commit:     commit,
+			Time:       createdAt,
 		})
+	}
+	for index := range infos {
+		if canonical, ok := canonicalByCommit[infos[index].Commit.String()]; ok {
+			infos[index].ID = canonical.id
+			infos[index].CanonicalRef = canonical.ref
+			if parts, err := infos[index].Ref.Parts(); err == nil && !parts.Scoped {
+				producerID := repo.EventProducerID
+				if primary, ok := repo.primaryWorktreeBinding(); ok {
+					producerID = primary.ProducerID
+				}
+				if streamID, streamErr := primitives.DeriveEventStreamID(producerID, infos[index].SessionID); streamErr == nil {
+					infos[index].StreamID = streamID
+				}
+			}
+		}
 	}
 
 	sort.Slice(infos, func(i, j int) bool {
@@ -691,11 +929,11 @@ func (repo *Repo) DiffNameStatusRefs(preRef, postRef primitives.CheckpointRef) (
 }
 
 func (repo *Repo) DiffStatTurn(sessionID primitives.SessionID, turnID primitives.TurnID) (DiffSummary, error) {
-	preRef, err := primitives.NewCheckpointRef(sessionID, turnID, primitives.CheckpointPhasePre)
+	preRef, err := repo.CheckpointRefFor(sessionID, turnID, primitives.CheckpointPhasePre)
 	if err != nil {
 		return DiffSummary{}, err
 	}
-	postRef, err := primitives.NewCheckpointRef(sessionID, turnID, primitives.CheckpointPhasePost)
+	postRef, err := repo.CheckpointRefFor(sessionID, turnID, primitives.CheckpointPhasePost)
 	if err != nil {
 		return DiffSummary{}, err
 	}
@@ -1608,7 +1846,7 @@ func (repo *Repo) snapshotWorktree(indexPath string) error {
 }
 
 func (repo *Repo) secretDenyGlobs() ([]string, error) {
-	effective, _, err := agentconfig.Resolve(repo.WorkspaceRoot.String(), agentconfig.Overrides{})
+	effective, _, err := agentconfig.ResolvePath(filepath.Join(repo.MetadataDir, configFileName), agentconfig.Overrides{})
 	if err != nil {
 		return nil, err
 	}
@@ -1697,9 +1935,13 @@ func phaseRank(phase primitives.CheckpointPhase) int {
 
 func paths(root primitives.WorkspaceRoot) *Repo {
 	metadataDir := filepath.Join(root.String(), metadataDirName)
+	return pathsAt(root, metadataDir)
+}
+
+func pathsAt(root primitives.WorkspaceRoot, metadataDir string) *Repo {
 	return &Repo{
 		WorkspaceRoot: root,
-		MetadataDir:   metadataDir,
+		MetadataDir:   filepath.Clean(metadataDir),
 		GitDir:        filepath.Join(metadataDir, gitDirName),
 		TmpDir:        filepath.Join(metadataDir, tmpDirName),
 	}

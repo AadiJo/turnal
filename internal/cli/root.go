@@ -25,6 +25,9 @@ func NewRootCmd() *cobra.Command {
 	}
 
 	rootCmd.AddCommand(initCmd())
+	rootCmd.AddCommand(worktreeCmd())
+	rootCmd.AddCommand(mergeCmd())
+	rootCmd.AddCommand(storeCmd())
 	rootCmd.AddCommand(destroyCmd())
 	rootCmd.AddCommand(statusCmd())
 	rootCmd.AddCommand(logCmd())

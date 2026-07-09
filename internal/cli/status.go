@@ -3,10 +3,12 @@ package cli
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/AadiJo/turnal/internal/adapters"
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	agentconfig "github.com/AadiJo/turnal/internal/config"
+	"github.com/AadiJo/turnal/internal/importer"
 	"github.com/AadiJo/turnal/internal/integrity"
 	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/spf13/cobra"
@@ -36,15 +38,23 @@ func statusCmd() *cobra.Command {
 			if rootErr != nil {
 				status.Problems = append([]string{rootErr.Error()}, status.Problems...)
 			} else {
-				report := integrity.Inspect(&checkpoint.Repo{
-					WorkspaceRoot: root,
-					MetadataDir:   status.MetadataDir,
-					GitDir:        status.GitDir,
-					TmpDir:        status.TmpDir,
-				})
-				status.Problems = append(status.Problems, report.Problems...)
+				repo, openErr := checkpoint.Open(root)
+				if openErr != nil {
+					status.Problems = append(status.Problems, openErr.Error())
+				} else {
+					report := integrity.Inspect(repo)
+					status.Problems = append(status.Problems, report.Problems...)
+					pending, pendingErr := importer.Pending(repo)
+					if pendingErr != nil {
+						status.Problems = append(status.Problems, pendingErr.Error())
+					} else {
+						for _, journal := range pending {
+							status.Problems = append(status.Problems, fmt.Sprintf("import journal pending: %s state=%s; run turnal merge --recover or turnal merge --abort", journal.ImportID, journal.State))
+						}
+					}
+				}
 			}
-			effective, _, configErr := agentconfig.Resolve(root.String(), agentconfig.Overrides{})
+			effective, _, configErr := agentconfig.ResolvePath(filepath.Join(status.MetadataDir, "config.toml"), agentconfig.Overrides{})
 			if configErr != nil {
 				status.Problems = append(status.Problems, configErr.Error())
 			}
@@ -71,6 +81,10 @@ func statusCmd() *cobra.Command {
 			out := cmd.OutOrStdout()
 			fmt.Fprintf(out, "workspace: %s\n", status.WorkspaceRoot)
 			fmt.Fprintf(out, "metadata:  %s\n", status.MetadataDir)
+			fmt.Fprintf(out, "repo id:   %s\n", status.RepoID)
+			fmt.Fprintf(out, "store id:  %s\n", status.StoreID)
+			fmt.Fprintf(out, "worktree:  %s\n", status.WorktreeID)
+			fmt.Fprintf(out, "attached:  %t\n", status.Attached)
 			fmt.Fprintf(out, "hidden git: %s\n", status.GitDir)
 			fmt.Fprintf(out, "version:    %s\n", status.Version)
 			fmt.Fprintf(out, "gitignore:  %s\n", status.GitignorePath)

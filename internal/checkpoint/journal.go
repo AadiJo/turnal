@@ -10,7 +10,7 @@ import (
 	"github.com/AadiJo/turnal/internal/primitives"
 )
 
-const checkpointJournalVersion = 1
+const checkpointJournalVersion = 2
 
 type CheckpointJournal struct {
 	Version          int                        `json:"version"`
@@ -22,7 +22,11 @@ type CheckpointJournal struct {
 	Phase            primitives.CheckpointPhase `json:"phase"`
 	Adapter          primitives.AdapterName     `json:"adapter,omitempty"`
 	RawRef           string                     `json:"raw_ref,omitempty"`
+	WorktreeID       primitives.WorktreeID      `json:"worktree_id,omitempty"`
+	StreamID         primitives.EventStreamID   `json:"stream_id,omitempty"`
+	CheckpointID     primitives.CheckpointID    `json:"checkpoint_id,omitempty"`
 	Ref              primitives.CheckpointRef   `json:"ref,omitempty"`
+	CanonicalRef     primitives.CheckpointRef   `json:"canonical_ref,omitempty"`
 	CommitSHA        primitives.CommitSHA       `json:"commit_sha,omitempty"`
 	GitSyncRef       string                     `json:"git_sync_ref,omitempty"`
 	GitSyncCommitSHA string                     `json:"git_sync_commit_sha,omitempty"`
@@ -31,15 +35,26 @@ type CheckpointJournal struct {
 }
 
 func (repo *Repo) BeginCheckpointJournal(sessionID primitives.SessionID, turnID primitives.TurnID, phase primitives.CheckpointPhase, adapter primitives.AdapterName, rawRef string) error {
+	checkpointID, err := primitives.NewCheckpointID()
+	if err != nil {
+		return err
+	}
+	streamID, err := repo.StreamID(sessionID)
+	if err != nil {
+		return err
+	}
 	journal := CheckpointJournal{
-		Version:   checkpointJournalVersion,
-		State:     "intent",
-		StartedAt: time.Now().UTC().Format(time.RFC3339Nano),
-		SessionID: sessionID,
-		TurnID:    turnID,
-		Phase:     phase,
-		Adapter:   adapter,
-		RawRef:    rawRef,
+		Version:      checkpointJournalVersion,
+		State:        "intent",
+		StartedAt:    time.Now().UTC().Format(time.RFC3339Nano),
+		SessionID:    sessionID,
+		TurnID:       turnID,
+		Phase:        phase,
+		Adapter:      adapter,
+		RawRef:       rawRef,
+		WorktreeID:   repo.WorktreeID,
+		StreamID:     streamID,
+		CheckpointID: checkpointID,
 	}
 	return repo.writeCheckpointJournal(journal)
 }
@@ -50,7 +65,9 @@ func (repo *Repo) MarkCheckpointJournalCommitted(sessionID primitives.SessionID,
 		return err
 	}
 	journal.State = "committed"
+	journal.CheckpointID = created.ID
 	journal.Ref = created.Ref
+	journal.CanonicalRef = created.CanonicalRef
 	journal.CommitSHA = created.Commit
 	return repo.writeCheckpointJournal(journal)
 }
@@ -148,7 +165,15 @@ func (repo *Repo) CheckpointJournalPath(sessionID primitives.SessionID, turnID p
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(repo.checkpointJournalDir(), fmt.Sprintf("%s-turn-%s-%s.json", sessionID, turnID.RefSegment(), phase)), nil
+	name := fmt.Sprintf("%s-turn-%s-%s.json", sessionID, turnID.RefSegment(), phase)
+	if repo.ScopedRefs {
+		streamID, err := repo.StreamID(sessionID)
+		if err != nil {
+			return "", err
+		}
+		name = fmt.Sprintf("%s-%s-%s", repo.WorktreeID, streamID, name)
+	}
+	return filepath.Join(repo.checkpointJournalDir(), name), nil
 }
 
 func (repo *Repo) checkpointJournalDir() string {
@@ -210,7 +235,7 @@ func readCheckpointJournalFile(path string) (CheckpointJournal, error) {
 }
 
 func validateCheckpointJournal(journal CheckpointJournal) error {
-	if journal.Version != checkpointJournalVersion {
+	if journal.Version != 1 && journal.Version != checkpointJournalVersion {
 		return fmt.Errorf("unsupported version %d", journal.Version)
 	}
 	switch journal.State {
@@ -234,6 +259,26 @@ func validateCheckpointJournal(journal CheckpointJournal) error {
 	}
 	if journal.Ref != "" {
 		if _, err := primitives.ParseCheckpointRef(journal.Ref.String()); err != nil {
+			return err
+		}
+	}
+	if journal.CanonicalRef != "" {
+		if _, err := primitives.ParseCheckpointRef(journal.CanonicalRef.String()); err != nil {
+			return err
+		}
+	}
+	if journal.WorktreeID != "" {
+		if _, err := primitives.ParseWorktreeID(journal.WorktreeID.String()); err != nil {
+			return err
+		}
+	}
+	if journal.StreamID != "" {
+		if _, err := primitives.ParseEventStreamID(journal.StreamID.String()); err != nil {
+			return err
+		}
+	}
+	if journal.CheckpointID != "" {
+		if _, err := primitives.ParseCheckpointID(journal.CheckpointID.String()); err != nil {
 			return err
 		}
 	}

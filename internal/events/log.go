@@ -21,22 +21,31 @@ const eventLogDirName = "events"
 var GenesisHash = mustEventHashFromBytes(nil)
 
 type Log struct {
-	Dir string
+	Dir           string
+	WorkspaceRoot string
+	RepoID        primitives.RepoID
+	StoreID       primitives.StoreID
+	WorktreeID    primitives.WorktreeID
+	ProducerID    primitives.EventProducerID
+	Aggregate     bool
 }
 
 type Event struct {
-	Version   int                    `json:"v"`
-	Seq       primitives.EventSeq    `json:"seq"`
-	SessionID primitives.SessionID   `json:"session_id"`
-	TurnID    *primitives.TurnID     `json:"turn_id,omitempty"`
-	Type      primitives.EventType   `json:"type"`
-	Adapter   primitives.AdapterName `json:"adapter,omitempty"`
-	Time      primitives.Timestamp   `json:"time"`
-	SourceID  string                 `json:"source_id,omitempty"`
-	RawRef    string                 `json:"raw_ref,omitempty"`
-	PrevHash  primitives.EventHash   `json:"prev_hash"`
-	Payload   json.RawMessage        `json:"payload"`
-	Hash      primitives.EventHash   `json:"hash"`
+	Version    int                      `json:"v"`
+	RepoID     primitives.RepoID        `json:"repo_id,omitempty"`
+	WorktreeID primitives.WorktreeID    `json:"worktree_id,omitempty"`
+	StreamID   primitives.EventStreamID `json:"stream_id,omitempty"`
+	Seq        primitives.EventSeq      `json:"seq"`
+	SessionID  primitives.SessionID     `json:"session_id"`
+	TurnID     *primitives.TurnID       `json:"turn_id,omitempty"`
+	Type       primitives.EventType     `json:"type"`
+	Adapter    primitives.AdapterName   `json:"adapter,omitempty"`
+	Time       primitives.Timestamp     `json:"time"`
+	SourceID   string                   `json:"source_id,omitempty"`
+	RawRef     string                   `json:"raw_ref,omitempty"`
+	PrevHash   primitives.EventHash     `json:"prev_hash"`
+	Payload    json.RawMessage          `json:"payload"`
+	Hash       primitives.EventHash     `json:"hash"`
 }
 
 type AppendContext struct {
@@ -57,7 +66,20 @@ type AppendInput struct {
 }
 
 func Open(metadataDir string) Log {
-	return Log{Dir: filepath.Join(metadataDir, "log", eventLogDirName)}
+	log := Log{Dir: filepath.Join(metadataDir, "log", eventLogDirName), Aggregate: true}
+	log.RepoID, log.StoreID, log.WorktreeID, log.ProducerID = readDefaultContext(metadataDir)
+	return log
+}
+
+func OpenFor(metadataDir, workspaceRoot string, repoID primitives.RepoID, storeID primitives.StoreID, worktreeID primitives.WorktreeID, producerID primitives.EventProducerID) Log {
+	return Log{
+		Dir:           filepath.Join(metadataDir, "log", eventLogDirName),
+		WorkspaceRoot: workspaceRoot,
+		RepoID:        repoID,
+		StoreID:       storeID,
+		WorktreeID:    worktreeID,
+		ProducerID:    producerID,
+	}
 }
 
 func ListSessions(metadataDir string) ([]primitives.SessionID, error) {
@@ -75,18 +97,30 @@ func (log Log) ListSessions() ([]primitives.SessionID, error) {
 
 	var sessions []primitives.SessionID
 	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
 		name := entry.Name()
-		if filepath.Ext(name) != ".jsonl" {
-			continue
+		var sessionText string
+		if entry.IsDir() {
+			sessionText = name
+		} else {
+			if filepath.Ext(name) != ".jsonl" {
+				continue
+			}
+			sessionText = strings.TrimSuffix(name, ".jsonl")
 		}
-		sessionID, err := primitives.ParseSessionID(strings.TrimSuffix(name, ".jsonl"))
+		sessionID, err := primitives.ParseSessionID(sessionText)
 		if err != nil {
 			return nil, fmt.Errorf("event log filename invariant failed for %s: %w", name, err)
 		}
-		sessions = append(sessions, sessionID)
+		seen := false
+		for _, existing := range sessions {
+			if existing == sessionID {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			sessions = append(sessions, sessionID)
+		}
 	}
 	sort.Slice(sessions, func(i, j int) bool {
 		return sessions[i].String() < sessions[j].String()
@@ -140,18 +174,43 @@ func (log Log) Append(input AppendInput) (Event, error) {
 		return Event{}, fmt.Errorf("create event log dir: %w", err)
 	}
 
+	version := 1
+	var streamID primitives.EventStreamID
 	path := log.sessionPath(sessionID)
+	if log.ProducerID != "" {
+		if log.RepoID, err = primitives.ParseRepoID(log.RepoID.String()); err != nil {
+			return Event{}, err
+		}
+		if log.WorktreeID, err = primitives.ParseWorktreeID(log.WorktreeID.String()); err != nil {
+			return Event{}, err
+		}
+		if log.ProducerID, err = primitives.ParseEventProducerID(log.ProducerID.String()); err != nil {
+			return Event{}, err
+		}
+		streamID, err = primitives.DeriveEventStreamID(log.ProducerID, sessionID)
+		if err != nil {
+			return Event{}, err
+		}
+		version = 2
+		path = log.streamPath(sessionID, streamID)
+		if err := log.ensureStreamMetadata(sessionID, streamID); err != nil {
+			return Event{}, err
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return Event{}, fmt.Errorf("create event stream dir: %w", err)
+	}
 	lockDir := path + ".lock"
 	if err := acquireDirLock(lockDir); err != nil {
 		return Event{}, err
 	}
 	defer func() { _ = os.Remove(lockDir) }()
 
-	if _, err := log.RecoverTrailingPartial(sessionID); err != nil {
+	if _, err := recoverTrailingPartialPath(path); err != nil {
 		return Event{}, err
 	}
 
-	events, err := log.read(sessionID)
+	events, err := log.readPath(sessionID, path, streamID)
 	if err != nil {
 		return Event{}, err
 	}
@@ -180,17 +239,20 @@ func (log Log) Append(input AppendInput) (Event, error) {
 	}
 
 	event := Event{
-		Version:   1,
-		Seq:       nextSeq,
-		SessionID: sessionID,
-		TurnID:    turnID,
-		Type:      eventType,
-		Adapter:   adapter,
-		Time:      timestamp,
-		SourceID:  input.SourceID,
-		RawRef:    input.RawRef,
-		PrevHash:  prevHash,
-		Payload:   payload,
+		Version:    version,
+		RepoID:     log.RepoID,
+		WorktreeID: log.WorktreeID,
+		StreamID:   streamID,
+		Seq:        nextSeq,
+		SessionID:  sessionID,
+		TurnID:     turnID,
+		Type:       eventType,
+		Adapter:    adapter,
+		Time:       timestamp,
+		SourceID:   input.SourceID,
+		RawRef:     input.RawRef,
+		PrevHash:   prevHash,
+		Payload:    payload,
 	}
 	event.Hash, err = eventHash(event)
 	if err != nil {
@@ -223,6 +285,13 @@ func (log Log) Read(sessionID primitives.SessionID) ([]Event, error) {
 	parsedSessionID, err := primitives.ParseSessionID(sessionID.String())
 	if err != nil {
 		return nil, err
+	}
+	if log.ProducerID != "" && !log.Aggregate {
+		streamID, err := primitives.DeriveEventStreamID(log.ProducerID, parsedSessionID)
+		if err != nil {
+			return nil, err
+		}
+		return log.readPath(parsedSessionID, log.streamPath(parsedSessionID, streamID), streamID)
 	}
 	return log.read(parsedSessionID)
 }
@@ -264,6 +333,17 @@ func (log Log) RecoverTrailingPartial(sessionID primitives.SessionID) (bool, err
 	}
 
 	path := log.sessionPath(parsedSessionID)
+	if log.ProducerID != "" && !log.Aggregate {
+		streamID, err := primitives.DeriveEventStreamID(log.ProducerID, parsedSessionID)
+		if err != nil {
+			return false, err
+		}
+		path = log.streamPath(parsedSessionID, streamID)
+	}
+	return recoverTrailingPartialPath(path)
+}
+
+func recoverTrailingPartialPath(path string) (bool, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -286,7 +366,48 @@ func (log Log) RecoverTrailingPartial(sessionID primitives.SessionID) (bool, err
 }
 
 func (log Log) read(sessionID primitives.SessionID) ([]Event, error) {
-	path := log.sessionPath(sessionID)
+	var events []Event
+	legacy, err := log.readPath(sessionID, log.sessionPath(sessionID), "")
+	if err != nil {
+		return nil, err
+	}
+	events = append(events, legacy...)
+
+	dir := filepath.Join(log.Dir, sessionID.String())
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("read event stream dir: %w", err)
+		}
+	} else {
+		for _, entry := range entries {
+			if entry.IsDir() || filepath.Ext(entry.Name()) != ".jsonl" {
+				continue
+			}
+			streamID, err := primitives.ParseEventStreamID(strings.TrimSuffix(entry.Name(), ".jsonl"))
+			if err != nil {
+				return nil, fmt.Errorf("event stream filename invariant failed for %s: %w", entry.Name(), err)
+			}
+			streamEvents, err := log.readPath(sessionID, filepath.Join(dir, entry.Name()), streamID)
+			if err != nil {
+				return nil, err
+			}
+			events = append(events, streamEvents...)
+		}
+	}
+	sort.SliceStable(events, func(i, j int) bool {
+		if !events[i].Time.Time.Equal(events[j].Time.Time) {
+			return events[i].Time.Time.Before(events[j].Time.Time)
+		}
+		if events[i].StreamID != events[j].StreamID {
+			return events[i].StreamID.String() < events[j].StreamID.String()
+		}
+		return events[i].Seq.Uint64() < events[j].Seq.Uint64()
+	})
+	return events, nil
+}
+
+func (log Log) readPath(sessionID primitives.SessionID, path string, expectedStreamID primitives.EventStreamID) ([]Event, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -317,6 +438,22 @@ func (log Log) read(sessionID primitives.SessionID) ([]Event, error) {
 		if event.SessionID != sessionID {
 			return nil, fmt.Errorf("event log invariant failed for session %s line %d: event session %s does not match file session", sessionID, lineNumber, event.SessionID)
 		}
+		if event.Version == 1 && event.StreamID == "" && expectedStreamID != "" {
+			event.StreamID = expectedStreamID
+			if metadata, ok := log.readStreamMetadata(expectedStreamID); ok {
+				event.WorktreeID = metadata.WorktreeID
+				event.RepoID = metadata.RepoID
+			}
+		}
+		if expectedStreamID != "" && event.StreamID != expectedStreamID {
+			return nil, fmt.Errorf("event log invariant failed for session %s line %d: event stream %s does not match file stream %s", sessionID, lineNumber, event.StreamID, expectedStreamID)
+		}
+		if event.Version == 1 && event.StreamID == "" && log.StoreID != "" {
+			event.StreamID, err = primitives.DeriveLegacyEventStreamID(log.StoreID, sessionID)
+			if err != nil {
+				return nil, err
+			}
+		}
 		wantSeq, err := primitives.NewEventSeq(uint64(lineNumber))
 		if err != nil {
 			return nil, err
@@ -346,8 +483,20 @@ func parseEventLine(line []byte) (Event, error) {
 	if err := json.Unmarshal(line, &event); err != nil {
 		return Event{}, fmt.Errorf("malformed JSON: %w", err)
 	}
-	if event.Version != 1 {
+	if event.Version != 1 && event.Version != 2 {
 		return Event{}, fmt.Errorf("unsupported version %d", event.Version)
+	}
+	if event.Version == 2 {
+		var err error
+		if event.RepoID, err = primitives.ParseRepoID(event.RepoID.String()); err != nil {
+			return Event{}, err
+		}
+		if event.WorktreeID, err = primitives.ParseWorktreeID(event.WorktreeID.String()); err != nil {
+			return Event{}, err
+		}
+		if event.StreamID, err = primitives.ParseEventStreamID(event.StreamID.String()); err != nil {
+			return Event{}, err
+		}
 	}
 	if _, err := primitives.NewEventSeq(event.Seq.Uint64()); err != nil {
 		return Event{}, err
@@ -403,6 +552,193 @@ func (log Log) sessionPath(sessionID primitives.SessionID) string {
 	return filepath.Join(log.Dir, sessionID.String()+".jsonl")
 }
 
+func (log Log) streamPath(sessionID primitives.SessionID, streamID primitives.EventStreamID) string {
+	return filepath.Join(log.Dir, sessionID.String(), streamID.String()+".jsonl")
+}
+
+func StreamPath(metadataDir string, sessionID primitives.SessionID, streamID primitives.EventStreamID) string {
+	return filepath.Join(metadataDir, "log", eventLogDirName, sessionID.String(), streamID.String()+".jsonl")
+}
+
+type StreamMetadata struct {
+	Version    int                        `json:"version"`
+	StreamID   primitives.EventStreamID   `json:"stream_id"`
+	ProducerID primitives.EventProducerID `json:"event_producer_id"`
+	RepoID     primitives.RepoID          `json:"repo_id"`
+	WorktreeID primitives.WorktreeID      `json:"worktree_id"`
+	SessionID  primitives.SessionID       `json:"session_id"`
+	CreatedAt  string                     `json:"created_at"`
+}
+
+func (log Log) ensureStreamMetadata(sessionID primitives.SessionID, streamID primitives.EventStreamID) error {
+	metadataDir := filepath.Clean(filepath.Join(log.Dir, "..", "streams"))
+	path := filepath.Join(metadataDir, streamID.String()+".json")
+	if data, err := os.ReadFile(path); err == nil {
+		var metadata StreamMetadata
+		if err := json.Unmarshal(data, &metadata); err != nil {
+			return fmt.Errorf("event stream metadata invariant failed at %s: %w", path, err)
+		}
+		if metadata.StreamID != streamID || metadata.ProducerID != log.ProducerID || metadata.SessionID != sessionID || metadata.WorktreeID != log.WorktreeID || metadata.RepoID != log.RepoID {
+			return fmt.Errorf("event stream metadata invariant failed at %s: identity mismatch", path)
+		}
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("read event stream metadata: %w", err)
+	}
+	if err := os.MkdirAll(metadataDir, 0o755); err != nil {
+		return fmt.Errorf("create event stream metadata dir: %w", err)
+	}
+	metadata := StreamMetadata{
+		Version:    1,
+		StreamID:   streamID,
+		ProducerID: log.ProducerID,
+		RepoID:     log.RepoID,
+		WorktreeID: log.WorktreeID,
+		SessionID:  sessionID,
+		CreatedAt:  time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	data, err := json.MarshalIndent(metadata, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal event stream metadata: %w", err)
+	}
+	data = append(data, '\n')
+	tmp, err := os.CreateTemp(metadataDir, ".stream-*")
+	if err != nil {
+		return fmt.Errorf("create event stream metadata temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("commit event stream metadata: %w", err)
+	}
+	return nil
+}
+
+func WriteStreamMetadata(metadataDir string, metadata StreamMetadata) error {
+	if metadata.Version != 1 {
+		return fmt.Errorf("event stream metadata invariant failed: unsupported version %d", metadata.Version)
+	}
+	streamID, err := primitives.ParseEventStreamID(metadata.StreamID.String())
+	if err != nil {
+		return err
+	}
+	metadata.StreamID = streamID
+	if metadata.RepoID, err = primitives.ParseRepoID(metadata.RepoID.String()); err != nil {
+		return err
+	}
+	if metadata.WorktreeID, err = primitives.ParseWorktreeID(metadata.WorktreeID.String()); err != nil {
+		return err
+	}
+	if metadata.SessionID, err = primitives.ParseSessionID(metadata.SessionID.String()); err != nil {
+		return err
+	}
+	if metadata.ProducerID != "" {
+		if metadata.ProducerID, err = primitives.ParseEventProducerID(metadata.ProducerID.String()); err != nil {
+			return err
+		}
+	}
+	if metadata.CreatedAt == "" {
+		metadata.CreatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	dir := filepath.Join(metadataDir, "log", "streams")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create event stream metadata dir: %w", err)
+	}
+	path := filepath.Join(dir, streamID.String()+".json")
+	data, err := json.MarshalIndent(metadata, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	if existing, readErr := os.ReadFile(path); readErr == nil {
+		var parsed StreamMetadata
+		if json.Unmarshal(existing, &parsed) != nil || parsed.StreamID != metadata.StreamID || parsed.RepoID != metadata.RepoID || parsed.WorktreeID != metadata.WorktreeID || parsed.SessionID != metadata.SessionID {
+			return fmt.Errorf("event stream metadata collision at %s", path)
+		}
+		return nil
+	} else if !os.IsNotExist(readErr) {
+		return readErr
+	}
+	return os.WriteFile(path, data, 0o600)
+}
+
+func (log Log) readStreamMetadata(streamID primitives.EventStreamID) (StreamMetadata, bool) {
+	path := filepath.Clean(filepath.Join(log.Dir, "..", "streams", streamID.String()+".json"))
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return StreamMetadata{}, false
+	}
+	var metadata StreamMetadata
+	if json.Unmarshal(data, &metadata) != nil || metadata.StreamID != streamID {
+		return StreamMetadata{}, false
+	}
+	return metadata, true
+}
+
+func readDefaultContext(metadataDir string) (primitives.RepoID, primitives.StoreID, primitives.WorktreeID, primitives.EventProducerID) {
+	data, err := os.ReadFile(filepath.Join(metadataDir, "identity.json"))
+	if err != nil {
+		return "", "", "", ""
+	}
+	var identity struct {
+		RepoID  primitives.RepoID  `json:"repo_id"`
+		StoreID primitives.StoreID `json:"store_id"`
+	}
+	if json.Unmarshal(data, &identity) != nil {
+		return "", "", "", ""
+	}
+	repoID, err := primitives.ParseRepoID(identity.RepoID.String())
+	if err != nil {
+		return "", "", "", ""
+	}
+	storeID, err := primitives.ParseStoreID(identity.StoreID.String())
+	if err != nil {
+		return "", "", "", ""
+	}
+	entries, err := os.ReadDir(filepath.Join(metadataDir, "worktrees"))
+	if err != nil {
+		return repoID, storeID, "", ""
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		bindingData, err := os.ReadFile(filepath.Join(metadataDir, "worktrees", entry.Name()))
+		if err != nil {
+			continue
+		}
+		var binding struct {
+			WorktreeID primitives.WorktreeID      `json:"worktree_id"`
+			ProducerID primitives.EventProducerID `json:"event_producer_id"`
+			Primary    bool                       `json:"primary"`
+		}
+		if json.Unmarshal(bindingData, &binding) != nil || !binding.Primary {
+			continue
+		}
+		worktreeID, worktreeErr := primitives.ParseWorktreeID(binding.WorktreeID.String())
+		producerID, producerErr := primitives.ParseEventProducerID(binding.ProducerID.String())
+		if worktreeErr == nil && producerErr == nil {
+			return repoID, storeID, worktreeID, producerID
+		}
+	}
+	return repoID, storeID, "", ""
+}
+
 func eventHash(event Event) (primitives.EventHash, error) {
 	payload, err := compactPayload(event.Payload)
 	if err != nil {
@@ -412,6 +748,11 @@ func eventHash(event Event) (primitives.EventHash, error) {
 
 	var input []byte
 	input = appendLengthPrefixed(input, fmt.Sprintf("%d", event.Version))
+	if event.Version >= 2 {
+		input = appendLengthPrefixed(input, event.RepoID.String())
+		input = appendLengthPrefixed(input, event.WorktreeID.String())
+		input = appendLengthPrefixed(input, event.StreamID.String())
+	}
 	input = appendLengthPrefixed(input, event.Seq.String())
 	input = appendLengthPrefixed(input, event.SessionID.String())
 	if event.TurnID == nil {
