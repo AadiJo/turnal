@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -86,5 +87,5 @@ func TestClaudeHookInvalidKindFailsOpenAndRecordsFailure(t *testing.T) {
 }
 
 func strconvQuote(value string) string {
-	return `"` + strings.ReplaceAll(value, `"`, `\"`) + `"`
+	return strconv.Quote(value)
 }
