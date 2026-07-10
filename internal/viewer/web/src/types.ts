@@ -1,0 +1,137 @@
+export type Workspace = {
+  name: string;
+  root: string;
+  repo_id: string;
+  store_id: string;
+  worktree_id: string;
+  session_count: number;
+  turn_count: number;
+  index_state: "healthy" | "stale" | "missing" | "unavailable";
+  history_state: "ready" | "attention";
+  problems?: string[];
+  last_activity?: string;
+  read_only: boolean;
+  network_silent: boolean;
+  viewer_started_at: string;
+};
+
+export type FileChange = {
+  path: string;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+};
+
+export type SessionSummary = {
+  key: string;
+  id: string;
+  stream_id: string;
+  worktree_id?: string;
+  adapter?: string;
+  model?: string;
+  branch?: string;
+  started_at?: string;
+  finished_at?: string;
+  event_count: number;
+  turn_count: number;
+  complete_turns: number;
+  error_count: number;
+  file_count: number;
+  additions: number;
+  deletions: number;
+  status: "complete" | "active" | "attention";
+  prompt_preview?: string;
+};
+
+export type TurnSummary = {
+  key: string;
+  id: number;
+  status: "complete" | "active" | "attention";
+  started_at?: string;
+  finished_at?: string;
+  adapter?: string;
+  prompt?: string;
+  assistant?: string;
+  tool_names?: string[];
+  event_count: number;
+  error_count: number;
+  files?: FileChange[];
+  additions: number;
+  deletions: number;
+  pre_commit?: string;
+  post_commit?: string;
+  checkpointed: boolean;
+};
+
+export type SessionTurns = {
+  session: SessionSummary;
+  turns: TurnSummary[];
+};
+
+export type TurnEvent = {
+  sequence: number;
+  type: string;
+  kind: "prompt" | "assistant" | "tool" | "result" | "checkpoint" | "error" | "system";
+  title: string;
+  body?: string;
+  tool_name?: string;
+  time: string;
+  sensitive: boolean;
+};
+
+export type TurnDetail = TurnSummary & {
+  session_id: string;
+  stream_id: string;
+  events: TurnEvent[];
+  warnings?: string[];
+  truncated: boolean;
+  identity: Record<string, string>;
+};
+
+export type DiffSummary = {
+  turn_key: string;
+  files: FileChange[];
+  additions: number;
+  deletions: number;
+  binary_files: number;
+  pre_commit: string;
+  post_commit: string;
+  truth_source: string;
+};
+
+export type FilePatch = {
+  path: string;
+  patch: string;
+  truncated: boolean;
+  byte_count: number;
+  line_count: number;
+  limit_bytes: number;
+};
+
+export type BlameLine = {
+  line: number;
+  text: string;
+  kind: string;
+  turn_key?: string;
+  turn_id?: number;
+  session_id?: string;
+  adapter?: string;
+  prompt?: string;
+  tool_names?: string[];
+  time?: string;
+};
+
+export type Blame = {
+  path: string;
+  latest_commit: string;
+  latest_time: string;
+  complete_turns: number;
+  lines: BlameLine[];
+  warnings?: string[];
+  truncated: boolean;
+  truth_source: string;
+};
+
+export type ViewerError = {
+  error: { code: string; message: string };
+};
