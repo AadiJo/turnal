@@ -131,7 +131,7 @@ func normalizeOpenCode(hook string, raw json.RawMessage) ([]adaptersdk.Event, er
 			applyCommon(&base, mergeMaps(merged, info))
 		}
 		return []adaptersdk.Event{base}, nil
-	case "messageupdated", "messagepartupdated":
+	case "messageupdated":
 		info := childMap(properties, "info")
 		if info == nil {
 			info = properties
@@ -143,10 +143,9 @@ func normalizeOpenCode(hook string, raw json.RawMessage) ([]adaptersdk.Event, er
 			base.Type = adaptersdk.EventPromptUser
 			return []adaptersdk.Event{base}, nil
 		}
-		if role == "assistant" && base.Text != "" {
-			base.Type = adaptersdk.EventAssistantMessage
-			return []adaptersdk.Event{base}, nil
-		}
+		// Assistant messages can be updated repeatedly while streaming. The
+		// session.idle event closes the turn without risking an early post
+		// checkpoint from a partial response.
 		return nil, nil
 	case "toolexecuteafter":
 		return toolEvents(base, merged, []string{"args", "input"}, []string{"output", "result"}), nil

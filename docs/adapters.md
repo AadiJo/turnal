@@ -92,4 +92,3 @@ OpenCode message and session events are normalized through the `event` callback;
 ## Compatibility and safety
 
 Protocol versions are explicit and adapters advertise every supported version in their manifest. Turnal rejects unknown versions, malformed NDJSON, mismatched request IDs, invalid event types, non-absolute workspaces, cross-session batches, excessive lines, and processes that exceed the handshake timeout. Provider input is retained under the existing raw-adapter policy; prompt and tool aliases used by the included adapters are recursively redacted when the corresponding secrets settings are disabled.
-

@@ -42,4 +42,3 @@ module.exports = function runAdapter(command) {
     else process.exit(code || 0);
   });
 };
-

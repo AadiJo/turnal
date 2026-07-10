@@ -3,6 +3,7 @@ package adapter
 import (
 	"encoding/json"
 	"fmt"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -80,7 +81,7 @@ func ValidateEvent(event Event) error {
 	if !sessionIDPattern.MatchString(strings.TrimSpace(event.SessionID)) {
 		return fmt.Errorf("invalid session_id %q", event.SessionID)
 	}
-	if !filepath.IsAbs(event.CWD) {
+	if !isAbsolutePath(event.CWD) {
 		return fmt.Errorf("cwd must be an absolute path")
 	}
 	switch event.Type {
@@ -100,6 +101,18 @@ func ValidateEvent(event Event) error {
 		}
 	}
 	return nil
+}
+
+func isAbsolutePath(value string) bool {
+	if filepath.IsAbs(value) || path.IsAbs(value) {
+		return true
+	}
+	// filepath.IsAbs only recognizes paths for the current GOOS. The wire
+	// protocol and its fixtures must also be inspectable on other platforms.
+	if len(value) >= 3 && ((value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= 'a' && value[0] <= 'z')) && value[1] == ':' && (value[2] == '\\' || value[2] == '/') {
+		return true
+	}
+	return strings.HasPrefix(value, `\\`)
 }
 
 func validEventType(eventType EventType) bool {

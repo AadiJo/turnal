@@ -85,6 +85,15 @@ func TestServeRejectsUnsupportedVersionWithoutCallingNormalizer(t *testing.T) {
 	}
 }
 
+func TestValidateEventAcceptsCrossPlatformAbsolutePaths(t *testing.T) {
+	for _, cwd := range []string{"/workspace", `C:\workspace`, `\\server\share`} {
+		event := Event{Type: EventTurnFinish, SessionID: "fixture", CWD: cwd}
+		if err := ValidateEvent(event); err != nil {
+			t.Fatalf("ValidateEvent cwd %q: %v", cwd, err)
+		}
+	}
+}
+
 func testManifest() Manifest {
 	return Manifest{
 		Name: "example", DisplayName: "Example", AdapterVersion: "1.0.0", Provider: "Example",
