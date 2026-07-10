@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -83,6 +84,37 @@ func TestRunCodexWrapperCreatesCheckpointsAndEnablesHooks(t *testing.T) {
 	}
 	if !strings.Contains(string(configData), "hooks = true") || !strings.Contains(string(configData), "turnal codex-hook") {
 		t.Fatalf("Codex config missing hook setup:\n%s", configData)
+	}
+}
+
+func TestWaitForChildEscalatesRepeatedSignal(t *testing.T) {
+	done := make(chan error, 1)
+	signals := make(chan os.Signal, 2)
+	forwarded := make(chan os.Signal, 1)
+	killed := make(chan struct{}, 1)
+	result := make(chan error, 1)
+	go func() {
+		result <- waitForChild(done, signals, func(value os.Signal) error {
+			forwarded <- value
+			return nil
+		}, func() error {
+			killed <- struct{}{}
+			return nil
+		})
+	}()
+	signals <- os.Interrupt
+	if got := <-forwarded; got != os.Interrupt {
+		t.Fatalf("forwarded signal = %v, want interrupt", got)
+	}
+	signals <- os.Interrupt
+	select {
+	case <-killed:
+	case <-time.After(time.Second):
+		t.Fatal("second signal did not kill child")
+	}
+	done <- nil
+	if err := <-result; err != nil {
+		t.Fatalf("waitForChild: %v", err)
 	}
 }
 
@@ -182,6 +214,9 @@ func TestRunCodexWrapperPropagatesChildExitCodeAndFinishesTurn(t *testing.T) {
 }
 
 func TestRunCodexLiveEndToEnd(t *testing.T) {
+	if os.Getenv("TURNAL_LIVE_CODEX_TEST") != "1" {
+		t.Skip("set TURNAL_LIVE_CODEX_TEST=1 to run authenticated Codex integration test")
+	}
 	isolateAgentConfig(t)
 	if _, err := exec.LookPath("codex"); err != nil {
 		t.Skip("codex executable not found")
@@ -267,6 +302,9 @@ func liveCodexHome(t *testing.T, trustedProjectRoot string) string {
 
 func installFakeCodex(t *testing.T, root string, exitCode int) string {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake Codex fixture requires a POSIX shell")
+	}
 	binDir := t.TempDir()
 	argsPath := filepath.Join(root, "fake-codex-args.txt")
 	script := filepath.Join(binDir, "codex")

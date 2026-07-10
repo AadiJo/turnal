@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/AadiJo/turnal/internal/adapters"
@@ -35,6 +37,10 @@ type runCheckpointPayload struct {
 	CommitSHA  string `json:"commit_sha"`
 	Ref        string `json:"ref"`
 	GitSyncRef string `json:"git_sync_ref,omitempty"`
+}
+
+type runIncompletePayload struct {
+	Reason string `json:"reason"`
 }
 
 type childExitError struct {
@@ -104,6 +110,11 @@ func runCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			unlockSession, err := adapters.AcquireSessionLock(repo, sessionID)
+			if err != nil {
+				return err
+			}
+			defer unlockSession()
 
 			started, err := startRunTurn(repo, sessionID, args)
 			if err != nil {
@@ -123,6 +134,14 @@ func runCmd() *cobra.Command {
 				}
 			}
 			if finishErr != nil {
+				_, _ = eventlog.Open(repo.MetadataDir).Append(eventlog.AppendInput{
+					SessionID: sessionID,
+					TurnID:    &started.TurnID,
+					Type:      primitives.EventTypeError,
+					Adapter:   primitives.AdapterCodex,
+					SourceID:  fmt.Sprintf("codex-run:%s:%s:incomplete", sessionID, started.TurnID),
+					Payload:   mustJSON(runIncompletePayload{Reason: finishErr.Error()}),
+				})
 				return finishErr
 			}
 			if countErr != nil {
@@ -205,7 +224,16 @@ func runChildCommand(cmd *cobra.Command, args []string) error {
 	child.Dir = ""
 	child.Env = os.Environ()
 
-	if err := child.Run(); err != nil {
+	if err := child.Start(); err != nil {
+		return err
+	}
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	done := make(chan error, 1)
+	go func() { done <- child.Wait() }()
+	err := waitForChild(done, signals, child.Process.Signal, child.Process.Kill)
+	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			return childExitError{code: exitErr.ExitCode()}
@@ -213,6 +241,25 @@ func runChildCommand(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	return nil
+}
+
+func waitForChild(done <-chan error, signals <-chan os.Signal, forward func(os.Signal) error, kill func() error) error {
+	forwarded := false
+	for {
+		select {
+		case err := <-done:
+			return err
+		case received := <-signals:
+			if !forwarded {
+				forwarded = true
+				_ = forward(received)
+				continue
+			}
+			// A repeated interrupt is an explicit escalation request. This also
+			// prevents an uncooperative child from trapping the wrapper forever.
+			_ = kill()
+		}
+	}
 }
 
 func newRunSessionID(now time.Time) (primitives.SessionID, error) {
@@ -311,14 +358,26 @@ func snapshotRef(snapshot *checkpoint.Snapshot) string {
 }
 
 func codexRawRecordCount(metadataDir string) (int, error) {
-	data, err := os.ReadFile(filepath.Join(metadataDir, "log", "adapter", "codex.jsonl"))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return 0, nil
+	paths := []string{filepath.Join(metadataDir, "log", "adapter", "codex.jsonl")}
+	rawRoot := filepath.Join(metadataDir, "log", "raw")
+	_ = filepath.WalkDir(rawRoot, func(path string, entry os.DirEntry, err error) error {
+		if err == nil && !entry.IsDir() && entry.Name() == "codex.jsonl" {
+			paths = append(paths, path)
 		}
-		return 0, fmt.Errorf("read Codex raw adapter log: %w", err)
+		return nil
+	})
+	count := 0
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return 0, fmt.Errorf("read Codex raw adapter log: %w", err)
+		}
+		count += strings.Count(string(data), "\n")
 	}
-	return strings.Count(string(data), "\n"), nil
+	return count, nil
 }
 
 func mustJSON(value any) json.RawMessage {
