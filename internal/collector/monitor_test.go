@@ -1,9 +1,21 @@
 package collector
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
+
+func TestSchemaRejectionVersionCountersAreBounded(t *testing.T) {
+	monitor := NewMonitor()
+	for index := 0; index < 256; index++ {
+		monitor.RecordSchemaRejected([]string{fmt.Sprintf("1.0.%d", index)})
+	}
+	snapshot := monitor.Snapshot()
+	if len(snapshot.SchemaRejectedByVersion) > maxSchemaVersionCounters+1 || snapshot.SchemaRejectedByVersion["other"] == 0 {
+		t.Fatalf("version counters are not bounded: %d, %#v", len(snapshot.SchemaRejectedByVersion), snapshot.SchemaRejectedByVersion)
+	}
+}
 
 func TestMonitorTracksOnlyAggregateOperationalCounters(t *testing.T) {
 	monitor := NewMonitor()

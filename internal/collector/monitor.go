@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+const maxSchemaVersionCounters = 128
+
 type Monitor struct {
 	requests          atomic.Uint64
 	acceptedResponses atomic.Uint64
@@ -71,6 +73,9 @@ func (monitor *Monitor) RecordSchemaRejected(versions []string) {
 			continue
 		}
 		seen[version] = struct{}{}
+		if _, known := monitor.schemaRejectedVersion[version]; !known && len(monitor.schemaRejectedVersion) >= maxSchemaVersionCounters {
+			version = "other"
+		}
 		monitor.schemaRejectedVersion[version]++
 	}
 }
