@@ -3,9 +3,15 @@ package integrity
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
+	"github.com/AadiJo/turnal/internal/adapters"
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/filelock"
+	queryindex "github.com/AadiJo/turnal/internal/index"
 	"github.com/AadiJo/turnal/internal/primitives"
 	rollbackengine "github.com/AadiJo/turnal/internal/rollback"
 )
@@ -20,14 +26,112 @@ func Inspect(repo *checkpoint.Repo) Report {
 		report.Problems = append(report.Problems, "integrity check requires checkpoint repo")
 		return report
 	}
-	if repo.WorkspaceLockHeld() {
+	held, lockErr := repo.WorkspaceLockStatus()
+	if lockErr != nil {
+		report.Problems = append(report.Problems, fmt.Sprintf("workspace lock inspection failed: %v", lockErr))
+	} else if held {
 		report.Problems = append(report.Problems, fmt.Sprintf("workspace lock held: %s", repo.WorkspaceLockPath()))
 	}
 	report.Problems = append(report.Problems, inspectEventLogs(repo)...)
 	report.Problems = append(report.Problems, inspectCheckpointRefs(repo)...)
 	report.Problems = append(report.Problems, inspectCheckpointJournals(repo)...)
 	report.Problems = append(report.Problems, rollbackengine.InspectJournal(repo)...)
+	report.Problems = append(report.Problems, inspectHookFailures(repo)...)
+	report.Problems = append(report.Problems, inspectCaptureFiles(repo)...)
+	report.Problems = append(report.Problems, inspectIndex(repo)...)
 	return report
+}
+
+func inspectCaptureFiles(repo *checkpoint.Repo) []string {
+	var problems []string
+	roots := []string{
+		filepath.Join(repo.MetadataDir, "log", "adapter"),
+		filepath.Join(repo.MetadataDir, "log", "raw"),
+		filepath.Join(repo.MetadataDir, "log", "events"),
+		filepath.Join(repo.TmpDir, "hooks"),
+	}
+	for _, root := range roots {
+		_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+			if err != nil {
+				if !os.IsNotExist(err) {
+					problems = append(problems, fmt.Sprintf("capture path inspection failed for %s: %v", path, err))
+				}
+				return nil
+			}
+			if entry.IsDir() {
+				return nil
+			}
+			if strings.HasSuffix(entry.Name(), ".lock") {
+				_, lockErr := filelock.Held(path)
+				if lockErr != nil {
+					problems = append(problems, fmt.Sprintf("capture lock inspection failed for %s: %v", path, lockErr))
+				}
+				return nil
+			}
+			if filepath.Ext(entry.Name()) != ".jsonl" {
+				return nil
+			}
+			file, openErr := os.Open(path)
+			if openErr != nil {
+				problems = append(problems, fmt.Sprintf("capture log inspection failed for %s: %v", path, openErr))
+				return nil
+			}
+			info, statErr := file.Stat()
+			if statErr == nil && info.Size() > 0 {
+				last := []byte{0}
+				if _, readErr := file.ReadAt(last, info.Size()-1); readErr != nil {
+					problems = append(problems, fmt.Sprintf("capture log tail inspection failed for %s: %v", path, readErr))
+				} else if last[0] != '\n' {
+					problems = append(problems, fmt.Sprintf("capture log has trailing partial record: %s", path))
+				}
+			}
+			_ = file.Close()
+			return nil
+		})
+	}
+	return problems
+}
+
+func inspectIndex(repo *checkpoint.Repo) []string {
+	exists, err := queryindex.Exists(repo.MetadataDir)
+	if err != nil {
+		return []string{fmt.Sprintf("query index inspection failed: %v", err)}
+	}
+	if !exists {
+		return nil
+	}
+	store, err := queryindex.Open(repo.MetadataDir)
+	if err != nil {
+		return []string{fmt.Sprintf("query index inspection failed: %v", err)}
+	}
+	defer func() { _ = store.Close() }()
+	healthy, err := store.StructurallyHealthy()
+	if err != nil {
+		return []string{fmt.Sprintf("query index inspection failed: %v", err)}
+	}
+	if !healthy {
+		return []string{"query index is corrupt or incompatible; run turnal reindex"}
+	}
+	return nil
+}
+
+func inspectHookFailures(repo *checkpoint.Repo) []string {
+	failures, err := adapters.ReadHookFailures(repo.MetadataDir)
+	if err != nil {
+		return []string{fmt.Sprintf("hook failure inspection failed: %v", err)}
+	}
+	if len(failures) == 0 {
+		return nil
+	}
+	latest := failures[len(failures)-1]
+	return []string{fmt.Sprintf(
+		"%d hook capture failure(s) require acknowledgement; latest=%s adapter=%s hook=%s error=%s (run turnal maintenance clear-hook-failures --yes after review)",
+		len(failures),
+		latest.Time,
+		latest.Adapter,
+		latest.Hook,
+		latest.Error,
+	)}
 }
 
 func inspectEventLogs(repo *checkpoint.Repo) []string {

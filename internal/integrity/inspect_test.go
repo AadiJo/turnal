@@ -2,12 +2,14 @@ package integrity
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/AadiJo/turnal/internal/adapters"
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/primitives"
@@ -57,6 +59,43 @@ func TestInspectReportsMalformedRollbackJournal(t *testing.T) {
 	report := Inspect(repo)
 	if !containsProblem(report.Problems, "unreadable rollback journal") {
 		t.Fatalf("problems = %#v, want unreadable rollback journal", report.Problems)
+	}
+}
+
+func TestInspectReportsPersistedHookFailures(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+	if err := adapters.RecordHookFailure(primitives.AdapterCodex, "after_agent", []byte(`{"session_id":"demo"}`), errors.New("adapter log unavailable")); err != nil {
+		t.Fatalf("RecordHookFailure: %v", err)
+	}
+	report := Inspect(repo)
+	if !containsProblem(report.Problems, "hook capture failure") || !containsProblem(report.Problems, "clear-hook-failures") {
+		t.Fatalf("problems = %#v, want actionable hook failure", report.Problems)
+	}
+}
+
+func TestInspectReportsPartialRawAdapterTail(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	path := filepath.Join(repo.MetadataDir, "log", "raw", "demo", "codex.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir raw log: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(`{"partial":`), 0o600); err != nil {
+		t.Fatalf("write partial raw log: %v", err)
+	}
+	report := Inspect(repo)
+	if !containsProblem(report.Problems, "trailing partial record") {
+		t.Fatalf("problems = %#v, want partial raw record", report.Problems)
 	}
 }
 
