@@ -46,18 +46,37 @@ The Claude and Codex marks in `public/brands/` are cached from the
 [SVGL registry](https://svgl.app/) so the page does not hot-link third-party
 assets at render time. Keep each asset's source comment when updating it.
 
+## Documentation authoring
+
+Documentation prose and reference material live in
+`src/content/docs/index.md`. Astro renders that Markdown inside a
+`typeset typeset-docs` container; `src/pages/docs.astro` owns only the page
+shell, navigation, copy controls, and disclosure behavior.
+
+`src/styles/typeset.css` is the owned [shadcn/typeset](https://ui.shadcn.com/docs/typeset)
+stylesheet. Keep its element rules aligned with upstream. Turnal-specific font,
+color, size, leading, and flow choices belong in the `.typeset-docs` preset in
+the page shell. The base reset stays in the lower `reset` cascade layer so it
+does not erase Typeset's component-layer rhythm.
+
+When changing section headings, update the matching generated slug in
+`src/data/docs.ts` and run the anchor check described in validation. Fenced
+code blocks receive copy controls at runtime and wrap instead of introducing an
+internal horizontal scrollbar.
+
 ## Structure
 
 ```
 src/
   data/demos.ts       command-faithful multi-agent fixtures, tokenized
   data/content.ts     marketing copy (single source of truth)
+  content/docs/       production documentation source
   components/
     Terminal.astro    window chrome + ANSI-colored output; themeable via CSS vars
     Logo.astro        inline mark (rollback loop + checkpoint beads + REC dot)
     CopyButton.astro  icon copy control with brief checkmark feedback
-    CodeBlock.astro   wrapping, copyable documentation examples
     DocsNav.astro     responsive documentation navigation
   layouts/Base.astro  head, fonts, favicon
   pages/              landing page + product documentation
+  styles/typeset.css  owned shadcn/typeset stylesheet
 ```

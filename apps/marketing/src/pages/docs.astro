@@ -1,70 +1,16 @@
 ---
 import Base from '../layouts/Base.astro';
-import Callout from '../components/Callout.astro';
-import CodeBlock from '../components/CodeBlock.astro';
 import DocsNav from '../components/DocsNav.astro';
 import Logo from '../components/Logo.astro';
 import { product } from '../data/content';
-import {
-  commandReference,
-  configReference,
-  docsNav,
-  environmentReference,
-} from '../data/docs';
+import { docsNav } from '../data/docs';
+import { Content, frontmatter } from '../content/docs/index.md';
+import '../styles/typeset.css';
 
 const githubUrl = `https://${product.repo}`;
-const issuesUrl = `${githubUrl}/issues`;
-
-const quickstart = `npm install -g @aadijo/turnal
-cd path/to/your/project
-turnal init
-turnal status
-
-# Use Claude Code or Codex normally, then inspect the recording.
-turnal sessions
-turnal log --transcript`;
-
-const configExample = `version = 1
-
-[init]
-agent = "auto"
-install_hooks = true
-
-[run]
-install_hooks = true
-quiet = false
-bypass_hook_trust = false
-
-[hooks]
-command = "turnal"
-
-[bootstrap]
-init_workspace_git = true
-update_gitignore = true
-
-[git_sync]
-enabled = false
-
-[rollback]
-mode = "checkpoint"
-
-[secrets]
-store_prompts = true
-store_tool_io = true
-snapshot_deny_globs = [
-  ".env",
-  ".env.*",
-  "**/.env",
-  "**/.env.*",
-  "**/credentials.*",
-]`;
 ---
 
-<Base
-  theme="docs"
-  title="Turnal documentation — record, inspect, and recover agent work"
-  description="Production documentation for Turnal: install the CLI, connect Claude Code and Codex, inspect agent history, search and blame changes, replay checkpoints, and roll back safely."
->
+<Base theme="docs" title={frontmatter.title} description={frontmatter.description}>
   <a class="skip-link" href="#main-content">Skip to documentation</a>
 
   <div class="docs-page">
@@ -94,612 +40,11 @@ snapshot_deny_globs = [
           <DocsNav groups={docsNav} compact />
         </details>
 
-        <section id="overview" class="doc-section overview" aria-labelledby="overview-title">
-          <h1 id="overview-title">Record the work.<br />Keep the reason.</h1>
-          <p class="lead">
-            Turnal is a local flight recorder for Claude Code and Codex. It captures each agent
-            turn as an append-only event trail and a pair of hidden Git checkpoints, so you can
-            reconstruct what happened, find the prompt behind a line, or safely return to an
-            earlier state.
-          </p>
-
-          <div class="overview-actions">
-            <a class="primary-action" href="#quickstart">Start in five minutes</a>
-            <a class="text-action" href="#mental-model">Understand the model <span aria-hidden="true">→</span></a>
-          </div>
-
-          <div class="promise-grid" aria-label="Turnal guarantees">
-            <div><strong>Local recording</strong><span>Recording data stays in <code>.turnal/</code>.</span></div>
-            <div><strong>Separate history</strong><span>Your workspace Git history remains independent.</span></div>
-            <div><strong>Recoverable by design</strong><span>Rollback saves the current workspace first.</span></div>
-          </div>
-        </section>
-
-        <section id="installation" class="doc-section" aria-labelledby="installation-title">
-          <h2 id="installation-title">Installation</h2>
-          <p>
-            Install Turnal globally with npm. The package selects a prebuilt binary for macOS,
-            Linux, or Windows on x64 and arm64. On an unsupported platform it can fall back to a
-            local Go build.
-          </p>
-
-          <CodeBlock code="npm install -g @aadijo/turnal" label="Install" />
-
-          <div class="split-list">
-            <div>
-              <h3>Requirements</h3>
-              <ul>
-                <li>Node.js 18 or newer</li>
-                <li>Git available on <code>PATH</code></li>
-                <li>Go only when a prebuilt binary is unavailable</li>
-              </ul>
-            </div>
-            <div>
-              <h3>Verify the install</h3>
-              <CodeBlock code={`turnal version\nturnal --help`} label="Terminal" />
-            </div>
-          </div>
-
-          <p>
-            Turnal preserves the installed release channel during upgrades. Use
-            <code>turnal upgrade --check</code> to check without installing, or select
-            <code>--stable</code> or <code>--nightly</code> explicitly when switching channels.
-          </p>
-        </section>
-
-        <section id="quickstart" class="doc-section" aria-labelledby="quickstart-title">
-          <h2 id="quickstart-title">Quickstart</h2>
-          <p>
-            Initialize Turnal at the directory you consider the workspace root. Auto mode detects
-            installed Claude Code and Codex configurations; when neither is detectable, it prepares
-            both integrations.
-          </p>
-
-          <CodeBlock code={quickstart} label="Terminal" />
-
-          <ol class="steps-list">
-            <li>
-              <span>1</span>
-              <div><strong>Initialize storage.</strong> Turnal creates or attaches <code>.turnal/</code>, ensures workspace Git exists by default, and adds the store to <code>.gitignore</code>.</div>
-            </li>
-            <li>
-              <span>2</span>
-              <div><strong>Install agent hooks.</strong> Existing non-Turnal hooks are preserved. Invalid supported config files are moved aside with a <code>.backup</code> suffix before replacement.</div>
-            </li>
-            <li>
-              <span>3</span>
-              <div><strong>Work normally.</strong> The provider launches as usual; Turnal records hook events and snapshots in the background.</div>
-            </li>
-          </ol>
-
-          <Callout title="Check health before relying on recovery" kind="tip">
-            Run <code>turnal status</code> after setup. It validates identities, hidden Git,
-            durable refs, configuration, hook wiring, and unfinished merge or rollback journals.
-            A non-zero exit status means the workspace needs attention.
-          </Callout>
-        </section>
-
-        <section id="mental-model" class="doc-section" aria-labelledby="mental-model-title">
-          <h2 id="mental-model-title">Mental model</h2>
-          <p>
-            Turnal separates the meaning of an agent run from the bytes in the workspace. One
-            store contains three cooperating layers, each with a deliberately different job.
-          </p>
-
-          <div class="architecture" role="list" aria-label="Turnal storage architecture">
-            <article role="listitem">
-              <span class="architecture-number">01</span>
-              <h3>Event streams</h3>
-              <p>Append-only, hash-chained JSONL records preserve prompts, replies, tools, errors, checkpoints, and adapter metadata.</p>
-              <small>Durable · explains why</small>
-            </article>
-            <span class="architecture-arrow" aria-hidden="true">→</span>
-            <article role="listitem">
-              <span class="architecture-number">02</span>
-              <h3>Hidden Git</h3>
-              <p>A bare repository stores byte-exact synthetic commits for pre- and post-turn workspace snapshots.</p>
-              <small>Durable · preserves what</small>
-            </article>
-            <span class="architecture-arrow" aria-hidden="true">→</span>
-            <article role="listitem">
-              <span class="architecture-number">03</span>
-              <h3>SQLite index</h3>
-              <p>An FTS5 index makes history searchable. It is derived from durable logs and checkpoint refs.</p>
-              <small>Disposable · accelerates queries</small>
-            </article>
-          </div>
-
-          <p>
-            A <strong>session</strong> follows the provider session ID. A <strong>turn</strong>
-            normally begins with a user prompt and becomes complete only after Turnal has both a
-            pre checkpoint and a post checkpoint. Tool activity can start a turn when a prompt
-            event is unavailable.
-          </p>
-
-          <Callout title="The index is a cache, not the record">
-            Normal activity does not continuously rebuild full-text search. Run
-            <code>turnal reindex</code> before searching and after recording new work. If the
-            SQLite database is missing or damaged, rebuild it from the durable layers.
-          </Callout>
-        </section>
-
-        <section id="capture-boundaries" class="doc-section" aria-labelledby="capture-boundaries-title">
-          <h2 id="capture-boundaries-title">Capture boundaries</h2>
-          <p>
-            A normal turn has a before-and-after boundary. The prompt hook records context and
-            creates the pre checkpoint; tool hooks add normalized activity; the stop hook records
-            the result and creates the post checkpoint.
-          </p>
-
-          <div class="turn-sequence" aria-label="Turn capture sequence">
-            <div><b>Prompt</b><span>event + pre checkpoint</span></div>
-            <i aria-hidden="true"></i>
-            <div><b>Agent work</b><span>tools, replies, errors</span></div>
-            <i aria-hidden="true"></i>
-            <div><b>Stop</b><span>event + post checkpoint</span></div>
-          </div>
-
-          <div class="boundary-grid">
-            <article>
-              <h3>Included in snapshots</h3>
-              <ul class="check-list">
-                <li>Regular files under the workspace root</li>
-                <li>Symbolic links, captured as links</li>
-                <li>Executable and non-executable file modes</li>
-                <li>Untracked files unless ignored or denied</li>
-              </ul>
-            </article>
-            <article>
-              <h3>Excluded and preserved</h3>
-              <ul class="minus-list">
-                <li>Any <code>.git</code> or <code>.turnal</code> path segment</li>
-                <li>Files ignored by workspace Git</li>
-                <li>Paths matching <code>secrets.snapshot_deny_globs</code></li>
-                <li>Excluded files already present during restore</li>
-              </ul>
-            </article>
-          </div>
-
-          <Callout title="Turnal Git is not your project Git">
-            Normal checkpoints and checkpoint-mode rollback do not write your project repository's
-            <code>HEAD</code>, index, branches, or refs. Initialization can run <code>git init</code>
-            when no workspace repository exists because <code>bootstrap.init_workspace_git</code>
-            defaults to true. Full workspace-Git capture is a separate, opt-in mode.
-          </Callout>
-        </section>
-
-        <section id="agents" class="doc-section" aria-labelledby="agents-title">
-          <h2 id="agents-title">Agent integrations</h2>
-          <p>
-            Turnal currently supports Claude Code and Codex. Hook installation is additive: it
-            removes or refreshes Turnal-owned commands while leaving unrelated hook commands in
-            place.
-          </p>
-
-          <div class="agent-grid">
-            <article>
-              <div class="agent-heading">
-                <img class="agent-logo claude" src="/brands/claude.svg" alt="" aria-hidden="true" />
-                <h3>Claude Code</h3>
-              </div>
-              <p>Configured in <code>.claude/settings.json</code>.</p>
-              <dl>
-                <div><dt>UserPromptSubmit</dt><dd>prompt and pre boundary</dd></div>
-                <div><dt>PostToolUse</dt><dd>tool activity</dd></div>
-                <div><dt>Stop</dt><dd>reply and post boundary</dd></div>
-              </dl>
-            </article>
-            <article>
-              <div class="agent-heading">
-                <img class="agent-logo codex" src="/brands/codex.svg" alt="" aria-hidden="true" />
-                <h3>Codex</h3>
-              </div>
-              <p>Configured in <code>.codex/config.toml</code> with hooks enabled.</p>
-              <dl>
-                <div><dt>SessionStart</dt><dd>session metadata</dd></div>
-                <div><dt>UserPromptSubmit</dt><dd>prompt and pre boundary</dd></div>
-                <div><dt>PostToolUse</dt><dd>tool activity</dd></div>
-                <div><dt>Stop</dt><dd>reply and post boundary</dd></div>
-              </dl>
-            </article>
-          </div>
-
-          <CodeBlock
-            code={`# Configure only one adapter\nturnal init --agent claude\nturnal init --agent codex\n\n# Configure both explicitly\nturnal init --agent all\n\n# Create storage without changing hook files\nturnal init --agent none --skip-hooks`}
-            label="Agent selection"
-          />
-
-          <h3>Codex wrapper checkpoints</h3>
-          <p>
-            <code>turnal run -- codex</code> launches Codex with hooks enabled and adds independent
-            wrapper-level pre/post checkpoints. If hooks emit no prompt, tool, or assistant
-            payloads, the safety checkpoints still exist but the semantic transcript will be
-            sparse. The wrapper currently supports Codex only.
-          </p>
-        </section>
-
-        <section id="history" class="doc-section" aria-labelledby="history-title">
-          <h2 id="history-title">History and turns</h2>
-          <p>
-            Start with sessions, then move from a timeline into a single turn or its exact file
-            patch. Session listing is store-wide; history commands default to the current worktree.
-          </p>
-
-          <CodeBlock
-            code={`turnal sessions\nturnal log\nturnal log --transcript --session claude-7f2a\nturnal show claude-7f2a:2\nturnal diff claude-7f2a:2`}
-            label="Inspect history"
-          />
-
-          <div class="definition-list">
-            <div><dt><code>turnal sessions</code></dt><dd>Lists provider, turn counts, activity range, latest prompt, tools, and head checkpoint for each recorded session.</dd></div>
-            <div><dt><code>turnal log</code></dt><dd>Builds the timeline from durable data by default. Use <code>--all-worktrees</code> for a shared-store view and <code>--no-pager</code> in scripts.</dd></div>
-            <div><dt><code>turnal show</code></dt><dd>Accepts latest, a bare unambiguous turn number, <code>SESSION:TURN</code>, or <code>SESSION:latest</code>.</dd></div>
-            <div><dt><code>turnal diff</code></dt><dd>Compares the selected turn's pre and post hidden-Git checkpoints.</dd></div>
-          </div>
-
-          <Callout title="Normalized history and provider transcripts are different">
-            <code>--transcript</code> on <code>turnal log</code> renders normalized Turnal events.
-            <code>turnal show --transcript</code> can also read the provider's own transcript from
-            its captured path on demand. Turnal does not copy that provider transcript into its
-            store.
-          </Callout>
-        </section>
-
-        <section id="search" class="doc-section" aria-labelledby="search-title">
-          <h2 id="search-title">Search</h2>
-          <p>
-            Search covers normalized prompts, assistant replies, tool activity, file paths, and
-            event text. Whitespace-separated query terms are combined with AND, so every term must
-            match the indexed turn.
-          </p>
-
-          <CodeBlock
-            code={`turnal reindex\nturnal search "invoice duplicate"\nturnal search "stripe" --session codex-b91e\nturnal search "timeout" --all-worktrees --json`}
-            label="Search history"
-          />
-
-          <p>
-            Search defaults to the current worktree and 20 results. Use <code>--all-worktrees</code>
-            for attached or imported worktrees and <code>--limit 0</code> for every result. Re-run
-            <code>turnal reindex</code> whenever newer activity is absent from results.
-          </p>
-        </section>
-
-        <section id="blame" class="doc-section" aria-labelledby="blame-title">
-          <h2 id="blame-title">Prompt-aware blame</h2>
-          <p>
-            Turnal replays completed checkpoint history and attributes each current line to the
-            turn that last changed it. Rename tracking and moved-line origins preserve authorship
-            better than a simple last-snapshot comparison.
-          </p>
-
-          <CodeBlock
-            code={`turnal blame src/webhooks/stripe.ts\nturnal blame src/webhooks/stripe.ts:24 --verbose\nturnal blame src/webhooks/stripe.ts --session codex-b91e --json`}
-            label="Blame a file or line"
-          />
-
-          <ul>
-            <li>Only complete turns with both pre and post checkpoints participate.</li>
-            <li>The latest completed post checkpoint is the file source; live, uncheckpointed edits are not included.</li>
-            <li>Binary files are not supported.</li>
-            <li>The optional blame cache is derived and can be rebuilt.</li>
-          </ul>
-        </section>
-
-        <section id="rollback" class="doc-section" aria-labelledby="rollback-title">
-          <h2 id="rollback-title">Rollback</h2>
-          <p>
-            Rollback changes the source workspace. Turnal first records the current workspace as a
-            hidden safety snapshot, journals the operation, then restores the selected checkpoint.
-            Preview target resolution and planned file changes with <code>--dry-run</code>.
-          </p>
-
-          <CodeBlock
-            code={`# Undo the work performed by turn 2\nturnal rollback --to claude-7f2a:2:pre --dry-run\nturnal rollback --to claude-7f2a:2:pre\n\n# Restore the completed result of turn 2\nturnal rollback --to claude-7f2a:2:post`}
-            label="Checkpoint rollback"
-          />
-
-          <div class="phase-grid">
-            <div><code>:pre</code><strong>Before the agent worked</strong><p>Use this to undo the changes made during the selected turn.</p></div>
-            <div><code>:post</code><strong>After the agent finished</strong><p>This is the default when the phase is omitted.</p></div>
-          </div>
-
-          <p>
-            Targets can also be a <code>chk_</code> checkpoint ID prefix or a hidden Git SHA prefix;
-            prefixes must be long enough to resolve safely. For another attached worktree, add
-            <code>--from-worktree ID</code>.
-          </p>
-
-          <Callout title="Excluded files survive restore" kind="tip">
-            Checkpoint mode restores captured workspace files while preserving Git-ignored files,
-            deny-glob matches, <code>.git</code>, and <code>.turnal</code>. The safety snapshot ref
-            is printed after a successful rollback and in recovery-oriented errors.
-          </Callout>
-
-          <h3>Workspace-Git rollback</h3>
-          <p>
-            Enable <code>git_sync.enabled</code> before the turn when you need to capture and later
-            restore project Git state: <code>HEAD</code>, index, staged and unstaged patches, and
-            non-ignored untracked files. Then pass <code>--workspace-git</code>, or set
-            <code>rollback.mode = "workspace-git"</code>. A checkpoint captured before Git sync was
-            enabled cannot be upgraded retroactively.
-          </p>
-        </section>
-
-        <section id="replay" class="doc-section" aria-labelledby="replay-title">
-          <h2 id="replay-title">Replay worktrees</h2>
-          <p>
-            Replay materializes a checkpoint in an isolated directory, leaving the source
-            workspace untouched. Use it to inspect an old state, step through a session, run tests,
-            or compare a checkpoint with what exists now.
-          </p>
-
-          <CodeBlock
-            code={`turnal replay checkout claude-7f2a:2:pre\nturnal replay show\nturnal replay next\nturnal replay diff\nturnal replay diff --workspace\nturnal replay keep\nturnal replay stop`}
-            label="Replay a session"
-          />
-
-          <p>
-            A managed replay lives under <code>.turnal/tmp/replay/worktrees</code>. By default,
-            <code>turnal replay stop</code> removes it. Run <code>turnal replay keep</code> first to
-            preserve that directory, or provide an empty destination path to copy the current
-            replay state elsewhere. A range such as <code>SESSION:2..6</code> constrains navigation.
-          </p>
-
-          <div class="command-strip" aria-label="Replay navigation commands">
-            <code>prev</code><code>next</code><code>goto</code><code>show</code><code>diff</code><code>list</code><code>keep</code><code>stop</code><code>remove</code>
-          </div>
-        </section>
-
-        <section id="worktrees" class="doc-section" aria-labelledby="worktrees-title">
-          <h2 id="worktrees-title">Git worktrees</h2>
-          <p>
-            Linked Git worktrees can share the primary worktree's physical <code>.turnal</code>
-            store. Turnal records a distinct worktree identity on every stream and uses a
-            user-state registry to find the shared store again.
-          </p>
-
-          <CodeBlock
-            code={`# Usually discovery is automatic from a linked worktree\nturnal init\n\n# Attach explicitly when discovery is unavailable\nturnal worktree attach --store /path/to/primary/.turnal\nturnal worktree list\nturnal worktree repair`}
-            label="Shared worktree store"
-          />
-
-          <p>
-            The registry lives under <code>TURNAL_STATE_DIR</code> when set; otherwise Turnal uses
-            the platform state directory, with <code>XDG_STATE_HOME</code> on XDG systems. History,
-            search, and rollback remain current-worktree scoped unless you opt into their
-            cross-worktree flags.
-          </p>
-
-          <Callout title="Copied stores need new identities" kind="warning">
-            If you copy <code>.turnal</code> rather than attaching the same physical store, run
-            <code>turnal store rekey --confirm</code> on the copy. This creates new store, worktree,
-            and producer IDs; existing event records and commits are intentionally not rewritten.
-          </Callout>
-        </section>
-
-        <section id="merge" class="doc-section" aria-labelledby="merge-title">
-          <h2 id="merge-title">Merge stores</h2>
-          <p>
-            <code>turnal merge</code> imports immutable event streams and private checkpoint refs
-            from another store or a workspace containing one. The destination keeps a manifest of
-            imported material and rebuilds its search index after a successful durable import.
-          </p>
-
-          <CodeBlock
-            code={`turnal merge /path/to/other/workspace --dry-run\nturnal merge /path/to/other/workspace\n\n# Resume or discard an interrupted import\nturnal merge --recover\nturnal merge --abort`}
-            label="Merge durable history"
-          />
-
-          <ul>
-            <li>Source and destination cannot have the same store ID.</li>
-            <li>Hidden-Git object formats must match.</li>
-            <li>Divergent immutable streams are rejected instead of silently reconciled.</li>
-            <li>A different repository ID requires <code>--adopt-source-as-current-repo</code> and should only be used for the same logical project.</li>
-          </ul>
-
-          <Callout title="Index failure does not erase a successful import">
-            Imported event logs and refs are durable before reindexing. If the automatic index
-            rebuild warns or fails, repair the cause and run <code>turnal reindex</code> manually.
-          </Callout>
-        </section>
-
-        <section id="configuration" class="doc-section" aria-labelledby="configuration-title">
-          <h2 id="configuration-title">Configuration</h2>
-          <p>
-            Configuration is layered from broad defaults to workspace-specific behavior. Later
-            sources override earlier ones:
-          </p>
-
-          <ol class="precedence-list">
-            <li><span>1</span><div><strong>Built-in defaults</strong><small>Safe, zero-config baseline</small></div></li>
-            <li><span>2</span><div><strong>User config</strong><small>Platform user config directory, or <code>TURNAL_CONFIG</code></small></div></li>
-            <li><span>3</span><div><strong>Workspace config</strong><small><code>.turnal/config.toml</code> in the physical store</small></div></li>
-            <li><span>4</span><div><strong>Environment</strong><small><code>TURNAL_HOOK_COMMAND</code> overrides the hook command</small></div></li>
-            <li><span>5</span><div><strong>CLI flags</strong><small>Command-specific, highest precedence</small></div></li>
-          </ol>
-
-          <CodeBlock code={configExample} label="config.toml" language="toml" />
-
-          <h3>Configuration keys</h3>
-          <div class="config-reference">
-            {configReference.map((item) => (
-              <div class="config-row">
-                <div class="config-key"><code>{item.key}</code><span>{item.type}</span></div>
-                <div><p>{item.description}</p><small>Default: <code>{item.defaultValue}</code></small></div>
-              </div>
-            ))}
-          </div>
-
-          <h3>Environment variables</h3>
-          <div class="environment-reference">
-            {environmentReference.map((item) => (
-              <div><code>{item.name}</code><p>{item.description}</p></div>
-            ))}
-          </div>
-        </section>
-
-        <section id="privacy" class="doc-section" aria-labelledby="privacy-title">
-          <h2 id="privacy-title">Privacy and storage</h2>
-          <p>
-            Turnal does not upload recording data. Event logs, snapshots, and the search index stay
-            in the local Turnal store. The npm launcher may contact npm for an interactive update
-            notice unless <code>TURNAL_NO_UPDATE_CHECK</code> is set.
-          </p>
-
-          <div class="storage-table" role="table" aria-label="Turnal storage durability">
-            <div class="storage-head" role="row"><span role="columnheader">Layer</span><span role="columnheader">Contains</span><span role="columnheader">Policy</span></div>
-            <div role="row"><strong role="cell">Event streams</strong><span role="cell">Normalized semantic events and raw adapter references</span><small role="cell">Durable, hash-chained</small></div>
-            <div role="row"><strong role="cell">Hidden Git</strong><span role="cell">Checkpoint commits and safety refs</span><small role="cell">Durable, local</small></div>
-            <div role="row"><strong role="cell">SQLite</strong><span role="cell">FTS search and derived metadata</span><small role="cell">Disposable, rebuildable</small></div>
-            <div role="row"><strong role="cell">Provider transcript</strong><span role="cell">Claude Code or Codex-owned conversation file</span><small role="cell">Read on demand, not copied</small></div>
-          </div>
-
-          <h3>Recording policy</h3>
-          <p>
-            Prompts and tool I/O are stored by default. Set <code>secrets.store_prompts = false</code>
-            or <code>secrets.store_tool_io = false</code> to redact those fields from new normalized
-            events and structured raw hook payloads. This setting does not modify transcript files
-            written by the provider itself.
-          </p>
-
-          <Callout title="Malformed raw payloads cannot be structurally redacted" kind="warning">
-            When an adapter provides a non-JSON raw hook payload, Turnal preserves the opaque raw
-            record because it cannot reliably identify individual prompt or tool fields inside it.
-            Treat access to <code>.turnal</code> as access to development history, and set recording
-            policy before starting sensitive work.
-          </Callout>
-
-          <h3>Snapshot deny globs</h3>
-          <p>
-            The default deny list excludes common environment and credential files. Add project-
-            specific secrets before recording. Denied paths are excluded from new checkpoints and
-            protected from deletion or replacement during checkpoint restore.
-          </p>
-          <CodeBlock
-            code={`[secrets]\nsnapshot_deny_globs = [\n  ".env",\n  ".env.*",\n  "**/.env",\n  "**/.env.*",\n  "**/credentials.*",\n  "**/*.pem",\n]`}
-            label="Protect additional paths"
-            language="toml"
-          />
-
-          <p>
-            Transcript reads are limited to recognized Claude Code or Codex roots—such as
-            <code>CLAUDE_CONFIG_DIR</code> and <code>CODEX_HOME</code>—reject <code>.git</code>
-            paths, and enforce a 64 MiB file-size limit.
-          </p>
-        </section>
-
-        <section id="retention" class="doc-section" aria-labelledby="retention-title">
-          <h2 id="retention-title">Retention and removal</h2>
-          <p>
-            Durable history and hidden-Git object bytes are removed in deliberate stages. Preview
-            each stage before committing to it.
-          </p>
-
-          <div class="retention-flow">
-            <article><span>1</span><h3>Drop a session</h3><code>turnal session drop ID --dry-run</code><p>Deletes its event log, stream metadata, temporary state, and related private refs.</p></article>
-            <article><span>2</span><h3>Prune refs</h3><code>turnal retention prune --dry-run</code><p>Removes private refs no durable record, journal, active turn, or import manifest still needs.</p></article>
-            <article><span>3</span><h3>Collect objects</h3><code>turnal maintenance gc --dry-run</code><p>Expires hidden reflogs and prunes unreachable Git objects when run without dry-run.</p></article>
-          </div>
-
-          <Callout title="Garbage collection is the irreversible step" kind="warning">
-            Dropping a session or pruning a ref does not immediately erase underlying Git objects.
-            <code>turnal maintenance gc</code> performs immediate object pruning. Review the earlier
-            dry runs and keep an external backup when the history may still matter.
-          </Callout>
-
-          <h3>Remove Turnal from a workspace</h3>
-          <CodeBlock
-            code={`turnal destroy --dry-run --remove-hooks --agent all\nturnal destroy --remove-hooks --agent all`}
-            label="Destroy metadata"
-          />
-          <p>
-            Destroy removes Turnal metadata and, when requested, Turnal-owned agent hook commands.
-            It does not delete workspace source files. Always inspect <code>--dry-run</code> first.
-          </p>
-        </section>
-
-        <section id="commands" class="doc-section command-section" aria-labelledby="commands-title">
-          <h2 id="commands-title">Command reference</h2>
-          <p>
-            These are Turnal's public commands. Hook, checkpoint, and turn-plumbing commands are
-            internal and intentionally omitted.
-          </p>
-
-          <div class="command-index" aria-label="Command index">
-            {commandReference.map((command) => <a href={`#${command.id}`}>{command.command.replace('turnal ', '')}</a>)}
-          </div>
-
-          <div class="command-reference">
-            {commandReference.map((command) => (
-              <article id={command.id} class="command-card">
-                <h3><code>{command.command}</code></h3>
-                <p>{command.summary}</p>
-                <CodeBlock code={command.usage} label="Usage" />
-
-                {command.flags && command.flags.length > 0 && (
-                  <dl class="flag-list">
-                    {command.flags.map((flag) => (
-                      <div><dt><code>{flag.name}</code></dt><dd>{flag.description}</dd></div>
-                    ))}
-                  </dl>
-                )}
-
-                {command.notes && command.notes.length > 0 && (
-                  <ul class="command-notes">
-                    {command.notes.map((note) => <li>{note}</li>)}
-                  </ul>
-                )}
-              </article>
-            ))}
-          </div>
-        </section>
-
-        <section id="troubleshooting" class="doc-section" aria-labelledby="troubleshooting-title">
-          <h2 id="troubleshooting-title">Troubleshooting</h2>
-          <p>Run <code>turnal status</code> first. It is the fastest way to separate hook, store, identity, integrity, and unfinished-operation failures.</p>
-
-          <div class="troubleshooting-list">
-            <details open>
-              <summary>Search says the index is missing, or recent turns are absent</summary>
-              <p>Run <code>turnal reindex</code> from the workspace. The SQLite database is intentionally disposable and normal recording does not rebuild it after every turn.</p>
-            </details>
-            <details>
-              <summary>A linked worktree cannot find its Turnal store</summary>
-              <p>From the linked worktree, run <code>turnal worktree attach --store /path/to/primary/.turnal</code>, then <code>turnal worktree repair</code> and <code>turnal status</code>.</p>
-            </details>
-            <details>
-              <summary>A turn or checkpoint target is ambiguous</summary>
-              <p>Use the explicit <code>SESSION:TURN:PHASE</code> form. For shared stores, add <code>--from-worktree ID</code>. Checkpoint and SHA prefixes must uniquely identify a target.</p>
-            </details>
-            <details>
-              <summary>Workspace-Git rollback is unavailable</summary>
-              <p>Git sync must have been enabled when the target was captured. Enable it with <code>turnal init --git-sync</code> or <code>git_sync.enabled = true</code> for future turns; use normal checkpoint rollback for older turns.</p>
-            </details>
-            <details>
-              <summary>Provider transcript text cannot be loaded</summary>
-              <p>The captured file must still exist under an allowed Claude Code or Codex config root, must not traverse a <code>.git</code> directory, and must be no larger than 64 MiB. Normalized Turnal events remain available without it.</p>
-            </details>
-            <details>
-              <summary>An interrupted merge is reported</summary>
-              <p>Inspect <code>turnal status</code>, then choose <code>turnal merge --recover</code> to resume the single pending journal or <code>turnal merge --abort</code> to remove its staging data.</p>
-            </details>
-            <details>
-              <summary>Disk use remains after dropping a session</summary>
-              <p>Run <code>turnal reindex</code>, preview <code>turnal retention prune --dry-run</code>, then preview and run <code>turnal maintenance gc</code> only when you are ready to irreversibly prune unreachable objects.</p>
-            </details>
-          </div>
-
-          <div class="support-card">
-            <div>
-              <h3>Still stuck?</h3>
-              <p>Include <code>turnal version --json</code> and the non-sensitive parts of <code>turnal status</code> in a bug report.</p>
-            </div>
-            <a href={issuesUrl}>Open a GitHub issue <span aria-hidden="true">→</span></a>
-          </div>
-        </section>
-
-        <footer class="docs-footer">
+        <article class="typeset typeset-docs">
+          <Content />
+        </article>
+
+        <footer class="docs-footer not-typeset" data-not-typeset>
           <a href="/"><Logo size={22} /></a>
           <p>{product.tagline}</p>
           <div><a href="/">Home</a><a href={githubUrl}>GitHub</a></div>
@@ -722,8 +67,6 @@ snapshot_deny_globs = [
     --quiet: rgba(236, 227, 212, 0.42);
     --hair: rgba(236, 227, 212, 0.1);
     --hair-strong: rgba(236, 227, 212, 0.16);
-    --code-bg: #0c0b09;
-    --code-fg: #ece3d4;
     min-height: 100vh;
     background: var(--bg);
     color: var(--fg);
@@ -752,7 +95,6 @@ snapshot_deny_globs = [
   }
 
   .skip-link:focus { transform: translateY(0); }
-
   .docs-page { min-height: 100vh; }
 
   .docs-header {
@@ -772,7 +114,6 @@ snapshot_deny_globs = [
     margin-inline: auto;
     padding-inline: 28px;
     align-items: center;
-    gap: 0;
   }
 
   .header-product {
@@ -811,7 +152,6 @@ snapshot_deny_globs = [
     color: var(--muted);
     font-size: 13px;
   }
-
   .header-links a { transition: color 120ms ease; }
   .header-links a:hover { color: var(--fg); }
   .header-links .install-link {
@@ -824,9 +164,9 @@ snapshot_deny_globs = [
 
   .docs-layout {
     display: grid;
-    grid-template-columns: 210px minmax(0, 800px);
+    grid-template-columns: 210px minmax(0, 760px);
     width: 100%;
-    max-width: 1160px;
+    max-width: 1120px;
     margin-inline: auto;
     padding: 0 28px 120px;
     column-gap: 68px;
@@ -843,454 +183,163 @@ snapshot_deny_globs = [
     scrollbar-color: var(--hair-strong) transparent;
   }
 
-  .doc-content { min-width: 0; }
+  .doc-content {
+    min-width: 0;
+    padding-top: clamp(68px, 8vw, 96px);
+  }
   .mobile-toc { display: none; }
 
-  .doc-section {
-    padding: 76px 0 8px;
-    scroll-margin-top: 68px;
+  .typeset-docs {
+    --typeset-font-body: var(--sans);
+    --typeset-font-heading: var(--sans);
+    --typeset-font-mono: var(--mono);
+    --typeset-size: 15.5px;
+    --typeset-leading: 1.75;
+    --typeset-flow: 1.45em;
+    --color-foreground: var(--fg);
+    --color-muted-foreground: var(--muted);
+    --color-border: var(--hair-strong);
+    --color-muted: rgba(236, 227, 212, 0.055);
+    --color-ring: var(--accent);
+    --color-primary: var(--accent);
+    --radius: 9px;
+    width: 100%;
+    max-width: 760px;
+    color: var(--fg);
   }
 
-  .doc-section + .doc-section {
-    margin-top: 58px;
+  .typeset-docs > h1 {
+    max-width: 650px;
+    font-weight: 680;
+    letter-spacing: -0.035em;
+    text-wrap: balance;
+  }
+  .typeset-docs > h2,
+  .typeset-docs > h3 { letter-spacing: -0.018em; }
+  .typeset-docs > h2[id] { scroll-margin-top: 84px; }
+  .typeset-docs .docs-lead {
+    max-width: 680px;
+    color: rgba(236, 227, 212, 0.72);
+    font-size: 1.075em;
+    text-wrap: pretty;
+  }
+
+  .typeset-docs :where(a) { text-underline-offset: 0.18em; }
+  .typeset-docs :where(strong) { color: var(--fg); }
+  .typeset-docs :where(hr) { border-color: var(--hair); }
+  .typeset-docs :where(blockquote) {
+    border: 1px solid var(--hair-strong);
+    border-inline-start: 2px solid var(--accent);
+    border-radius: 8px;
+    background: rgba(236, 227, 212, 0.025);
+    padding: 14px 16px;
+    color: var(--muted);
+  }
+  .typeset-docs :where(table) {
+    width: 100%;
+    table-layout: fixed;
+  }
+  .typeset-docs :where(th, td) { overflow-wrap: anywhere; }
+  .typeset-docs :where(th) { color: var(--fg); }
+  .typeset-docs :where(td) { color: var(--muted); }
+
+  .typeset-docs :where(pre) {
+    position: relative;
+    overflow-x: hidden;
+    border: 1px solid var(--hair);
+    background: #0c0b09;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    padding: 1.1em 3.7em 1.1em 1.2em;
+  }
+  .typeset-docs :where(pre code) { white-space: inherit; }
+
+  .typeset-copy {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    display: inline-grid;
+    width: 32px;
+    height: 32px;
+    place-items: center;
+    border: 0;
+    border-radius: 7px;
+    background: rgba(236, 227, 212, 0.08);
+    color: rgba(236, 227, 212, 0.58);
+    transition: background 140ms ease, color 140ms ease, transform 120ms ease;
+  }
+  .typeset-copy:hover { background: rgba(236, 227, 212, 0.14); color: var(--fg); }
+  .typeset-copy:active { transform: scale(0.94); }
+  .typeset-copy svg {
+    grid-area: 1 / 1;
+    width: 16px;
+    height: 16px;
+    transition: opacity 120ms ease, transform 160ms ease;
+  }
+  .typeset-copy .copy-check { color: var(--accent); opacity: 0; transform: scale(0.45); }
+  .typeset-copy.copied .copy-icon { opacity: 0; transform: scale(0.45); }
+  .typeset-copy.copied .copy-check { opacity: 1; transform: scale(1); }
+
+  .typeset-docs .agent-heading {
+    display: flex;
+    align-items: center;
+    gap: 0.65em;
+  }
+  .typeset-docs .agent-heading img {
+    width: 1.35em;
+    height: 1.35em;
+    margin: 0;
+    border-radius: 0;
+    object-fit: contain;
+  }
+
+  .troubleshooting-list {
+    margin-top: 24px;
     border-top: 1px solid var(--hair);
   }
-
-  .overview {
-    padding-top: clamp(68px, 9vw, 112px);
-    padding-bottom: 42px;
+  .troubleshooting-list details { border-bottom: 1px solid var(--hair); }
+  .troubleshooting-list details.is-animating {
+    overflow: hidden;
+    will-change: height;
   }
-
-  .doc-content h1 {
-    max-width: 760px;
-    margin: 0 0 26px;
+  .troubleshooting-list summary {
+    display: flex;
+    padding: 18px 2px;
     color: var(--fg);
-    font-size: clamp(44px, 7vw, 72px);
-    font-weight: 760;
-    letter-spacing: -0.045em;
-    line-height: 0.98;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 570;
+    list-style: none;
+    justify-content: space-between;
+    gap: 20px;
   }
-
-  .doc-content h2 {
-    margin: 0 0 20px;
-    color: var(--fg);
-    font-size: clamp(29px, 4vw, 40px);
-    font-weight: 700;
-    letter-spacing: -0.035em;
-    line-height: 1.08;
+  .troubleshooting-list summary::-webkit-details-marker { display: none; }
+  .troubleshooting-list summary::after {
+    color: var(--accent);
+    content: '+';
+    font-family: var(--mono);
   }
-
-  .doc-content h3 {
-    margin: 34px 0 12px;
-    color: var(--fg);
-    font-size: 18px;
-    font-weight: 650;
-    letter-spacing: -0.015em;
-    line-height: 1.3;
-  }
-
-  .doc-content p,
-  .doc-content li,
-  .doc-content dd {
+  .troubleshooting-list details[open] summary::after { content: '–'; }
+  .troubleshooting-list details p {
+    max-width: 680px;
+    padding: 0 36px 18px 2px;
     color: var(--muted);
-    font-size: 15.5px;
-    line-height: 1.72;
+    font-size: 13.5px;
+    line-height: 1.65;
   }
-
-  .doc-content p + p { margin-top: 16px; }
-  .doc-content strong { color: var(--fg); font-weight: 620; }
-
-  .doc-content :not(pre) > code,
-  .doc-content dt code,
-  .doc-content small code {
+  .troubleshooting-list code {
     border: 1px solid var(--hair);
     border-radius: 5px;
     background: rgba(236, 227, 212, 0.055);
     color: var(--fg);
     font-family: var(--mono);
     font-size: 0.84em;
-    overflow-wrap: anywhere;
     padding: 1px 5px;
   }
 
-  .doc-content > section > ul,
-  .doc-content > section > ol:not(.steps-list):not(.precedence-list) {
-    display: flex;
-    flex-direction: column;
-    gap: 9px;
-    margin: 20px 0;
-    padding-left: 21px;
-  }
-
-  .doc-content > section > ul li::marker { color: var(--accent); }
-
-  .lead {
-    max-width: 720px;
-    color: rgba(236, 227, 212, 0.7) !important;
-    font-size: clamp(17px, 2.2vw, 20px) !important;
-    line-height: 1.62 !important;
-  }
-
-  .overview-actions {
-    display: flex;
-    flex-wrap: wrap;
-    margin: 32px 0 48px;
-    align-items: center;
-    gap: 20px;
-  }
-
-  .primary-action {
-    display: inline-flex;
-    padding: 11px 18px;
-    border-radius: 999px;
-    background: var(--fg);
-    color: var(--bg);
-    font-size: 14px;
-    font-weight: 650;
-    transition: transform 120ms ease;
-  }
-
-  .primary-action:hover { transform: translateY(-1px); }
-  .text-action { color: var(--muted); font-size: 14px; }
-  .text-action span { color: var(--accent); }
-  .text-action:hover { color: var(--fg); }
-
-  .promise-grid {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 1px;
-    overflow: hidden;
-    border: 1px solid var(--hair);
-    border-radius: 10px;
-    background: var(--hair);
-  }
-
-  .promise-grid > div {
-    display: flex;
-    min-width: 0;
-    padding: 20px 18px;
-    background: var(--surface);
-    flex-direction: column;
-    gap: 5px;
-  }
-
-  .promise-grid strong { font-size: 13px; }
-  .promise-grid span { color: var(--muted); font-size: 12.5px; line-height: 1.5; }
-
-  .split-list {
-    display: grid;
-    grid-template-columns: 0.8fr 1.2fr;
-    gap: 34px;
-    margin: 30px 0 18px;
-    align-items: start;
-  }
-
-  .split-list h3 { margin-top: 0; }
-  .split-list ul { display: flex; flex-direction: column; gap: 7px; padding-left: 18px; }
-  .split-list figure { margin: 0; }
-
-  .steps-list {
-    display: flex;
-    flex-direction: column;
-    gap: 0;
-    margin: 30px 0;
-    padding: 0;
-    border-block: 1px solid var(--hair);
-    list-style: none;
-  }
-
-  .steps-list li {
-    display: grid;
-    grid-template-columns: 38px minmax(0, 1fr);
-    gap: 13px;
-    padding: 18px 0;
-  }
-
-  .steps-list li + li { border-top: 1px solid var(--hair); }
-  .steps-list li > span { color: var(--accent); font-family: var(--mono); font-size: 12px; padding-top: 4px; }
-
-  .architecture {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 24px minmax(0, 1fr) 24px minmax(0, 1fr);
-    margin: 32px 0;
-    align-items: stretch;
-  }
-
-  .architecture article {
-    display: flex;
-    min-width: 0;
-    padding: 20px 18px;
-    border: 1px solid var(--hair-strong);
-    border-radius: 9px;
-    background: var(--surface);
-    flex-direction: column;
-  }
-
-  .architecture h3 { margin: 8px 0 10px; font-size: 15px; }
-  .architecture p { font-size: 12.8px; line-height: 1.58; }
-  .architecture small { margin-top: auto; padding-top: 20px; color: var(--quiet); font-family: var(--mono); font-size: 10px; }
-  .architecture-number { color: var(--accent); font-family: var(--mono); font-size: 10px; }
-  .architecture-arrow { display: grid; place-items: center; color: var(--quiet); }
-
-  .turn-sequence {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 38px minmax(0, 1fr) 38px minmax(0, 1fr);
-    margin: 28px 0 34px;
-    align-items: center;
-  }
-
-  .turn-sequence > div {
-    display: flex;
-    min-height: 90px;
-    padding: 15px;
-    border: 1px solid var(--hair-strong);
-    border-radius: 9px;
-    background: var(--surface);
-    flex-direction: column;
-    justify-content: center;
-    gap: 4px;
-  }
-
-  .turn-sequence b { color: var(--fg); font-size: 13px; }
-  .turn-sequence span { color: var(--muted); font-size: 11.5px; line-height: 1.45; }
-  .turn-sequence i { height: 1px; background: var(--hair-strong); }
-  .turn-sequence i::after { display: block; float: right; margin: -6px -1px 0 0; color: var(--quiet); content: '›'; font-style: normal; }
-
-  .boundary-grid,
-  .agent-grid,
-  .phase-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 16px;
-    margin: 30px 0;
-  }
-
-  .boundary-grid article,
-  .agent-grid article,
-  .phase-grid > div {
-    min-width: 0;
-    padding: 22px;
-    border: 1px solid var(--hair);
-    border-radius: 10px;
-    background: var(--surface);
-  }
-
-  .boundary-grid h3,
-  .agent-grid h3 { margin-top: 0; font-size: 15px; }
-  .boundary-grid ul { display: flex; flex-direction: column; gap: 9px; padding: 0; list-style: none; }
-  .boundary-grid li { position: relative; padding-left: 21px; font-size: 13px; line-height: 1.55; }
-  .check-list li::before { position: absolute; left: 0; color: #4bd695; content: '✓'; }
-  .minus-list li::before { position: absolute; left: 1px; color: #e8c15f; content: '–'; }
-
-  .agent-heading { display: flex; align-items: center; gap: 9px; }
-  .agent-heading h3 { margin-bottom: 0; }
-  .agent-logo { display: block; width: 25px; height: 25px; object-fit: contain; flex: none; }
-  .agent-logo.claude { width: 24px; height: 24px; }
-  .agent-grid article > p { margin: 8px 0 18px; font-size: 13px; }
-  .agent-grid dl { display: flex; flex-direction: column; gap: 8px; }
-  .agent-grid dl div { display: flex; justify-content: space-between; gap: 12px; }
-  .agent-grid dt { color: var(--fg); font-family: var(--mono); font-size: 10.5px; overflow-wrap: anywhere; }
-  .agent-grid dd { color: var(--quiet); font-size: 11px; line-height: 1.4; text-align: right; }
-
-  .definition-list {
-    margin: 28px 0;
-    border-block: 1px solid var(--hair);
-  }
-
-  .definition-list > div {
-    display: grid;
-    grid-template-columns: 180px minmax(0, 1fr);
-    gap: 24px;
-    padding: 17px 0;
-  }
-
-  .definition-list > div + div { border-top: 1px solid var(--hair); }
-  .definition-list dd { font-size: 13.5px; }
-
-  .phase-grid > div { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 12px; }
-  .phase-grid > div > code { grid-row: 1 / 3; align-self: start; }
-  .phase-grid strong { font-size: 13px; }
-  .phase-grid p { margin: 0; font-size: 12.5px; line-height: 1.5; }
-
-  .command-strip {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    margin-top: 24px;
-  }
-
-  .command-strip code { padding: 5px 9px !important; }
-
-  .precedence-list {
-    display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-    margin: 28px 0;
-    padding: 0;
-    border: 1px solid var(--hair);
-    border-radius: 10px;
-    list-style: none;
-    overflow: hidden;
-  }
-
-  .precedence-list li {
-    display: flex;
-    min-width: 0;
-    padding: 15px 12px;
-    background: var(--surface);
-    gap: 9px;
-  }
-
-  .precedence-list li + li { border-left: 1px solid var(--hair); }
-  .precedence-list li > span { color: var(--accent); font-family: var(--mono); font-size: 10px; }
-  .precedence-list strong { display: block; font-size: 11px; line-height: 1.35; }
-  .precedence-list small { display: block; margin-top: 5px; color: var(--quiet); font-size: 9.5px; line-height: 1.45; overflow-wrap: anywhere; }
-
-  .config-reference {
-    margin: 18px 0 38px;
-    border-top: 1px solid var(--hair);
-  }
-
-  .config-row {
-    display: grid;
-    grid-template-columns: 245px minmax(0, 1fr);
-    gap: 28px;
-    padding: 16px 0;
-    border-bottom: 1px solid var(--hair);
-  }
-
-  .config-key { display: flex; min-width: 0; align-items: flex-start; justify-content: space-between; gap: 8px; }
-  .config-key code { font-size: 11px !important; }
-  .config-key span { color: var(--quiet); font-family: var(--mono); font-size: 10px; }
-  .config-row p { font-size: 13px; line-height: 1.5; }
-  .config-row small { display: block; margin-top: 6px; color: var(--quiet); font-size: 11px; }
-
-  .environment-reference {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 1px;
-    overflow: hidden;
-    margin: 18px 0;
-    border: 1px solid var(--hair);
-    border-radius: 10px;
-    background: var(--hair);
-  }
-
-  .environment-reference > div { min-width: 0; padding: 17px; background: var(--surface); }
-  .environment-reference code { font-size: 10.5px !important; }
-  .environment-reference p { margin-top: 9px; font-size: 12.5px; line-height: 1.5; }
-
-  .storage-table {
-    margin: 28px 0 36px;
-    border: 1px solid var(--hair);
-    border-radius: 10px;
-    overflow: hidden;
-  }
-
-  .storage-table > div {
-    display: grid;
-    grid-template-columns: 150px minmax(0, 1fr) 145px;
-    gap: 18px;
-    padding: 14px 16px;
-    align-items: center;
-  }
-
-  .storage-table > div + div { border-top: 1px solid var(--hair); }
-  .storage-table .storage-head { background: var(--surface-raised); color: var(--quiet); font-family: var(--mono); font-size: 10px; }
-  .storage-table strong { font-size: 12.5px; }
-  .storage-table span { color: var(--muted); font-size: 12.5px; line-height: 1.45; }
-  .storage-table small { color: var(--quiet); font-family: var(--mono); font-size: 9.5px; }
-
-  .retention-flow {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 1px;
-    overflow: hidden;
-    margin: 30px 0;
-    border: 1px solid var(--hair);
-    border-radius: 10px;
-    background: var(--hair);
-  }
-
-  .retention-flow article { min-width: 0; padding: 20px 17px; background: var(--surface); }
-  .retention-flow article > span { color: var(--accent); font-family: var(--mono); font-size: 10px; }
-  .retention-flow h3 { margin: 8px 0 12px; font-size: 14px; }
-  .retention-flow code { display: block; margin-bottom: 12px; font-size: 9.5px !important; }
-  .retention-flow p { font-size: 11.5px; line-height: 1.5; }
-
-  .command-index {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 7px;
-    margin: 25px 0 42px;
-  }
-
-  .command-index a {
-    padding: 5px 9px;
-    border: 1px solid var(--hair);
-    border-radius: 6px;
-    color: var(--muted);
-    font-family: var(--mono);
-    font-size: 10.5px;
-    transition: border-color 120ms ease, color 120ms ease;
-  }
-
-  .command-index a:hover { border-color: var(--hair-strong); color: var(--fg); }
-  .command-reference { display: flex; flex-direction: column; gap: 18px; }
-
-  .command-card {
-    padding: 25px;
-    border: 1px solid var(--hair);
-    border-radius: 11px;
-    background: var(--surface);
-    scroll-margin-top: 84px;
-  }
-
-  .command-card h3 { margin: 0 0 10px; }
-  .command-card h3 code { border: 0; background: transparent; padding: 0; color: var(--fg); font-size: 15px; }
-  .command-card > p { font-size: 13.5px; line-height: 1.55; }
-  .command-card figure { margin-block: 17px; }
-
-  .flag-list { border-top: 1px solid var(--hair); }
-  .flag-list > div { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 20px; padding: 12px 0; border-bottom: 1px solid var(--hair); }
-  .flag-list dt code { font-size: 10px; }
-  .flag-list dd { font-size: 12px; line-height: 1.5; }
-
-  .command-notes { display: flex; flex-direction: column; gap: 5px; margin: 15px 0 0; padding-left: 18px; }
-  .command-notes li { color: var(--quiet); font-size: 11.5px; line-height: 1.5; }
-  .command-notes li::marker { color: var(--accent); }
-
-  .troubleshooting-list { margin: 28px 0; border-top: 1px solid var(--hair); }
-  .troubleshooting-list details { border-bottom: 1px solid var(--hair); }
-  .troubleshooting-list details.is-animating {
-    overflow: hidden;
-    will-change: height;
-  }
-  .troubleshooting-list summary { display: flex; padding: 18px 2px; color: var(--fg); cursor: pointer; font-size: 14px; font-weight: 570; list-style: none; justify-content: space-between; gap: 20px; }
-  .troubleshooting-list summary::-webkit-details-marker { display: none; }
-  .troubleshooting-list summary::after { color: var(--accent); content: '+'; font-family: var(--mono); }
-  .troubleshooting-list details[open] summary::after { content: '–'; }
-  .troubleshooting-list details p { max-width: 700px; padding: 0 36px 18px 2px; font-size: 13.5px; }
-
-  .support-card {
-    display: flex;
-    margin-top: 40px;
-    padding: 24px;
-    border: 1px solid var(--hair-strong);
-    border-radius: 10px;
-    background: var(--surface-raised);
-    align-items: center;
-    justify-content: space-between;
-    gap: 28px;
-  }
-
-  .support-card h3 { margin: 0 0 6px; font-size: 16px; }
-  .support-card p { font-size: 12.5px; line-height: 1.5; }
-  .support-card > a { flex: none; color: var(--fg); font-size: 13px; }
-  .support-card > a span { color: var(--accent); }
-
   .docs-footer {
     display: flex;
-    margin-top: 100px;
+    margin-top: 96px;
     padding-top: 28px;
     border-top: 1px solid var(--hair);
     align-items: center;
@@ -1298,23 +347,36 @@ snapshot_deny_globs = [
     color: var(--quiet);
     font-size: 12px;
   }
-
-  .docs-footer > p { flex: 1; font-size: 12px; }
+  .docs-footer > p { flex: 1; }
   .docs-footer > div { display: flex; gap: 18px; }
   .docs-footer a:hover { color: var(--fg); }
 
   @media (max-width: 980px) {
-    .docs-layout { display: block; max-width: 850px; padding-inline: 24px; }
+    .docs-layout {
+      display: block;
+      max-width: 820px;
+      padding-inline: 24px;
+    }
     .sidebar { display: none; }
+    .doc-content { padding-top: 28px; }
     .mobile-toc {
       display: block;
-      margin-top: 28px;
+      margin-bottom: 56px;
       padding: 0 16px;
       border: 1px solid var(--hair);
       border-radius: 9px;
       background: var(--surface);
     }
-    .mobile-toc summary { display: flex; padding: 14px 0; color: var(--fg); cursor: pointer; font-size: 13px; font-weight: 600; list-style: none; justify-content: space-between; }
+    .mobile-toc summary {
+      display: flex;
+      padding: 14px 0;
+      color: var(--fg);
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      list-style: none;
+      justify-content: space-between;
+    }
     .mobile-toc summary::-webkit-details-marker { display: none; }
     .mobile-toc[open] summary { border-bottom: 1px solid var(--hair); }
   }
@@ -1324,49 +386,63 @@ snapshot_deny_globs = [
     .header-links { gap: 14px; }
     .header-links > a:not(.install-link) { display: none; }
     .docs-layout { padding: 0 18px 80px; }
-    .doc-section { padding-top: 58px; }
-    .doc-section + .doc-section { margin-top: 44px; }
-    .overview { padding-top: 56px; }
-    .promise-grid,
-    .boundary-grid,
-    .agent-grid,
-    .phase-grid,
-    .environment-reference,
-    .retention-flow { grid-template-columns: minmax(0, 1fr); }
-    .split-list { grid-template-columns: minmax(0, 1fr); }
-    .architecture { grid-template-columns: minmax(0, 1fr); gap: 9px; }
-    .architecture-arrow { height: 15px; transform: rotate(90deg); }
-    .turn-sequence { grid-template-columns: minmax(0, 1fr); gap: 7px; }
-    .turn-sequence i { width: 1px; height: 15px; margin-inline: auto; }
-    .turn-sequence i::after { display: none; }
-    .precedence-list { grid-template-columns: minmax(0, 1fr); }
-    .precedence-list li + li { border-top: 1px solid var(--hair); border-left: 0; }
-    .config-row { grid-template-columns: minmax(0, 1fr); gap: 11px; }
-    .config-key { justify-content: flex-start; }
-    .storage-table .storage-head { display: none; }
-    .storage-table > div { grid-template-columns: minmax(0, 1fr); gap: 5px; padding: 17px; }
-    .definition-list > div,
-    .flag-list > div { grid-template-columns: minmax(0, 1fr); gap: 8px; }
-    .support-card { align-items: flex-start; flex-direction: column; }
+    .typeset-docs { --typeset-size: 15px; --typeset-flow: 1.35em; }
+    .typeset-docs :where(table) { font-size: 0.9em; }
     .docs-footer { align-items: flex-start; flex-wrap: wrap; }
     .docs-footer > p { flex-basis: calc(100% - 50px); }
   }
 
   @media (max-width: 440px) {
-    .doc-content h1 { font-size: 42px; }
-    .overview-actions { align-items: flex-start; flex-direction: column; }
-    .command-card { padding: 19px 15px; }
-    .phase-grid > div { grid-template-columns: minmax(0, 1fr); }
-    .phase-grid > div > code { grid-row: auto; justify-self: start; }
+    .typeset-docs :where(pre) { padding-inline: 1em 3.5em; }
   }
 
   @media (prefers-reduced-motion: reduce) {
     .skip-link,
-    .primary-action { transition: none; }
+    .typeset-copy,
+    .typeset-copy svg { transition: none; }
   }
 </style>
 
 <script>
+  const clipboardIcon = `
+    <svg class="copy-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect x="9" y="9" width="11" height="11" rx="2.4" stroke="currentColor" stroke-width="1.8" />
+      <path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+    </svg>
+    <svg class="copy-check" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M20 6 9 17l-5-5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+    </svg>`;
+
+  for (const pre of document.querySelectorAll<HTMLElement>('.typeset-docs pre')) {
+    const code = pre.querySelector('code');
+    if (!code) continue;
+
+    const button = document.createElement('button');
+    button.className = 'typeset-copy';
+    button.type = 'button';
+    button.setAttribute('aria-label', 'Copy code');
+    button.innerHTML = clipboardIcon;
+    const value = code.textContent ?? '';
+
+    let resetTimer = 0;
+    button.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(value);
+      } catch {
+        // Clipboard access can be unavailable in non-secure preview contexts.
+      }
+      button.classList.add('copied');
+      button.setAttribute('aria-label', 'Copied');
+      window.clearTimeout(resetTimer);
+      resetTimer = window.setTimeout(() => {
+        button.classList.remove('copied');
+        button.setAttribute('aria-label', 'Copy code');
+      }, 1200);
+    });
+
+    pre.append(button);
+  }
+
   interface AccordionState {
     animation: Animation;
     expanding: boolean;
