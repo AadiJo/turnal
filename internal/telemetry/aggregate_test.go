@@ -72,6 +72,38 @@ func TestAggregateRecordsCanonicalDailyCounters(t *testing.T) {
 	assertMode(t, paths[0], 0o600)
 }
 
+func TestAggregateRecordManyUsesOneCanonicalUpdate(t *testing.T) {
+	store, state, build := testAggregateStore(t)
+	result, err := store.RecordMany(
+		RecordOptions{State: state, Build: build, LookupEnv: mapEnv(nil)},
+		MetricInstallationActive,
+		MetricCommandStatusSuccess,
+		MetricCommandStatusSuccess,
+	)
+	if err != nil || !result.Recorded {
+		t.Fatalf("RecordMany() = %#v, %v", result, err)
+	}
+	snapshot, err := store.Inspect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Current) != 1 || snapshot.FileCount() != 1 || snapshot.Bytes == 0 {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
+	want := []MetricCount{
+		{Key: MetricCommandStatusSuccess, Count: 2},
+		{Key: MetricInstallationActive, Count: 1},
+	}
+	if len(snapshot.Current[0].Metrics) != len(want) {
+		t.Fatalf("metrics = %#v", snapshot.Current[0].Metrics)
+	}
+	for index := range want {
+		if snapshot.Current[0].Metrics[index] != want[index] {
+			t.Fatalf("metrics = %#v, want %#v", snapshot.Current[0].Metrics, want)
+		}
+	}
+}
+
 func TestAggregateConcurrentWritersDoNotLoseCounts(t *testing.T) {
 	store, state, build := testAggregateStore(t)
 	store.LockTimeout = 5 * time.Second

@@ -144,6 +144,23 @@ func (store StateStore) SetPreference(preference Preference) (State, error) {
 	})
 }
 
+func (store StateStore) Enable(at time.Time) (State, error) {
+	return store.Update(func(state *State) error {
+		if state.AnonymousID == nil {
+			id, err := store.newUUID()()
+			if err != nil {
+				return err
+			}
+			state.AnonymousID = &id
+		}
+		state.Preference = PreferenceOn
+		if state.NoticeAt == "" {
+			state.NoticeAt = at.UTC().Truncate(time.Second).Format(time.RFC3339)
+		}
+		return nil
+	})
+}
+
 func (store StateStore) MarkNotice(at time.Time) (State, error) {
 	return store.Update(func(state *State) error {
 		state.NoticeAt = at.UTC().Truncate(time.Second).Format(time.RFC3339)

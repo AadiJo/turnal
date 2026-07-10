@@ -42,6 +42,17 @@ type QueuedBatch struct {
 	Size      int64
 }
 
+type QueueSnapshot struct {
+	Current     []DailyAggregate `json:"current"`
+	Batches     []DailyAggregate `json:"batches"`
+	Quarantined []DailyAggregate `json:"quarantined"`
+	Bytes       int64            `json:"bytes"`
+}
+
+func (snapshot QueueSnapshot) FileCount() int {
+	return len(snapshot.Current) + len(snapshot.Batches) + len(snapshot.Quarantined)
+}
+
 type AggregateStore struct {
 	CacheDir      string
 	Now           func() time.Time
@@ -68,6 +79,10 @@ func DefaultAggregateStore() (AggregateStore, error) {
 }
 
 func (store AggregateStore) Record(options RecordOptions, key MetricKey) (RecordResult, error) {
+	return store.RecordMany(options, key)
+}
+
+func (store AggregateStore) RecordMany(options RecordOptions, keys ...MetricKey) (RecordResult, error) {
 	policy := EvaluatePolicy(PolicyOptions{
 		Preference: options.State.Preference,
 		Build:      options.Build,
@@ -83,8 +98,15 @@ func (store AggregateStore) Record(options RecordOptions, key MetricKey) (Record
 	if options.State.AnonymousID == nil {
 		return result, errors.New("enabled telemetry state has no installation ID")
 	}
-	if !key.Valid() {
-		return result, fmt.Errorf("invalid telemetry metric %d", key)
+	if len(keys) == 0 {
+		return result, errors.New("at least one telemetry metric is required")
+	}
+	increments := make(map[MetricKey]uint64, len(keys))
+	for _, key := range keys {
+		if !key.Valid() {
+			return result, fmt.Errorf("invalid telemetry metric %d", key)
+		}
+		increments[key]++
 	}
 
 	err := store.withLock(func() error {
@@ -96,26 +118,26 @@ func (store AggregateStore) Record(options RecordOptions, key MetricKey) (Record
 		if err != nil {
 			return err
 		}
-		aggregate, created, err := store.loadCurrentOrNewUnlocked(path, *options.State.AnonymousID, now, options.Build, key)
+		aggregate, created, err := store.loadCurrentOrNewUnlocked(path, *options.State.AnonymousID, now, options.Build, increments)
 		if err != nil {
 			return err
 		}
-		found := created
 		if !created {
-			for index := range aggregate.Metrics {
-				if aggregate.Metrics[index].Key != key {
+			positions := make(map[MetricKey]int, len(aggregate.Metrics))
+			for index, metric := range aggregate.Metrics {
+				positions[metric.Key] = index
+			}
+			for key, increment := range increments {
+				index, found := positions[key]
+				if found {
+					if aggregate.Metrics[index].Count > MaxMetricCount-increment {
+						return fmt.Errorf("%w: metric %s reached its daily limit", ErrMetricDropped, key)
+					}
+					aggregate.Metrics[index].Count += increment
 					continue
 				}
-				if aggregate.Metrics[index].Count >= MaxMetricCount {
-					return fmt.Errorf("%w: metric %s reached its daily limit", ErrMetricDropped, key)
-				}
-				aggregate.Metrics[index].Count++
-				found = true
-				break
+				aggregate.Metrics = append(aggregate.Metrics, MetricCount{Key: key, Count: increment})
 			}
-		}
-		if !found {
-			aggregate.Metrics = append(aggregate.Metrics, MetricCount{Key: key, Count: 1})
 			sort.Slice(aggregate.Metrics, func(i, j int) bool {
 				return aggregate.Metrics[i].Key.String() < aggregate.Metrics[j].Key.String()
 			})
@@ -180,6 +202,39 @@ func (store AggregateStore) ListBatches(limit int) ([]QueuedBatch, error) {
 		return err
 	})
 	return batches, err
+}
+
+func (store AggregateStore) Inspect() (QueueSnapshot, error) {
+	var snapshot QueueSnapshot
+	err := store.withLock(func() error {
+		var err error
+		snapshot.Current, err = store.inspectDirectoryUnlocked(store.currentDir(), false)
+		if err != nil {
+			return err
+		}
+		snapshot.Batches, err = store.inspectDirectoryUnlocked(store.batchesDir(), true)
+		if err != nil {
+			return err
+		}
+		snapshot.Quarantined, err = store.inspectDirectoryUnlocked(store.quarantineDir(), true)
+		if err != nil {
+			return err
+		}
+		for _, dir := range []string{store.currentDir(), store.batchesDir(), store.quarantineDir()} {
+			paths, globErr := filepath.Glob(filepath.Join(dir, "*.json"))
+			if globErr != nil {
+				return globErr
+			}
+			for _, path := range paths {
+				info, statErr := os.Stat(path)
+				if statErr == nil {
+					snapshot.Bytes += info.Size()
+				}
+			}
+		}
+		return nil
+	})
+	return snapshot, err
 }
 
 func (store AggregateStore) RemoveBatch(batchID UUID) error {
@@ -267,7 +322,7 @@ func (store AggregateStore) withLock(action func() error) error {
 	return action()
 }
 
-func (store AggregateStore) loadCurrentOrNewUnlocked(path string, id UUID, now time.Time, build Build, key MetricKey) (DailyAggregate, bool, error) {
+func (store AggregateStore) loadCurrentOrNewUnlocked(path string, id UUID, now time.Time, build Build, counts map[MetricKey]uint64) (DailyAggregate, bool, error) {
 	data, err := readRegularFile(path, MaxAggregateFileSize)
 	if err == nil {
 		aggregate, decodeErr := DecodeDailyAggregate(data)
@@ -278,7 +333,7 @@ func (store AggregateStore) loadCurrentOrNewUnlocked(path string, id UUID, now t
 	} else if !os.IsNotExist(err) {
 		_ = os.Remove(path)
 	}
-	aggregate, err := NewDailyAggregate(id, now, build, map[MetricKey]uint64{key: 1})
+	aggregate, err := NewDailyAggregate(id, now, build, counts)
 	return aggregate, true, err
 }
 
@@ -404,6 +459,34 @@ func (store AggregateStore) listBatchesUnlocked(limit int) ([]QueuedBatch, error
 		batches = batches[:limit]
 	}
 	return batches, nil
+}
+
+func (store AggregateStore) inspectDirectoryUnlocked(dir string, requireBatchName bool) ([]DailyAggregate, error) {
+	paths, err := filepath.Glob(filepath.Join(dir, "*.json"))
+	if err != nil {
+		return nil, err
+	}
+	aggregates := make([]DailyAggregate, 0, len(paths))
+	for _, path := range paths {
+		data, err := readRegularFile(path, MaxAggregateFileSize)
+		if err != nil {
+			_ = os.Remove(path)
+			continue
+		}
+		aggregate, err := DecodeDailyAggregate(data)
+		if err != nil || (requireBatchName && filepath.Base(path) != aggregate.BatchID.String()+".json") {
+			_ = os.Remove(path)
+			continue
+		}
+		aggregates = append(aggregates, aggregate)
+	}
+	sort.Slice(aggregates, func(i, j int) bool {
+		if aggregates[i].Date == aggregates[j].Date {
+			return aggregates[i].BatchID.String() < aggregates[j].BatchID.String()
+		}
+		return aggregates[i].Date < aggregates[j].Date
+	})
+	return aggregates, nil
 }
 
 type localFile struct {

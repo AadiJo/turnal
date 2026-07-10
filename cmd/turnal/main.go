@@ -1,7 +1,11 @@
 package main
 
-import "github.com/AadiJo/turnal/internal/cli"
+import (
+	"os"
+
+	"github.com/AadiJo/turnal/internal/cli"
+)
 
 func main() {
-	cli.Execute()
+	os.Exit(cli.Execute())
 }

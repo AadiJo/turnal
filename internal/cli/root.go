@@ -48,8 +48,10 @@ func NewRootCmd() *cobra.Command {
 	rootCmd.AddCommand(runCmd())
 	rootCmd.AddCommand(versionCmd())
 	rootCmd.AddCommand(upgradeCmd())
+	rootCmd.AddCommand(analyticsCmd())
 	rootCmd.AddCommand(claudeHookCmd())
 	rootCmd.AddCommand(codexHookCmd())
+	rootCmd.AddCommand(internalTelemetryFlushCmd())
 	silenceSubcommandErrors(rootCmd)
 
 	return rootCmd
@@ -62,23 +64,33 @@ func silenceSubcommandErrors(cmd *cobra.Command) {
 	}
 }
 
-func Execute() {
+func Execute() int {
 	rootCmd := NewRootCmd()
 	rootCmd.SetOut(os.Stdout)
 	rootCmd.SetErr(os.Stderr)
 	rootCmd.SetVersionTemplate("{{.Version}}\n")
+	return executeRoot(rootCmd)
+}
 
+func executeRoot(rootCmd *cobra.Command) int {
 	executedCmd, err := rootCmd.ExecuteC()
+	exitCode := 0
 	if err != nil {
 		if code, ok := commandExitCode(err); ok {
-			os.Exit(code)
+			exitCode = code
+		} else {
+			exitCode = 1
 		}
-		if !isUnknownCommandError(err) {
-			fmt.Fprintln(os.Stderr, err)
+		if _, isCommandExit := commandExitCode(err); !isCommandExit && !isUnknownCommandError(err) {
+			fmt.Fprintln(rootCmd.ErrOrStderr(), err)
 		}
-		os.Exit(1)
 	}
-	maybeShowUpdateNotice(rootCmd, executedCmd)
+	recordCommandTelemetry(executedCmd, err)
+	maybeScheduleTelemetryFlush()
+	if err == nil && !maybeShowTelemetryNotice(rootCmd, executedCmd) {
+		maybeShowUpdateNotice(rootCmd, executedCmd)
+	}
+	return exitCode
 }
 
 func commandExitCode(err error) (int, bool) {
