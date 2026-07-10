@@ -165,7 +165,11 @@ func telemetryFailureMetric(err error) (telemetry.MetricKey, bool) {
 
 func maybeScheduleTelemetryFlush() {
 	runtime, err := currentTelemetryRuntime()
-	if err != nil {
+	if err != nil || !runtime.sender.Enabled() {
+		return
+	}
+	preflight := telemetry.EvaluatePolicy(telemetry.PolicyOptions{Preference: telemetry.PreferenceUnset, Build: runtime.build})
+	if preflight.Reason == telemetry.ReasonDevelopmentBuild || preflight.Reason == telemetry.ReasonUnsupportedBuild || preflight.Reason == telemetry.ReasonCI || preflight.Reason == telemetry.ReasonEnvironmentOptOut {
 		return
 	}
 	state, err := runtime.state.Load()

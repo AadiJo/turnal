@@ -141,6 +141,38 @@ func TestTelemetryNoticeExcludesJSONHiddenAndAnalyticsCommands(t *testing.T) {
 	}
 }
 
+func TestTelemetryPreflightDoesNotCreateStateWhenBuildOrNetworkDisablesIt(t *testing.T) {
+	configureTelemetryTestEnv(t)
+	setBuildMetadataForTest(t, "0.0.0", upgrade.ChannelDev, "dev", upgrade.InstallSourceSource)
+	oldCanDisplay := telemetryNoticeCanDisplay
+	telemetryNoticeCanDisplay = func() bool { return true }
+	t.Cleanup(func() { telemetryNoticeCanDisplay = oldCanDisplay })
+
+	recordTelemetryMetrics(telemetry.MetricInstallationActive)
+	root := &cobra.Command{Use: "turnal"}
+	statusCommand := &cobra.Command{Use: "status"}
+	root.AddCommand(statusCommand)
+	if maybeShowTelemetryNotice(root, statusCommand) {
+		t.Fatal("development build displayed telemetry notice")
+	}
+	maybeScheduleTelemetryFlush()
+
+	statePath, err := telemetry.DefaultStatePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(statePath); !os.IsNotExist(err) {
+		t.Fatalf("preflight created telemetry state: %v", err)
+	}
+	cacheDir, err := telemetry.DefaultCacheDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(cacheDir); !os.IsNotExist(err) {
+		t.Fatalf("preflight created telemetry cache: %v", err)
+	}
+}
+
 func TestTelemetryCommandMapperUsesOnlyCanonicalFamilies(t *testing.T) {
 	root := NewRootCmd()
 	for _, test := range []struct {

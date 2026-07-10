@@ -21,12 +21,12 @@ func maybeShowTelemetryNotice(root, executed *cobra.Command) bool {
 	if err != nil {
 		return false
 	}
-	state, err := runtime.state.Load()
-	if err != nil || state.Preference != telemetry.PreferenceUnset || state.NoticeAt != "" {
+	preflight := telemetry.EvaluatePolicy(telemetry.PolicyOptions{Preference: telemetry.PreferenceUnset, Build: runtime.build})
+	if preflight.Reason == telemetry.ReasonCI || preflight.Reason == telemetry.ReasonEnvironmentOptOut || preflight.Reason == telemetry.ReasonDevelopmentBuild || preflight.Reason == telemetry.ReasonUnsupportedBuild {
 		return false
 	}
-	policy := telemetry.EvaluatePolicy(telemetry.PolicyOptions{Preference: state.Preference, Build: runtime.build})
-	if policy.Reason == telemetry.ReasonCI || policy.Reason == telemetry.ReasonEnvironmentOptOut || policy.Reason == telemetry.ReasonDevelopmentBuild || policy.Reason == telemetry.ReasonUnsupportedBuild {
+	state, err := runtime.state.Load()
+	if err != nil || state.Preference != telemetry.PreferenceUnset || state.NoticeAt != "" {
 		return false
 	}
 	fmt.Fprintln(root.ErrOrStderr())
