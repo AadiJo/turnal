@@ -176,7 +176,7 @@ func maybeScheduleTelemetryFlush(executed *cobra.Command) {
 		return
 	}
 	state, err := runtime.state.Load()
-	if err != nil || state.Preference != telemetry.PreferenceOn || state.AnonymousID == nil {
+	if err != nil || state.Preference != telemetry.PreferenceOn || state.AnonymousID == nil || state.NetworkBackoff(timeNow()) > 0 {
 		return
 	}
 	_, _ = (telemetry.DetachedScheduler{Sender: runtime.sender, InstallationID: state.AnonymousID}).Schedule()

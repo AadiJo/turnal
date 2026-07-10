@@ -177,9 +177,11 @@ type captureTransport struct {
 	request      *http.Request
 	body         []byte
 	responseBody string
+	calls        int
 }
 
 func (transport *captureTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	transport.calls++
 	transport.request = request
 	body, err := io.ReadAll(request.Body)
 	if err != nil {

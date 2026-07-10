@@ -73,7 +73,7 @@ exit-code regression, foreground network delay, acknowledged loss, batch conflic
 outbox breach, canary mismatch, or unbounded deletion. Use one or more of:
 
 1. Set `TURNAL_COLLECTOR_ENABLED=false` so the collector returns 410 and clients
-   back off for 30 days.
+   persist a network-suppression deadline and back off for 30 days.
 2. Pause PostHog forwarding while preserving already accepted outbox data within
    its operational retention and capacity.
 3. Publish an emergency build with an empty endpoint and zero rollout.

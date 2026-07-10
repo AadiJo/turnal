@@ -21,14 +21,15 @@ const (
 )
 
 type State struct {
-	Version            int        `json:"version"`
-	Preference         Preference `json:"preference"`
-	AnonymousID        *UUID      `json:"anonymous_id,omitempty"`
-	NoticeAt           string     `json:"notice_at,omitempty"`
-	LastFlushAttemptAt string     `json:"last_flush_attempt_at,omitempty"`
-	LastFlushSuccessAt string     `json:"last_flush_success_at,omitempty"`
-	CreatedAt          string     `json:"created_at"`
-	UpdatedAt          string     `json:"updated_at"`
+	Version             int        `json:"version"`
+	Preference          Preference `json:"preference"`
+	AnonymousID         *UUID      `json:"anonymous_id,omitempty"`
+	NoticeAt            string     `json:"notice_at,omitempty"`
+	LastFlushAttemptAt  string     `json:"last_flush_attempt_at,omitempty"`
+	LastFlushSuccessAt  string     `json:"last_flush_success_at,omitempty"`
+	NetworkBackoffUntil string     `json:"network_backoff_until,omitempty"`
+	CreatedAt           string     `json:"created_at"`
+	UpdatedAt           string     `json:"updated_at"`
 }
 
 func (state State) Validate() error {
@@ -48,6 +49,7 @@ func (state State) Validate() error {
 		"notice_at":             state.NoticeAt,
 		"last_flush_attempt_at": state.LastFlushAttemptAt,
 		"last_flush_success_at": state.LastFlushSuccessAt,
+		"network_backoff_until": state.NetworkBackoffUntil,
 		"created_at":            state.CreatedAt,
 		"updated_at":            state.UpdatedAt,
 	} {
@@ -188,9 +190,28 @@ func (store StateStore) MarkFlush(at time.Time, successful bool) (State, error) 
 		state.LastFlushAttemptAt = stamp
 		if successful {
 			state.LastFlushSuccessAt = stamp
+			state.NetworkBackoffUntil = ""
 		}
 		return nil
 	})
+}
+
+func (store StateStore) MarkNetworkBackoff(until time.Time) (State, error) {
+	return store.Update(func(state *State) error {
+		state.NetworkBackoffUntil = until.UTC().Truncate(time.Second).Format(time.RFC3339)
+		return nil
+	})
+}
+
+func (state State) NetworkBackoff(at time.Time) time.Duration {
+	if state.NetworkBackoffUntil == "" {
+		return 0
+	}
+	until, err := time.Parse(time.RFC3339, state.NetworkBackoffUntil)
+	if err != nil || !at.UTC().Before(until) {
+		return 0
+	}
+	return until.Sub(at.UTC())
 }
 
 func (store StateStore) withLock(action func() error) error {

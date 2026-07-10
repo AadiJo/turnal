@@ -98,6 +98,36 @@ func TestFlushRetryAndRejectionLifecycle(t *testing.T) {
 	}
 }
 
+func TestFlushKillSwitchPersistsThirtyDayBackoff(t *testing.T) {
+	flusher, transport := enabledTestFlusher(t, http.StatusGone)
+	result, err := flusher.Flush(context.Background(), true)
+	if err != nil || result.Status != FlushKillSwitch || result.RetryAfter != KillSwitchBackoff || transport.calls != 1 {
+		t.Fatalf("first Flush() = %#v, %v, calls=%d", result, err, transport.calls)
+	}
+	state, err := flusher.State.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBackoff := flusher.now().Add(KillSwitchBackoff).Format(time.RFC3339)
+	if state.NetworkBackoffUntil != wantBackoff {
+		t.Fatalf("network backoff = %q, want %q", state.NetworkBackoffUntil, wantBackoff)
+	}
+	transport.status = http.StatusAccepted
+	result, err = flusher.Flush(context.Background(), true)
+	if err != nil || result.Status != FlushThrottled || result.Disposition != SendKillSwitch || transport.calls != 1 {
+		t.Fatalf("backed-off Flush() = %#v, %v, calls=%d", result, err, transport.calls)
+	}
+	flusher.Now = func() time.Time { return time.Date(2026, 8, 9, 18, 0, 1, 0, time.UTC) }
+	result, err = flusher.Flush(context.Background(), true)
+	if err != nil || result.Status != FlushAccepted || transport.calls != 2 {
+		t.Fatalf("post-backoff Flush() = %#v, %v, calls=%d", result, err, transport.calls)
+	}
+	state, err = flusher.State.Load()
+	if err != nil || state.NetworkBackoffUntil != "" {
+		t.Fatalf("successful flush did not clear backoff: %#v, %v", state, err)
+	}
+}
+
 func TestDetachedSchedulerDoesNothingWhileNetworkDisabled(t *testing.T) {
 	called := false
 	scheduler := DetachedScheduler{

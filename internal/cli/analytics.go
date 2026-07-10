@@ -29,22 +29,23 @@ Disable: turnal analytics off  or  TURNAL_NO_ANALYTICS=1
 Policy:  https://turnal.dev/telemetry`
 
 type analyticsStatus struct {
-	Enabled            bool                   `json:"enabled"`
-	Reason             telemetry.PolicyReason `json:"reason"`
-	Preference         telemetry.Preference   `json:"preference"`
-	Origin             string                 `json:"origin"`
-	NoticeAt           string                 `json:"notice_at,omitempty"`
-	InstallationID     string                 `json:"installation_id,omitempty"`
-	QueueFiles         int                    `json:"queue_files"`
-	QueueBytes         int64                  `json:"queue_bytes"`
-	LastFlushAttemptAt string                 `json:"last_flush_attempt_at,omitempty"`
-	LastFlushSuccessAt string                 `json:"last_flush_success_at,omitempty"`
-	Collector          string                 `json:"collector"`
-	RolloutPercent     int                    `json:"rollout_percent"`
-	RolloutEligible    bool                   `json:"rollout_eligible"`
-	LocalRetentionDays int                    `json:"local_retention_days"`
-	RawRetentionDays   int                    `json:"raw_retention_days"`
-	PolicyURL          string                 `json:"policy_url"`
+	Enabled             bool                   `json:"enabled"`
+	Reason              telemetry.PolicyReason `json:"reason"`
+	Preference          telemetry.Preference   `json:"preference"`
+	Origin              string                 `json:"origin"`
+	NoticeAt            string                 `json:"notice_at,omitempty"`
+	InstallationID      string                 `json:"installation_id,omitempty"`
+	QueueFiles          int                    `json:"queue_files"`
+	QueueBytes          int64                  `json:"queue_bytes"`
+	LastFlushAttemptAt  string                 `json:"last_flush_attempt_at,omitempty"`
+	LastFlushSuccessAt  string                 `json:"last_flush_success_at,omitempty"`
+	NetworkBackoffUntil string                 `json:"network_backoff_until,omitempty"`
+	Collector           string                 `json:"collector"`
+	RolloutPercent      int                    `json:"rollout_percent"`
+	RolloutEligible     bool                   `json:"rollout_eligible"`
+	LocalRetentionDays  int                    `json:"local_retention_days"`
+	RawRetentionDays    int                    `json:"raw_retention_days"`
+	PolicyURL           string                 `json:"policy_url"`
 }
 
 func analyticsCmd() *cobra.Command {
@@ -87,6 +88,7 @@ func analyticsStatusCmd() *cobra.Command {
 			fmt.Fprintf(out, "queue:              %d files, %d bytes\n", status.QueueFiles, status.QueueBytes)
 			fmt.Fprintf(out, "last_flush_attempt: %s\n", emptyAsDash(status.LastFlushAttemptAt))
 			fmt.Fprintf(out, "last_flush_success: %s\n", emptyAsDash(status.LastFlushSuccessAt))
+			fmt.Fprintf(out, "network_backoff:    %s\n", emptyAsDash(status.NetworkBackoffUntil))
 			fmt.Fprintf(out, "collector:          %s\n", status.Collector)
 			fmt.Fprintf(out, "rollout:            %d%% (eligible=%t)\n", status.RolloutPercent, status.RolloutEligible)
 			fmt.Fprintf(out, "retention:          %d days local, %d days raw server maximum\n", status.LocalRetentionDays, status.RawRetentionDays)
@@ -283,20 +285,21 @@ func loadAnalyticsStatus() (analyticsStatus, error) {
 		origin = "build override"
 	}
 	status := analyticsStatus{
-		Enabled:            policy.Enabled,
-		Reason:             policy.Reason,
-		Preference:         state.Preference,
-		Origin:             origin,
-		NoticeAt:           state.NoticeAt,
-		QueueFiles:         snapshot.FileCount(),
-		QueueBytes:         snapshot.Bytes,
-		LastFlushAttemptAt: state.LastFlushAttemptAt,
-		LastFlushSuccessAt: state.LastFlushSuccessAt,
-		Collector:          collector,
-		RolloutPercent:     telemetry.RolloutPercent(),
-		LocalRetentionDays: int(telemetry.DefaultMaxAge / (24 * time.Hour)),
-		RawRetentionDays:   90,
-		PolicyURL:          telemetryPolicyURL,
+		Enabled:             policy.Enabled,
+		Reason:              policy.Reason,
+		Preference:          state.Preference,
+		Origin:              origin,
+		NoticeAt:            state.NoticeAt,
+		QueueFiles:          snapshot.FileCount(),
+		QueueBytes:          snapshot.Bytes,
+		LastFlushAttemptAt:  state.LastFlushAttemptAt,
+		LastFlushSuccessAt:  state.LastFlushSuccessAt,
+		NetworkBackoffUntil: state.NetworkBackoffUntil,
+		Collector:           collector,
+		RolloutPercent:      telemetry.RolloutPercent(),
+		LocalRetentionDays:  int(telemetry.DefaultMaxAge / (24 * time.Hour)),
+		RawRetentionDays:    90,
+		PolicyURL:           telemetryPolicyURL,
 	}
 	if state.AnonymousID != nil {
 		status.InstallationID = state.AnonymousID.String()

@@ -56,6 +56,9 @@ func (flusher Flusher) Flush(ctx context.Context, explicit bool) (FlushResult, e
 		return FlushResult{Status: FlushDisabled, Disposition: SendDisabled}, nil
 	}
 	now := flusher.now()
+	if backoff := state.NetworkBackoff(now); backoff > 0 {
+		return FlushResult{Status: FlushThrottled, Disposition: SendKillSwitch, RetryAfter: backoff}, nil
+	}
 	if !explicit && recentlyAttempted(state.LastFlushAttemptAt, now) {
 		return FlushResult{Status: FlushThrottled}, nil
 	}
@@ -102,6 +105,13 @@ func (flusher Flusher) Flush(ctx context.Context, explicit bool) (FlushResult, e
 		}
 		result.Status = FlushQuarantined
 	case SendKillSwitch:
+		backoff := sendResult.RetryAfter
+		if backoff <= 0 {
+			backoff = KillSwitchBackoff
+		}
+		if _, err := flusher.State.MarkNetworkBackoff(now.Add(backoff)); err != nil {
+			return result, err
+		}
 		result.Status = FlushKillSwitch
 	default:
 		result.Status = FlushRetryable
