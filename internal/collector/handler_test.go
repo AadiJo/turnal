@@ -167,6 +167,26 @@ func TestHandlerDoesNotEchoSensitiveInvalidPayload(t *testing.T) {
 	}
 }
 
+func TestHandlerOperationalMonitorRecordsStableCounters(t *testing.T) {
+	store := testStore(t)
+	monitor := NewMonitor()
+	handler := testHandler(t, store, HandlerConfig{Enabled: true, Monitor: monitor})
+	batch := testAggregate(t, "2026-07-10", telemetry.MetricInstallationActive, 1)
+	response := performBatchRequest(t, handler, telemetry.CollectorRequest{SchemaVersion: telemetry.SchemaVersion, Batches: []telemetry.DailyAggregate{batch}})
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("accepted status = %d", response.Code)
+	}
+	invalid := httptest.NewRequest(http.MethodPost, "https://telemetry.turnal.dev/v1/batch", strings.NewReader(`{"schema_version":2,"batches":[]}`))
+	invalid.Header.Set("Content-Type", "application/json")
+	invalid.RemoteAddr = "192.0.2.2:4321"
+	invalidResponse := httptest.NewRecorder()
+	handler.ServeHTTP(invalidResponse, invalid)
+	snapshot := monitor.Snapshot()
+	if snapshot.Requests != 2 || snapshot.AcceptedResponses != 1 || snapshot.AcceptedBatches != 1 || snapshot.SchemaRejected != 1 {
+		t.Fatalf("monitor snapshot = %#v", snapshot)
+	}
+}
+
 func testHandler(t *testing.T, store *Store, config HandlerConfig) *Handler {
 	t.Helper()
 	config.Now = func() time.Time { return time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC) }

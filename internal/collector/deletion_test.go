@@ -62,6 +62,30 @@ func TestPostHogDeletionClientRejectsUnsafeConfigurationAndErrors(t *testing.T) 
 	}
 }
 
+func TestPostHogDeletionClientCountsMarkedCanary(t *testing.T) {
+	client, err := NewPostHogDeletionClient(PostHogDeletionConfig{
+		ProjectID:      7,
+		PersonalAPIKey: "key",
+		Client: &http.Client{Transport: deletionRoundTrip(func(request *http.Request) (*http.Response, error) {
+			body, _ := io.ReadAll(request.Body)
+			if request.URL.Path != "/api/projects/7/query/" || !strings.Contains(string(body), "collector-canary:167e8e5d-84fc-46bd-a39c-b67d47658f8e") || !strings.Contains(string(body), "collector_canary = true") {
+				t.Fatalf("canary query = %s %s", request.URL.Path, body)
+			}
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"results":[[1]]}`)), Header: make(http.Header), Request: request}, nil
+		})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	count, err := client.CountCanary(context.Background(), "collector-canary:167e8e5d-84fc-46bd-a39c-b67d47658f8e")
+	if err != nil || count != 1 {
+		t.Fatalf("CountCanary() = %d, %v", count, err)
+	}
+	if _, err := client.CountCanary(context.Background(), "not-a-canary"); err == nil {
+		t.Fatal("invalid canary ID accepted")
+	}
+}
+
 type deletionTransport struct {
 	t     *testing.T
 	id    string

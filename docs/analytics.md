@@ -6,6 +6,10 @@ not published automatically: production publication requires a dedicated PostHog
 project, named access owners, configured IP discard, a 90-day maximum raw event
 retention, and a successful deletion rehearsal.
 
+Every product query also applies the blueprint's global
+`collector_canary = false` predicate so downstream health probes cannot inflate
+installation metrics.
+
 ## Canonical KPIs
 
 | Role | Metric | Definition |

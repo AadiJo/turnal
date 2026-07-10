@@ -39,6 +39,7 @@ type PostHogProperties struct {
 	Arch                 string                   `json:"arch"`
 	EventDate            string                   `json:"event_date"`
 	BatchID              string                   `json:"batch_id"`
+	CollectorCanary      bool                     `json:"collector_canary,omitempty"`
 }
 
 type PostHogEvent struct {
@@ -160,6 +161,43 @@ func (client *PostHogClient) Deliver(ctx context.Context, aggregate telemetry.Da
 	if err != nil {
 		return DeliveryResult{Disposition: DeliveryRejected, Code: "translation_invalid"}, err
 	}
+	return client.deliverPayload(ctx, payload)
+}
+
+func (client *PostHogClient) DeliverCanary(ctx context.Context, now time.Time) (string, DeliveryResult, error) {
+	id, err := telemetry.NewUUID()
+	if err != nil {
+		return "", DeliveryResult{Disposition: DeliveryRetryable, Code: "canary_id_error"}, err
+	}
+	now = now.UTC().Truncate(time.Second)
+	insertID := "collector-canary:" + id.String()
+	payload := PostHogBatch{
+		APIKey: client.token,
+		Batch: []PostHogEvent{{
+			Event: "turnal_daily_active",
+			Properties: PostHogProperties{
+				DistinctID:           id.String(),
+				ProcessPersonProfile: false,
+				GeoIPDisabled:        true,
+				InsertID:             insertID,
+				SchemaVersion:        telemetry.SchemaVersion,
+				TurnalVersion:        "0.0.0-canary",
+				Channel:              telemetry.ChannelNightly,
+				InstallSource:        telemetry.InstallSourceSource,
+				OS:                   "linux",
+				Arch:                 "amd64",
+				EventDate:            now.Format(time.DateOnly),
+				BatchID:              id.String(),
+				CollectorCanary:      true,
+			},
+			Timestamp: now.Format(time.RFC3339),
+		}},
+	}
+	result, err := client.deliverPayload(ctx, payload)
+	return insertID, result, err
+}
+
+func (client *PostHogClient) deliverPayload(ctx context.Context, payload PostHogBatch) (DeliveryResult, error) {
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return DeliveryResult{Disposition: DeliveryRejected, Code: "encoding_error"}, err

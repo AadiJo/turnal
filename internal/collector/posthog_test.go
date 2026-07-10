@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AadiJo/turnal/internal/telemetry"
 )
@@ -95,6 +96,27 @@ func TestPostHogClientRejectsHostAndRetriesNetworkFailure(t *testing.T) {
 	result, err := client.Deliver(context.Background(), testAggregate(t, "2026-07-10", telemetry.MetricInstallationActive, 1))
 	if err == nil || result.Disposition != DeliveryRetryable || result.Code != "network_error" {
 		t.Fatalf("network result = %#v, %v", result, err)
+	}
+}
+
+func TestPostHogCanaryIsPersonlessAndExplicitlyMarked(t *testing.T) {
+	transport := &postHogTransport{status: http.StatusOK, body: `{"status":1}`, header: make(http.Header)}
+	client, err := NewPostHogClient(PostHogConfig{
+		Host: PostHogUSHost, Token: "phc_project", Client: &http.Client{Transport: transport},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertID, result, err := client.DeliverCanary(context.Background(), time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC))
+	if err != nil || result.Disposition != DeliveryDelivered || !strings.HasPrefix(insertID, "collector-canary:") {
+		t.Fatalf("DeliverCanary() = %s %#v %v", insertID, result, err)
+	}
+	var payload PostHogBatch
+	if err := json.Unmarshal(transport.payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Batch) != 1 || !payload.Batch[0].Properties.CollectorCanary || payload.Batch[0].Properties.ProcessPersonProfile || !payload.Batch[0].Properties.GeoIPDisabled {
+		t.Fatalf("canary payload = %#v", payload)
 	}
 }
 

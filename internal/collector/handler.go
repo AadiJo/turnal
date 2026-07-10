@@ -27,12 +27,14 @@ type HandlerConfig struct {
 	RateLimitPerMinute int
 	DailyVolumeLimit   uint64
 	Now                func() time.Time
+	Monitor            *Monitor
 }
 
 type Handler struct {
 	store   *Store
 	config  HandlerConfig
 	limiter *ephemeralLimiter
+	monitor *Monitor
 }
 
 type errorResponse struct {
@@ -54,12 +56,19 @@ func NewHandler(store *Store, config HandlerConfig) (*Handler, error) {
 	if limit <= 0 {
 		limit = DefaultRateLimitPerMinute
 	}
+	monitor := config.Monitor
+	if monitor == nil {
+		monitor = NewMonitor()
+	}
 	return &Handler{
 		store:   store,
 		config:  config,
 		limiter: newEphemeralLimiter(limit, time.Minute),
+		monitor: monitor,
 	}, nil
 }
+
+func (handler *Handler) Monitor() *Monitor { return handler.monitor }
 
 func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	writer.Header().Set("Cache-Control", "no-store")
@@ -93,22 +102,27 @@ func (handler *Handler) batch(writer http.ResponseWriter, request *http.Request)
 		writeError(writer, http.StatusMethodNotAllowed, "method_not_allowed")
 		return
 	}
+	handler.monitor.RecordRequest()
 	if !handler.config.Enabled {
+		handler.monitor.RecordKillSwitch()
 		writer.Header().Set("Retry-After", fmt.Sprintf("%.0f", telemetry.KillSwitchBackoff.Seconds()))
 		writeError(writer, http.StatusGone, "collection_disabled")
 		return
 	}
 	if handler.config.RequireHTTPS && !requestIsHTTPS(request, handler.config.TrustProxyProto) {
+		handler.monitor.RecordRejected()
 		writeError(writer, http.StatusUpgradeRequired, "https_required")
 		return
 	}
 	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
 	if err != nil || mediaType != "application/json" {
+		handler.monitor.RecordRejected()
 		writeError(writer, http.StatusUnsupportedMediaType, "invalid_content_type")
 		return
 	}
 	now := handler.now()
 	if !handler.limiter.Allow(ephemeralClientKey(request), now) {
+		handler.monitor.RecordRateLimited()
 		writer.Header().Set("Retry-After", "60")
 		writeError(writer, http.StatusTooManyRequests, "rate_limited")
 		return
@@ -118,13 +132,16 @@ func (handler *Handler) batch(writer http.ResponseWriter, request *http.Request)
 	if err != nil {
 		var maxBytesError *http.MaxBytesError
 		if errors.As(err, &maxBytesError) {
+			handler.monitor.RecordSchemaRejected(nil)
 			writeError(writer, http.StatusRequestEntityTooLarge, "body_too_large")
 			return
 		}
+		handler.monitor.RecordSchemaRejected(nil)
 		writeError(writer, http.StatusBadRequest, "invalid_payload")
 		return
 	}
 	if err := validateCollectorRequest(payload, now); err != nil {
+		handler.monitor.RecordSchemaRejected(requestVersions(payload))
 		writeError(writer, http.StatusBadRequest, "invalid_payload")
 		return
 	}
@@ -135,20 +152,31 @@ func (handler *Handler) batch(writer http.ResponseWriter, request *http.Request)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrBatchConflict):
+			handler.monitor.RecordConflict()
 			writeError(writer, http.StatusConflict, "batch_conflict")
 		case errors.Is(err, ErrInstallationDenied):
 			writeError(writer, http.StatusGone, "installation_deleted")
 		default:
+			handler.monitor.RecordServerError()
 			writeError(writer, http.StatusServiceUnavailable, "storage_unavailable")
 		}
 		return
 	}
+	handler.monitor.RecordAcceptance(result)
 	writeJSON(writer, http.StatusAccepted, acceptanceResponse{
 		Status:      "durably_accepted",
 		Accepted:    result.Accepted,
 		Duplicates:  result.Duplicates,
 		Quarantined: result.Quarantined,
 	})
+}
+
+func requestVersions(payload telemetry.CollectorRequest) []string {
+	versions := make([]string, 0, len(payload.Batches))
+	for _, batch := range payload.Batches {
+		versions = append(versions, batch.Build.Version)
+	}
+	return versions
 }
 
 func decodeCollectorRequest(reader io.Reader) (telemetry.CollectorRequest, error) {

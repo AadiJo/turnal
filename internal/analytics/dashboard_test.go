@@ -15,9 +15,10 @@ func TestPostHogDashboardDefinitionPreservesMetricSemantics(t *testing.T) {
 	var dashboard struct {
 		ScopeLabel string `json:"scope_label"`
 		Source     struct {
-			Timezone     string `json:"timezone"`
-			CountRule    string `json:"count_rule"`
-			OrderingRule string `json:"ordering_rule"`
+			Timezone        string `json:"timezone"`
+			CountRule       string `json:"count_rule"`
+			OrderingRule    string `json:"ordering_rule"`
+			GlobalPredicate string `json:"global_predicate"`
 		} `json:"source"`
 		SmallSample struct {
 			Minimum int `json:"minimum_distinct_installations"`
@@ -31,6 +32,9 @@ func TestPostHogDashboardDefinitionPreservesMetricSemantics(t *testing.T) {
 	}
 	if dashboard.Source.Timezone != "UTC" || dashboard.SmallSample.Minimum != SmallSampleThreshold || !strings.Contains(strings.ToLower(dashboard.ScopeLabel), "consenting installations") {
 		t.Fatalf("dashboard controls = %#v", dashboard)
+	}
+	if !strings.Contains(dashboard.Source.GlobalPredicate, "collector_canary") {
+		t.Fatal("dashboard does not exclude synthetic collector canaries")
 	}
 	for _, required := range []string{"weekly_recording_active", "activated_installations", "d7_recording_retention", "d30_recording_retention", "feature_adoption", "command_success_rate", "adapter_mix", "active_version_share"} {
 		if strings.TrimSpace(dashboard.Queries[required].Query) == "" {

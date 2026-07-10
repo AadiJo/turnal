@@ -109,6 +109,25 @@ func (client *PostHogDeletionClient) CountEvents(ctx context.Context, id telemet
 		"SELECT count() FROM events WHERE distinct_id = '%s' AND event IN ('turnal_daily_active', 'turnal_metric')",
 		id.String(),
 	)
+	return client.countQuery(ctx, query)
+}
+
+func (client *PostHogDeletionClient) CountCanary(ctx context.Context, insertID string) (uint64, error) {
+	if !strings.HasPrefix(insertID, "collector-canary:") {
+		return 0, errors.New("invalid collector canary ID")
+	}
+	canaryID := strings.TrimPrefix(insertID, "collector-canary:")
+	if _, err := telemetry.ParseUUID(canaryID); err != nil {
+		return 0, errors.New("invalid collector canary ID")
+	}
+	query := fmt.Sprintf(
+		"SELECT count() FROM events WHERE properties.$insert_id = '%s' AND properties.collector_canary = true",
+		insertID,
+	)
+	return client.countQuery(ctx, query)
+}
+
+func (client *PostHogDeletionClient) countQuery(ctx context.Context, query string) (uint64, error) {
 	payload := map[string]any{
 		"query": map[string]any{
 			"kind":  "HogQLQuery",

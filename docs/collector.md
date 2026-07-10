@@ -22,6 +22,9 @@ until every gate in [the telemetry policy](telemetry.md) has passing evidence.
 | `TURNAL_COLLECTOR_TLS_CERT` / `TURNAL_COLLECTOR_TLS_KEY` | unset | Optional direct TLS. Configure both or neither. |
 | `POSTHOG_PROJECT_TOKEN` | unset | Separate project token. Forwarding pauses when absent. |
 | `POSTHOG_HOST` | `https://us.i.posthog.com` | Allowlisted US or EU ingestion host. |
+| `POSTHOG_PERSONAL_API_KEY` | unset | Query-scoped key for downstream canary reconciliation; also used separately by the deletion admin tool. |
+| `POSTHOG_PROJECT_ID` | unset | Project queried by canary/deletion verification. |
+| `POSTHOG_APP_HOST` | `https://us.posthog.com` | Allowlisted US or EU application API host. |
 
 The production proxy and application must not log request bodies, headers,
 User-Agent values, or source addresses. The Go server discards its per-connection
@@ -59,6 +62,10 @@ only after moving the same transactional contract to a shared durable database.
 The collector emits `$process_person_profile: false`, `$geoip_disable: true`, and
 a deterministic `$insert_id` for every translated event. Each aggregate date is
 normalized to noon UTC; it never recreates an invocation timestamp.
+
+When query credentials are configured, an hourly synthetic canary must reconcile
+to exactly one queryable event. Canary events carry `collector_canary: true` and
+are excluded by every product query.
 
 ## Acceptance and delivery states
 

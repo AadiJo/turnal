@@ -33,12 +33,14 @@ func run() error {
 	}
 	defer store.Close()
 
+	monitor := collector.NewMonitor()
 	handler, err := collector.NewHandler(store, collector.HandlerConfig{
 		Enabled:            envBool("TURNAL_COLLECTOR_ENABLED", false),
 		RequireHTTPS:       envBool("TURNAL_COLLECTOR_REQUIRE_HTTPS", true),
 		TrustProxyProto:    envBool("TURNAL_COLLECTOR_TRUST_PROXY_PROTO", false),
 		RateLimitPerMinute: envInt("TURNAL_COLLECTOR_RATE_LIMIT", collector.DefaultRateLimitPerMinute),
 		DailyVolumeLimit:   uint64(envInt("TURNAL_COLLECTOR_DAILY_VOLUME_LIMIT", collector.DefaultDailyVolumeLimit)),
+		Monitor:            monitor,
 	})
 	if err != nil {
 		return err
@@ -47,8 +49,10 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go runRetention(ctx, store, logger)
+	go runAlerts(ctx, store, monitor, logger)
+	var posthog *collector.PostHogClient
 	if token := strings.TrimSpace(os.Getenv("POSTHOG_PROJECT_TOKEN")); token != "" {
-		posthog, err := collector.NewPostHogClient(collector.PostHogConfig{
+		posthog, err = collector.NewPostHogClient(collector.PostHogConfig{
 			Host:  envOr("POSTHOG_HOST", collector.PostHogUSHost),
 			Token: token,
 		})
@@ -65,6 +69,23 @@ func run() error {
 		}()
 	} else {
 		logger.Print("PostHog forwarding paused: project token is not configured")
+	}
+	if posthog != nil {
+		personalKey := strings.TrimSpace(os.Getenv("POSTHOG_PERSONAL_API_KEY"))
+		projectID := envInt("POSTHOG_PROJECT_ID", 0)
+		if personalKey != "" && projectID > 0 {
+			query, queryErr := collector.NewPostHogDeletionClient(collector.PostHogDeletionConfig{
+				AppHost:        envOr("POSTHOG_APP_HOST", collector.PostHogUSAppHost),
+				ProjectID:      projectID,
+				PersonalAPIKey: personalKey,
+			})
+			if queryErr != nil {
+				return queryErr
+			}
+			go runCanaries(ctx, collector.CanaryReconciler{Sender: posthog, Query: query}, monitor, logger)
+		} else {
+			logger.Print("downstream canary reconciliation paused: query credentials are not configured")
+		}
 	}
 
 	server := &http.Server{
@@ -100,6 +121,48 @@ func run() error {
 	stop()
 	<-shutdownDone
 	return err
+}
+
+func runCanaries(ctx context.Context, reconciler collector.CanaryReconciler, monitor *collector.Monitor, logger *log.Logger) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		result, err := reconciler.RunOnce(probeCtx)
+		cancel()
+		monitor.RecordCanary(result, err != nil)
+		if err != nil {
+			logger.Print("alert code=canary_reconciliation severity=critical")
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func runAlerts(ctx context.Context, store *collector.Store, monitor *collector.Monitor, logger *log.Logger) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	lastLogged := make(map[string]time.Time)
+	for {
+		now := time.Now().UTC()
+		stats, err := store.Stats(ctx)
+		if err == nil {
+			for _, alert := range collector.EvaluateAlerts(collector.AlertInput{Now: now, Monitor: monitor.Snapshot(), Outbox: stats}) {
+				if previous := lastLogged[alert.Code]; previous.IsZero() || now.Sub(previous) >= 15*time.Minute {
+					logger.Printf("alert code=%s severity=%s", alert.Code, alert.Severity)
+					lastLogged[alert.Code] = now
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 func runRetention(ctx context.Context, store *collector.Store, logger *log.Logger) {

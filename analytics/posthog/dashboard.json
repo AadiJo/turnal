@@ -6,6 +6,7 @@
     "events": ["turnal_daily_active", "turnal_metric"],
     "timezone": "UTC",
     "refresh": "daily",
+    "global_predicate": "coalesce(properties.collector_canary, false) = false",
     "count_rule": "Command volume always sums the numeric count property; aggregate event rows are never command executions.",
     "ordering_rule": "Same-day milestones are an unordered set. No query establishes order within a UTC date."
   },

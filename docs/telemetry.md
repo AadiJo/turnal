@@ -63,6 +63,10 @@ Allowed fields are closed in schema version 1. Any unlisted field is forbidden.
 | `metrics[].key` | A value from the compile-time metric registry. |
 | `metrics[].count` | Positive bounded integer aggregate. |
 
+The collector adds one backend-only boolean, `collector_canary`, solely to mark
+synthetic downstream reconciliation events. Client payloads cannot set it, and
+all product dashboards exclude it.
+
 The following data is forbidden in telemetry files and request bodies:
 
 - names or identifiers for people, accounts, organizations, machines, devices,
