@@ -52,3 +52,30 @@ func TestAlertEvaluatorUsesPublishedThresholds(t *testing.T) {
 		t.Fatalf("missing alerts: %#v (got %#v)", want, alerts)
 	}
 }
+
+func TestDailyAcceptanceWindowFeedsPriorCompleteUTCDay(t *testing.T) {
+	var window DailyAcceptanceWindow
+	dayOne := time.Date(2026, 7, 10, 23, 59, 0, 0, time.UTC)
+	current, previous := window.Observe(dayOne, 10)
+	if current != 10 || previous != 0 {
+		t.Fatalf("day one = %d, %d", current, previous)
+	}
+	current, previous = window.Observe(dayOne.Add(2*time.Minute), 12)
+	if current != 2 || previous != 10 {
+		t.Fatalf("day two = %d, %d", current, previous)
+	}
+	current, previous = window.Observe(dayOne.Add(48*time.Hour), 20)
+	if current != 8 || previous != 2 {
+		t.Fatalf("day three = %d, %d", current, previous)
+	}
+}
+
+func TestDailyAcceptanceWindowHandlesCounterReset(t *testing.T) {
+	var window DailyAcceptanceWindow
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	window.Observe(now, 20)
+	current, previous := window.Observe(now.Add(time.Minute), 3)
+	if current != 3 || previous != 0 {
+		t.Fatalf("reset window = %d, %d", current, previous)
+	}
+}

@@ -129,6 +129,40 @@ type AlertInput struct {
 	PreviousDailyBaseline uint64
 }
 
+// DailyAcceptanceWindow derives the current UTC-day volume and the immediately
+// preceding complete UTC-day baseline from a process-lifetime cumulative
+// counter. It deliberately keeps no installation-level state.
+type DailyAcceptanceWindow struct {
+	day          time.Time
+	dayStart     uint64
+	lastObserved uint64
+	previous     uint64
+}
+
+func (window *DailyAcceptanceWindow) Observe(now time.Time, cumulative uint64) (current, previous uint64) {
+	day := now.UTC().Truncate(24 * time.Hour)
+	if window.day.IsZero() {
+		window.day = day
+	}
+	if !day.Equal(window.day) {
+		if day.Equal(window.day.AddDate(0, 0, 1)) && window.lastObserved >= window.dayStart {
+			window.previous = window.lastObserved - window.dayStart
+		} else {
+			window.previous = 0
+		}
+		window.day = day
+		window.dayStart = window.lastObserved
+	}
+	if cumulative < window.lastObserved {
+		// A reset can only happen if the caller swaps monitors. Start a fresh
+		// window instead of underflowing or reporting a false spike.
+		window.dayStart = 0
+		window.previous = 0
+	}
+	window.lastObserved = cumulative
+	return cumulative - window.dayStart, window.previous
+}
+
 func EvaluateAlerts(input AlertInput) []Alert {
 	var alerts []Alert
 	if input.Monitor.Requests >= 100 && float64(input.Monitor.ServerErrors)/float64(input.Monitor.Requests) > 0.01 {

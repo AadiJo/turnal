@@ -146,11 +146,20 @@ func runAlerts(ctx context.Context, store *collector.Store, monitor *collector.M
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	lastLogged := make(map[string]time.Time)
+	var dailyWindow collector.DailyAcceptanceWindow
 	for {
 		now := time.Now().UTC()
 		stats, err := store.Stats(ctx)
 		if err == nil {
-			for _, alert := range collector.EvaluateAlerts(collector.AlertInput{Now: now, Monitor: monitor.Snapshot(), Outbox: stats}) {
+			snapshot := monitor.Snapshot()
+			dailyAccepted, previousDailyBaseline := dailyWindow.Observe(now, snapshot.AcceptedBatches)
+			for _, alert := range collector.EvaluateAlerts(collector.AlertInput{
+				Now:                   now,
+				Monitor:               snapshot,
+				Outbox:                stats,
+				DailyAccepted:         dailyAccepted,
+				PreviousDailyBaseline: previousDailyBaseline,
+			}) {
 				if previous := lastLogged[alert.Code]; previous.IsZero() || now.Sub(previous) >= 15*time.Minute {
 					logger.Printf("alert code=%s severity=%s", alert.Code, alert.Severity)
 					lastLogged[alert.Code] = now
