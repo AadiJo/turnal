@@ -1,10 +1,10 @@
 # Turnal — marketing site
 
 An [Astro](https://astro.build) static site for Turnal. The landing page lives at
-`/`; its lightweight design reference for future contributors lives at `/docs`.
+`/`; production-facing product documentation lives at `/docs`.
 
 ```sh
-cd web
+cd apps/marketing
 npm install
 npm run dev      # http://localhost:4321
 npm run build    # -> dist/
@@ -27,6 +27,25 @@ workday instead of repeating one session.
 completions, red deletions, dim metadata). Check new fixtures against the current
 CLI before changing them; do not invent adapters, commands, or flags.
 
+## Design rules
+
+- Use warm black (`#100f0d`) and cream (`#ece3d4`) as the base. International
+  orange (`#ff4f00`) is the single brand accent and should mark state, not fill
+  large surfaces.
+- Inter carries product copy; JetBrains Mono is for commands, paths, metadata,
+  and terminal output. Avoid wide, uppercase marketing kickers.
+- Keep documentation prose near 800px wide and use the sidebar rail for active
+  section state. Section movement uses a short 300ms ease-in-out; the active rail
+  segment and title color should respond without layout work during scrolling.
+- Code and terminal content wraps. Product examples must never require an
+  internal horizontal or vertical scroll area to reveal their content.
+- Use hairline borders and spacing for hierarchy. Motion should be short,
+  functional, and disabled by `prefers-reduced-motion`.
+
+The Claude and Codex marks in `public/brands/` are cached from the
+[SVGL registry](https://svgl.app/) so the page does not hot-link third-party
+assets at render time. Keep each asset's source comment when updating it.
+
 ## Structure
 
 ```
@@ -37,6 +56,8 @@ src/
     Terminal.astro    window chrome + ANSI-colored output; themeable via CSS vars
     Logo.astro        inline mark (rollback loop + checkpoint beads + REC dot)
     CopyButton.astro  icon copy control with brief checkmark feedback
+    CodeBlock.astro   wrapping, copyable documentation examples
+    DocsNav.astro     responsive documentation navigation
   layouts/Base.astro  head, fonts, favicon
-  pages/              landing page + design guidelines
+  pages/              landing page + product documentation
 ```

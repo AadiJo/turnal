@@ -35,6 +35,14 @@ go test ./...
 go build -o bin/turnal ./cmd/turnal
 ```
 
+The Astro marketing and documentation site is kept outside the npm package:
+
+```sh
+cd apps/marketing
+npm install
+npm run dev
+```
+
 ## License
 
 Apache-2.0

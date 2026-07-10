@@ -174,17 +174,17 @@ export const demos: Record<string, Demo> = {
 
   rollback: {
     id: 'rollback',
-    cmd: 'turnal rollback --to claude-7f2a:1',
-    caption: 'Roll back a Claude Code turn while preserving every other agent session.',
+    cmd: 'turnal rollback --to claude-7f2a:1:pre',
+    caption: 'Undo a Claude Code turn after snapshotting the current mixed-agent workspace.',
     out: [
       `Rollback complete`,
-      `  target: claude-7f2a:turn:1:post`,
+      `  target: claude-7f2a:turn:1:pre`,
       `  id:     ${dim('1cf588b4d7a1')}`,
-      `  ref:    ${dim('refs/agent-vcs/checkpoints/claude-7f2a/turn/000001/post')}`,
+      `  ref:    ${dim('refs/agent-vcs/checkpoints/claude-7f2a/turn/000001/pre')}`,
       ``,
       `Previous workspace saved`,
       `  id:  ${dim('80f4f334992a')}`,
-      `  ref: ${dim('refs/agent-vcs/rollback-safety/claude-7f2a/turn/000001/post')}`,
+      `  ref: ${dim('refs/agent-vcs/rollback-safety/claude-7f2a/turn/000001/pre/1783629131200000000-a4c9e2f18b7d')}`,
     ].join('\n'),
   },
 

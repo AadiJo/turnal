@@ -52,7 +52,7 @@ export const features: Feature[] = [
   {
     k: 'local',
     title: 'Local-first',
-    body: 'Everything lives in .turnal/ on your machine — a hidden Git store plus a disposable SQLite index. Nothing is uploaded, ever.',
+    body: 'Recording data lives in .turnal/ on your machine — append-only events, a hidden Git store, and a disposable SQLite index. Turnal does not upload it.',
     demo: 'diff',
   },
 ];
