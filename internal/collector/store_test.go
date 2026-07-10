@@ -3,12 +3,56 @@ package collector
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/AadiJo/turnal/internal/telemetry"
 )
+
+func TestOpenStoreSecuresDatabaseAndRefusesSymlink(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "data", "collector.db")
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range []string{path, path + "-wal", path + "-shm"} {
+		info, err := os.Stat(candidate)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+			t.Fatalf("collector database file %s mode = %o", candidate, info.Mode().Perm())
+		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" {
+		return
+	}
+	target := filepath.Join(t.TempDir(), "target.db")
+	if err := os.WriteFile(target, []byte("unchanged"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	symlink := filepath.Join(t.TempDir(), "collector.db")
+	if err := os.Symlink(target, symlink); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenStore(symlink); err == nil {
+		t.Fatal("collector database symlink was accepted")
+	}
+	data, err := os.ReadFile(target)
+	if err != nil || string(data) != "unchanged" {
+		t.Fatalf("database symlink target changed: %q, %v", data, err)
+	}
+}
 
 func TestStoreAcceptanceIsAtomicAndReplaySafe(t *testing.T) {
 	store := testStore(t)

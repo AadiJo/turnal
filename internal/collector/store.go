@@ -95,8 +95,22 @@ func OpenStore(path string) (*Store, error) {
 		return nil, errors.New("collector database path is required")
 	}
 	if path != ":memory:" {
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		dir := filepath.Dir(path)
+		if info, err := os.Lstat(dir); err == nil {
+			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+				return nil, fmt.Errorf("collector database directory is not a real directory: %s", dir)
+			}
+		} else if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("inspect collector database directory: %w", err)
+		} else if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("create collector database directory: %w", err)
+		}
+		if info, err := os.Lstat(path); err == nil {
+			if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+				return nil, fmt.Errorf("collector database is not a regular file: %s", path)
+			}
+		} else if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("inspect collector database: %w", err)
 		}
 	}
 	db, err := sql.Open("sqlite", path)
@@ -110,7 +124,32 @@ func OpenStore(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if path != ":memory:" {
+		if err := secureCollectorDatabaseFiles(path); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+	}
 	return store, nil
+}
+
+func secureCollectorDatabaseFiles(path string) error {
+	for _, candidate := range []string{path, path + "-wal", path + "-shm"} {
+		info, err := os.Lstat(candidate)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("inspect collector database file: %w", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return fmt.Errorf("collector database file is not regular: %s", candidate)
+		}
+		if err := os.Chmod(candidate, 0o600); err != nil {
+			return fmt.Errorf("secure collector database file: %w", err)
+		}
+	}
+	return nil
 }
 
 func (store *Store) Close() error {
