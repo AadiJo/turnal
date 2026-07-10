@@ -2,8 +2,7 @@ package cli
 
 import (
 	"bytes"
-	"os"
-	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -23,12 +22,9 @@ func TestCodexHookFailsOpenButRecordsVisibleFailure(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 	t.Chdir(rootPath)
-	blockedPath := filepath.Join(repo.MetadataDir, "log", "raw", "failed-hook", "codex.jsonl")
-	if err := os.MkdirAll(blockedPath, 0o700); err != nil {
-		t.Fatalf("create blocking adapter log directory: %v", err)
-	}
 
 	payload := `{"cwd":` + strconvQuote(rootPath) + `,"session_id":"failed-hook","hook_event_name":"after_agent"}`
+	payload += strings.Repeat(" ", adapters.MaxHookPayloadBytes-len(payload)+1)
 	var stderr bytes.Buffer
 	cmd := NewRootCmd()
 	cmd.SetArgs([]string{"codex-hook"})
@@ -91,5 +87,5 @@ func TestClaudeHookInvalidKindFailsOpenAndRecordsFailure(t *testing.T) {
 }
 
 func strconvQuote(value string) string {
-	return `"` + strings.ReplaceAll(value, `"`, `\"`) + `"`
+	return strconv.Quote(value)
 }

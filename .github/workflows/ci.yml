@@ -40,6 +40,7 @@ jobs:
         uses: golang/govulncheck-action@v1
         with:
           go-package: ./...
+          repo-checkout: false
 
   platform-tests:
     name: Test (${{ matrix.os }})

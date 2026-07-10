@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/AadiJo/turnal/internal/fsidentity"
 	"github.com/AadiJo/turnal/internal/primitives"
 )
 
@@ -648,10 +649,7 @@ func cleanIdentityPath(value string) string {
 }
 
 func sameIdentityPath(left, right string) bool {
-	if strings.TrimSpace(left) == "" || strings.TrimSpace(right) == "" {
-		return false
-	}
-	return cleanIdentityPath(left) == cleanIdentityPath(right)
+	return fsidentity.Same(left, right)
 }
 
 func validateStoreCandidate(store registryStore, identity UserGitIdentity) error {

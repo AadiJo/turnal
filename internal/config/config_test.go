@@ -167,15 +167,16 @@ func TestResolveEnvAndOverridesWin(t *testing.T) {
 }
 
 func TestGlobalPathUsesEnvOverride(t *testing.T) {
+	want := filepath.Join(t.TempDir(), "turnal-test.toml")
 	loader := testLoader(t, map[string]string{
-		ConfigEnvVar: "/tmp/turnal-test.toml",
+		ConfigEnvVar: want,
 	})
 
 	path, err := loader.GlobalPath()
 	if err != nil {
 		t.Fatalf("GlobalPath: %v", err)
 	}
-	if path != "/tmp/turnal-test.toml" {
+	if path != want {
 		t.Fatalf("GlobalPath = %q, want env override", path)
 	}
 }

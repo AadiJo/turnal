@@ -211,6 +211,9 @@ func InitAt(root primitives.WorkspaceRoot, metadataDir string) (*Repo, error) {
 	if err := writeFileIfMissing(filepath.Join(repo.MetadataDir, configFileName), []byte(workspaceConfigTemplate)); err != nil {
 		return nil, err
 	}
+	if err := configureHiddenGit(repo); err != nil {
+		return nil, err
+	}
 
 	bare, err := repo.HiddenGitBare()
 	if err != nil {
@@ -268,6 +271,9 @@ func OpenAt(root primitives.WorkspaceRoot, metadataDir string) (*Repo, error) {
 			return nil, fmt.Errorf("hidden git repo not initialized at %s", repo.GitDir)
 		}
 		return nil, fmt.Errorf("stat hidden git repo: %w", err)
+	}
+	if err := configureHiddenGit(repo); err != nil {
+		return nil, err
 	}
 	var gitIdentity *UserGitIdentity
 	if discovered, discoverErr := discoverUserGit(root.String()); discoverErr == nil {
@@ -2237,6 +2243,13 @@ func runGitNoRepo(workDir string, args ...string) (string, error) {
 		return "", fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
 	}
 	return string(output), nil
+}
+
+func configureHiddenGit(repo *Repo) error {
+	if _, err := runGitNoRepo(repo.WorkspaceRoot.String(), "--git-dir="+repo.GitDir, "config", "core.longpaths", "true"); err != nil {
+		return fmt.Errorf("configure hidden git long-path support: %w", err)
+	}
+	return nil
 }
 
 func runHiddenGit(repo *Repo, indexPath string, args ...string) (string, error) {
