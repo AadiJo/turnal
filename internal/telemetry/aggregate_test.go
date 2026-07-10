@@ -5,12 +5,45 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/AadiJo/turnal/internal/filelock"
 )
+
+func BenchmarkAggregateRecord(b *testing.B) {
+	id, err := ParseUUID("167e8e5d-84fc-46bd-a39c-b67d47658f8e")
+	if err != nil {
+		b.Fatal(err)
+	}
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	store := AggregateStore{CacheDir: filepath.Join(b.TempDir(), "telemetry"), Now: func() time.Time { return now }}
+	state := State{
+		Version:     StateVersion,
+		Preference:  PreferenceOn,
+		AnonymousID: &id,
+		CreatedAt:   now.Format(time.RFC3339),
+		UpdatedAt:   now.Format(time.RFC3339),
+	}
+	build := supportedTestBuild()
+	durations := make([]time.Duration, 0, b.N)
+	b.ResetTimer()
+	for range b.N {
+		started := time.Now()
+		if _, err := store.Record(RecordOptions{State: state, Build: build, LookupEnv: mapEnv(nil)}, MetricInstallationActive); err != nil {
+			b.Fatal(err)
+		}
+		durations = append(durations, time.Since(started))
+	}
+	b.StopTimer()
+	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
+	if len(durations) > 0 {
+		p95 := durations[(len(durations)-1)*95/100]
+		b.ReportMetric(float64(p95.Nanoseconds()), "p95-ns")
+	}
+}
 
 func TestAggregateDoesNotWriteBeforeConsentOrUnderOverrides(t *testing.T) {
 	store, state, build := testAggregateStore(t)
@@ -39,6 +72,20 @@ func TestAggregateDoesNotWriteBeforeConsentOrUnderOverrides(t *testing.T) {
 	}
 	if _, err := os.Stat(store.CacheDir); !os.IsNotExist(err) {
 		t.Fatalf("cache exists before consent: %v", err)
+	}
+}
+
+func TestInspectEmptyQueueDoesNotCreateCache(t *testing.T) {
+	store, _, _ := testAggregateStore(t)
+	snapshot, err := store.Inspect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.FileCount() != 0 || snapshot.Bytes != 0 {
+		t.Fatalf("empty snapshot = %#v", snapshot)
+	}
+	if _, err := os.Lstat(store.CacheDir); !os.IsNotExist(err) {
+		t.Fatalf("inspection created telemetry cache: %v", err)
 	}
 }
 

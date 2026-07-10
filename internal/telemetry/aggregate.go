@@ -146,7 +146,7 @@ func (store AggregateStore) RecordMany(options RecordOptions, keys ...MetricKey)
 		if err != nil {
 			return err
 		}
-		if err := atomicWriteFile(path, data, 0o600); err != nil {
+		if err := atomicWriteFileRelaxed(path, data, 0o600); err != nil {
 			return err
 		}
 		if err := store.enforceLimitsUnlocked(now); err != nil {
@@ -206,7 +206,17 @@ func (store AggregateStore) ListBatches(limit int) ([]QueuedBatch, error) {
 
 func (store AggregateStore) Inspect() (QueueSnapshot, error) {
 	var snapshot QueueSnapshot
-	err := store.withLock(func() error {
+	info, err := os.Lstat(store.CacheDir)
+	if os.IsNotExist(err) {
+		return snapshot, nil
+	}
+	if err != nil {
+		return snapshot, fmt.Errorf("inspect telemetry cache: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return snapshot, fmt.Errorf("telemetry cache is not a directory: %s", store.CacheDir)
+	}
+	err = store.withLock(func() error {
 		var err error
 		snapshot.Current, err = store.inspectDirectoryUnlocked(store.currentDir(), false)
 		if err != nil {
@@ -314,7 +324,7 @@ func (store AggregateStore) withLock(action func() error) error {
 	if timeout == 0 {
 		timeout = aggregateLockTimeout
 	}
-	lock, err := filelock.Acquire(filepath.Join(store.CacheDir, ".lock"), timeout)
+	lock, err := filelock.AcquireQuiet(filepath.Join(store.CacheDir, ".lock"), timeout)
 	if err != nil {
 		return err
 	}

@@ -2,10 +2,37 @@ package telemetry
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestTelemetrySchemaV1GoldenCoversEntireMetricRegistry(t *testing.T) {
+	data, err := os.ReadFile("testdata/telemetry_schema_v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	aggregate, err := DecodeDailyAggregate(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(aggregate.Metrics) != len(metricNames) {
+		t.Fatalf("golden metrics = %d, registry = %d", len(aggregate.Metrics), len(metricNames))
+	}
+	for _, metric := range aggregate.Metrics {
+		if _, ok := metricNames[metric.Key]; !ok {
+			t.Fatalf("golden contains unknown metric %d", metric.Key)
+		}
+	}
+	encoded, err := EncodeDailyAggregate(aggregate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(encoded, data) {
+		t.Fatalf("golden payload is not canonical\nwant: %s\ngot:  %s", data, encoded)
+	}
+}
 
 func TestMetricRegistryRejectsUnknownValues(t *testing.T) {
 	for key, name := range metricNames {

@@ -75,3 +75,21 @@ func TestHeldDoesNotRewriteOwnerMetadata(t *testing.T) {
 		t.Fatalf("Held rewrote owner metadata: before=%q after=%q", before, after)
 	}
 }
+
+func TestAcquireQuietDoesNotWriteOwnerMetadata(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "quiet.lock")
+	lock, err := AcquireQuiet(path, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lock.Release(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) != 0 {
+		t.Fatalf("quiet lock wrote owner metadata: %q", data)
+	}
+}

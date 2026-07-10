@@ -148,11 +148,35 @@ func TestSenderRejectsNonAllowlistedEndpointAndBatchCount(t *testing.T) {
 	}
 }
 
+func TestSenderRequiresBoundedValidAcceptance(t *testing.T) {
+	for name, body := range map[string]string{
+		"empty object":      `{}`,
+		"unknown field":     `{"status":"durably_accepted","accepted":1,"duplicates":0,"quarantined":0,"path":"secret"}`,
+		"wrong batch total": `{"status":"durably_accepted","accepted":0,"duplicates":0,"quarantined":0}`,
+		"trailing value":    `{"status":"durably_accepted","accepted":1,"duplicates":0,"quarantined":0}{}`,
+		"oversized":         strings.Repeat("x", MaxResponseBodyBytes+1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			transport := &captureTransport{status: http.StatusAccepted, header: make(http.Header), responseBody: body}
+			sender := Sender{
+				endpoint: CollectorURL,
+				version:  "0.4.2",
+				client:   &http.Client{Transport: transport, Timeout: NetworkTimeout},
+			}
+			result, err := sender.Send(context.Background(), []DailyAggregate{testDailyAggregate(t)})
+			if err == nil || result.Disposition != SendRetryable {
+				t.Fatalf("Send() = %#v, %v", result, err)
+			}
+		})
+	}
+}
+
 type captureTransport struct {
-	status  int
-	header  http.Header
-	request *http.Request
-	body    []byte
+	status       int
+	header       http.Header
+	request      *http.Request
+	body         []byte
+	responseBody string
 }
 
 func (transport *captureTransport) RoundTrip(request *http.Request) (*http.Response, error) {
@@ -162,10 +186,14 @@ func (transport *captureTransport) RoundTrip(request *http.Request) (*http.Respo
 		return nil, err
 	}
 	transport.body = body
+	responseBody := transport.responseBody
+	if responseBody == "" && transport.status == http.StatusAccepted {
+		responseBody = `{"status":"durably_accepted","accepted":1,"duplicates":0,"quarantined":0}`
+	}
 	return &http.Response{
 		StatusCode: transport.status,
 		Header:     transport.header,
-		Body:       io.NopCloser(strings.NewReader("{}")),
+		Body:       io.NopCloser(strings.NewReader(responseBody)),
 		Request:    request,
 	}, nil
 }

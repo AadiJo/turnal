@@ -103,6 +103,10 @@ must use the word "installation" and, while opt-in is used, the prefix
 Local aggregates are retained for at most 14 UTC days, 128 batch files, or 512
 KiB, whichever bound is reached first. The oldest telemetry is discarded first.
 Malformed data is quarantined or removed and can never block a Turnal command.
+Current-day counters use atomic replacement without forcing every approximate
+increment to stable storage; a machine-level storage failure can lose the newest
+counter but cannot expose a partially written JSON file. Consent state and
+rotated sendable batches use durable writes.
 
 ## Metric semantics
 

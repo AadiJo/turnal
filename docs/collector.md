@@ -82,6 +82,11 @@ rejected. A forwarding lease that survives a crash becomes retryable. Delivered
 payload bytes are removed immediately while the payload hash remains for replay
 deduplication.
 
+The client deletes local batches only after a bounded HTTP 202 response with the
+closed `durably_accepted` acknowledgement shape and a batch total matching the
+request. Malformed, oversized, trailing, or inconsistent acknowledgements remain
+retryable.
+
 ## Local verification
 
 ```sh

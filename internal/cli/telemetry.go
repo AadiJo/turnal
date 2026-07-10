@@ -173,7 +173,7 @@ func maybeScheduleTelemetryFlush() {
 		return
 	}
 	state, err := runtime.state.Load()
-	if err != nil || state.AnonymousID == nil {
+	if err != nil || state.Preference != telemetry.PreferenceOn || state.AnonymousID == nil {
 		return
 	}
 	_, _ = (telemetry.DetachedScheduler{Sender: runtime.sender, InstallationID: state.AnonymousID}).Schedule()

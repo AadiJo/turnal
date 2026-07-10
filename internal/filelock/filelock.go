@@ -22,6 +22,17 @@ type owner struct {
 }
 
 func Acquire(path string, timeout time.Duration) (*Lock, error) {
+	return acquire(path, timeout, true)
+}
+
+// AcquireQuiet takes the same operating-system lock without writing diagnostic
+// owner metadata. It is intended for latency-sensitive, privacy-minimized files
+// whose callers treat contention as a dropped best-effort operation.
+func AcquireQuiet(path string, timeout time.Duration) (*Lock, error) {
+	return acquire(path, timeout, false)
+}
+
+func acquire(path string, timeout time.Duration, writeOwner bool) (*Lock, error) {
 	if path == "" {
 		return nil, fmt.Errorf("lock path is required")
 	}
@@ -51,10 +62,12 @@ func Acquire(path string, timeout time.Duration) (*Lock, error) {
 		}
 		if acquired {
 			lock := &Lock{file: file, path: path}
-			if err := lock.writeOwner(); err != nil {
-				_ = unlock(file)
-				_ = file.Close()
-				return nil, err
+			if writeOwner {
+				if err := lock.writeOwner(); err != nil {
+					_ = unlock(file)
+					_ = file.Close()
+					return nil, err
+				}
 			}
 			return lock, nil
 		}

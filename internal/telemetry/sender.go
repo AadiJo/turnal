@@ -52,6 +52,13 @@ type CollectorRequest struct {
 	Batches       []DailyAggregate `json:"batches"`
 }
 
+type collectorAcceptance struct {
+	Status      string `json:"status"`
+	Accepted    int    `json:"accepted"`
+	Duplicates  int    `json:"duplicates"`
+	Quarantined int    `json:"quarantined"`
+}
+
 type Sender struct {
 	endpoint string
 	version  string
@@ -145,8 +152,38 @@ func (sender Sender) Send(ctx context.Context, batches []DailyAggregate) (SendRe
 		return SendResult{Disposition: SendRetryable}, fmt.Errorf("send telemetry batch: %w", err)
 	}
 	defer response.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, MaxResponseBodyBytes))
-	return classifyResponse(response.StatusCode, response.Header), nil
+	body, err := io.ReadAll(io.LimitReader(response.Body, MaxResponseBodyBytes+1))
+	if err != nil {
+		return SendResult{Disposition: SendRetryable, StatusCode: response.StatusCode}, fmt.Errorf("read telemetry collector response: %w", err)
+	}
+	if len(body) > MaxResponseBodyBytes {
+		return SendResult{Disposition: SendRetryable, StatusCode: response.StatusCode}, errors.New("telemetry collector response exceeds limit")
+	}
+	result := classifyResponse(response.StatusCode, response.Header)
+	if result.Disposition != SendAccepted {
+		return result, nil
+	}
+	if err := validateCollectorAcceptance(body, len(batches)); err != nil {
+		return SendResult{Disposition: SendRetryable, StatusCode: response.StatusCode}, err
+	}
+	return result, nil
+}
+
+func validateCollectorAcceptance(body []byte, batchCount int) error {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	var acknowledgement collectorAcceptance
+	if err := decoder.Decode(&acknowledgement); err != nil {
+		return errors.New("telemetry collector returned an invalid acknowledgement")
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return errors.New("telemetry collector returned a trailing acknowledgement value")
+	}
+	if acknowledgement.Status != "durably_accepted" || acknowledgement.Accepted < 0 || acknowledgement.Duplicates < 0 || acknowledgement.Quarantined < 0 || acknowledgement.Accepted+acknowledgement.Duplicates != batchCount || acknowledgement.Quarantined > batchCount {
+		return errors.New("telemetry collector returned an inconsistent acknowledgement")
+	}
+	return nil
 }
 
 func classifyResponse(statusCode int, header http.Header) SendResult {

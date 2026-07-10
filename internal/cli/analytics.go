@@ -15,6 +15,10 @@ const telemetryDisclosure = `Turnal can collect pseudonymous, aggregate usage an
 and prioritize features. If enabled, it records command categories, success/failure,
 Turnal version, install source, OS/architecture, and a random installation ID.
 
+A Turnal collector forwards personless daily events to PostHog as its analytics
+processor. Local queued data expires within 14 days and raw server events within
+90 days. Reset rotates the ID; the policy explains deletion requests.
+
 It never sends prompts, agent transcripts, tool data, repository or file names,
 paths, diffs, Git data, command arguments, output, or raw errors. Nothing was
 sent during this command, and analytics remain off until you enable them.
