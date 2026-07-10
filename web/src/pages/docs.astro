@@ -1,0 +1,178 @@
+---
+import Base from '../layouts/Base.astro';
+import Logo from '../components/Logo.astro';
+import Terminal from '../components/Terminal.astro';
+import { demos } from '../data/demos';
+import { product } from '../data/content';
+
+const swatches = [
+  { name: 'Warm black', val: '#171512', note: 'base ink / page bg (#100f0d in use)' },
+  { name: 'Cream', val: '#ECE3D4', note: 'foreground text' },
+  { name: 'International orange', val: '#FF4F00', note: 'the single accent — used sparingly' },
+];
+---
+
+<Base theme="docs" title="Turnal — design guidelines">
+  <div class="page">
+    <header class="nav">
+      <div class="wrap navrow">
+        <a href="/" class="brand"><Logo size={24} /></a>
+        <nav class="links">
+          <a href="/">Home</a>
+          <a href={`https://${product.repo}`}>GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="wrap doc">
+      <h1>Building on the Turnal site.</h1>
+      <p class="intro">
+        A sparse reference so future agents keep the site coherent. This is intentionally
+        short — extend it as decisions get made, don't overspecify up front.
+      </p>
+
+      <section>
+        <h2>01 · North star</h2>
+        <p>
+          Turnal is a <strong>flight recorder for AI coding agents</strong>. The design leans
+          into that story: calm, technical, local-first, a little bit cockpit. Clean and
+          minimalist over decorative. When in doubt, remove.
+        </p>
+      </section>
+
+      <section>
+        <h2>02 · Palette</h2>
+        <div class="swatches">
+          {swatches.map((s) => (
+            <div class="sw">
+              <span class="chip" style={`background:${s.val}`}></span>
+              <div>
+                <b>{s.name}</b>
+                <code>{s.val}</code>
+                <span>{s.note}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+        <p class="fine">
+          One accent only. International orange is the color real flight recorders are painted —
+          it carries the brand story, so spend it on one thing per view (a link, the REC dot, a
+          single emphasis), never as a fill across large areas.
+        </p>
+      </section>
+
+      <section>
+        <h2>03 · Type</h2>
+        <ul class="list">
+          <li><b>Inter</b> — UI, headings, body. Tight tracking on display sizes (−0.03em).</li>
+          <li><b>JetBrains Mono</b> — terminals, commands, labels, metadata.</li>
+          <li><b>Newsreader</b> — reserved for editorial moments; not required.</li>
+        </ul>
+        <p class="fine">
+          Avoid uppercase, wide-letter-spaced kicker labels — they were removed on purpose. Lead
+          with the headline.
+        </p>
+      </section>
+
+      <section>
+        <h2>04 · The terminals are the product</h2>
+        <p>
+          The demos are the single most important element on the site. <strong>They must stay
+          faithful to the actual CLI</strong> and show the full mix of supported agents.
+        </p>
+        <Terminal demo={demos.diff} title="~/relay-api — Codex" />
+        <p class="fine">
+          Build the binary (<code>go build -o bin/turnal ./cmd/turnal</code>) and use genuine
+          Claude Code and Codex hooks as the source for new fixtures. Representative prompts,
+          timestamps, paths, and short hashes are fine; commands, flags, labels, and output shapes
+          must match the current CLI. Never show an unsupported adapter. Token classes
+          (<code>t-b</code>, <code>t-g</code>,
+          <code>t-ok</code>, <code>t-gr</code>, <code>t-del</code>, <code>t-dim</code>) map 1:1 to
+          the CLI's ANSI colors — keep that mapping intact. Render everything through the shared
+          <code>&lt;Terminal&gt;</code> component so chrome stays consistent.
+        </p>
+      </section>
+
+      <section>
+        <h2>05 · Layout & motion</h2>
+        <ul class="list">
+          <li>Content max-width <code>1120px</code>; generous vertical rhythm (80–120px between sections).</li>
+          <li>Hero is centered. Everything else can be asymmetric.</li>
+          <li>Hairline borders (<code>rgba(cream, 0.1)</code>) over shadows and boxes.</li>
+          <li>Motion is quick and functional (copy → checkmark, subtle hovers). No parallax, no long scroll-jacking.</li>
+          <li>Honor <code>prefers-reduced-motion</code>.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>06 · Voice</h2>
+        <p>
+          Concise and technical, written for engineers. Say what a command does, show it, move on.
+          Claims map to real behavior — if the CLI can't do it, the site doesn't say it.
+        </p>
+      </section>
+
+      <footer class="foot">
+        <a href="/">← Back home</a>
+        <span>{product.tagline}</span>
+      </footer>
+    </main>
+  </div>
+</Base>
+
+<style is:global>
+  .docs {
+    --accent: #ff4f00;
+    --bg: #100f0d;
+    --fg: #ece3d4;
+    --muted: rgba(236, 227, 212, 0.58);
+    --hair: rgba(236, 227, 212, 0.1);
+    background: var(--bg);
+    color: var(--fg);
+    min-height: 100vh;
+    --term-bg: #0c0b09;
+    --term-border: rgba(236, 227, 212, 0.1);
+    --term-bar-bg: rgba(236, 227, 212, 0.03);
+    --term-shadow: 0 30px 70px -40px rgba(0, 0, 0, 0.8);
+  }
+
+  .nav { position: sticky; top: 0; z-index: 40; backdrop-filter: blur(10px); background: rgba(16,15,13,0.6); border-bottom: 1px solid var(--hair); }
+  .navrow { display: flex; align-items: center; gap: 24px; height: 66px; }
+  .brand { color: var(--fg); }
+  .links { margin-left: auto; display: flex; gap: 26px; font-size: 14px; color: var(--muted); }
+  .links a:hover { color: var(--fg); }
+
+  .doc { max-width: 760px; padding-top: clamp(48px, 7vw, 88px); padding-bottom: 100px; }
+  .doc h1 { font-size: clamp(34px, 6vw, 60px); line-height: 1.0; letter-spacing: -0.035em; font-weight: 800; margin: 0 0 20px; }
+  .intro { font-size: 18px; line-height: 1.6; color: var(--muted); margin-bottom: 20px; }
+
+  .doc section { padding: 34px 0; border-top: 1px solid var(--hair); }
+  .doc h2 { font-size: 15px; font-family: var(--mono); font-weight: 500; letter-spacing: 0.02em; color: var(--fg); margin-bottom: 16px; }
+  .doc p { color: var(--muted); font-size: 16px; line-height: 1.65; }
+  .doc p + p, .doc :global(.term) + p { margin-top: 14px; }
+  .doc strong { color: var(--fg); font-weight: 600; }
+  .doc code { font-family: var(--mono); font-size: 0.85em; background: rgba(236,227,212,0.07); border: 1px solid var(--hair); border-radius: 5px; padding: 1px 6px; color: var(--fg); }
+  .doc :global(.term) { margin: 22px 0; }
+
+  .fine { font-size: 14.5px; }
+
+  .list { list-style: none; display: flex; flex-direction: column; gap: 12px; }
+  .list li { color: var(--muted); font-size: 15.5px; line-height: 1.55; padding-left: 18px; position: relative; }
+  .list li::before { content: '—'; position: absolute; left: 0; color: var(--accent); }
+  .list b { color: var(--fg); font-weight: 600; }
+
+  .swatches { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 18px; }
+  .sw { display: flex; gap: 12px; align-items: flex-start; }
+  .sw .chip { width: 40px; height: 40px; border-radius: 9px; flex: none; border: 1px solid var(--hair); }
+  .sw b { display: block; font-size: 14px; }
+  .sw code { display: inline-block; margin: 3px 0; font-size: 11.5px; }
+  .sw span { display: block; font-size: 12px; color: var(--muted); }
+
+  .foot { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-top: 40px; padding-top: 26px; border-top: 1px solid var(--hair); font-size: 13px; color: var(--muted); }
+  .foot a:hover { color: var(--fg); }
+
+  @media (max-width: 640px) {
+    .links { display: none; }
+    .swatches { grid-template-columns: minmax(0, 1fr); }
+  }
+</style>

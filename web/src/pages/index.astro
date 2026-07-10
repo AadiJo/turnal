@@ -1,0 +1,302 @@
+---
+import Base from '../layouts/Base.astro';
+import Logo from '../components/Logo.astro';
+import Terminal from '../components/Terminal.astro';
+import CopyButton from '../components/CopyButton.astro';
+import { demos, install } from '../data/demos';
+import { product, features } from '../data/content';
+
+const heroDemos = ['blame', 'search', 'rollback'];
+const demoTitles: Record<string, string> = {
+  blame: '~/relay-api — Claude + Codex',
+  search: '~/relay-api — all sessions',
+  rollback: '~/relay-api — Claude Code',
+};
+---
+
+<Base theme="opt1" title="Turnal — a flight recorder for your AI coding agent">
+  <div class="page">
+    <header class="nav">
+      <div class="wrap navrow">
+        <a href="#top" class="brand"><Logo size={26} /></a>
+        <nav class="links">
+          <a href="#features">Features</a>
+          <a href="#how">How it works</a>
+          <a href="/docs">Docs</a>
+          <a href={`https://${product.repo}`}>GitHub</a>
+        </nav>
+        <a class="btn ghost" href="#install">Install</a>
+      </div>
+    </header>
+
+    <main id="top">
+      <section class="hero wrap">
+        <h1>A flight recorder<br />for your AI <em>coding agent.</em></h1>
+        <p class="lede">{product.sub}</p>
+
+        <div class="cta">
+          <div class="install" id="install">
+            <span class="prompt">$</span>
+            <code>{install}</code>
+            <CopyButton text={install} />
+          </div>
+          <a class="btn solid" href="/docs">Read the docs →</a>
+        </div>
+
+        <div class="hero-term">
+          <Terminal demo={demos.log} rec title="~/relay-api — Claude + Codex" />
+        </div>
+      </section>
+
+      <section class="marquee">
+        <div class="wrap tags">
+          <span>Hidden Git store</span><b>·</b>
+          <span>Pre / post checkpoints</span><b>·</b>
+          <span>Prompt-aware blame</span><b>·</b>
+          <span>Safe rollback</span><b>·</b>
+          <span>SQLite search index</span><b>·</b>
+          <span>Nothing leaves your machine</span>
+        </div>
+      </section>
+
+      <section id="features" class="features wrap">
+        <header class="sec-head">
+          <h2>Every turn. The whole story.</h2>
+        </header>
+
+        <div class="feat-grid">
+          {features.map((f) => (
+            <article class="feat">
+              <h3>{f.title}</h3>
+              <p>{f.body}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section class="demos wrap">
+        {heroDemos.map((id) => (
+          <div class="demo-row">
+            <div class="demo-copy">
+              <p class="demo-cmd"><span>$</span> {demos[id].cmd}</p>
+              <p class="demo-cap">{demos[id].caption}</p>
+            </div>
+            <Terminal demo={demos[id]} title={demoTitles[id]} />
+          </div>
+        ))}
+      </section>
+
+      <section id="how" class="how wrap">
+        <header class="sec-head center">
+          <h2>Set up in under a minute.</h2>
+        </header>
+        <div class="steps">
+          <div class="step">
+            <span class="n">01</span>
+            <h3>Install</h3>
+            <p>Grab the CLI. Prebuilt binaries ship for macOS, Linux, and Windows.</p>
+            <Terminal demo={{ id: 'i', cmd: install, caption: '', out: '' }} flat title="install" />
+          </div>
+          <div class="step">
+            <span class="n">02</span>
+            <h3>Init</h3>
+            <p>One command wires hooks into your agents and creates the hidden store.</p>
+            <Terminal demo={demos.init} flat title="init" />
+          </div>
+          <div class="step">
+            <span class="n">03</span>
+            <h3>Recall</h3>
+            <p>Your agent works as normal. Everything is recorded, ready to replay.</p>
+            <Terminal demo={demos.sessions} flat title="Claude Code + Codex" />
+          </div>
+        </div>
+      </section>
+
+      <section class="closer">
+        <div class="wrap">
+          <h2>Trust, but verify —<br />then <em>roll back.</em></h2>
+          <div class="install big">
+            <span class="prompt">$</span>
+            <code>{install}</code>
+            <CopyButton text={install} />
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <div class="wrap footrow">
+        <Logo size={22} />
+        <span class="fine">Local-first version control for AI agent activity · Apache-2.0</span>
+        <a href={`https://${product.repo}`}>{product.repo}</a>
+      </div>
+    </footer>
+  </div>
+</Base>
+
+<style is:global>
+  .opt1 {
+    --accent: #ff4f00;
+    --bg: #100f0d;
+    --fg: #ece3d4;
+    --muted: rgba(236, 227, 212, 0.56);
+    --hair: rgba(236, 227, 212, 0.1);
+    --copy-bg: rgba(236, 227, 212, 0.08);
+    --copy-fg: rgba(236, 227, 212, 0.55);
+    background:
+      radial-gradient(1100px 620px at 50% -12%, rgba(255, 79, 0, 0.12), transparent 60%),
+      var(--bg);
+    color: var(--fg);
+    min-height: 100vh;
+    --term-bg: #0c0b09;
+    --term-border: rgba(236, 227, 212, 0.1);
+    --term-bar-bg: rgba(236, 227, 212, 0.03);
+    --term-shadow: 0 40px 90px -40px rgba(0, 0, 0, 0.85);
+  }
+
+  .page { display: flex; flex-direction: column; min-height: 100vh; }
+
+  /* nav */
+  .nav {
+    position: sticky;
+    top: 0;
+    z-index: 40;
+    backdrop-filter: blur(10px);
+    background: rgba(16, 15, 13, 0.6);
+    border-bottom: 1px solid var(--hair);
+  }
+  .navrow { display: flex; align-items: center; gap: 24px; height: 66px; }
+  .brand { color: var(--fg); }
+  .links { margin-left: auto; display: flex; gap: 28px; font-size: 14px; color: var(--muted); }
+  .links a:hover { color: var(--fg); }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    font-size: 14px;
+    font-weight: 600;
+    padding: 10px 18px;
+    border-radius: 999px;
+    transition: transform 0.12s ease, background 0.15s ease, color 0.15s ease;
+  }
+  .btn.ghost { border: 1px solid var(--hair); color: var(--fg); }
+  .btn.ghost:hover { background: rgba(236, 227, 212, 0.06); }
+  .btn.solid { background: var(--fg); color: var(--bg); }
+  .btn.solid:hover { transform: translateY(-1px); }
+
+  /* hero — centered */
+  .hero {
+    padding: clamp(64px, 10vw, 128px) 24px 44px;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  h1 {
+    font-size: clamp(44px, 8vw, 92px);
+    line-height: 0.98;
+    letter-spacing: -0.035em;
+    font-weight: 800;
+    margin: 0 0 24px;
+  }
+  h1 em { font-style: normal; color: var(--accent); }
+  .lede { max-width: 620px; font-size: clamp(16px, 2vw, 19px); color: var(--muted); }
+
+  .cta { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; justify-content: center; margin: 34px 0 60px; }
+  .install {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    font-family: var(--mono);
+    font-size: 14.5px;
+    padding: 8px 8px 8px 18px;
+    border-radius: 12px;
+    background: #0c0b09;
+    border: 1px solid var(--hair);
+  }
+  .install .prompt { color: var(--accent); font-weight: 700; }
+  .install code { color: var(--fg); }
+
+  .hero-term { width: 100%; max-width: 1040px; text-align: left; }
+
+  /* marquee */
+  .marquee { border-block: 1px solid var(--hair); padding: 20px 0; }
+  .tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    justify-content: center;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    text-transform: uppercase;
+  }
+  .tags b { color: var(--accent); }
+
+  /* sections */
+  .sec-head { max-width: 720px; margin-bottom: 44px; }
+  .sec-head.center { margin-inline: auto; text-align: center; }
+  h2 {
+    font-size: clamp(30px, 4.4vw, 50px);
+    line-height: 1.02;
+    letter-spacing: -0.03em;
+    font-weight: 700;
+  }
+  h2 em { font-style: normal; color: var(--accent); }
+
+  .features { padding: 96px 24px 30px; }
+  .feat-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1px;
+    background: var(--hair);
+    border: 1px solid var(--hair);
+    border-radius: 14px;
+    overflow: hidden;
+  }
+  .feat { background: var(--bg); padding: 30px 28px 34px; }
+  .feat h3 { font-size: 18px; font-weight: 650; margin-bottom: 10px; letter-spacing: -0.01em; }
+  .feat p { color: var(--muted); font-size: 15px; }
+
+  /* demos */
+  .demos { padding: 80px 24px 40px; display: flex; flex-direction: column; gap: 64px; }
+  .demo-row {
+    display: grid;
+    grid-template-columns: 340px minmax(0, 1fr);
+    gap: 40px;
+    align-items: center;
+  }
+  .demo-row:nth-child(even) { grid-template-columns: minmax(0, 1fr) 340px; }
+  .demo-row:nth-child(even) .demo-copy { order: 2; }
+  .demo-cmd { font-family: var(--mono); font-size: 13px; color: var(--muted); margin-bottom: 14px; }
+  .demo-cmd span { color: var(--accent); }
+  .demo-cap { font-size: 20px; letter-spacing: -0.02em; line-height: 1.35; }
+
+  /* how */
+  .how { padding: 100px 24px 40px; }
+  .steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 28px; }
+  .step .n { font-family: var(--mono); color: var(--accent); font-size: 13px; letter-spacing: 0.1em; }
+  .step h3 { font-size: 20px; margin: 10px 0 8px; letter-spacing: -0.01em; }
+  .step p { color: var(--muted); font-size: 14.5px; margin-bottom: 18px; min-height: 62px; }
+
+  /* closer */
+  .closer { padding: 120px 0 110px; text-align: center; border-top: 1px solid var(--hair); margin-top: 90px; }
+  .closer h2 { font-size: clamp(36px, 6vw, 68px); }
+  .install.big { margin: 40px auto 0; width: max-content; max-width: 100%; font-size: 16px; padding: 12px 12px 12px 22px; }
+
+  /* footer */
+  .foot { border-top: 1px solid var(--hair); padding: 34px 0 80px; }
+  .footrow { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+  .fine { flex: 1; min-width: 220px; }
+  .foot a:hover { color: var(--fg); }
+
+  @media (max-width: 860px) {
+    .links { display: none; }
+    .feat-grid { grid-template-columns: minmax(0, 1fr); }
+    .demo-row, .demo-row:nth-child(even) { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+    .demo-row:nth-child(even) .demo-copy { order: 0; }
+    .steps { grid-template-columns: minmax(0, 1fr); }
+    .step p { min-height: 0; }
+  }
+</style>
