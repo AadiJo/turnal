@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	agentconfig "github.com/AadiJo/turnal/internal/config"
+	"github.com/AadiJo/turnal/internal/fsidentity"
 	"github.com/AadiJo/turnal/internal/gitsync"
 	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/AadiJo/turnal/internal/snapshotpolicy"
@@ -192,9 +193,9 @@ func (git Git) ensureSupportedWorktree() error {
 	if err != nil {
 		return fmt.Errorf("git-sync requires an initialized Git worktree at the turnal workspace root %s; run git init from that root and create an initial commit, or disable git-sync: %w", git.Root, err)
 	}
-	root := filepath.Clean(git.Root.String())
-	got := filepath.Clean(strings.TrimSpace(toplevel))
-	if got != root {
+	root := git.Root.String()
+	got := strings.TrimSpace(toplevel)
+	if !fsidentity.Same(root, got) {
 		return fmt.Errorf("git-sync requires the turnal workspace root to be the Git worktree root; workspace=%s git_toplevel=%s. Run turnal init from the Git root, or disable git-sync for this workspace", root, got)
 	}
 	if _, err := git.currentHead(); err != nil {

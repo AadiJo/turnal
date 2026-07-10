@@ -37,6 +37,13 @@ func TestInitCreatesHiddenBareRepo(t *testing.T) {
 	if strings.TrimSpace(output) != "true" {
 		t.Fatalf("is-bare-repository = %q, want true", output)
 	}
+	output, err = runGitNoRepo(root.String(), "--git-dir", repo.GitDir, "config", "--bool", "--get", "core.longpaths")
+	if err != nil {
+		t.Fatalf("read core.longpaths: %v", err)
+	}
+	if strings.TrimSpace(output) != "true" {
+		t.Fatalf("core.longpaths = %q, want true", output)
+	}
 }
 
 func TestOpenUpgradesLegacyMetadataPermissions(t *testing.T) {
