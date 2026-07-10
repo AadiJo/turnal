@@ -204,6 +204,17 @@ func TestStoreDeletionPurgesAndDeniesIdentifier(t *testing.T) {
 	}
 }
 
+func TestStoreCannotCompleteDeletionThatWasNeverStarted(t *testing.T) {
+	store := testStore(t)
+	id, err := telemetry.ParseUUID("167e8e5d-84fc-46bd-a39c-b67d47658f8e")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CompleteDeletion(context.Background(), id, time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)); err == nil {
+		t.Fatal("unstarted deletion was completed")
+	}
+}
+
 func TestStorePurgesOperationalDataAtDocumentedBounds(t *testing.T) {
 	store := testStore(t)
 	start := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)

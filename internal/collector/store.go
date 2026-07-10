@@ -539,16 +539,21 @@ func (store *Store) BeginDeletion(ctx context.Context, id telemetry.UUID, now ti
 }
 
 func (store *Store) CompleteDeletion(ctx context.Context, id telemetry.UUID, now time.Time) error {
+	if !id.Valid() {
+		return errors.New("invalid installation ID")
+	}
 	stamp := now.UTC().Truncate(time.Second).Format(time.RFC3339)
 	tx, err := store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `UPDATE deletion_denylist SET state = 'completed', completed_at = ? WHERE anonymous_id = ?`, stamp, id.String()); err != nil {
+	denylist, err := tx.ExecContext(ctx, `UPDATE deletion_denylist SET state = 'completed', completed_at = ? WHERE anonymous_id = ? AND state = 'pending'`, stamp, id.String())
+	if err := expectOneRow(denylist, err, "complete deletion denylist"); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE deletion_audit SET verified_at = ? WHERE anonymous_id = ?`, stamp, id.String()); err != nil {
+	audit, err := tx.ExecContext(ctx, `UPDATE deletion_audit SET verified_at = ? WHERE anonymous_id = ? AND verified_at IS NULL`, stamp, id.String())
+	if err := expectOneRow(audit, err, "complete deletion audit"); err != nil {
 		return err
 	}
 	return tx.Commit()
