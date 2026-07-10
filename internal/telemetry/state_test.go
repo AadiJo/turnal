@@ -172,6 +172,24 @@ func TestStateSerializationContainsNoEndpointOrWorkspaceFields(t *testing.T) {
 	}
 }
 
+func TestAutomaticFlushWaitUsesLongestActiveDeadline(t *testing.T) {
+	state := State{
+		LastFlushAttemptAt:  "2026-07-10T12:00:00Z",
+		NetworkBackoffUntil: "2026-07-11T12:00:00Z",
+	}
+	now := time.Date(2026, 7, 10, 12, 30, 0, 0, time.UTC)
+	if got := state.AutomaticFlushWait(now); got != 23*time.Hour+30*time.Minute {
+		t.Fatalf("AutomaticFlushWait() = %s", got)
+	}
+	state.NetworkBackoffUntil = ""
+	if got := state.AutomaticFlushWait(now); got != 5*time.Hour+30*time.Minute {
+		t.Fatalf("attempt wait = %s", got)
+	}
+	if got := state.AutomaticFlushWait(now.Add(6 * time.Hour)); got != 0 {
+		t.Fatalf("expired wait = %s", got)
+	}
+}
+
 func testStateStore(t *testing.T) StateStore {
 	t.Helper()
 	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)

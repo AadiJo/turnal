@@ -68,6 +68,10 @@ func TestFlushAcceptedRemovesBatchAndMarksSuccess(t *testing.T) {
 	if state.LastFlushSuccessAt == "" || state.LastFlushAttemptAt != state.LastFlushSuccessAt {
 		t.Fatalf("flush timestamps = %#v", state)
 	}
+	result, err = flusher.Flush(context.Background(), false)
+	if err != nil || result.Status != FlushThrottled || transport.calls != 1 {
+		t.Fatalf("automatic throttle = %#v, %v, calls=%d", result, err, transport.calls)
+	}
 }
 
 func TestFlushRetryAndRejectionLifecycle(t *testing.T) {

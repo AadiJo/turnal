@@ -214,6 +214,22 @@ func (state State) NetworkBackoff(at time.Time) time.Duration {
 	return until.Sub(at.UTC())
 }
 
+func (state State) AutomaticFlushWait(at time.Time) time.Duration {
+	wait := state.NetworkBackoff(at)
+	if state.LastFlushAttemptAt == "" {
+		return wait
+	}
+	attempt, err := time.Parse(time.RFC3339, state.LastFlushAttemptAt)
+	if err != nil {
+		return wait
+	}
+	until := attempt.Add(FlushInterval)
+	if remaining := until.Sub(at.UTC()); remaining > wait {
+		return remaining
+	}
+	return wait
+}
+
 func (store StateStore) withLock(action func() error) error {
 	if strings.TrimSpace(store.Path) == "" {
 		return errors.New("telemetry state path is required")

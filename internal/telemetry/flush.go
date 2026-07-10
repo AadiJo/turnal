@@ -59,8 +59,10 @@ func (flusher Flusher) Flush(ctx context.Context, explicit bool) (FlushResult, e
 	if backoff := state.NetworkBackoff(now); backoff > 0 {
 		return FlushResult{Status: FlushThrottled, Disposition: SendKillSwitch, RetryAfter: backoff}, nil
 	}
-	if !explicit && recentlyAttempted(state.LastFlushAttemptAt, now) {
-		return FlushResult{Status: FlushThrottled}, nil
+	if !explicit {
+		if wait := state.AutomaticFlushWait(now); wait > 0 {
+			return FlushResult{Status: FlushThrottled, RetryAfter: wait}, nil
+		}
 	}
 	batches, err := flusher.Aggregates.Rotate(RecordOptions{State: state, Build: flusher.Build, LookupEnv: flusher.LookupEnv})
 	if err != nil {
@@ -120,17 +122,6 @@ func (flusher Flusher) Flush(ctx context.Context, explicit bool) (FlushResult, e
 		return result, sendErr
 	}
 	return result, sendErr
-}
-
-func recentlyAttempted(value string, now time.Time) bool {
-	if value == "" {
-		return false
-	}
-	attempt, err := time.Parse(time.RFC3339, value)
-	if err != nil {
-		return false
-	}
-	return now.UTC().Before(attempt.Add(FlushInterval))
 }
 
 func (flusher Flusher) now() time.Time {
