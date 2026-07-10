@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +13,22 @@ import (
 
 	"github.com/AadiJo/turnal/internal/telemetry"
 )
+
+func TestEphemeralRateLimiterHasBoundedCardinality(t *testing.T) {
+	limiter := newEphemeralLimiter(1, time.Minute)
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	for index := 0; index < maxLimiterWindows; index++ {
+		if !limiter.Allow(fmt.Sprintf("192.0.2.%d", index), now) {
+			t.Fatalf("key %d rejected before cardinality bound", index)
+		}
+	}
+	if limiter.Allow("new-client", now) || len(limiter.windows) != maxLimiterWindows {
+		t.Fatalf("limiter cardinality = %d", len(limiter.windows))
+	}
+	if !limiter.Allow("new-client", now.Add(time.Minute)) || len(limiter.windows) > maxLimiterWindows {
+		t.Fatalf("expired limiter windows were not reclaimed: %d", len(limiter.windows))
+	}
+}
 
 func TestHandlerDurablyAcceptsAndDeduplicates(t *testing.T) {
 	store := testStore(t)

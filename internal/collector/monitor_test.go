@@ -27,12 +27,10 @@ func TestAlertEvaluatorUsesPublishedThresholds(t *testing.T) {
 	alerts := EvaluateAlerts(AlertInput{
 		Now: now,
 		Monitor: MonitorSnapshot{
-			Requests:         100,
-			ServerErrors:     2,
-			SchemaRejected:   3,
 			BatchConflicts:   1,
 			LastCanaryFailed: true,
 		},
+		RateMonitor:           MonitorSnapshot{Requests: 100, ServerErrors: 2, SchemaRejected: 3},
 		Outbox:                OutboxStats{OldestPending: now.Add(-16 * time.Minute)},
 		DailyAccepted:         51,
 		PreviousDailyBaseline: 10,
@@ -53,29 +51,23 @@ func TestAlertEvaluatorUsesPublishedThresholds(t *testing.T) {
 	}
 }
 
-func TestDailyAcceptanceWindowFeedsPriorCompleteUTCDay(t *testing.T) {
-	var window DailyAcceptanceWindow
-	dayOne := time.Date(2026, 7, 10, 23, 59, 0, 0, time.UTC)
-	current, previous := window.Observe(dayOne, 10)
-	if current != 10 || previous != 0 {
-		t.Fatalf("day one = %d, %d", current, previous)
+func TestOperationalRateWindowUsesOnlyRollingFifteenMinutes(t *testing.T) {
+	var window OperationalRateWindow
+	start := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	first := window.Observe(start, MonitorSnapshot{Requests: 60, ServerErrors: 2, SchemaRejected: 1})
+	if first.Requests != 60 || first.ServerErrors != 2 {
+		t.Fatalf("first rate window = %#v", first)
 	}
-	current, previous = window.Observe(dayOne.Add(2*time.Minute), 12)
-	if current != 2 || previous != 10 {
-		t.Fatalf("day two = %d, %d", current, previous)
+	second := window.Observe(start.Add(10*time.Minute), MonitorSnapshot{Requests: 120, ServerErrors: 2, SchemaRejected: 4})
+	if second.Requests != 120 || second.ServerErrors != 2 || second.SchemaRejected != 4 {
+		t.Fatalf("combined rate window = %#v", second)
 	}
-	current, previous = window.Observe(dayOne.Add(48*time.Hour), 20)
-	if current != 8 || previous != 2 {
-		t.Fatalf("day three = %d, %d", current, previous)
+	third := window.Observe(start.Add(16*time.Minute), MonitorSnapshot{Requests: 180, ServerErrors: 2, SchemaRejected: 4})
+	if third.Requests != 120 || third.ServerErrors != 0 || third.SchemaRejected != 3 {
+		t.Fatalf("expired rate window = %#v", third)
 	}
-}
-
-func TestDailyAcceptanceWindowHandlesCounterReset(t *testing.T) {
-	var window DailyAcceptanceWindow
-	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
-	window.Observe(now, 20)
-	current, previous := window.Observe(now.Add(time.Minute), 3)
-	if current != 3 || previous != 0 {
-		t.Fatalf("reset window = %d, %d", current, previous)
+	reset := window.Observe(start.Add(17*time.Minute), MonitorSnapshot{Requests: 3, ServerErrors: 1})
+	if reset.Requests != 123 || reset.ServerErrors != 1 {
+		t.Fatalf("counter reset window = %#v", reset)
 	}
 }

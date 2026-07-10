@@ -146,23 +146,27 @@ func runAlerts(ctx context.Context, store *collector.Store, monitor *collector.M
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	lastLogged := make(map[string]time.Time)
-	var dailyWindow collector.DailyAcceptanceWindow
+	var rateWindow collector.OperationalRateWindow
 	for {
 		now := time.Now().UTC()
 		stats, err := store.Stats(ctx)
 		if err == nil {
 			snapshot := monitor.Snapshot()
-			dailyAccepted, previousDailyBaseline := dailyWindow.Observe(now, snapshot.AcceptedBatches)
-			for _, alert := range collector.EvaluateAlerts(collector.AlertInput{
-				Now:                   now,
-				Monitor:               snapshot,
-				Outbox:                stats,
-				DailyAccepted:         dailyAccepted,
-				PreviousDailyBaseline: previousDailyBaseline,
-			}) {
-				if previous := lastLogged[alert.Code]; previous.IsZero() || now.Sub(previous) >= 15*time.Minute {
-					logger.Printf("alert code=%s severity=%s", alert.Code, alert.Severity)
-					lastLogged[alert.Code] = now
+			dailyAccepted, currentErr := store.AcceptanceVolume(ctx, now)
+			previousDailyBaseline, previousErr := store.AcceptanceVolume(ctx, now.AddDate(0, 0, -1))
+			if currentErr == nil && previousErr == nil {
+				for _, alert := range collector.EvaluateAlerts(collector.AlertInput{
+					Now:                   now,
+					Monitor:               snapshot,
+					RateMonitor:           rateWindow.Observe(now, snapshot),
+					Outbox:                stats,
+					DailyAccepted:         dailyAccepted,
+					PreviousDailyBaseline: previousDailyBaseline,
+				}) {
+					if previous := lastLogged[alert.Code]; previous.IsZero() || now.Sub(previous) >= 15*time.Minute {
+						logger.Printf("alert code=%s severity=%s", alert.Code, alert.Severity)
+						lastLogged[alert.Code] = now
+					}
 				}
 			}
 		}

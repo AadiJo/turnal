@@ -35,6 +35,27 @@ func TestStoreAcceptanceIsAtomicAndReplaySafe(t *testing.T) {
 	}
 }
 
+func TestStoreAcceptanceVolumeCountsUniqueDurableBatchesByUTCDay(t *testing.T) {
+	store := testStore(t)
+	day := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	first := testAggregate(t, "2026-07-10", telemetry.MetricInstallationActive, 1)
+	second := testAggregate(t, "2026-07-10", telemetry.MetricInstallationActive, 1)
+	if _, err := store.Accept(context.Background(), []telemetry.DailyAggregate{first}, AcceptOptions{Now: day}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Accept(context.Background(), []telemetry.DailyAggregate{first, second}, AcceptOptions{Now: day.Add(8 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	volume, err := store.AcceptanceVolume(context.Background(), day.UTC())
+	if err != nil || volume != 2 {
+		t.Fatalf("acceptance volume = %d, %v", volume, err)
+	}
+	previous, err := store.AcceptanceVolume(context.Background(), day.AddDate(0, 0, -1))
+	if err != nil || previous != 0 {
+		t.Fatalf("previous acceptance volume = %d, %v", previous, err)
+	}
+}
+
 func TestStoreCrashPointsRollbackOrReplayWithoutInflation(t *testing.T) {
 	store := testStore(t)
 	batch := testAggregate(t, "2026-07-10", telemetry.MetricTurnRecordedCodex, 3)

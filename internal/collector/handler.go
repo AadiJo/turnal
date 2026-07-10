@@ -18,6 +18,7 @@ import (
 const (
 	DefaultRateLimitPerMinute = 120
 	maxCollectorResponseBytes = 1024
+	maxLimiterWindows         = 4096
 )
 
 type HandlerConfig struct {
@@ -282,18 +283,21 @@ func newEphemeralLimiter(limit int, duration time.Duration) *ephemeralLimiter {
 func (limiter *ephemeralLimiter) Allow(key string, now time.Time) bool {
 	limiter.mu.Lock()
 	defer limiter.mu.Unlock()
-	window := limiter.windows[key]
-	if window.started.IsZero() || !now.Before(window.started.Add(limiter.duration)) {
-		window = limiterWindow{started: now}
-	}
-	window.count++
-	limiter.windows[key] = window
-	if len(limiter.windows) > 4096 {
+	window, exists := limiter.windows[key]
+	if !exists && len(limiter.windows) >= maxLimiterWindows {
 		for existing, candidate := range limiter.windows {
 			if !now.Before(candidate.started.Add(limiter.duration)) {
 				delete(limiter.windows, existing)
 			}
 		}
+		if len(limiter.windows) >= maxLimiterWindows {
+			return false
+		}
 	}
+	if window.started.IsZero() || !now.Before(window.started.Add(limiter.duration)) {
+		window = limiterWindow{started: now}
+	}
+	window.count++
+	limiter.windows[key] = window
 	return window.count <= limiter.limit
 }

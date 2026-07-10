@@ -483,6 +483,18 @@ func (store *Store) Stats(ctx context.Context) (OutboxStats, error) {
 	return stats, nil
 }
 
+func (store *Store) AcceptanceVolume(ctx context.Context, day time.Time) (uint64, error) {
+	day = time.Date(day.UTC().Year(), day.UTC().Month(), day.UTC().Day(), 0, 0, 0, 0, time.UTC)
+	var count uint64
+	if err := store.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM outbox WHERE accepted_at >= ? AND accepted_at < ?`,
+		day.Format(time.RFC3339), day.AddDate(0, 0, 1).Format(time.RFC3339),
+	).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count daily accepted batches: %w", err)
+	}
+	return count, nil
+}
+
 func (store *Store) BeginDeletion(ctx context.Context, id telemetry.UUID, now time.Time) (DeletionResult, error) {
 	if !id.Valid() {
 		return DeletionResult{}, errors.New("invalid installation ID")

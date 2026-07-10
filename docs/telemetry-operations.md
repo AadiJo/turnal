@@ -8,8 +8,8 @@ or raw errors. External proxies must be configured to meet the same boundary.
 
 | Code | Trigger | First response |
 | --- | --- | --- |
-| `collector_5xx_rate` | More than 1% of at least 100 requests fail server-side. | Enable the 410 kill switch if durable acceptance is at risk; inspect storage health without dumping payloads. |
-| `schema_rejection_rate` | More than 2% of at least 100 requests are schema-rejected; counters are split by released version when decodable. | Stop rollout for the affected version and compare its golden fixture. |
+| `collector_5xx_rate` | More than 1% of at least 100 requests in the rolling fifteen-minute window fail server-side. | Enable the 410 kill switch if durable acceptance is at risk; inspect storage health without dumping payloads. |
+| `schema_rejection_rate` | More than 2% of at least 100 requests in the rolling fifteen-minute window are schema-rejected; counters are split by released version when decodable. | Stop rollout for the affected version and compare its golden fixture. |
 | `batch_id_conflict` | A known batch ID arrives with different canonical content. | Stop rollout and investigate client/storage integrity. No conflicting payload is committed. |
 | `outbox_delivery_slo` | Oldest accepted/retryable batch is older than 15 minutes. | Pause rollout, inspect PostHog and worker health, and protect outbox capacity. |
 | `canary_reconciliation` | A synthetic canary is absent, duplicated, rejected, or cannot be queried. | Treat downstream visibility as unknown; do not claim delivery health. |
