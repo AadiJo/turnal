@@ -1,0 +1,1 @@
+{"protocol":"turnal-adapter","version":1,"id":"normalize-1","method":"normalize","hook":"UserPromptSubmit","payload":{"session_id":"fixture-session","cwd":"/workspace","prompt":"Update the fixture"}}

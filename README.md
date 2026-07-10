@@ -30,7 +30,7 @@ Turnal should be piloted before company-wide adoption. Pin a version and validat
 
 - Git available on `PATH`. Turnal uses Git plumbing for its private checkpoint store.
 - Node.js 18 or newer when installing through npm.
-- Claude Code or Codex for automatic agent capture. Manual checkpoints are also available.
+- Claude Code, Codex, OpenCode, Gemini CLI, or Copilot CLI for automatic agent capture. Manual checkpoints are also available.
 
 Turnal does not initialize a Git repository for your project. It works in both Git and non-Git directories.
 
@@ -58,6 +58,8 @@ turnal status
 ```
 
 `turnal init` creates a `.turnal/` store, adds `.turnal/` to `.gitignore`, and configures hooks according to the `--agent` selection. The default `auto` mode detects Claude Code and Codex, falling back to configuring both when neither is discoverable. Initialization does not change your existing `.git/`.
+
+OpenCode, Gemini CLI, and Copilot CLI use the versioned external adapter SDK. Release packages ship their adapter executables; verify discovery with `turnal adapter list` and `turnal adapter doctor`, then follow the [provider hook examples](docs/adapters.md#included-adapters).
 
 Now use your agent normally. After it has completed a turn:
 

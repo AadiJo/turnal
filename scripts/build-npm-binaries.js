@@ -20,8 +20,15 @@ const targets = [
   { nodePlatform: 'win32', nodeArch: 'arm64', goos: 'windows', goarch: 'arm64' },
 ];
 
-function exeName(target) {
-  return target.nodePlatform === 'win32' ? 'turnal.exe' : 'turnal';
+const commands = [
+  'turnal',
+  'turnal-adapter-opencode',
+  'turnal-adapter-gemini-cli',
+  'turnal-adapter-copilot-cli',
+];
+
+function exeName(target, command) {
+  return target.nodePlatform === 'win32' ? `${command}.exe` : command;
 }
 
 function targetKey(target) {
@@ -45,42 +52,46 @@ function ldflags() {
 
 function buildTarget(target) {
   const key = targetKey(target);
-  const outputPath = path.join(outputRoot, key, exeName(target));
-  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  for (const command of commands) {
+    const outputPath = path.join(outputRoot, key, exeName(target, command));
+    fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
-  console.log(`building ${key}`);
-  const result = spawnSync('go', [
-    'build',
-    '-trimpath',
-    '-buildvcs=false',
-    '-ldflags',
-    ldflags(),
-    '-o',
-    outputPath,
-    './cmd/turnal',
-  ], {
-    cwd: packageRoot,
-    stdio: 'inherit',
-    env: {
-      ...process.env,
-      CGO_ENABLED: '0',
-      GOOS: target.goos,
-      GOARCH: target.goarch,
-    },
-  });
-
-  if (result.error) {
-    if (result.error.code === 'ENOENT') {
-      throw new Error('go is required to build npm release binaries');
+    console.log(`building ${command} for ${key}`);
+    const args = [
+      'build',
+      '-trimpath',
+      '-buildvcs=false',
+    ];
+    if (command === 'turnal') {
+      args.push('-ldflags', ldflags());
+    } else {
+      args.push('-ldflags', '-s -w');
     }
-    throw result.error;
-  }
-  if (result.status !== 0) {
-    process.exit(result.status || 1);
-  }
+    args.push('-o', outputPath, `./cmd/${command}`);
+    const result = spawnSync('go', args, {
+      cwd: packageRoot,
+      stdio: 'inherit',
+      env: {
+        ...process.env,
+        CGO_ENABLED: '0',
+        GOOS: target.goos,
+        GOARCH: target.goarch,
+      },
+    });
 
-  if (target.nodePlatform !== 'win32') {
-    fs.chmodSync(outputPath, 0o755);
+    if (result.error) {
+      if (result.error.code === 'ENOENT') {
+        throw new Error('go is required to build npm release binaries');
+      }
+      throw result.error;
+    }
+    if (result.status !== 0) {
+      process.exit(result.status || 1);
+    }
+
+    if (target.nodePlatform !== 'win32') {
+      fs.chmodSync(outputPath, 0o755);
+    }
   }
 }
 

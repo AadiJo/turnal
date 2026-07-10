@@ -138,6 +138,103 @@ func RecordHookPayload(adapter primitives.AdapterName, hookName string, raw []by
 	return appendRawHookRecord(repo.MetadataDir, record)
 }
 
+// RecordExternalHookPayload persists provider input after an external adapter
+// supplies the routing fields. External adapters never receive repository or
+// event-log handles and therefore cannot write durable Turnal state.
+func RecordExternalHookPayload(adapter primitives.AdapterName, hookName string, raw []byte, cwd string, sessionID primitives.SessionID) (string, error) {
+	if len(raw) > MaxHookPayloadBytes {
+		return "", fmt.Errorf("hook payload is %d bytes; maximum is %d bytes", len(raw), MaxHookPayloadBytes)
+	}
+	parsedAdapter, err := primitives.ParseAdapterName(adapter.String())
+	if err != nil {
+		return "", err
+	}
+	parsedSession, err := primitives.ParseSessionID(sessionID.String())
+	if err != nil {
+		return "", err
+	}
+	if hookName == "" {
+		return "", fmt.Errorf("hook name is required")
+	}
+	if !filepath.IsAbs(cwd) {
+		return "", fmt.Errorf("external adapter cwd must be absolute")
+	}
+	root, err := checkpoint.FindRoot(cwd)
+	if err != nil {
+		return "", nil
+	}
+	repo, err := checkpoint.Open(root)
+	if err != nil {
+		return "", nil
+	}
+	effective, _, err := agentconfig.ResolvePath(filepath.Join(repo.MetadataDir, "config.toml"), agentconfig.Overrides{})
+	if err != nil {
+		return "", err
+	}
+	storedRaw := redactExternalHookPayload(raw, effective.Secrets)
+	record := RawHookRecord{
+		Version:    2,
+		SessionID:  parsedSession.String(),
+		Adapter:    parsedAdapter,
+		Hook:       hookName,
+		ReceivedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		CWD:        cwd,
+	}
+	if json.Valid(storedRaw) {
+		record.Payload = append(json.RawMessage(nil), storedRaw...)
+	} else {
+		record.Raw = string(storedRaw)
+		record.Error = "malformed JSON payload"
+	}
+	return appendRawHookRecord(repo.MetadataDir, record)
+}
+
+func redactExternalHookPayload(raw []byte, secrets agentconfig.Secrets) []byte {
+	if secrets.StorePrompts && secrets.StoreToolIO || !json.Valid(raw) {
+		return raw
+	}
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return raw
+	}
+	redactExternalValue(value, secrets)
+	redacted, err := json.Marshal(value)
+	if err != nil {
+		return raw
+	}
+	return redacted
+}
+
+func redactExternalValue(value any, secrets agentconfig.Secrets) {
+	object, ok := value.(map[string]any)
+	if !ok {
+		if array, ok := value.([]any); ok {
+			for _, item := range array {
+				redactExternalValue(item, secrets)
+			}
+		}
+		return
+	}
+	for key, child := range object {
+		normalized := strings.ToLower(strings.ReplaceAll(key, "_", ""))
+		if !secrets.StorePrompts {
+			switch normalized {
+			case "prompt", "initialprompt", "promptresponse", "lastassistantmessage":
+				object[key] = redactedText("", false)
+				continue
+			}
+		}
+		if !secrets.StoreToolIO {
+			switch normalized {
+			case "toolinput", "toolargs", "toolresponse", "toolresult":
+				object[key] = map[string]any{"redacted": true, "policy": "turnal.secrets"}
+				continue
+			}
+		}
+		redactExternalValue(child, secrets)
+	}
+}
+
 func appendRawHookRecord(metadataDir string, record RawHookRecord) (string, error) {
 	ref := RawHookRef{Version: 1, Adapter: record.Adapter}
 	dir := filepath.Join(metadataDir, "log", "adapter")

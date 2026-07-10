@@ -12,6 +12,7 @@ import (
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/AadiJo/turnal/internal/turns"
+	adaptersdk "github.com/AadiJo/turnal/sdk/adapter"
 )
 
 type checkpointEventPayload struct {
@@ -21,6 +22,49 @@ type checkpointEventPayload struct {
 	Ref           string `json:"ref"`
 	EventSeqStart uint64 `json:"event_seq_start"`
 	EventSeqEnd   uint64 `json:"event_seq_end"`
+}
+
+func TestHandleNormalizedEventsKeepsDurabilityInCore(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+	writeFile(t, root, "app.txt", "before\n")
+
+	rawPrompt := []byte(`{"sessionId":"external-session","cwd":"` + root.String() + `","prompt":"change app.txt"}`)
+	err = HandleNormalizedEvents("gemini-cli", "BeforeAgent", rawPrompt, []adaptersdk.Event{{
+		Type: adaptersdk.EventPromptUser, SessionID: "external-session", CWD: root.String(), Text: "change app.txt",
+	}})
+	if err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+	writeFile(t, root, "app.txt", "after\n")
+	rawFinish := []byte(`{"session_id":"external-session","cwd":"` + root.String() + `","prompt_response":"done"}`)
+	err = HandleNormalizedEvents("gemini-cli", "AfterAgent", rawFinish, []adaptersdk.Event{{
+		Type: adaptersdk.EventAssistantMessage, SessionID: "external-session", CWD: root.String(), Text: "done",
+	}})
+	if err != nil {
+		t.Fatalf("assistant: %v", err)
+	}
+
+	sessionID := sessionID(t, "external-session")
+	events := readEvents(t, repo, sessionID)
+	if countEvents(events, primitives.EventTypePromptUser) != 1 || countEvents(events, primitives.EventTypeAssistantMessage) != 1 || countEvents(events, primitives.EventTypeCheckpoint) != 2 {
+		t.Fatalf("unexpected events: %#v", eventTypes(events))
+	}
+	for _, event := range events {
+		if event.Adapter != "gemini-cli" || event.RawRef == "" {
+			t.Fatalf("event did not retain external adapter provenance: %#v", event)
+		}
+	}
+	turnID, _ := primitives.NewTurnID(1)
+	diff, err := repo.DiffTurn(sessionID, turnID)
+	if err != nil || !containsAll(string(diff), "-before", "+after") {
+		t.Fatalf("DiffTurn = %q, err=%v", diff, err)
+	}
 }
 
 func TestHandleClaudeHookPayloadCreatesAutomaticTurn(t *testing.T) {

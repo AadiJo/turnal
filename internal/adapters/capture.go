@@ -16,6 +16,7 @@ import (
 	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/AadiJo/turnal/internal/turnevents"
 	"github.com/AadiJo/turnal/internal/turns"
+	adaptersdk "github.com/AadiJo/turnal/sdk/adapter"
 )
 
 type hookPayload struct {
@@ -138,6 +139,134 @@ func HandleHookPayload(adapter primitives.AdapterName, hookName string, raw []by
 
 func ProcessHookPayload(adapter primitives.AdapterName, hookName, rawRef string, raw []byte) error {
 	return processHookPayload(adapter, hookName, rawRef, raw, false)
+}
+
+// HandleNormalizedEvents applies provider-neutral output from an external
+// adapter. Core Turnal still owns raw retention, redaction, serialization,
+// durable events, and checkpoints.
+func HandleNormalizedEvents(adapter primitives.AdapterName, hookName string, raw []byte, normalized []adaptersdk.Event) error {
+	parsedAdapter, err := primitives.ParseAdapterName(adapter.String())
+	if err != nil {
+		return err
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	for _, event := range normalized {
+		if err := adaptersdk.ValidateEvent(event); err != nil {
+			return fmt.Errorf("external adapter event: %w", err)
+		}
+	}
+	sessionID, err := primitives.ParseSessionID(normalized[0].SessionID)
+	if err != nil {
+		return err
+	}
+	cwd := normalized[0].CWD
+	for _, event := range normalized[1:] {
+		eventSession, parseErr := primitives.ParseSessionID(event.SessionID)
+		if parseErr != nil || eventSession != sessionID || event.CWD != cwd {
+			return fmt.Errorf("external adapter batch must use one session_id and cwd")
+		}
+	}
+	root, err := checkpoint.FindRoot(cwd)
+	if err != nil {
+		return nil
+	}
+	repo, err := checkpoint.Open(root)
+	if err != nil {
+		return nil
+	}
+	unlock, err := AcquireSessionLock(repo, sessionID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	rawRef, err := RecordExternalHookPayload(parsedAdapter, hookName, raw, cwd, sessionID)
+	if err != nil || rawRef == "" {
+		return err
+	}
+	effective, _, err := agentconfig.ResolvePath(filepath.Join(repo.MetadataDir, "config.toml"), agentconfig.Overrides{})
+	if err != nil {
+		return err
+	}
+	log := repo.EventLog()
+	if err := turnevents.RecoverCheckpointJournals(log, repo); err != nil {
+		return err
+	}
+	manager := turns.NewManager(repo)
+	for index, event := range normalized {
+		if err := processNormalizedEvent(log, manager, parsedAdapter, rawRef, raw, index, sessionID, event, effective.Secrets); err != nil {
+			_ = appendErrorEvent(log, parsedAdapter, sessionID, rawRef, string(event.Type), err)
+			return err
+		}
+	}
+	return nil
+}
+
+func processNormalizedEvent(log eventlog.Log, manager turns.Manager, adapter primitives.AdapterName, rawRef string, raw []byte, index int, sessionID primitives.SessionID, event adaptersdk.Event, secrets agentconfig.Secrets) error {
+	payload := hookPayload{
+		SessionID:            event.SessionID,
+		TurnID:               event.ProviderTurnID,
+		TranscriptPath:       event.TranscriptPath,
+		CWD:                  event.CWD,
+		Model:                event.Model,
+		PermissionMode:       event.PermissionMode,
+		Prompt:               event.Text,
+		LastAssistantMessage: event.Text,
+		ToolName:             event.ToolName,
+		ToolInput:            event.Input,
+		ToolUseID:            event.ToolUseID,
+		ToolResponse:         event.Output,
+	}
+	sourceID := event.SourceID
+	if sourceID == "" {
+		sourceID = sourceIDFor(adapter, fmt.Sprintf("%s:%d", event.Type, index), event.SessionID, event.ProviderTurnID, event.ToolUseID, raw)
+	} else {
+		sourceID = sourceIDFor(adapter, string(event.Type), event.SessionID, event.ProviderTurnID, event.ToolUseID, []byte(sourceID))
+	}
+	if seen, err := log.ContainsSourceID(sessionID, sourceID); err != nil {
+		return err
+	} else if seen {
+		return nil
+	}
+	switch event.Type {
+	case adaptersdk.EventSessionStart:
+		return appendSessionStart(log, adapter, sessionID, rawRef, sourceID, payload)
+	case adaptersdk.EventPromptUser:
+		if err := ensureSessionStarted(log, adapter, sessionID, rawRef, payload); err != nil {
+			return err
+		}
+		turnID, err := startPromptTurn(log, manager, adapter, sessionID, rawRef, payload)
+		if err != nil {
+			return err
+		}
+		return appendPrompt(log, adapter, sessionID, turnID, rawRef, sourceID, payload, secrets)
+	case adaptersdk.EventToolCall, adaptersdk.EventToolResult:
+		if err := ensureSessionStarted(log, adapter, sessionID, rawRef, payload); err != nil {
+			return err
+		}
+		turnID, err := ensureActiveTurn(log, manager, adapter, sessionID, rawRef)
+		if err != nil {
+			return err
+		}
+		if event.Type == adaptersdk.EventToolCall {
+			return appendToolCall(log, adapter, sessionID, turnID, rawRef, sourceID, payload, secrets)
+		}
+		return appendToolResult(log, adapter, sessionID, turnID, rawRef, sourceID, payload, secrets)
+	case adaptersdk.EventAssistantMessage, adaptersdk.EventTurnFinish:
+		active, ok, err := manager.Active(sessionID)
+		if err != nil || !ok {
+			return err
+		}
+		if event.Type == adaptersdk.EventAssistantMessage {
+			if err := appendAssistant(log, adapter, sessionID, active.TurnID, rawRef, sourceID, payload, secrets); err != nil {
+				return err
+			}
+		}
+		return finishTurn(log, manager, adapter, sessionID, active.TurnID, rawRef)
+	default:
+		return fmt.Errorf("unsupported normalized event type %q", event.Type)
+	}
 }
 
 func processHookPayload(adapter primitives.AdapterName, hookName, rawRef string, raw []byte, sessionLockHeld bool) error {
@@ -450,48 +579,44 @@ func appendAssistant(log eventlog.Log, adapter primitives.AdapterName, sessionID
 }
 
 func appendToolUse(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, rawRef, sourceID string, payload hookPayload, secrets agentconfig.Secrets) error {
-	callSourceID := sourceID + ":call"
-	if seen, err := log.ContainsSourceID(sessionID, callSourceID); err != nil {
+	if err := appendToolCall(log, adapter, sessionID, turnID, rawRef, sourceID+":call", payload, secrets); err != nil {
 		return err
-	} else if !seen {
-		if err := appendPayloadEvent(log, eventlog.AppendInput{
-			SessionID: sessionID,
-			TurnID:    &turnID,
-			Type:      primitives.EventTypeToolCall,
-			Adapter:   adapter,
-			SourceID:  callSourceID,
-			RawRef:    rawRef,
-			Payload: mustJSON(toolCallPayload{
-				ToolName:       payload.ToolName,
-				ToolUseID:      payload.ToolUseID,
-				ProviderTurnID: payload.TurnID,
-				Input:          redactedJSON(payload.ToolInput, secrets.StoreToolIO),
-			}),
-		}); err != nil {
-			return err
-		}
 	}
+	return appendToolResult(log, adapter, sessionID, turnID, rawRef, sourceID+":result", payload, secrets)
+}
 
-	resultSourceID := sourceID + ":result"
-	if seen, err := log.ContainsSourceID(sessionID, resultSourceID); err != nil {
-		return err
-	} else if !seen {
-		return appendPayloadEvent(log, eventlog.AppendInput{
-			SessionID: sessionID,
-			TurnID:    &turnID,
-			Type:      primitives.EventTypeToolResult,
-			Adapter:   adapter,
-			SourceID:  resultSourceID,
-			RawRef:    rawRef,
-			Payload: mustJSON(toolResultPayload{
-				ToolName:       payload.ToolName,
-				ToolUseID:      payload.ToolUseID,
-				ProviderTurnID: payload.TurnID,
-				Output:         redactedJSON(payload.ToolResponse, secrets.StoreToolIO),
-			}),
-		})
-	}
-	return nil
+func appendToolCall(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, rawRef, sourceID string, payload hookPayload, secrets agentconfig.Secrets) error {
+	return appendPayloadEvent(log, eventlog.AppendInput{
+		SessionID: sessionID,
+		TurnID:    &turnID,
+		Type:      primitives.EventTypeToolCall,
+		Adapter:   adapter,
+		SourceID:  sourceID,
+		RawRef:    rawRef,
+		Payload: mustJSON(toolCallPayload{
+			ToolName:       payload.ToolName,
+			ToolUseID:      payload.ToolUseID,
+			ProviderTurnID: payload.TurnID,
+			Input:          redactedJSON(payload.ToolInput, secrets.StoreToolIO),
+		}),
+	})
+}
+
+func appendToolResult(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, rawRef, sourceID string, payload hookPayload, secrets agentconfig.Secrets) error {
+	return appendPayloadEvent(log, eventlog.AppendInput{
+		SessionID: sessionID,
+		TurnID:    &turnID,
+		Type:      primitives.EventTypeToolResult,
+		Adapter:   adapter,
+		SourceID:  sourceID,
+		RawRef:    rawRef,
+		Payload: mustJSON(toolResultPayload{
+			ToolName:       payload.ToolName,
+			ToolUseID:      payload.ToolUseID,
+			ProviderTurnID: payload.TurnID,
+			Output:         redactedJSON(payload.ToolResponse, secrets.StoreToolIO),
+		}),
+	})
 }
 
 func appendAdapterRawEvent(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, rawRef, sourceID, hookName string) error {

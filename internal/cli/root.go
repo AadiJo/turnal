@@ -50,6 +50,7 @@ func NewRootCmd() *cobra.Command {
 	rootCmd.AddCommand(upgradeCmd())
 	rootCmd.AddCommand(claudeHookCmd())
 	rootCmd.AddCommand(codexHookCmd())
+	rootCmd.AddCommand(adapterCmd())
 	silenceSubcommandErrors(rootCmd)
 
 	return rootCmd
