@@ -195,6 +195,7 @@ func TestRestorePreservesTrackedDeniedStagedAndWorkingContent(t *testing.T) {
 	runGit(t, root.String(), "init", "-q")
 	runGit(t, root.String(), "config", "user.email", "turnal@example.test")
 	runGit(t, root.String(), "config", "user.name", "turnal")
+	runGit(t, root.String(), "config", "core.autocrlf", "false")
 	writeFile(t, root.String(), "README.md", "base\n")
 	writeFile(t, root.String(), ".env", "BASE=committed\n")
 	runGit(t, root.String(), "add", "README.md", ".env")

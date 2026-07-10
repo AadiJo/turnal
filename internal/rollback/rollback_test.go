@@ -621,6 +621,7 @@ func TestRunWorkspaceGitRestoresCapturedDirtyState(t *testing.T) {
 	repo := bootstrapped.Repo
 	runWorkspaceGit(t, root, "config", "user.email", "turnal@example.test")
 	runWorkspaceGit(t, root, "config", "user.name", "turnal")
+	runWorkspaceGit(t, root, "config", "core.autocrlf", "false")
 
 	writeFile(t, root, "tracked.txt", "base\n")
 	runWorkspaceGit(t, root, "add", ".gitignore", "tracked.txt")

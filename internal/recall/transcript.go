@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/fsidentity"
 	"github.com/AadiJo/turnal/internal/primitives"
 )
 
@@ -202,21 +203,12 @@ func cleanAbsoluteRoot(root string) (string, error) {
 }
 
 func pathWithinRoot(path, root string) bool {
-	cleanedPath := filepath.Clean(path)
-	cleanedRoot := filepath.Clean(root)
-	if cleanedPath == cleanedRoot {
-		return true
-	}
-	rel, err := filepath.Rel(cleanedRoot, cleanedPath)
-	if err != nil {
-		return false
-	}
-	return rel != "." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".." && !filepath.IsAbs(rel)
+	return fsidentity.Within(path, root)
 }
 
 func pathHasSegment(path string, segment string) bool {
 	for _, part := range strings.Split(filepath.Clean(path), string(filepath.Separator)) {
-		if part == segment {
+		if strings.EqualFold(part, segment) {
 			return true
 		}
 	}

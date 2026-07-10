@@ -13,6 +13,7 @@ import (
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/fsidentity"
 	queryindex "github.com/AadiJo/turnal/internal/index"
 	"github.com/AadiJo/turnal/internal/primitives"
 )
@@ -619,13 +620,5 @@ func fileDigest(path string) (string, bool, error) {
 }
 
 func samePath(left, right string) bool {
-	leftEval, leftErr := filepath.EvalSymlinks(left)
-	rightEval, rightErr := filepath.EvalSymlinks(right)
-	if leftErr == nil {
-		left = leftEval
-	}
-	if rightErr == nil {
-		right = rightEval
-	}
-	return filepath.Clean(left) == filepath.Clean(right)
+	return fsidentity.Same(left, right)
 }

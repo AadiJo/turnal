@@ -63,12 +63,14 @@ func Run(start string, opts Options) (Result, error) {
 			}
 			result.HookResults = hookResults
 		}
-		if err := os.RemoveAll(metadataDir); err != nil {
-			return fmt.Errorf("remove metadata dir %s: %w", metadataDir, err)
-		}
 		return nil
 	}); err != nil {
 		return Result{}, err
+	}
+	// Windows does not permit deleting the lock file while its handle is open.
+	// Release the workspace lock before removing the metadata tree.
+	if err := os.RemoveAll(metadataDir); err != nil {
+		return Result{}, fmt.Errorf("remove metadata dir %s: %w", metadataDir, err)
 	}
 
 	return result, nil
