@@ -86,7 +86,7 @@ func executeRoot(rootCmd *cobra.Command) int {
 		}
 	}
 	recordCommandTelemetry(executedCmd, err)
-	maybeScheduleTelemetryFlush()
+	maybeScheduleTelemetryFlush(executedCmd)
 	if err == nil && !maybeShowTelemetryNotice(rootCmd, executedCmd) {
 		maybeShowUpdateNotice(rootCmd, executedCmd)
 	}

@@ -155,7 +155,7 @@ func TestTelemetryPreflightDoesNotCreateStateWhenBuildOrNetworkDisablesIt(t *tes
 	if maybeShowTelemetryNotice(root, statusCommand) {
 		t.Fatal("development build displayed telemetry notice")
 	}
-	maybeScheduleTelemetryFlush()
+	maybeScheduleTelemetryFlush(statusCommand)
 
 	statePath, err := telemetry.DefaultStatePath()
 	if err != nil {
@@ -170,6 +170,24 @@ func TestTelemetryPreflightDoesNotCreateStateWhenBuildOrNetworkDisablesIt(t *tes
 	}
 	if _, err := os.Lstat(cacheDir); !os.IsNotExist(err) {
 		t.Fatalf("preflight created telemetry cache: %v", err)
+	}
+}
+
+func TestTelemetryFlushSchedulingExcludesHiddenAndAnalyticsCommands(t *testing.T) {
+	root := &cobra.Command{Use: "turnal"}
+	status := &cobra.Command{Use: "status"}
+	hidden := &cobra.Command{Use: "__telemetry-flush", Hidden: true}
+	analytics := &cobra.Command{Use: "analytics"}
+	analyticsFlush := &cobra.Command{Use: "flush"}
+	analytics.AddCommand(analyticsFlush)
+	root.AddCommand(status, hidden, analytics)
+	if !shouldScheduleTelemetryFlush(status) {
+		t.Fatal("ordinary public command cannot schedule detached flush")
+	}
+	for _, command := range []*cobra.Command{root, hidden, analytics, analyticsFlush} {
+		if shouldScheduleTelemetryFlush(command) {
+			t.Fatalf("flush scheduling allowed for %s", command.CommandPath())
+		}
 	}
 }
 

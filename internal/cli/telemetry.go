@@ -163,7 +163,10 @@ func telemetryFailureMetric(err error) (telemetry.MetricKey, bool) {
 	return 0, false
 }
 
-func maybeScheduleTelemetryFlush() {
+func maybeScheduleTelemetryFlush(executed *cobra.Command) {
+	if !shouldScheduleTelemetryFlush(executed) {
+		return
+	}
 	runtime, err := currentTelemetryRuntime()
 	if err != nil || !runtime.sender.Enabled() {
 		return
@@ -177,4 +180,8 @@ func maybeScheduleTelemetryFlush() {
 		return
 	}
 	_, _ = (telemetry.DetachedScheduler{Sender: runtime.sender, InstallationID: state.AnonymousID}).Schedule()
+}
+
+func shouldScheduleTelemetryFlush(command *cobra.Command) bool {
+	return telemetryCommandEligible(command)
 }
