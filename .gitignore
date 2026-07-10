@@ -1,3 +1,6 @@
+bin/
+node_modules/
+
 apps/marketing/node_modules/
 apps/marketing/dist/
 apps/marketing/.astro/
@@ -9,3 +12,5 @@ turnal.spdx.json
 .turnal/
 
 npm/bin/
+
+tmp/

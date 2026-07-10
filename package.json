@@ -22,8 +22,11 @@
     "docs/"
   ],
   "scripts": {
-    "build": "go build -o bin/turnal ./cmd/turnal",
-    "build:npm-binaries": "node scripts/build-npm-binaries.js",
+    "build": "npm run build:web && go build -o bin/turnal ./cmd/turnal",
+    "build:web": "vite build",
+    "check:web": "tsc --noEmit && npm run build:web && git diff --exit-code -- internal/viewer/web/dist",
+    "dev:web": "vite",
+    "build:npm-binaries": "npm run build:web && node scripts/build-npm-binaries.js",
     "test": "go test ./...",
     "test:postinstall": "node --test scripts/remove-powershell-shims.test.js",
     "test:installer": "sh scripts/test-install.sh",
@@ -32,7 +35,7 @@
     "pack:dry-run": "npm pack --dry-run",
     "test:release-sbom": "node --test scripts/validate-release-sbom.test.js",
     "postinstall": "node npm/postinstall.js",
-    "prepack": "node scripts/build-npm-binaries.js",
+    "prepack": "npm run build:npm-binaries",
     "prepublishOnly": "go test ./..."
   },
   "repository": {
@@ -56,5 +59,16 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "dependencies": {
+    "@phosphor-icons/react": "^2.1.10",
+    "motion": "^12.42.2",
+    "preact": "^10.29.7"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "^2.10.5",
+    "@types/node": "^26.1.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.1.4"
   }
 }
