@@ -119,6 +119,9 @@ func TestDetachedSchedulerDoesNothingWhileNetworkDisabled(t *testing.T) {
 
 func enabledTestFlusher(t *testing.T, status int) (Flusher, *captureTransport) {
 	t.Helper()
+	oldRollout := collectorRolloutPercent
+	collectorRolloutPercent = "100"
+	t.Cleanup(func() { collectorRolloutPercent = oldRollout })
 	aggregates, _, build := testAggregateStore(t)
 	stateStore := testStateStore(t)
 	stateStore.Path = filepath.Join(t.TempDir(), "config", "turnal", "telemetry.json")

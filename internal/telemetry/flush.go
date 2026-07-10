@@ -52,6 +52,9 @@ func (flusher Flusher) Flush(ctx context.Context, explicit bool) (FlushResult, e
 	if !policy.Enabled {
 		return FlushResult{Status: FlushDisabled, Disposition: SendDisabled}, nil
 	}
+	if state.AnonymousID == nil || !flusher.Sender.EnabledFor(*state.AnonymousID) {
+		return FlushResult{Status: FlushDisabled, Disposition: SendDisabled}, nil
+	}
 	now := flusher.now()
 	if !explicit && recentlyAttempted(state.LastFlushAttemptAt, now) {
 		return FlushResult{Status: FlushThrottled}, nil
@@ -128,13 +131,14 @@ func (flusher Flusher) now() time.Time {
 }
 
 type DetachedScheduler struct {
-	Sender     Sender
-	Executable func() (string, error)
-	Start      func(*exec.Cmd) error
+	Sender         Sender
+	InstallationID *UUID
+	Executable     func() (string, error)
+	Start          func(*exec.Cmd) error
 }
 
 func (scheduler DetachedScheduler) Schedule() (bool, error) {
-	if !scheduler.Sender.Enabled() {
+	if !scheduler.Sender.Enabled() || (scheduler.InstallationID != nil && !scheduler.Sender.EnabledFor(*scheduler.InstallationID)) {
 		return false, nil
 	}
 	executable := scheduler.Executable

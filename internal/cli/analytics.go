@@ -36,6 +36,8 @@ type analyticsStatus struct {
 	LastFlushAttemptAt string                 `json:"last_flush_attempt_at,omitempty"`
 	LastFlushSuccessAt string                 `json:"last_flush_success_at,omitempty"`
 	Collector          string                 `json:"collector"`
+	RolloutPercent     int                    `json:"rollout_percent"`
+	RolloutEligible    bool                   `json:"rollout_eligible"`
 	LocalRetentionDays int                    `json:"local_retention_days"`
 	RawRetentionDays   int                    `json:"raw_retention_days"`
 	PolicyURL          string                 `json:"policy_url"`
@@ -82,6 +84,7 @@ func analyticsStatusCmd() *cobra.Command {
 			fmt.Fprintf(out, "last_flush_attempt: %s\n", emptyAsDash(status.LastFlushAttemptAt))
 			fmt.Fprintf(out, "last_flush_success: %s\n", emptyAsDash(status.LastFlushSuccessAt))
 			fmt.Fprintf(out, "collector:          %s\n", status.Collector)
+			fmt.Fprintf(out, "rollout:            %d%% (eligible=%t)\n", status.RolloutPercent, status.RolloutEligible)
 			fmt.Fprintf(out, "retention:          %d days local, %d days raw server maximum\n", status.LocalRetentionDays, status.RawRetentionDays)
 			fmt.Fprintf(out, "policy:             %s\n", status.PolicyURL)
 			return nil
@@ -286,12 +289,14 @@ func loadAnalyticsStatus() (analyticsStatus, error) {
 		LastFlushAttemptAt: state.LastFlushAttemptAt,
 		LastFlushSuccessAt: state.LastFlushSuccessAt,
 		Collector:          collector,
+		RolloutPercent:     telemetry.RolloutPercent(),
 		LocalRetentionDays: int(telemetry.DefaultMaxAge / (24 * time.Hour)),
 		RawRetentionDays:   90,
 		PolicyURL:          telemetryPolicyURL,
 	}
 	if state.AnonymousID != nil {
 		status.InstallationID = state.AnonymousID.String()
+		status.RolloutEligible = runtime.sender.EnabledFor(*state.AnonymousID)
 	}
 	return status, nil
 }

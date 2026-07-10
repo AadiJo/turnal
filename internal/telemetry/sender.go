@@ -3,12 +3,15 @@ package telemetry
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -26,6 +29,7 @@ const (
 // enablement gates in docs/telemetry.md are satisfied. It may only be set by a
 // release-time linker flag; configuration and workspace files cannot alter it.
 var collectorEndpoint = ""
+var collectorRolloutPercent = "0"
 
 type SendDisposition string
 
@@ -69,6 +73,30 @@ func NewSender(version string) Sender {
 
 func (sender Sender) Enabled() bool {
 	return sender.endpoint == CollectorURL
+}
+
+func (sender Sender) EnabledFor(id UUID) bool {
+	return sender.Enabled() && InRollout(id, RolloutPercent())
+}
+
+func RolloutPercent() int {
+	value, err := strconv.Atoi(strings.TrimSpace(collectorRolloutPercent))
+	if err != nil || value < 0 || value > 100 {
+		return 0
+	}
+	return value
+}
+
+func InRollout(id UUID, percent int) bool {
+	if !id.Valid() || percent <= 0 {
+		return false
+	}
+	if percent >= 100 {
+		return true
+	}
+	digest := sha256.Sum256([]byte(id.String()))
+	bucket := binary.BigEndian.Uint64(digest[:8]) % 100
+	return int(bucket) < percent
 }
 
 func (sender Sender) Send(ctx context.Context, batches []DailyAggregate) (SendResult, error) {

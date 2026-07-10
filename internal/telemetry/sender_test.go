@@ -3,6 +3,7 @@ package telemetry
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -18,6 +19,44 @@ func TestReleasedSenderIsNetworkDisabled(t *testing.T) {
 	result, err := sender.Send(context.Background(), nil)
 	if err != nil || result.Disposition != SendDisabled {
 		t.Fatalf("Send() = %#v, %v", result, err)
+	}
+}
+
+func TestRolloutSelectionIsStableAndBounded(t *testing.T) {
+	id := mustUUID(t, "167e8e5d-84fc-46bd-a39c-b67d47658f8e")
+	first := InRollout(id, 10)
+	for range 20 {
+		if InRollout(id, 10) != first {
+			t.Fatal("rollout selection changed for the same installation ID")
+		}
+	}
+	if InRollout(id, 0) || !InRollout(id, 100) || InRollout(UUID{}, 100) {
+		t.Fatal("rollout boundary handling is invalid")
+	}
+	selected := 0
+	for index := 1; index <= 1000; index++ {
+		candidate := mustUUID(t, fmt.Sprintf("%08x-0000-4000-a000-%012x", index, index))
+		if InRollout(candidate, 10) {
+			selected++
+		}
+	}
+	if selected < 70 || selected > 130 {
+		t.Fatalf("10%% rollout selected %d of 1000 deterministic IDs", selected)
+	}
+}
+
+func TestInvalidReleaseRolloutConfigurationFailsClosed(t *testing.T) {
+	old := collectorRolloutPercent
+	t.Cleanup(func() { collectorRolloutPercent = old })
+	for _, value := range []string{"", "-1", "101", "not-a-number"} {
+		collectorRolloutPercent = value
+		if got := RolloutPercent(); got != 0 {
+			t.Fatalf("RolloutPercent(%q) = %d", value, got)
+		}
+	}
+	collectorRolloutPercent = "37"
+	if got := RolloutPercent(); got != 37 {
+		t.Fatalf("RolloutPercent() = %d", got)
 	}
 }
 

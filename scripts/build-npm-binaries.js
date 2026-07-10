@@ -4,12 +4,14 @@
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const { resolveTelemetryReleaseConfig } = require('./telemetry-release-config');
 
 const packageRoot = path.resolve(__dirname, '..');
 const packageJson = require(path.join(packageRoot, 'package.json'));
 const outputRoot = path.join(packageRoot, 'npm', 'bin');
 const buildChannel = process.env.TURNAL_RELEASE_CHANNEL || inferChannel(packageJson.version);
 const buildCommit = process.env.TURNAL_COMMIT || process.env.GITHUB_SHA || '';
+const telemetry = resolveTelemetryReleaseConfig(process.env);
 
 const targets = [
   { nodePlatform: 'darwin', nodeArch: 'x64', goos: 'darwin', goarch: 'amd64' },
@@ -40,6 +42,8 @@ function ldflags() {
     `-X github.com/AadiJo/turnal/internal/cli.channel=${buildChannel}`,
     `-X github.com/AadiJo/turnal/internal/cli.commit=${buildCommit}`,
     '-X github.com/AadiJo/turnal/internal/cli.installSource=npm',
+    `-X github.com/AadiJo/turnal/internal/telemetry.collectorEndpoint=${telemetry.endpoint}`,
+    `-X github.com/AadiJo/turnal/internal/telemetry.collectorRolloutPercent=${telemetry.rolloutPercent}`,
   ].join(' ');
 }
 
