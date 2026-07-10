@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -91,5 +92,26 @@ func TestAcquireQuietDoesNotWriteOwnerMetadata(t *testing.T) {
 	}
 	if len(data) != 0 {
 		t.Fatalf("quiet lock wrote owner metadata: %q", data)
+	}
+}
+
+func TestAcquireRefusesSymlinkWithoutTouchingTarget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires privileges on some Windows hosts")
+	}
+	target := filepath.Join(t.TempDir(), "target")
+	if err := os.WriteFile(target, []byte("unchanged"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "lock")
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Acquire(path, time.Second); err == nil {
+		t.Fatal("lock symlink was accepted")
+	}
+	data, err := os.ReadFile(target)
+	if err != nil || string(data) != "unchanged" {
+		t.Fatalf("symlink target changed: %q, %v", data, err)
 	}
 }

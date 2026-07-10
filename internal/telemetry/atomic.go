@@ -21,11 +21,8 @@ func atomicWriteFileRelaxed(path string, data []byte, mode os.FileMode) error {
 
 func atomicWriteFileWithDurability(path string, data []byte, mode os.FileMode, durable bool) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("create telemetry directory: %w", err)
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return fmt.Errorf("secure telemetry directory: %w", err)
+	if err := secureDirectory(dir); err != nil {
+		return err
 	}
 	if info, err := os.Lstat(path); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
@@ -73,6 +70,29 @@ func atomicWriteFileWithDurability(path string, data []byte, mode os.FileMode, d
 		if err := syncDirectory(dir); err != nil {
 			return fmt.Errorf("sync telemetry directory: %w", err)
 		}
+	}
+	return nil
+}
+
+func secureDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("inspect telemetry directory: %w", err)
+		}
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			return fmt.Errorf("create telemetry directory: %w", err)
+		}
+		info, err = os.Lstat(path)
+		if err != nil {
+			return fmt.Errorf("inspect created telemetry directory: %w", err)
+		}
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("telemetry directory is not a real directory: %s", path)
+	}
+	if err := os.Chmod(path, 0o700); err != nil {
+		return fmt.Errorf("secure telemetry directory: %w", err)
 	}
 	return nil
 }

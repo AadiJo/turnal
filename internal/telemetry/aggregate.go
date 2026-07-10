@@ -272,10 +272,7 @@ func (store AggregateStore) QuarantineBatch(batchID UUID) error {
 			}
 			return err
 		}
-		if err := os.MkdirAll(store.quarantineDir(), 0o700); err != nil {
-			return err
-		}
-		if err := os.Chmod(store.quarantineDir(), 0o700); err != nil {
+		if err := secureDirectory(store.quarantineDir()); err != nil {
 			return err
 		}
 		destination := filepath.Join(store.quarantineDir(), batchID.String()+".json")
@@ -314,11 +311,13 @@ func (store AggregateStore) withLock(action func() error) error {
 	if strings.TrimSpace(store.CacheDir) == "" {
 		return errors.New("telemetry cache directory is required")
 	}
-	if err := os.MkdirAll(store.CacheDir, 0o700); err != nil {
-		return fmt.Errorf("create telemetry cache directory: %w", err)
+	if err := secureDirectory(store.CacheDir); err != nil {
+		return err
 	}
-	if err := os.Chmod(store.CacheDir, 0o700); err != nil {
-		return fmt.Errorf("secure telemetry cache directory: %w", err)
+	for _, dir := range []string{store.currentDir(), store.batchesDir(), store.quarantineDir()} {
+		if err := secureDirectory(dir); err != nil {
+			return err
+		}
 	}
 	timeout := store.LockTimeout
 	if timeout == 0 {
@@ -410,10 +409,7 @@ func (store AggregateStore) rotateAllCurrentUnlocked(id UUID) error {
 }
 
 func (store AggregateStore) rotateFileUnlocked(currentPath string, aggregate DailyAggregate, canonical []byte) error {
-	if err := os.MkdirAll(store.batchesDir(), 0o700); err != nil {
-		return err
-	}
-	if err := os.Chmod(store.batchesDir(), 0o700); err != nil {
+	if err := secureDirectory(store.batchesDir()); err != nil {
 		return err
 	}
 	batchPath := filepath.Join(store.batchesDir(), aggregate.BatchID.String()+".json")

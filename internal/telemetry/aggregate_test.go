@@ -346,6 +346,27 @@ func TestDeleteAllRefusesSymlinkAndRemovesQueue(t *testing.T) {
 	}
 }
 
+func TestAggregateRefusesSymlinkedSubdirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires privileges on some Windows hosts")
+	}
+	store, state, build := testAggregateStore(t)
+	if err := secureDirectory(store.CacheDir); err != nil {
+		t.Fatal(err)
+	}
+	target := t.TempDir()
+	if err := os.Symlink(target, store.currentDir()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Record(RecordOptions{State: state, Build: build, LookupEnv: mapEnv(nil)}, MetricInstallationActive); err == nil {
+		t.Fatal("symlinked current directory was accepted")
+	}
+	entries, err := os.ReadDir(target)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("symlink target received telemetry: %v, %v", entries, err)
+	}
+}
+
 func testAggregateStore(t *testing.T) (AggregateStore, State, Build) {
 	t.Helper()
 	now := time.Date(2026, 7, 10, 23, 30, 0, 0, time.FixedZone("test", -5*60*60))
