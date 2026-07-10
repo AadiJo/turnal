@@ -5,10 +5,13 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/AadiJo/turnal/internal/telemetry"
 	"github.com/spf13/cobra"
 )
+
+const telemetryBestEffortStateLockTimeout = 5 * time.Millisecond
 
 type telemetryRuntime struct {
 	state      telemetry.StateStore
@@ -57,6 +60,11 @@ func recordTelemetryMetrics(keys ...telemetry.MetricKey) {
 	if err != nil {
 		return
 	}
+	if _, err := os.Lstat(runtime.state.Path); err != nil {
+		return
+	}
+	runtime.state.LockTimeout = telemetryBestEffortStateLockTimeout
+	runtime.state.QuietLock = true
 	state, err := runtime.state.Load()
 	if err != nil {
 		return

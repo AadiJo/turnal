@@ -72,6 +72,7 @@ type StateStore struct {
 	Now         func() time.Time
 	NewUUID     func() (UUID, error)
 	LockTimeout time.Duration
+	QuietLock   bool
 }
 
 func DefaultStatePath() (string, error) {
@@ -238,7 +239,11 @@ func (store StateStore) withLock(action func() error) error {
 	if timeout == 0 {
 		timeout = stateLockTimeout
 	}
-	lock, err := filelock.Acquire(store.Path+".lock", timeout)
+	acquire := filelock.Acquire
+	if store.QuietLock {
+		acquire = filelock.AcquireQuiet
+	}
+	lock, err := acquire(store.Path+".lock", timeout)
 	if err != nil {
 		return fmt.Errorf("lock telemetry state: %w", err)
 	}

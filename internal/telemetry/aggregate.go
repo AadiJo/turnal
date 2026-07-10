@@ -20,7 +20,7 @@ const (
 	DefaultMaxBatchFiles = 128
 	DefaultMaxLocalBytes = 512 * 1024
 	MaxAggregateFileSize = 64 * 1024
-	aggregateLockTimeout = 25 * time.Millisecond
+	aggregateLockTimeout = 15 * time.Millisecond
 )
 
 var ErrMetricDropped = errors.New("telemetry metric dropped")

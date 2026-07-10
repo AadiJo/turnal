@@ -75,7 +75,16 @@ func acquire(path string, timeout time.Duration, writeOwner bool) (*Lock, error)
 			_ = file.Close()
 			return nil, ErrBusy
 		}
-		time.Sleep(10 * time.Millisecond)
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			_ = file.Close()
+			return nil, ErrBusy
+		}
+		delay := 10 * time.Millisecond
+		if remaining < delay {
+			delay = remaining
+		}
+		time.Sleep(delay)
 	}
 }
 

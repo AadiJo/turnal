@@ -90,6 +90,14 @@ func TestTelemetryNoticeWritesOnlyNoticeState(t *testing.T) {
 	root.AddCommand(statusCommand)
 	var stderr bytes.Buffer
 	root.SetErr(&stderr)
+	recordTelemetryMetrics(telemetry.MetricInstallationActive)
+	statePath, err := telemetry.DefaultStatePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(statePath); !os.IsNotExist(err) {
+		t.Fatalf("pre-notice finalization created state: %v", err)
+	}
 	if !maybeShowTelemetryNotice(root, statusCommand) {
 		t.Fatal("first eligible command did not show disclosure")
 	}

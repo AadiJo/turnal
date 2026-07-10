@@ -106,7 +106,9 @@ Malformed data is quarantined or removed and can never block a Turnal command.
 Current-day counters use atomic replacement without forcing every approximate
 increment to stable storage; a machine-level storage failure can lose the newest
 counter but cannot expose a partially written JSON file. Consent state and
-rotated sendable batches use durable writes.
+rotated sendable batches use durable writes. Best-effort recording budgets 5 ms
+for the state read and 15 ms for the aggregate lock, dropping the metric on
+contention rather than delaying the hook beyond its 25 ms telemetry budget.
 
 ## Metric semantics
 
