@@ -96,10 +96,14 @@ func runCmd() *cobra.Command {
 			}
 
 			if effective.Run.InstallHooks {
-				if _, err := adapters.InstallCodexHookWithOptions(repo.WorkspaceRoot.String(), adapters.InstallOptions{
+				installed, err := adapters.InstallCodexHookWithOptions(repo.WorkspaceRoot.String(), adapters.InstallOptions{
 					HookCommand: effective.Hooks.Command,
-				}); err != nil {
+				})
+				if err != nil {
 					return err
+				}
+				if installed.Installed {
+					recordTelemetryMetrics(telemetry.MetricAdapterConfiguredCodex)
 				}
 			}
 

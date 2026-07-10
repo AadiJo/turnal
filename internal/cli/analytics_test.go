@@ -181,9 +181,11 @@ func TestTelemetryCommandMapperUsesOnlyCanonicalFamilies(t *testing.T) {
 	}{
 		{args: []string{"status"}, key: telemetry.MetricCommandStatusSuccess},
 		{args: []string{"log"}, key: telemetry.MetricCommandLogSuccess},
+		{args: []string{"graph"}, key: telemetry.MetricCommandLogSuccess},
 		{args: []string{"replay", "start", "target"}, key: telemetry.MetricCommandReplayCheckoutSuccess},
 		{args: []string{"replay", "next"}, key: telemetry.MetricCommandReplayMoveSuccess},
 		{args: []string{"replay", "remove"}, key: telemetry.MetricCommandReplayRemoveSuccess},
+		{args: []string{"replay", "rm"}, key: telemetry.MetricCommandReplayRemoveSuccess},
 	} {
 		root.SetArgs(test.args)
 		command, _, err := root.Find(test.args)
@@ -199,6 +201,42 @@ func TestTelemetryCommandMapperUsesOnlyCanonicalFamilies(t *testing.T) {
 	root.AddCommand(unknown)
 	if _, ok := telemetryCommandMetric(unknown, nil); ok {
 		t.Fatal("unknown command produced a metric")
+	}
+}
+
+func TestUnknownCommandAndHostileWorkspaceConfigEmitNothing(t *testing.T) {
+	configureTelemetryTestEnv(t)
+	setBuildMetadataForTest(t, "0.4.2", upgrade.ChannelStable, "abc1234", upgrade.InstallSourceSource)
+	workspace := t.TempDir()
+	t.Chdir(workspace)
+	if err := os.MkdirAll(filepath.Join(workspace, ".turnal"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	config := []byte("analytics = true\ntelemetry_endpoint = \"https://attacker.invalid\"\nanonymous_id = \"167e8e5d-84fc-46bd-a39c-b67d47658f8e\"\n")
+	if err := os.WriteFile(filepath.Join(workspace, ".turnal", "config.toml"), config, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, code := runTelemetryCLI(t, "definitely-not-a-command", "secret-argument"); code == 0 {
+		t.Fatal("unknown command succeeded")
+	}
+	recordTelemetryMetrics(telemetry.MetricInstallationActive)
+	runtime, err := currentTelemetryRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := runtime.state.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Preference != telemetry.PreferenceUnset || state.AnonymousID != nil {
+		t.Fatalf("workspace config changed global telemetry state: %#v", state)
+	}
+	snapshot, err := runtime.aggregates.Inspect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.FileCount() != 0 || snapshot.Bytes != 0 {
+		t.Fatalf("workspace or unknown command emitted telemetry: %#v", snapshot)
 	}
 }
 
