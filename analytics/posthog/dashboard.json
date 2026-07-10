@@ -27,6 +27,7 @@
       "name": "Executive overview",
       "widgets": [
         "weekly_recording_active",
+        "weekly_recording_active_trend",
         "activated_installations",
         "d7_recording_retention",
         "d30_recording_retention",
@@ -38,6 +39,7 @@
       "name": "Product adoption",
       "widgets": [
         "feature_adoption",
+        "activation_conversion_by_version",
         "adapter_mix",
         "command_success_rate"
       ]
@@ -55,42 +57,62 @@
     "weekly_recording_active": {
       "kind": "HogQLQuery",
       "description": "Distinct consenting installations with a completed recorded turn in the inclusive seven-date UTC window.",
-      "query": "SELECT count(DISTINCT distinct_id) AS recording_active_installations FROM events WHERE event = 'turnal_metric' AND properties.metric IN ('turn.recorded.claude', 'turn.recorded.codex') AND toDate(properties.event_date) BETWEEN today() - 6 AND today()"
+      "query": "SELECT count(DISTINCT distinct_id) AS recording_active_installations FROM events WHERE event = 'turnal_metric' AND coalesce(properties.collector_canary, false) = false AND properties.metric IN ('turn.recorded.claude', 'turn.recorded.codex') AND toDate(properties.event_date) BETWEEN today() - 6 AND today()"
     },
     "activated_installations": {
       "kind": "HogQLQuery",
       "description": "Date-level init plus validated adapter or wrapped-run milestone; same-day rows are unordered.",
-      "query": "WITH milestones AS (SELECT distinct_id, toDate(properties.event_date) AS event_date, maxIf(1, properties.metric = 'workspace.initialized') AS initialized, maxIf(1, properties.metric IN ('adapter.configured.claude', 'adapter.configured.codex', 'command.run.success')) AS configured FROM events WHERE event = 'turnal_metric' GROUP BY distinct_id, event_date), init AS (SELECT distinct_id, minIf(event_date, initialized = 1) AS init_date FROM milestones GROUP BY distinct_id) SELECT count(DISTINCT milestones.distinct_id) AS activated_installations FROM milestones INNER JOIN init ON milestones.distinct_id = init.distinct_id WHERE milestones.configured = 1 AND milestones.event_date >= init.init_date"
+      "query": "WITH milestones AS (SELECT distinct_id, toDate(properties.event_date) AS event_date, maxIf(1, properties.metric = 'workspace.initialized') AS initialized, maxIf(1, properties.metric IN ('adapter.configured.claude', 'adapter.configured.codex', 'command.run.success')) AS configured FROM events WHERE event = 'turnal_metric' AND coalesce(properties.collector_canary, false) = false GROUP BY distinct_id, event_date), init AS (SELECT distinct_id, minIf(event_date, initialized = 1) AS init_date FROM milestones GROUP BY distinct_id) SELECT count(DISTINCT milestones.distinct_id) AS activated_installations FROM milestones INNER JOIN init ON milestones.distinct_id = init.distinct_id WHERE milestones.configured = 1 AND milestones.event_date >= init.init_date"
     },
     "d7_recording_retention": {
       "kind": "HogQLQuery",
       "description": "Activated installation with a recording metric exactly seven UTC dates after activation.",
-      "query": "WITH activation AS ({activated_installation_dates}), recording AS (SELECT DISTINCT distinct_id, toDate(properties.event_date) AS record_date FROM events WHERE event = 'turnal_metric' AND properties.metric IN ('turn.recorded.claude', 'turn.recorded.codex')) SELECT count(DISTINCT recording.distinct_id) / nullIf(count(DISTINCT activation.distinct_id), 0) AS d7_recording_retention FROM activation LEFT JOIN recording ON activation.distinct_id = recording.distinct_id AND recording.record_date = activation.activation_date + 7 WHERE activation.activation_date <= today() - 7"
+      "query": "WITH milestones AS (SELECT distinct_id, toDate(properties.event_date) AS event_date, maxIf(1, properties.metric = 'workspace.initialized') AS initialized, maxIf(1, properties.metric IN ('adapter.configured.claude', 'adapter.configured.codex', 'command.run.success')) AS configured FROM events WHERE event = 'turnal_metric' AND coalesce(properties.collector_canary, false) = false GROUP BY distinct_id, event_date), init AS (SELECT distinct_id, minIf(event_date, initialized = 1) AS init_date FROM milestones GROUP BY distinct_id), activation AS (SELECT milestones.distinct_id AS distinct_id, min(milestones.event_date) AS activation_date FROM milestones INNER JOIN init ON milestones.distinct_id = init.distinct_id WHERE milestones.configured = 1 AND milestones.event_date >= init.init_date GROUP BY milestones.distinct_id), recording AS (SELECT DISTINCT distinct_id, toDate(properties.event_date) AS record_date FROM events WHERE event = 'turnal_metric' AND coalesce(properties.collector_canary, false) = false AND properties.metric IN ('turn.recorded.claude', 'turn.recorded.codex')) SELECT count(DISTINCT recording.distinct_id) / nullIf(count(DISTINCT activation.distinct_id), 0) AS d7_recording_retention FROM activation LEFT JOIN recording ON activation.distinct_id = recording.distinct_id AND recording.record_date = activation.activation_date + 7 WHERE activation.activation_date <= today() - 7"
     },
     "d30_recording_retention": {
       "kind": "HogQLQuery",
       "description": "Activated installation with a recording metric exactly thirty UTC dates after activation.",
-      "query": "WITH activation AS ({activated_installation_dates}), recording AS (SELECT DISTINCT distinct_id, toDate(properties.event_date) AS record_date FROM events WHERE event = 'turnal_metric' AND properties.metric IN ('turn.recorded.claude', 'turn.recorded.codex')) SELECT count(DISTINCT recording.distinct_id) / nullIf(count(DISTINCT activation.distinct_id), 0) AS d30_recording_retention FROM activation LEFT JOIN recording ON activation.distinct_id = recording.distinct_id AND recording.record_date = activation.activation_date + 30 WHERE activation.activation_date <= today() - 30"
+      "query": "WITH milestones AS (SELECT distinct_id, toDate(properties.event_date) AS event_date, maxIf(1, properties.metric = 'workspace.initialized') AS initialized, maxIf(1, properties.metric IN ('adapter.configured.claude', 'adapter.configured.codex', 'command.run.success')) AS configured FROM events WHERE event = 'turnal_metric' AND coalesce(properties.collector_canary, false) = false GROUP BY distinct_id, event_date), init AS (SELECT distinct_id, minIf(event_date, initialized = 1) AS init_date FROM milestones GROUP BY distinct_id), activation AS (SELECT milestones.distinct_id AS distinct_id, min(milestones.event_date) AS activation_date FROM milestones INNER JOIN init ON milestones.distinct_id = init.distinct_id WHERE milestones.configured = 1 AND milestones.event_date >= init.init_date GROUP BY milestones.distinct_id), recording AS (SELECT DISTINCT distinct_id, toDate(properties.event_date) AS record_date FROM events WHERE event = 'turnal_metric' AND coalesce(properties.collector_canary, false) = false AND properties.metric IN ('turn.recorded.claude', 'turn.recorded.codex')) SELECT count(DISTINCT recording.distinct_id) / nullIf(count(DISTINCT activation.distinct_id), 0) AS d30_recording_retention FROM activation LEFT JOIN recording ON activation.distinct_id = recording.distinct_id AND recording.record_date = activation.activation_date + 30 WHERE activation.activation_date <= today() - 30"
     },
     "feature_adoption": {
       "kind": "HogQLQuery",
       "description": "Distinct installations using each successful public feature among weekly recording-active installations.",
-      "query": "WITH weekly_recording AS (SELECT DISTINCT distinct_id FROM events WHERE event = 'turnal_metric' AND properties.metric IN ('turn.recorded.claude', 'turn.recorded.codex') AND toDate(properties.event_date) BETWEEN today() - 6 AND today()) SELECT properties.metric AS feature, count(DISTINCT events.distinct_id) AS feature_active_installations, count(DISTINCT weekly_recording.distinct_id) AS recording_active_installations FROM events INNER JOIN weekly_recording ON events.distinct_id = weekly_recording.distinct_id WHERE event = 'turnal_metric' AND properties.metric IN ('command.log.success','command.sessions.success','command.show.success','command.search.success','command.diff.success','command.blame.success','command.rollback.success','command.replay.checkout.success','command.replay.move.success','command.replay.remove.success','command.run.success') AND toDate(properties.event_date) BETWEEN today() - 6 AND today() GROUP BY feature HAVING recording_active_installations >= 20"
+      "query": "WITH weekly_recording AS (SELECT DISTINCT distinct_id FROM events WHERE event = 'turnal_metric' AND coalesce(properties.collector_canary, false) = false AND properties.metric IN ('turn.recorded.claude', 'turn.recorded.codex') AND toDate(properties.event_date) BETWEEN today() - 6 AND today()), denominator AS (SELECT count() AS recording_active_installations FROM weekly_recording) SELECT properties.metric AS feature, count(DISTINCT events.distinct_id) AS feature_active_installations, any(denominator.recording_active_installations) AS recording_active_installations FROM events INNER JOIN weekly_recording ON events.distinct_id = weekly_recording.distinct_id CROSS JOIN denominator WHERE event = 'turnal_metric' AND coalesce(properties.collector_canary, false) = false AND properties.metric IN ('command.log.success','command.sessions.success','command.show.success','command.search.success','command.diff.success','command.blame.success','command.rollback.success','command.replay.checkout.success','command.replay.move.success','command.replay.remove.success','command.run.success') AND toDate(properties.event_date) BETWEEN today() - 6 AND today() GROUP BY feature HAVING recording_active_installations >= 20"
     },
     "command_success_rate": {
       "kind": "HogQLQuery",
       "description": "Count-weighted reliability by canonical command family.",
-      "query": "SELECT replaceRegexpOne(properties.metric, '\\.(success|failure)$', '') AS command_family, sumIf(toUInt64(properties.count), properties.metric LIKE '%.success') AS successes, sumIf(toUInt64(properties.count), properties.metric LIKE '%.failure') AS failures, successes / nullIf(successes + failures, 0) AS success_rate FROM events WHERE event = 'turnal_metric' AND properties.metric LIKE 'command.%' GROUP BY command_family"
+      "query": "SELECT replaceRegexpOne(properties.metric, '\\.(success|failure)$', '') AS command_family, sumIf(toUInt64(properties.count), properties.metric LIKE '%.success') AS successes, sumIf(toUInt64(properties.count), properties.metric LIKE '%.failure') AS failures, successes / nullIf(successes + failures, 0) AS success_rate FROM events WHERE event = 'turnal_metric' AND coalesce(properties.collector_canary, false) = false AND properties.metric LIKE 'command.%' GROUP BY command_family"
     },
     "adapter_mix": {
       "kind": "HogQLQuery",
       "description": "Installation adoption and aggregate completed-turn count by adapter.",
-      "query": "SELECT properties.metric AS adapter, count(DISTINCT distinct_id) AS installations, sum(toUInt64(properties.count)) AS completed_turns FROM events WHERE event = 'turnal_metric' AND properties.metric IN ('turn.recorded.claude', 'turn.recorded.codex') GROUP BY adapter HAVING installations >= 20"
+      "query": "SELECT properties.metric AS adapter, count(DISTINCT distinct_id) AS installations, sum(toUInt64(properties.count)) AS completed_turns FROM events WHERE event = 'turnal_metric' AND coalesce(properties.collector_canary, false) = false AND properties.metric IN ('turn.recorded.claude', 'turn.recorded.codex') GROUP BY adapter HAVING installations >= 20"
     },
     "active_version_share": {
       "kind": "HogQLQuery",
       "description": "Weekly active installation mix by released version.",
-      "query": "SELECT properties.turnal_version AS turnal_version, count(DISTINCT distinct_id) AS active_installations FROM events WHERE event = 'turnal_daily_active' AND toDate(properties.event_date) BETWEEN today() - 6 AND today() GROUP BY turnal_version HAVING active_installations >= 20 ORDER BY active_installations DESC"
+      "query": "SELECT properties.turnal_version AS turnal_version, count(DISTINCT distinct_id) AS active_installations FROM events WHERE event = 'turnal_daily_active' AND coalesce(properties.collector_canary, false) = false AND toDate(properties.event_date) BETWEEN today() - 6 AND today() GROUP BY turnal_version HAVING active_installations >= 20 ORDER BY active_installations DESC"
+    },
+    "weekly_recording_active_trend": {
+      "kind": "HogQLQuery",
+      "description": "Daily trailing-seven-date recording-active installations with a four-week moving average.",
+      "query": "WITH dates AS (SELECT arrayJoin(range(28)) AS offset, today() - offset AS report_date), daily AS (SELECT dates.report_date AS report_date, count(DISTINCT events.distinct_id) AS weekly_recording_active FROM dates LEFT JOIN events ON event = 'turnal_metric' AND coalesce(events.properties.collector_canary, false) = false AND events.properties.metric IN ('turn.recorded.claude', 'turn.recorded.codex') AND toDate(events.properties.event_date) BETWEEN dates.report_date - 6 AND dates.report_date GROUP BY report_date) SELECT report_date, weekly_recording_active, avg(weekly_recording_active) OVER (ORDER BY report_date ROWS BETWEEN 27 PRECEDING AND CURRENT ROW) AS four_week_moving_average FROM daily ORDER BY report_date"
+    },
+    "inspection_share": {
+      "kind": "HogQLQuery",
+      "description": "Weekly inspecting-active installations divided by weekly recording-active installations.",
+      "query": "WITH recording AS (SELECT DISTINCT distinct_id FROM events WHERE event = 'turnal_metric' AND coalesce(properties.collector_canary, false) = false AND properties.metric IN ('turn.recorded.claude','turn.recorded.codex') AND toDate(properties.event_date) BETWEEN today() - 6 AND today()), inspecting AS (SELECT DISTINCT distinct_id FROM events WHERE event = 'turnal_metric' AND coalesce(properties.collector_canary, false) = false AND properties.metric IN ('command.log.success','command.sessions.success','command.show.success','command.search.success','command.diff.success','command.blame.success') AND toDate(properties.event_date) BETWEEN today() - 6 AND today()) SELECT count(DISTINCT inspecting.distinct_id) / nullIf(count(DISTINCT recording.distinct_id), 0) AS inspection_share FROM recording LEFT JOIN inspecting ON recording.distinct_id = inspecting.distinct_id HAVING count(DISTINCT recording.distinct_id) >= 20"
+    },
+    "recovery_share": {
+      "kind": "HogQLQuery",
+      "description": "Weekly recovery-active installations divided by weekly recording-active installations.",
+      "query": "WITH recording AS (SELECT DISTINCT distinct_id FROM events WHERE event = 'turnal_metric' AND coalesce(properties.collector_canary, false) = false AND properties.metric IN ('turn.recorded.claude','turn.recorded.codex') AND toDate(properties.event_date) BETWEEN today() - 6 AND today()), recovery AS (SELECT DISTINCT distinct_id FROM events WHERE event = 'turnal_metric' AND coalesce(properties.collector_canary, false) = false AND properties.metric IN ('command.rollback.success','command.replay.checkout.success','command.replay.move.success','command.replay.remove.success') AND toDate(properties.event_date) BETWEEN today() - 6 AND today()) SELECT count(DISTINCT recovery.distinct_id) / nullIf(count(DISTINCT recording.distinct_id), 0) AS recovery_share FROM recording LEFT JOIN recovery ON recording.distinct_id = recovery.distinct_id HAVING count(DISTINCT recording.distinct_id) >= 20"
+    },
+    "activation_conversion_by_version": {
+      "kind": "HogQLQuery",
+      "description": "Date-level initialized and activated installation counts by release version; no ordered same-day funnel.",
+      "query": "WITH milestones AS (SELECT distinct_id, properties.turnal_version AS turnal_version, toDate(properties.event_date) AS event_date, maxIf(1, properties.metric = 'workspace.initialized') AS initialized, maxIf(1, properties.metric IN ('adapter.configured.claude','adapter.configured.codex','command.run.success')) AS configured FROM events WHERE event = 'turnal_metric' AND coalesce(properties.collector_canary, false) = false GROUP BY distinct_id, turnal_version, event_date), init AS (SELECT distinct_id, min(event_date) AS init_date, argMin(turnal_version, event_date) AS init_version FROM milestones WHERE initialized = 1 GROUP BY distinct_id), activation AS (SELECT milestones.distinct_id AS distinct_id, min(milestones.event_date) AS activation_date FROM milestones INNER JOIN init ON milestones.distinct_id = init.distinct_id WHERE milestones.configured = 1 AND milestones.event_date >= init.init_date GROUP BY milestones.distinct_id) SELECT init.init_version AS turnal_version, count(DISTINCT init.distinct_id) AS initialized_installations, count(DISTINCT activation.distinct_id) AS activated_installations, activated_installations / nullIf(initialized_installations, 0) AS activation_rate FROM init LEFT JOIN activation ON init.distinct_id = activation.distinct_id GROUP BY turnal_version HAVING initialized_installations >= 20"
     }
   },
   "operational_sources": {

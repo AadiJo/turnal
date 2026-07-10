@@ -9,19 +9,21 @@ import (
 )
 
 type SyntheticExpectation struct {
-	AsOf                  string  `json:"as_of"`
-	Installations         int     `json:"installations"`
-	Activated             int     `json:"activated"`
-	WeeklyRecordingActive int     `json:"weekly_recording_active"`
-	D7Eligible            int     `json:"d7_eligible"`
-	D7Retained            int     `json:"d7_retained"`
-	D30Eligible           int     `json:"d30_eligible"`
-	D30Retained           int     `json:"d30_retained"`
-	SearchFeatureActive   int     `json:"search_feature_active"`
-	SearchFeatureShare    float64 `json:"search_feature_share"`
-	StatusSuccessCount    uint64  `json:"status_success_count"`
-	StatusFailureCount    uint64  `json:"status_failure_count"`
-	StatusSuccessRate     float64 `json:"status_success_rate"`
+	AsOf                   string  `json:"as_of"`
+	Installations          int     `json:"installations"`
+	Activated              int     `json:"activated"`
+	WeeklyRecordingActive  int     `json:"weekly_recording_active"`
+	D7Eligible             int     `json:"d7_eligible"`
+	D7Retained             int     `json:"d7_retained"`
+	D30Eligible            int     `json:"d30_eligible"`
+	D30Retained            int     `json:"d30_retained"`
+	SearchFeatureActive    int     `json:"search_feature_active"`
+	SearchFeatureShare     float64 `json:"search_feature_share"`
+	WeeklyInspectingActive int     `json:"weekly_inspecting_active"`
+	WeeklyRecoveryActive   int     `json:"weekly_recovery_active"`
+	StatusSuccessCount     uint64  `json:"status_success_count"`
+	StatusFailureCount     uint64  `json:"status_failure_count"`
+	StatusSuccessRate      float64 `json:"status_success_rate"`
 }
 
 type dayMetrics map[int]map[telemetry.MetricKey]uint64
@@ -84,19 +86,21 @@ func SyntheticFixture() ([]telemetry.DailyAggregate, SyntheticExpectation, error
 		}
 	}
 	return aggregates, SyntheticExpectation{
-		AsOf:                  "2026-07-05",
-		Installations:         30,
-		Activated:             30,
-		WeeklyRecordingActive: 22,
-		D7Eligible:            30,
-		D7Retained:            21,
-		D30Eligible:           30,
-		D30Retained:           18,
-		SearchFeatureActive:   12,
-		SearchFeatureShare:    12.0 / 22.0,
-		StatusSuccessCount:    90,
-		StatusFailureCount:    30,
-		StatusSuccessRate:     0.75,
+		AsOf:                   "2026-07-05",
+		Installations:          30,
+		Activated:              30,
+		WeeklyRecordingActive:  22,
+		D7Eligible:             30,
+		D7Retained:             21,
+		D30Eligible:            30,
+		D30Retained:            18,
+		SearchFeatureActive:    12,
+		SearchFeatureShare:     12.0 / 22.0,
+		WeeklyInspectingActive: 12,
+		WeeklyRecoveryActive:   5,
+		StatusSuccessCount:     90,
+		StatusFailureCount:     30,
+		StatusSuccessRate:      0.75,
 	}, nil
 }
 

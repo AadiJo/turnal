@@ -36,7 +36,20 @@ func TestPostHogDashboardDefinitionPreservesMetricSemantics(t *testing.T) {
 	if !strings.Contains(dashboard.Source.GlobalPredicate, "collector_canary") {
 		t.Fatal("dashboard does not exclude synthetic collector canaries")
 	}
-	for _, required := range []string{"weekly_recording_active", "activated_installations", "d7_recording_retention", "d30_recording_retention", "feature_adoption", "command_success_rate", "adapter_mix", "active_version_share"} {
+	for _, required := range []string{
+		"weekly_recording_active",
+		"weekly_recording_active_trend",
+		"activated_installations",
+		"activation_conversion_by_version",
+		"d7_recording_retention",
+		"d30_recording_retention",
+		"feature_adoption",
+		"inspection_share",
+		"recovery_share",
+		"command_success_rate",
+		"adapter_mix",
+		"active_version_share",
+	} {
 		if strings.TrimSpace(dashboard.Queries[required].Query) == "" {
 			t.Fatalf("missing dashboard query %q", required)
 		}
@@ -46,6 +59,12 @@ func TestPostHogDashboardDefinitionPreservesMetricSemantics(t *testing.T) {
 		if strings.Contains(lower, " user") || strings.Contains(lower, "users") {
 			t.Fatalf("query %s uses person terminology: %s", name, query.Query)
 		}
+		if strings.Contains(query.Query, "{") || strings.Contains(query.Query, "}") {
+			t.Fatalf("query %s contains an unresolved placeholder: %s", name, query.Query)
+		}
+		if !strings.Contains(lower, "collector_canary") {
+			t.Fatalf("query %s does not exclude collector canaries: %s", name, query.Query)
+		}
 		if name == "command_success_rate" || name == "adapter_mix" {
 			if !strings.Contains(lower, "sum(") && !strings.Contains(lower, "sumif(") {
 				t.Fatalf("count-aware query %s does not sum count: %s", name, query.Query)
@@ -54,6 +73,10 @@ func TestPostHogDashboardDefinitionPreservesMetricSemantics(t *testing.T) {
 				t.Fatalf("count-aware query %s ignores numeric count: %s", name, query.Query)
 			}
 		}
+	}
+	featureAdoption := strings.ToLower(dashboard.Queries["feature_adoption"].Query)
+	if !strings.Contains(featureAdoption, "denominator") || !strings.Contains(featureAdoption, "cross join denominator") {
+		t.Fatalf("feature adoption does not preserve the recording-active denominator: %s", featureAdoption)
 	}
 	activation := strings.ToLower(dashboard.Queries["activated_installations"].Query)
 	if !strings.Contains(activation, "todate(properties.event_date)") || strings.Contains(activation, "order by") || strings.Contains(activation, "timestamp") {

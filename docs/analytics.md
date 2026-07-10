@@ -44,6 +44,7 @@ The committed test expectation is:
 | D7 retained / eligible | 21 / 30 |
 | D30 retained / eligible | 18 / 30 |
 | Weekly search-active / recording-active | 12 / 22 |
+| Weekly inspecting-active / recovery-active | 12 / 5 |
 | Status success / failure command volume | 90 / 30 |
 | Status success rate | 75% |
 

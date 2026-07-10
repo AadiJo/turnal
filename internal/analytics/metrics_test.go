@@ -47,6 +47,13 @@ func TestSyntheticFixtureReconcilesDashboardMetrics(t *testing.T) {
 	if search.RecordingActive != expected.WeeklyRecordingActive || search.FeatureActive != expected.SearchFeatureActive || !search.Visible || math.Abs(search.Share()-expected.SearchFeatureShare) > 1e-12 {
 		t.Fatalf("search adoption = %#v", search)
 	}
+	weekStart := asOf.AddDate(0, 0, -6)
+	if got := dataset.InspectingActive(weekStart, asOf); got != expected.WeeklyInspectingActive {
+		t.Fatalf("weekly inspecting active = %d", got)
+	}
+	if got := dataset.RecoveryActive(weekStart, asOf); got != expected.WeeklyRecoveryActive {
+		t.Fatalf("weekly recovery active = %d", got)
+	}
 	status := dataset.CommandSuccessRate(
 		telemetry.MetricCommandStatusSuccess,
 		telemetry.MetricCommandStatusFailure,
