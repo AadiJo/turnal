@@ -7,10 +7,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
+	agentconfig "github.com/AadiJo/turnal/internal/config"
 	"github.com/AadiJo/turnal/internal/gitsync"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/snapshotpolicy"
 )
 
 type Git struct {
@@ -38,14 +41,6 @@ func (git Git) Capture() (gitsync.Capture, error) {
 		return gitsync.Capture{}, err
 	}
 
-	stagedPatch, err := git.runBytes("diff", "--binary", "--full-index", "--cached", head.Commit.String(), "--")
-	if err != nil {
-		return gitsync.Capture{}, fmt.Errorf("capture staged patch: %w", err)
-	}
-	unstagedPatch, err := git.runBytes("diff", "--binary", "--full-index", "--")
-	if err != nil {
-		return gitsync.Capture{}, fmt.Errorf("capture unstaged patch: %w", err)
-	}
 	stagedPaths, err := git.diffPaths("--cached", head.Commit.String(), "--")
 	if err != nil {
 		return gitsync.Capture{}, fmt.Errorf("capture staged paths: %w", err)
@@ -57,6 +52,23 @@ func (git Git) Capture() (gitsync.Capture, error) {
 	untrackedPaths, err := git.nulPaths("ls-files", "-z", "--others", "--exclude-standard", "--")
 	if err != nil {
 		return gitsync.Capture{}, fmt.Errorf("capture untracked paths: %w", err)
+	}
+	effective, _, err := agentconfig.Resolve(git.Root.String(), agentconfig.Overrides{})
+	if err != nil {
+		return gitsync.Capture{}, fmt.Errorf("resolve snapshot deny policy: %w", err)
+	}
+	denyGlobs := effective.Secrets.SnapshotDenyGlobs
+	stagedPaths = filterDeniedPaths(stagedPaths, denyGlobs)
+	unstagedPaths = filterDeniedPaths(unstagedPaths, denyGlobs)
+	untrackedPaths = filterDeniedPaths(untrackedPaths, denyGlobs)
+
+	stagedPatch, err := git.diffPatch(denyGlobs, "--cached", head.Commit.String())
+	if err != nil {
+		return gitsync.Capture{}, fmt.Errorf("capture staged patch: %w", err)
+	}
+	unstagedPatch, err := git.diffPatch(denyGlobs)
+	if err != nil {
+		return gitsync.Capture{}, fmt.Errorf("capture unstaged patch: %w", err)
 	}
 
 	state := gitsync.NewState(head)
@@ -104,7 +116,7 @@ func (git Git) PlanRestore(target gitsync.Capture) (RestorePlan, error) {
 	}, nil
 }
 
-func (git Git) Restore(target gitsync.Capture) error {
+func (git Git) PreflightRestore(target gitsync.Capture) error {
 	if err := git.ensureSupportedWorktree(); err != nil {
 		return err
 	}
@@ -114,11 +126,40 @@ func (git Git) Restore(target gitsync.Capture) error {
 	if err := git.run("cat-file", "-e", target.State.Head.Commit.String()+"^{commit}"); err != nil {
 		return fmt.Errorf("target workspace git commit is not available: %w", err)
 	}
+	return nil
+}
+
+func (git Git) Restore(target gitsync.Capture) (returnErr error) {
+	if err := git.PreflightRestore(target); err != nil {
+		return err
+	}
+	effective, _, err := agentconfig.Resolve(git.Root.String(), agentconfig.Overrides{})
+	if err != nil {
+		return fmt.Errorf("resolve snapshot deny policy: %w", err)
+	}
+	preserved, err := git.captureDeniedWorkspaceState(target.State.Head.Commit, effective.Secrets.SnapshotDenyGlobs)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := git.restoreDeniedWorkspaceState(preserved); err != nil {
+			if returnErr == nil {
+				returnErr = err
+			} else {
+				returnErr = fmt.Errorf("%v; additionally failed to restore deny-listed paths: %w", returnErr, err)
+			}
+		}
+	}()
 
 	if err := git.run("reset", "--hard", "HEAD"); err != nil {
 		return fmt.Errorf("normalize current worktree: %w", err)
 	}
-	if err := git.run("clean", "-fd", "-e", ".turnal", "-e", ".turnal/", "--", "."); err != nil {
+	cleanArgs := []string{"clean", "-fd", "-e", ".turnal", "-e", ".turnal/"}
+	for _, pattern := range effective.Secrets.SnapshotDenyGlobs {
+		cleanArgs = append(cleanArgs, "-e", filepath.ToSlash(pattern))
+	}
+	cleanArgs = append(cleanArgs, "--", ".")
+	if err := git.run(cleanArgs...); err != nil {
 		return fmt.Errorf("clean current untracked files: %w", err)
 	}
 	if err := git.restoreHead(target.State.Head); err != nil {
@@ -172,10 +213,214 @@ func (git Git) ensureNoOperationInProgress() error {
 		if path == "" {
 			continue
 		}
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(git.Root.String(), path)
+		}
 		if _, err := os.Stat(path); err == nil {
 			return fmt.Errorf("workspace git operation in progress (%s); finish or abort it before workspace-git rollback", name)
 		} else if !os.IsNotExist(err) {
 			return fmt.Errorf("inspect workspace git state %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func filterDeniedPaths(paths []primitives.RepoPath, patterns []string) []primitives.RepoPath {
+	filtered := make([]primitives.RepoPath, 0, len(paths))
+	for _, repoPath := range paths {
+		if !snapshotpolicy.Denied(repoPath.String(), patterns) {
+			filtered = append(filtered, repoPath)
+		}
+	}
+	return filtered
+}
+
+func (git Git) diffPatch(denyGlobs []string, options ...string) ([]byte, error) {
+	args := []string{"diff", "--binary", "--full-index"}
+	args = append(args, options...)
+	args = append(args, "--")
+	for _, pattern := range denyGlobs {
+		pattern = filepath.ToSlash(pattern)
+		args = append(args, ":(exclude,glob)"+pattern)
+		if !strings.Contains(pattern, "/") {
+			args = append(args, ":(exclude,glob)**/"+pattern)
+		}
+	}
+	return git.runBytes(args...)
+}
+
+type preservedDeniedPath struct {
+	Path          primitives.RepoPath
+	Exists        bool
+	Mode          fs.FileMode
+	Content       []byte
+	SymlinkTarget string
+	IndexChanged  bool
+	IndexExists   bool
+	IndexMode     string
+	IndexObject   string
+}
+
+type preservedDeniedPaths []preservedDeniedPath
+
+func (git Git) captureDeniedWorkspaceState(targetCommit primitives.CommitSHA, patterns []string) (preservedDeniedPaths, error) {
+	candidates := map[string]primitives.RepoPath{}
+	stagedPaths, err := git.diffPaths("--cached", "--")
+	if err != nil {
+		return nil, fmt.Errorf("list staged deny-policy candidates: %w", err)
+	}
+	staged := make(map[string]struct{}, len(stagedPaths))
+	for _, repoPath := range stagedPaths {
+		if snapshotpolicy.Denied(repoPath.String(), patterns) {
+			staged[repoPath.String()] = struct{}{}
+			candidates[repoPath.String()] = repoPath
+		}
+	}
+	for _, args := range [][]string{
+		{"ls-files", "-z", "--"},
+		{"ls-tree", "-r", "-z", "--name-only", targetCommit.String()},
+	} {
+		paths, err := git.nulPaths(args...)
+		if err != nil {
+			return nil, fmt.Errorf("list deny-policy candidates: %w", err)
+		}
+		for _, repoPath := range paths {
+			if snapshotpolicy.Denied(repoPath.String(), patterns) {
+				candidates[repoPath.String()] = repoPath
+			}
+		}
+	}
+	root := git.Root.String()
+	if err := filepath.WalkDir(root, func(absPath string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(root, absPath)
+		if err != nil {
+			return err
+		}
+		if relative == "." {
+			return nil
+		}
+		repoText := filepath.ToSlash(relative)
+		if entry.IsDir() {
+			if repoText == ".git" || repoText == ".turnal" {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !snapshotpolicy.Denied(repoText, patterns) {
+			return nil
+		}
+		repoPath, err := primitives.ParseRepoPath(repoText)
+		if err != nil {
+			return err
+		}
+		candidates[repoPath.String()] = repoPath
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("scan deny-listed workspace paths: %w", err)
+	}
+
+	keys := make([]string, 0, len(candidates))
+	for key := range candidates {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	state := make([]preservedDeniedPath, 0, len(keys))
+	for _, key := range keys {
+		repoPath := candidates[key]
+		entry := preservedDeniedPath{Path: repoPath}
+		if _, ok := staged[repoPath.String()]; ok {
+			entry.IndexChanged = true
+			indexEntry, err := git.runBytes("ls-files", "-s", "-z", "--", repoPath.String())
+			if err != nil {
+				return nil, fmt.Errorf("read staged deny-listed path %s: %w", repoPath, err)
+			}
+			if len(indexEntry) > 0 {
+				header, _, ok := bytes.Cut(indexEntry, []byte{'\t'})
+				fields := strings.Fields(string(header))
+				if !ok || len(fields) != 3 || fields[2] != "0" {
+					return nil, fmt.Errorf("staged deny-listed path %s has unsupported index entry %q", repoPath, indexEntry)
+				}
+				entry.IndexExists = true
+				entry.IndexMode = fields[0]
+				entry.IndexObject = fields[1]
+			}
+		}
+		absPath := git.Root.Join(repoPath)
+		info, err := os.Lstat(absPath)
+		if os.IsNotExist(err) {
+			state = append(state, entry)
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("stat deny-listed path %s: %w", repoPath, err)
+		}
+		entry.Exists = true
+		entry.Mode = info.Mode()
+		switch {
+		case info.Mode().IsRegular():
+			entry.Content, err = os.ReadFile(absPath)
+		case info.Mode()&os.ModeSymlink != 0:
+			entry.SymlinkTarget, err = os.Readlink(absPath)
+		default:
+			return nil, fmt.Errorf("cannot safely preserve deny-listed path %s with mode %s", repoPath, info.Mode())
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read deny-listed path %s: %w", repoPath, err)
+		}
+		state = append(state, entry)
+	}
+	return state, nil
+}
+
+func (git Git) restoreDeniedWorkspaceState(entries preservedDeniedPaths) error {
+	for index := len(entries) - 1; index >= 0; index-- {
+		entry := entries[index]
+		if entry.Exists {
+			continue
+		}
+		if err := os.RemoveAll(git.Root.Join(entry.Path)); err != nil {
+			return fmt.Errorf("remove deny-listed path %s that was originally absent: %w", entry.Path, err)
+		}
+	}
+	for _, entry := range entries {
+		if !entry.Exists {
+			continue
+		}
+		absPath := git.Root.Join(entry.Path)
+		if err := os.RemoveAll(absPath); err != nil {
+			return fmt.Errorf("replace deny-listed path %s: %w", entry.Path, err)
+		}
+		if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+			return fmt.Errorf("create parent for deny-listed path %s: %w", entry.Path, err)
+		}
+		if entry.Mode&os.ModeSymlink != 0 {
+			if err := os.Symlink(entry.SymlinkTarget, absPath); err != nil {
+				return fmt.Errorf("restore deny-listed symlink %s: %w", entry.Path, err)
+			}
+			continue
+		}
+		if err := os.WriteFile(absPath, entry.Content, entry.Mode.Perm()); err != nil {
+			return fmt.Errorf("restore deny-listed file %s: %w", entry.Path, err)
+		}
+		if err := os.Chmod(absPath, entry.Mode.Perm()); err != nil {
+			return fmt.Errorf("restore deny-listed mode %s: %w", entry.Path, err)
+		}
+	}
+	for _, entry := range entries {
+		if !entry.IndexChanged {
+			continue
+		}
+		if !entry.IndexExists {
+			if err := git.run("update-index", "--force-remove", "--", entry.Path.String()); err != nil {
+				return fmt.Errorf("restore staged deletion for deny-listed path %s: %w", entry.Path, err)
+			}
+			continue
+		}
+		if err := git.run("update-index", "--add", "--cacheinfo", entry.IndexMode, entry.IndexObject, entry.Path.String()); err != nil {
+			return fmt.Errorf("restore staged deny-listed path %s: %w", entry.Path, err)
 		}
 	}
 	return nil

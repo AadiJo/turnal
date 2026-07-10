@@ -12,6 +12,7 @@ import (
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/filelock"
 	"github.com/AadiJo/turnal/internal/gitsync"
 	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/AadiJo/turnal/internal/turns"
@@ -55,6 +56,101 @@ func TestResolveTargetDefaultsToPost(t *testing.T) {
 	}
 	if resolved.Target.String() != "demo:turn:1:post" {
 		t.Fatalf("resolved target = %q, want demo:turn:1:post", resolved.Target)
+	}
+}
+
+func TestRestoreSafetyRecoversPreRollbackWorkspace(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	sessionID := sessionID(t, "demo")
+	turnID, _ := primitives.NewTurnID(1)
+	writeFile(t, root, "app.txt", "target\n")
+	target, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("target checkpoint: %v", err)
+	}
+	writeFile(t, root, "app.txt", "before rollback\n")
+	safety, err := repo.CreateSnapshotRef("refs/agent-vcs/rollback-safety/demo/turn/000001/pre/recovery", "recovery safety")
+	if err != nil {
+		t.Fatalf("safety snapshot: %v", err)
+	}
+	targetRef, _ := primitives.NewTargetRef(sessionID, turnID, primitives.CheckpointPhasePre)
+	journal := Journal{
+		Version: 1, State: "restoring", RestorePhase: "restoring", Target: targetRef.String(),
+		CheckpointRef: target.Ref.String(), TargetCommitSHA: target.Commit.String(),
+		Mode: primitives.RollbackModeCheckpoint.String(), SafetyRef: safety.Ref, SafetyCommitSHA: safety.Commit.String(),
+	}
+	if err := writeJournal(JournalPath(repo), journal); err != nil {
+		t.Fatalf("write journal: %v", err)
+	}
+	writeFile(t, root, "app.txt", "partially restored\n")
+
+	if err := New(repo).RestoreSafety(); err != nil {
+		t.Fatalf("RestoreSafety: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(root.String(), "app.txt"))
+	if err != nil {
+		t.Fatalf("read restored app: %v", err)
+	}
+	if string(data) != "before rollback\n" {
+		t.Fatalf("restored app = %q, want pre-rollback content", data)
+	}
+	if _, err := os.Stat(JournalPath(repo)); !os.IsNotExist(err) {
+		t.Fatalf("journal remains after safety restore: %v", err)
+	}
+}
+
+func TestResumeRecoveryReappliesTargetAndFinalizes(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	sessionID := sessionID(t, "demo")
+	turnID, _ := primitives.NewTurnID(1)
+	writeFile(t, root, "app.txt", "target\n")
+	target, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("target checkpoint: %v", err)
+	}
+	writeFile(t, root, "app.txt", "before rollback\n")
+	safety, err := repo.CreateSnapshotRef("refs/agent-vcs/rollback-safety/demo/turn/000001/pre/resume", "resume safety")
+	if err != nil {
+		t.Fatalf("safety snapshot: %v", err)
+	}
+	targetRef, _ := primitives.NewTargetRef(sessionID, turnID, primitives.CheckpointPhasePre)
+	resolved, err := ResolveTarget(repo, targetRef)
+	if err != nil {
+		t.Fatalf("ResolveTarget: %v", err)
+	}
+	journal := Journal{
+		Version: 1, State: "restoring", RestorePhase: "restoring", Target: targetRef.String(),
+		CheckpointRef: target.Ref.String(), TargetCommitSHA: target.Commit.String(),
+		Mode: primitives.RollbackModeCheckpoint.String(), SafetyRef: safety.Ref, SafetyCommitSHA: safety.Commit.String(),
+		EventSourceID: rollbackEventSourceID(resolved, safety),
+	}
+	if err := writeJournal(JournalPath(repo), journal); err != nil {
+		t.Fatalf("write journal: %v", err)
+	}
+	writeFile(t, root, "app.txt", "ambiguous partial state\n")
+
+	if err := New(repo).ResumeRecovery(); err != nil {
+		t.Fatalf("ResumeRecovery: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(root.String(), "app.txt"))
+	if err != nil {
+		t.Fatalf("read resumed app: %v", err)
+	}
+	if string(data) != "target\n" {
+		t.Fatalf("resumed app = %q, want target content", data)
+	}
+	if _, err := os.Stat(JournalPath(repo)); !os.IsNotExist(err) {
+		t.Fatalf("journal remains after resume: %v", err)
 	}
 }
 
@@ -336,10 +432,12 @@ func TestRunFailsWhenWorkspaceLockHeld(t *testing.T) {
 		t.Fatalf("target checkpoint: %v", err)
 	}
 	writeFile(t, root, "app.txt", "current\n")
-	if err := os.Mkdir(repo.WorkspaceLockPath(), 0o700); err != nil {
+	lock, err := filelock.Acquire(repo.WorkspaceLockPath(), time.Second)
+	if err != nil {
 		t.Fatalf("create workspace lock: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Remove(repo.WorkspaceLockPath()) })
+	t.Cleanup(func() { _ = lock.Release() })
+	repo.LockTimeout = 20 * time.Millisecond
 
 	targetRef, err := primitives.NewTargetRef(sessionID, turnID, primitives.CheckpointPhasePre)
 	if err != nil {

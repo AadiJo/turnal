@@ -176,6 +176,147 @@ func InspectJournal(repo *checkpoint.Repo) []string {
 	}
 }
 
+func RecoveryStatus(repo *checkpoint.Repo) (Journal, bool, error) {
+	if repo == nil {
+		return Journal{}, false, fmt.Errorf("recovery repo is required")
+	}
+	return readJournal(JournalPath(repo))
+}
+
+// ResumeRecovery explicitly reapplies the recorded target and finalizes the
+// rollback. Reapplying is intentional because a crash in the restoring phase
+// leaves the exact progress ambiguous.
+func (engine Engine) ResumeRecovery() error {
+	if engine.Repo == nil {
+		return fmt.Errorf("recovery repo is required")
+	}
+	return engine.Repo.WithWorkspaceLock("resume rollback recovery", func() error {
+		path := JournalPath(engine.Repo)
+		journal, ok, err := readJournal(path)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("no rollback recovery journal exists")
+		}
+		switch journal.phase() {
+		case "intent":
+			return clearJournal(path)
+		case "planned", "restoring":
+			if journal.Mode != primitives.RollbackModeWorkspaceGit.String() {
+				commit, err := primitives.ParseCommitSHA(journal.TargetCommitSHA)
+				if err != nil {
+					return fmt.Errorf("rollback recovery target commit: %w", err)
+				}
+				if err := engine.Repo.PreflightRestoreCommit(commit); err != nil {
+					return fmt.Errorf("preflight resumed restore: %w", err)
+				}
+			} else {
+				gitSyncRef, err := primitives.ParseGitSyncRef(journal.GitSyncRef)
+				if err != nil {
+					return fmt.Errorf("rollback recovery git-sync ref: %w", err)
+				}
+				targetCapture, err := gitsync.Load(engine.Repo, gitSyncRef)
+				if err != nil {
+					return fmt.Errorf("load rollback recovery workspace state: %w", err)
+				}
+				if err := workspacegit.Open(engine.Repo.WorkspaceRoot).PreflightRestore(targetCapture); err != nil {
+					return fmt.Errorf("preflight resumed workspace-Git restore: %w", err)
+				}
+			}
+			journal = journal.withPhase("restoring")
+			if err := writeJournal(path, journal); err != nil {
+				return err
+			}
+			if journal.Mode == primitives.RollbackModeWorkspaceGit.String() {
+				gitSyncRef, err := primitives.ParseGitSyncRef(journal.GitSyncRef)
+				if err != nil {
+					return fmt.Errorf("rollback recovery git-sync ref: %w", err)
+				}
+				targetCapture, err := gitsync.Load(engine.Repo, gitSyncRef)
+				if err != nil {
+					return fmt.Errorf("load rollback recovery workspace state: %w", err)
+				}
+				if err := workspacegit.Open(engine.Repo.WorkspaceRoot).Restore(targetCapture); err != nil {
+					return fmt.Errorf("resume workspace-git restore: %w", err)
+				}
+			} else {
+				commit, err := primitives.ParseCommitSHA(journal.TargetCommitSHA)
+				if err != nil {
+					return fmt.Errorf("rollback recovery target commit: %w", err)
+				}
+				if err := engine.Repo.RestoreCommit(commit); err != nil {
+					return fmt.Errorf("resume checkpoint restore: %w", err)
+				}
+			}
+			journal = journal.withPhase("restored")
+			if err := writeJournal(path, journal); err != nil {
+				return err
+			}
+			fallthrough
+		case "restored":
+			if journal.Mode == primitives.RollbackModeWorkspaceGit.String() {
+				return engine.finalizeRestoredWorkspaceGitJournal(path, journal)
+			}
+			return engine.finalizeRestoredJournal(path, journal)
+		default:
+			return fmt.Errorf("rollback invariant failed: unknown rollback journal phase %q at %s", journal.phase(), path)
+		}
+	})
+}
+
+// RestoreSafety abandons the target restore and restores the safety snapshot
+// captured immediately before rollback began.
+func (engine Engine) RestoreSafety() error {
+	if engine.Repo == nil {
+		return fmt.Errorf("recovery repo is required")
+	}
+	return engine.Repo.WithWorkspaceLock("restore rollback safety", func() error {
+		path := JournalPath(engine.Repo)
+		journal, ok, err := readJournal(path)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("no rollback recovery journal exists")
+		}
+		if journal.SafetyRef == "" || journal.SafetyCommitSHA == "" {
+			return fmt.Errorf("rollback journal has no safety snapshot; target restore had not started")
+		}
+		if journal.Mode == primitives.RollbackModeWorkspaceGit.String() {
+			if journal.GitSafetyRef == "" {
+				return fmt.Errorf("rollback journal has no workspace-Git safety snapshot")
+			}
+			capture, err := gitsync.LoadPrivate(engine.Repo, journal.GitSafetyRef)
+			if err != nil {
+				return fmt.Errorf("load workspace-Git safety snapshot: %w", err)
+			}
+			if err := workspacegit.Open(engine.Repo.WorkspaceRoot).Restore(capture); err != nil {
+				return fmt.Errorf("restore workspace-Git safety snapshot: %w", err)
+			}
+		} else {
+			commit, err := primitives.ParseCommitSHA(journal.SafetyCommitSHA)
+			if err != nil {
+				return fmt.Errorf("rollback safety commit: %w", err)
+			}
+			refCommit, err := engine.Repo.RefCommit(journal.SafetyRef)
+			if err != nil {
+				return fmt.Errorf("resolve rollback safety ref: %w", err)
+			}
+			if refCommit != commit {
+				return fmt.Errorf("rollback safety ref points to %s, journal records %s", refCommit, commit)
+			}
+			if err := engine.Repo.RestoreCommit(commit); err != nil {
+				return fmt.Errorf("restore checkpoint safety snapshot: %w", err)
+			}
+		}
+		if err := clearJournal(path); err != nil {
+			return fmt.Errorf("clear rollback recovery journal: %w", err)
+		}
+		return nil
+	})
+}
+
 func ResolveTarget(repo *checkpoint.Repo, target primitives.TargetRef) (ResolvedTarget, error) {
 	phase, ok := target.Phase()
 	if !ok {
@@ -301,6 +442,9 @@ func (engine Engine) runCheckpointUnlocked(request Request) (Result, error) {
 		return result, engine.safetyError("write rollback journal", safety, err)
 	}
 
+	if err := engine.Repo.PreflightRestoreCommit(target.Commit); err != nil {
+		return result, engine.safetyError("preflight checkpoint restore", safety, err)
+	}
 	journal = journal.withPhase("restoring")
 	if err := writeJournal(JournalPath(engine.Repo), journal); err != nil {
 		return result, engine.safetyError("write rollback journal", safety, err)
@@ -320,7 +464,7 @@ func (engine Engine) runCheckpointUnlocked(request Request) (Result, error) {
 	}
 	result.Event = &event
 
-	if err := os.Remove(JournalPath(engine.Repo)); err != nil && !os.IsNotExist(err) {
+	if err := clearJournal(JournalPath(engine.Repo)); err != nil {
 		return result, engine.safetyError("clear rollback journal", safety, err)
 	}
 	return result, nil
@@ -417,6 +561,9 @@ func (engine Engine) runWorkspaceGitUnlocked(request Request) (Result, error) {
 		return result, engine.safetyError("write rollback journal", safety, err)
 	}
 
+	if err := workspace.PreflightRestore(targetCapture); err != nil {
+		return result, engine.safetyError("preflight workspace-Git restore", safety, err)
+	}
 	journal = journal.withPhase("restoring")
 	if err := writeJournal(JournalPath(engine.Repo), journal); err != nil {
 		return result, engine.safetyError("write rollback journal", safety, err)
@@ -436,7 +583,7 @@ func (engine Engine) runWorkspaceGitUnlocked(request Request) (Result, error) {
 	}
 	result.Event = &event
 
-	if err := os.Remove(JournalPath(engine.Repo)); err != nil && !os.IsNotExist(err) {
+	if err := clearJournal(JournalPath(engine.Repo)); err != nil {
 		return result, engine.safetyError("clear rollback journal", safety, err)
 	}
 	return result, nil
@@ -451,7 +598,7 @@ func (engine Engine) ensureNoActiveJournal() error {
 	if ok {
 		switch journal.phase() {
 		case "intent":
-			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			if err := clearJournal(path); err != nil {
 				return fmt.Errorf("clear pre-restore rollback journal: %w", err)
 			}
 			return nil
@@ -493,7 +640,7 @@ func (engine Engine) finalizeRestoredJournal(path string, journal Journal) error
 		}
 	}
 
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+	if err := clearJournal(path); err != nil {
 		return SafetyError{
 			Op:          "clear restored rollback journal",
 			Err:         err,
@@ -526,7 +673,7 @@ func (engine Engine) finalizeRestoredWorkspaceGitJournal(path string, journal Jo
 		}
 	}
 
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+	if err := clearJournal(path); err != nil {
 		return SafetyError{
 			Op:          "clear restored workspace-git rollback journal",
 			Err:         err,
@@ -772,7 +919,8 @@ func (journal Journal) withPhase(phase string) Journal {
 }
 
 func writeJournal(path string, journal Journal) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create rollback journal dir: %w", err)
 	}
 	journal.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
@@ -782,14 +930,44 @@ func writeJournal(path string, journal Journal) error {
 	}
 	data = append(data, '\n')
 
-	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
+	tmp, err := os.CreateTemp(dir, ".rollback-journal-*")
+	if err != nil {
+		return fmt.Errorf("create rollback journal: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("secure rollback journal: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
 		return fmt.Errorf("write rollback journal: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync rollback journal: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close rollback journal: %w", err)
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
 		return fmt.Errorf("commit rollback journal: %w", err)
 	}
+	if err := syncDirectory(dir); err != nil {
+		return fmt.Errorf("sync rollback journal dir: %w", err)
+	}
 	return nil
+}
+
+func clearJournal(path string) error {
+	if err := os.Remove(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	return syncDirectory(filepath.Dir(path))
 }
 
 func safetyRef(target ResolvedTarget, now time.Time) string {

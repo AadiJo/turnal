@@ -5,9 +5,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/AadiJo/turnal/internal/filelock"
 	"github.com/AadiJo/turnal/internal/primitives"
 )
 
@@ -36,6 +39,54 @@ func TestInitCreatesHiddenBareRepo(t *testing.T) {
 	}
 }
 
+func TestOpenUpgradesLegacyMetadataPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits are not enforced on Windows")
+	}
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	legacyDir := filepath.Join(repo.MetadataDir, "log", "raw", "legacy")
+	if err := os.MkdirAll(legacyDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	legacyFile := filepath.Join(legacyDir, "payload.jsonl")
+	if err := os.WriteFile(legacyFile, []byte("secret\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.Chmod(legacyDir, 0o755); err != nil {
+		t.Fatalf("Chmod dir: %v", err)
+	}
+	if err := os.Chmod(legacyFile, 0o644); err != nil {
+		t.Fatalf("Chmod file: %v", err)
+	}
+	if err := os.Remove(filepath.Join(repo.MetadataDir, permissionsVersionFileName)); err != nil {
+		t.Fatalf("remove permission marker: %v", err)
+	}
+
+	if _, err := Open(root); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	info, err := os.Stat(legacyDir)
+	if err != nil {
+		t.Fatalf("stat legacy dir: %v", err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Fatalf("legacy dir mode = %v, want 0700", info.Mode().Perm())
+	}
+	info, err = os.Stat(legacyFile)
+	if err != nil {
+		t.Fatalf("stat legacy file: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("legacy file mode = %v, want 0600", info.Mode().Perm())
+	}
+}
+
 func TestWorkspaceLockBlocksCheckpointMutation(t *testing.T) {
 	requireGit(t)
 
@@ -44,10 +95,12 @@ func TestWorkspaceLockBlocksCheckpointMutation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	if err := os.Mkdir(repo.WorkspaceLockPath(), 0o700); err != nil {
+	lock, err := filelock.Acquire(repo.WorkspaceLockPath(), time.Second)
+	if err != nil {
 		t.Fatalf("create workspace lock: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Remove(repo.WorkspaceLockPath()) })
+	t.Cleanup(func() { _ = lock.Release() })
+	repo.LockTimeout = 20 * time.Millisecond
 
 	sessionID, _ := primitives.ParseSessionID("demo")
 	turnID, _ := primitives.NewTurnID(1)
@@ -545,6 +598,9 @@ func TestPlanRestoreCommitClassifiesChanges(t *testing.T) {
 		"delete.txt": RestoreActionDeleted,
 		"mode.sh":    RestoreActionModeChanged,
 	}
+	if runtime.GOOS == "windows" {
+		delete(want, "mode.sh")
+	}
 	for path, action := range want {
 		if actions[path] != action {
 			t.Fatalf("action for %s = %s, want %s; all actions=%#v", path, actions[path], action, actions)
@@ -557,6 +613,9 @@ func TestPlanRestoreCommitClassifiesChanges(t *testing.T) {
 
 func TestRestoreCommitPreservesBytesModesSymlinksAndMetadata(t *testing.T) {
 	requireGit(t)
+	if runtime.GOOS == "windows" {
+		t.Skip("exact POSIX mode and symlink round-trip is not supported on Windows")
+	}
 
 	root := workspaceRoot(t)
 	repo, err := Init(root)
@@ -567,6 +626,7 @@ func TestRestoreCommitPreservesBytesModesSymlinksAndMetadata(t *testing.T) {
 	rawBytes := []byte{'h', 'i', 0, '\r', '\n', 0xff}
 	writeBytes(t, root, "raw.bin", rawBytes, 0o644)
 	writeBytes(t, root, "script.sh", []byte("#!/bin/sh\n"), 0o755)
+	writeBytes(t, root, "private.key", []byte("checkpoint secret\n"), 0o600)
 	if err := os.Symlink("raw.bin", filepath.Join(root.String(), "link.bin")); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
@@ -579,6 +639,7 @@ func TestRestoreCommitPreservesBytesModesSymlinksAndMetadata(t *testing.T) {
 	}
 
 	writeBytes(t, root, "raw.bin", []byte("changed\n"), 0o644)
+	writeBytes(t, root, "private.key", []byte("changed secret\n"), 0o644)
 	if err := os.Chmod(filepath.Join(root.String(), "script.sh"), 0o644); err != nil {
 		t.Fatalf("chmod script.sh: %v", err)
 	}
@@ -607,6 +668,13 @@ func TestRestoreCommitPreservesBytesModesSymlinksAndMetadata(t *testing.T) {
 	if scriptInfo.Mode().Perm() != 0o755 {
 		t.Fatalf("script.sh mode = %o, want 755", scriptInfo.Mode().Perm())
 	}
+	privateInfo, err := os.Stat(filepath.Join(root.String(), "private.key"))
+	if err != nil {
+		t.Fatalf("stat private.key: %v", err)
+	}
+	if privateInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("private.key mode = %o, want 600", privateInfo.Mode().Perm())
+	}
 
 	linkInfo, err := os.Lstat(filepath.Join(root.String(), "link.bin"))
 	if err != nil {
@@ -628,6 +696,71 @@ func TestRestoreCommitPreservesBytesModesSymlinksAndMetadata(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root.String(), ".turnal/tmp/keep.txt")); err != nil {
 		t.Fatalf("metadata file was not preserved: %v", err)
+	}
+}
+
+func TestRestoreRejectsTamperedModeManifest(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	writeFile(t, root, "app.txt", "content\n")
+	sessionID, _ := primitives.ParseSessionID("demo")
+	turnID, _ := primitives.NewTurnID(1)
+	target, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("CreateCheckpoint: %v", err)
+	}
+	if err := os.WriteFile(repo.modeManifestPath(target.Commit), []byte(`{"version":1,"modes":{"app.txt":384}}`), 0o600); err != nil {
+		t.Fatalf("tamper manifest: %v", err)
+	}
+	if err := repo.PreflightRestoreCommit(target.Commit); err == nil || !strings.Contains(err.Error(), "does not match commit trailer") {
+		t.Fatalf("PreflightRestoreCommit error = %v, want manifest hash mismatch", err)
+	}
+}
+
+func TestPruneModeManifestsRemovesOnlyUnreachableSidecars(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	writeFile(t, root, "app.txt", "one\n")
+	sessionID, _ := primitives.ParseSessionID("demo")
+	turnID, _ := primitives.NewTurnID(1)
+	first, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("first checkpoint: %v", err)
+	}
+	writeFile(t, root, "app.txt", "two\n")
+	second, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePost)
+	if err != nil {
+		t.Fatalf("second checkpoint: %v", err)
+	}
+	refs, err := repo.ListAllPrivateRefs()
+	if err != nil {
+		t.Fatalf("ListAllPrivateRefs: %v", err)
+	}
+	for _, ref := range refs {
+		commit, resolveErr := repo.RefCommit(ref)
+		if resolveErr == nil && commit == first.Commit {
+			if _, err := runHiddenGit(repo, "", "update-ref", "-d", ref); err != nil {
+				t.Fatalf("delete first commit ref %s: %v", ref, err)
+			}
+		}
+	}
+	removed, err := repo.PruneModeManifests()
+	if err != nil {
+		t.Fatalf("PruneModeManifests: %v", err)
+	}
+	if len(removed) != 1 || removed[0] != repo.modeManifestPath(first.Commit) {
+		t.Fatalf("removed = %#v, want first manifest", removed)
+	}
+	if _, err := os.Stat(repo.modeManifestPath(second.Commit)); err != nil {
+		t.Fatalf("reachable manifest removed: %v", err)
 	}
 }
 
