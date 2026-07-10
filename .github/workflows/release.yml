@@ -16,6 +16,9 @@ jobs:
     name: Release
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    env:
+      TURNAL_TELEMETRY_ENDPOINT: ${{ vars.TURNAL_TELEMETRY_ENDPOINT }}
+      TURNAL_TELEMETRY_ROLLOUT_PERCENT: ${{ vars.TURNAL_TELEMETRY_ROLLOUT_PERCENT || '0' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6

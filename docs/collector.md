@@ -42,7 +42,8 @@ Mount `/app/data` on durable encrypted storage. Put the service behind a TLS
 terminator that overwrites `X-Forwarded-Proto`, set
 `TURNAL_COLLECTOR_TRUST_PROXY_PROTO=true`, and verify plain HTTP requests cannot
 reach the origin directly. Alternatively, mount a certificate and key and use
-direct TLS.
+direct TLS. The image-owned directory is writable by its non-root UID 65532; a
+host bind mount must grant that UID read/write access explicitly.
 
 SQLite runs in WAL mode with `synchronous=FULL`. Back up the database with a
 SQLite-aware snapshot mechanism; copying only the main file while the process is

@@ -24,6 +24,10 @@ positive percentage is paired with an empty endpoint. Selection hashes only the
 random installation UUID into a stable 0–99 bucket. It does not inspect machine,
 workspace, account, or network attributes.
 
+GitHub releases read these values from repository variables with the same names;
+missing variables resolve to the dark empty-endpoint/zero-percent configuration.
+Changing them is a release operation and requires the evidence below.
+
 ## Required evidence before nightly
 
 - The disclosure is published at `https://turnal.dev/telemetry`, names PostHog,
