@@ -63,7 +63,8 @@ type Origin struct {
 }
 
 type Engine struct {
-	Repo *checkpoint.Repo
+	Repo     *checkpoint.Repo
+	ReadOnly bool
 }
 
 func New(repo *checkpoint.Repo) Engine {

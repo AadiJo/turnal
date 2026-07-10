@@ -50,7 +50,7 @@ func (engine Engine) Compute(query Query) (Result, error) {
 	concurrent := concurrentTurnAttributions(history.Complete, history.Incomplete)
 
 	store := engine.openBlameCache()
-	if store != nil {
+	if store != nil && !engine.ReadOnly {
 		defer store.Close()
 		cached, found, err := store.LoadBlameCache(queryindex.BlameCacheQuery{
 			ScopeSession:  query.SessionID,
