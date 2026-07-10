@@ -79,23 +79,35 @@ func Rebuild(repo *checkpoint.Repo) (RebuildStats, error) {
 	}
 
 	paths := PathsForMetadata(repo.MetadataDir)
-	data, err := collectRebuildData(repo)
-	if err != nil {
-		return RebuildStats{DBPath: paths.DBPath}, err
+	var stats RebuildStats
+	for attempt := 1; attempt <= 3; attempt++ {
+		fingerprintBefore, err := sourceFingerprint(repo.MetadataDir)
+		if err != nil {
+			return RebuildStats{DBPath: paths.DBPath}, err
+		}
+		data, err := collectRebuildData(repo)
+		if err != nil {
+			return RebuildStats{DBPath: paths.DBPath}, err
+		}
+		stats = RebuildStats{
+			DBPath: paths.DBPath, Sessions: len(data.Sessions), Turns: len(data.Turns),
+			Events: len(data.Events), Checkpoints: len(data.Checkpoints),
+			FileTouches: len(data.FileTouches), SearchDocuments: len(data.SearchDocuments),
+			SourceFingerprint: fingerprintBefore,
+		}
+		fingerprintAfter, err := sourceFingerprint(repo.MetadataDir)
+		if err != nil {
+			return stats, err
+		}
+		if fingerprintBefore != fingerprintAfter {
+			continue
+		}
+		if err := writeRebuiltDatabase(paths, data, stats); err != nil {
+			return stats, err
+		}
+		return stats, nil
 	}
-	stats := RebuildStats{
-		DBPath:          paths.DBPath,
-		Sessions:        len(data.Sessions),
-		Turns:           len(data.Turns),
-		Events:          len(data.Events),
-		Checkpoints:     len(data.Checkpoints),
-		FileTouches:     len(data.FileTouches),
-		SearchDocuments: len(data.SearchDocuments),
-	}
-	if err := writeRebuiltDatabase(paths, data, stats); err != nil {
-		return stats, err
-	}
-	return stats, nil
+	return stats, fmt.Errorf("durable records kept changing during 3 index rebuild attempts; retry when capture activity is quieter")
 }
 
 func collectRebuildData(repo *checkpoint.Repo) (rebuildData, error) {
@@ -411,8 +423,11 @@ func nonEmptyStrings(values []string) []string {
 }
 
 func writeRebuiltDatabase(paths Paths, data rebuildData, stats RebuildStats) error {
-	if err := os.MkdirAll(paths.Dir, 0o755); err != nil {
+	if err := os.MkdirAll(paths.Dir, 0o700); err != nil {
 		return fmt.Errorf("create index dir: %w", err)
+	}
+	if err := os.Chmod(paths.Dir, 0o700); err != nil {
+		return fmt.Errorf("secure index dir: %w", err)
 	}
 
 	tempFile, err := os.CreateTemp(paths.Dir, DBFileName+".rebuild-*")
@@ -519,6 +534,7 @@ func insertMeta(ctx context.Context, tx *sql.Tx, stats RebuildStats) error {
 		"checkpoint_ref_count": strconv.Itoa(stats.Checkpoints),
 		"file_touch_count":     strconv.Itoa(stats.FileTouches),
 		"search_doc_count":     strconv.Itoa(stats.SearchDocuments),
+		"source_fingerprint":   stats.SourceFingerprint,
 	}
 	keys := make([]string, 0, len(values))
 	for key := range values {

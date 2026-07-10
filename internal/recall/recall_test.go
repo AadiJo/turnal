@@ -95,8 +95,8 @@ func TestRecallTurnIncludesProviderEventsAndRawRecords(t *testing.T) {
 				t.Fatalf("raw records len = %d, want 3: %#v", len(turn.RawRecords), turn.RawRecords)
 			}
 			for _, rawRecord := range turn.RawRecords {
-				if !strings.HasPrefix(rawRecord.RawRef, test.rawAdapter+":") {
-					t.Fatalf("raw ref = %q, want %s:<line>", rawRecord.RawRef, test.rawAdapter)
+				if !strings.Contains(rawRecord.RawRef, ":"+test.rawAdapter+":") {
+					t.Fatalf("raw ref = %q, want v2 session ref for %s", rawRecord.RawRef, test.rawAdapter)
 				}
 				if rawRecord.Record.Adapter != test.adapter {
 					t.Fatalf("raw record adapter = %s, want %s", rawRecord.Record.Adapter, test.adapter)

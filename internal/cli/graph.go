@@ -116,10 +116,14 @@ func logCmd() *cobra.Command {
 					return err
 				}
 			}
-			if shouldPageOutput(cmd.OutOrStdout(), noPager, buf.Bytes()) {
-				return pageOutput(cmd.OutOrStdout(), buf.Bytes())
+			output := buf.Bytes()
+			if !colorOutputEnabled(cmd.OutOrStdout()) {
+				output = stripANSIBytes(output)
 			}
-			_, err = cmd.OutOrStdout().Write(buf.Bytes())
+			if shouldPageOutput(cmd.OutOrStdout(), noPager, output) {
+				return pageOutput(cmd.OutOrStdout(), output)
+			}
+			_, err = cmd.OutOrStdout().Write(output)
 			return err
 		},
 	}

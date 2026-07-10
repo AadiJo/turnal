@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -36,6 +37,16 @@ func Exists(metadataDir string) (bool, error) {
 	return true, nil
 }
 
+// Invalidate removes derived index state. It is safe because the index can be
+// rebuilt entirely from durable event, checkpoint, and adapter records.
+func Invalidate(metadataDir string) error {
+	paths := PathsForMetadata(metadataDir)
+	if err := os.RemoveAll(paths.Dir); err != nil {
+		return fmt.Errorf("invalidate query index: %w", err)
+	}
+	return nil
+}
+
 func Open(metadataDir string) (*Store, error) {
 	paths := PathsForMetadata(metadataDir)
 	db, err := sql.Open("sqlite", paths.DBPath)
@@ -54,6 +65,36 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) Healthy() (bool, error) {
+	healthy, err := s.StructurallyHealthy()
+	if err != nil || !healthy {
+		return healthy, err
+	}
+	var storedFingerprint string
+	if err := s.db.QueryRow(`SELECT value FROM meta WHERE key = 'source_fingerprint'`).Scan(&storedFingerprint); err != nil {
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		return false, fmt.Errorf("read index source fingerprint: %w", err)
+	}
+	metadataDir := filepath.Dir(s.paths.Dir)
+	currentFingerprint, err := sourceFingerprint(metadataDir)
+	if err != nil {
+		return false, err
+	}
+	return storedFingerprint != "" && storedFingerprint == currentFingerprint, nil
+}
+
+// StructurallyHealthy reports whether the derived database is internally
+// usable and schema-compatible. Freshness is deliberately separate: a new
+// durable event makes an index stale, but does not indicate corruption.
+func (s *Store) StructurallyHealthy() (bool, error) {
+	var quickCheck string
+	if err := s.db.QueryRow("PRAGMA quick_check").Scan(&quickCheck); err != nil {
+		return false, fmt.Errorf("check index database integrity: %w", err)
+	}
+	if quickCheck != "ok" {
+		return false, nil
+	}
 	var version int
 	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return false, fmt.Errorf("read index schema version: %w", err)
@@ -69,7 +110,17 @@ func (s *Store) Healthy() (bool, error) {
 		}
 		return false, fmt.Errorf("read index metadata: %w", err)
 	}
-	return rebuiltAt != "", nil
+	if rebuiltAt == "" {
+		return false, nil
+	}
+	var storedFingerprint string
+	if err := s.db.QueryRow(`SELECT value FROM meta WHERE key = 'source_fingerprint'`).Scan(&storedFingerprint); err != nil {
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		return false, fmt.Errorf("read index source fingerprint: %w", err)
+	}
+	return storedFingerprint != "", nil
 }
 
 func (s *Store) Search(query SearchQuery) ([]SearchResult, error) {
