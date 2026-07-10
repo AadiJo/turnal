@@ -9,7 +9,7 @@ import (
 	"github.com/AadiJo/turnal/internal/primitives"
 )
 
-func TestBootstrapCreatesWorkspaceMetadataAndGitignore(t *testing.T) {
+func TestBootstrapCreatesWorkspaceMetadataWithoutWorkspaceGit(t *testing.T) {
 	requireGit(t)
 
 	root := workspaceRoot(t)
@@ -20,11 +20,8 @@ func TestBootstrapCreatesWorkspaceMetadataAndGitignore(t *testing.T) {
 	if !result.GitignoreUpdated {
 		t.Fatal("Bootstrap did not report gitignore update")
 	}
-	if !result.WorkspaceGitInitialized {
-		t.Fatal("Bootstrap did not report workspace git initialization")
-	}
-	if result.WorkspaceGitPath != filepath.Join(root.String(), ".git") {
-		t.Fatalf("workspace git path = %q, want root .git", result.WorkspaceGitPath)
+	if _, err := os.Lstat(filepath.Join(root.String(), ".git")); !os.IsNotExist(err) {
+		t.Fatalf("workspace .git exists or could not be checked: %v", err)
 	}
 
 	for _, path := range []string{
@@ -35,20 +32,11 @@ func TestBootstrapCreatesWorkspaceMetadataAndGitignore(t *testing.T) {
 		result.Repo.TmpDir,
 		filepath.Join(result.Repo.MetadataDir, versionFileName),
 		filepath.Join(result.Repo.MetadataDir, configFileName),
-		result.WorkspaceGitPath,
 		result.GitignorePath,
 	} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected bootstrap path %s: %v", path, err)
 		}
-	}
-
-	inside, err := runGitNoRepo(root.String(), "rev-parse", "--is-inside-work-tree")
-	if err != nil {
-		t.Fatalf("verify workspace git repo: %v", err)
-	}
-	if strings.TrimSpace(inside) != "true" {
-		t.Fatalf("is-inside-work-tree = %q, want true", inside)
 	}
 
 	gitignore, err := os.ReadFile(result.GitignorePath)
@@ -103,11 +91,8 @@ func TestBootstrapIsIdempotent(t *testing.T) {
 	if second.GitignoreUpdated {
 		t.Fatal("second bootstrap should not update gitignore")
 	}
-	if !first.WorkspaceGitInitialized {
-		t.Fatal("first bootstrap should initialize workspace git")
-	}
-	if second.WorkspaceGitInitialized {
-		t.Fatal("second bootstrap should not reinitialize workspace git")
+	if _, err := os.Lstat(filepath.Join(root.String(), ".git")); !os.IsNotExist(err) {
+		t.Fatalf("workspace .git exists or could not be checked: %v", err)
 	}
 
 	gitignore, err := os.ReadFile(first.GitignorePath)
@@ -119,19 +104,15 @@ func TestBootstrapIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestBootstrapWithOptionsCanSkipWorkspaceGit(t *testing.T) {
+func TestBootstrapNeverInitializesWorkspaceGit(t *testing.T) {
 	requireGit(t)
 
 	root := workspaceRoot(t)
 	result, err := BootstrapWithOptions(root, BootstrapOptions{
-		InitWorkspaceGit: false,
-		UpdateGitignore:  true,
+		UpdateGitignore: true,
 	})
 	if err != nil {
 		t.Fatalf("BootstrapWithOptions: %v", err)
-	}
-	if result.WorkspaceGitInitialized {
-		t.Fatal("workspace git initialized despite InitWorkspaceGit=false")
 	}
 	if _, err := os.Lstat(filepath.Join(root.String(), ".git")); !os.IsNotExist(err) {
 		t.Fatalf("workspace .git exists or could not be checked: %v", err)
@@ -149,14 +130,10 @@ func TestBootstrapWithOptionsCanSkipGitignore(t *testing.T) {
 
 	root := workspaceRoot(t)
 	result, err := BootstrapWithOptions(root, BootstrapOptions{
-		InitWorkspaceGit: true,
-		UpdateGitignore:  false,
+		UpdateGitignore: false,
 	})
 	if err != nil {
 		t.Fatalf("BootstrapWithOptions: %v", err)
-	}
-	if !result.WorkspaceGitInitialized {
-		t.Fatal("workspace git was not initialized")
 	}
 	if result.GitignoreUpdated {
 		t.Fatal("gitignore updated despite UpdateGitignore=false")
@@ -183,9 +160,7 @@ func TestBootstrapDoesNotMutateExistingWorkspaceGit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Bootstrap: %v", err)
 	}
-	if result.WorkspaceGitInitialized {
-		t.Fatal("Bootstrap reinitialized existing workspace git")
-	}
+	_ = result
 
 	after, err := os.ReadFile(configPath)
 	if err != nil {
@@ -213,20 +188,12 @@ func TestBootstrapDoesNotCreateNestedGitRepoInsideParentWorktree(t *testing.T) {
 		t.Fatalf("ParseWorkspaceRoot: %v", err)
 	}
 
-	result, err := Bootstrap(childRoot)
+	_, err = Bootstrap(childRoot)
 	if err != nil {
 		t.Fatalf("Bootstrap: %v", err)
 	}
-	if result.WorkspaceGitInitialized {
-		t.Fatal("Bootstrap initialized nested workspace git inside parent worktree")
-	}
 	if _, err := os.Lstat(filepath.Join(childRoot.String(), ".git")); !os.IsNotExist(err) {
 		t.Fatalf("child .git exists or could not be checked: %v", err)
-	}
-
-	parentGitPath := filepath.Join(parent.String(), ".git")
-	if result.WorkspaceGitPath != parentGitPath {
-		t.Fatalf("workspace git path = %q, want parent git path %q", result.WorkspaceGitPath, parentGitPath)
 	}
 }
 
@@ -256,9 +223,9 @@ func TestBootstrapRefusesNestedGitInitWhenParentGitDiscoveryFails(t *testing.T) 
 
 	_, err = Bootstrap(childRoot)
 	if err == nil {
-		t.Fatal("Bootstrap succeeded, want refusal to initialize nested workspace git")
+		t.Fatal("Bootstrap succeeded, want refusal to use invalid parent Git metadata")
 	}
-	if !strings.Contains(err.Error(), "refusing to initialize nested workspace git repo") {
+	if !strings.Contains(err.Error(), "refusing to select a Turnal store") {
 		t.Fatalf("Bootstrap error = %v, want nested git refusal", err)
 	}
 	if _, err := os.Lstat(filepath.Join(childRoot.String(), ".git")); !os.IsNotExist(err) {
@@ -266,7 +233,7 @@ func TestBootstrapRefusesNestedGitInitWhenParentGitDiscoveryFails(t *testing.T) 
 	}
 }
 
-func TestBootstrapWorkspaceGitInitDropsInheritedGitEnv(t *testing.T) {
+func TestBootstrapDoesNotCreateWorkspaceGitWithInheritedGitEnv(t *testing.T) {
 	requireGit(t)
 
 	root := workspaceRoot(t)
@@ -276,15 +243,12 @@ func TestBootstrapWorkspaceGitInitDropsInheritedGitEnv(t *testing.T) {
 	t.Setenv("GIT_WORK_TREE", badDir)
 	t.Setenv("GIT_INDEX_FILE", filepath.Join(badDir, "bad.index"))
 
-	result, err := Bootstrap(root)
+	_, err := Bootstrap(root)
 	if err != nil {
 		t.Fatalf("Bootstrap: %v", err)
 	}
-	if !result.WorkspaceGitInitialized {
-		t.Fatal("Bootstrap did not initialize workspace git")
-	}
-	if _, err := os.Stat(filepath.Join(root.String(), ".git")); err != nil {
-		t.Fatalf("expected root .git: %v", err)
+	if _, err := os.Lstat(filepath.Join(root.String(), ".git")); !os.IsNotExist(err) {
+		t.Fatalf("workspace .git exists or could not be checked: %v", err)
 	}
 	if _, err := os.Stat(badGitDir); !os.IsNotExist(err) {
 		t.Fatalf("inherited GIT_DIR was used or stat failed: %v", err)

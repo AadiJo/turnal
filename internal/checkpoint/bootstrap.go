@@ -12,24 +12,20 @@ import (
 const GitignoreEntry = ".turnal/"
 
 type BootstrapResult struct {
-	Repo                    *Repo
-	Attached                bool
-	WorkspaceGitPath        string
-	WorkspaceGitInitialized bool
-	GitignorePath           string
-	GitignoreUpdated        bool
+	Repo             *Repo
+	Attached         bool
+	GitignorePath    string
+	GitignoreUpdated bool
 }
 
 type BootstrapOptions struct {
-	InitWorkspaceGit bool
-	UpdateGitignore  bool
-	StorePath        string
+	UpdateGitignore bool
+	StorePath       string
 }
 
 func DefaultBootstrapOptions() BootstrapOptions {
 	return BootstrapOptions{
-		InitWorkspaceGit: true,
-		UpdateGitignore:  true,
+		UpdateGitignore: true,
 	}
 }
 
@@ -64,14 +60,6 @@ func BootstrapWithOptions(root primitives.WorkspaceRoot, opts BootstrapOptions) 
 		return BootstrapResult{}, err
 	}
 
-	workspaceGitPath := filepath.Join(root.String(), ".git")
-	var workspaceGitInitialized bool
-	if opts.InitWorkspaceGit {
-		workspaceGitPath, workspaceGitInitialized, err = ensureWorkspaceGit(root)
-		if err != nil {
-			return BootstrapResult{}, err
-		}
-	}
 	if gitIdentity, identityErr := discoverUserGit(root.String()); identityErr == nil {
 		if err := repo.ensureIdentity(&gitIdentity); err != nil {
 			return BootstrapResult{}, err
@@ -88,12 +76,10 @@ func BootstrapWithOptions(root primitives.WorkspaceRoot, opts BootstrapOptions) 
 	}
 
 	return BootstrapResult{
-		Repo:                    repo,
-		Attached:                attached,
-		WorkspaceGitPath:        workspaceGitPath,
-		WorkspaceGitInitialized: workspaceGitInitialized,
-		GitignorePath:           gitignorePath,
-		GitignoreUpdated:        updated,
+		Repo:             repo,
+		Attached:         attached,
+		GitignorePath:    gitignorePath,
+		GitignoreUpdated: updated,
 	}, nil
 }
 
@@ -128,7 +114,7 @@ func bootstrapRepo(root primitives.WorkspaceRoot, explicitStorePath string) (*Re
 		if ancestorPath, found, ancestorErr := findAncestorGitPath(root); ancestorErr != nil {
 			return nil, false, ancestorErr
 		} else if found {
-			return nil, false, fmt.Errorf("workspace git discovery failed under existing git metadata %s; refusing to initialize nested workspace git repo: %w", ancestorPath, err)
+			return nil, false, fmt.Errorf("workspace git discovery failed under existing git metadata %s; refusing to select a Turnal store while Git metadata is invalid: %w", ancestorPath, err)
 		}
 		return nil, false, fmt.Errorf("discover workspace git identity: %w", err)
 	}
@@ -147,39 +133,6 @@ func bootstrapRepo(root primitives.WorkspaceRoot, explicitStorePath string) (*Re
 	return repo, !sameIdentityPath(storePath, localMetadata), err
 }
 
-func ensureWorkspaceGit(root primitives.WorkspaceRoot) (string, bool, error) {
-	gitPath := filepath.Join(root.String(), ".git")
-	if _, err := os.Lstat(gitPath); err == nil {
-		return gitPath, false, nil
-	} else if !os.IsNotExist(err) {
-		return gitPath, false, fmt.Errorf("stat workspace git repo: %w", err)
-	}
-
-	output, err := runGitNoRepo(root.String(), "rev-parse", "--is-inside-work-tree")
-	if err == nil && strings.TrimSpace(output) == "true" {
-		gitDir, gitDirErr := runGitNoRepo(root.String(), "rev-parse", "--absolute-git-dir")
-		if gitDirErr != nil {
-			return gitPath, false, fmt.Errorf("locate existing workspace git repo: %w", gitDirErr)
-		}
-		return strings.TrimSpace(gitDir), false, nil
-	}
-	if err != nil && !gitDiscoveryReportedNoRepo(err) {
-		ancestorGitPath, hasAncestorGit, ancestorErr := findAncestorGitPath(root)
-		if ancestorErr != nil {
-			return gitPath, false, ancestorErr
-		}
-		if hasAncestorGit {
-			return ancestorGitPath, false, fmt.Errorf("workspace git discovery failed under existing git metadata %s; refusing to initialize nested workspace git repo: %w", ancestorGitPath, err)
-		}
-		return gitPath, false, fmt.Errorf("workspace git discovery failed: %w", err)
-	}
-
-	if _, err := runGitNoRepo(root.String(), "init"); err != nil {
-		return gitPath, false, fmt.Errorf("init workspace git repo: %w", err)
-	}
-	return gitPath, true, nil
-}
-
 func findAncestorGitPath(root primitives.WorkspaceRoot) (string, bool, error) {
 	current := filepath.Dir(root.String())
 	for {
@@ -196,10 +149,6 @@ func findAncestorGitPath(root primitives.WorkspaceRoot) (string, bool, error) {
 		}
 		current = parent
 	}
-}
-
-func gitDiscoveryReportedNoRepo(err error) bool {
-	return strings.Contains(err.Error(), "not a git repository")
 }
 
 func EnsureGitignoreEntry(root primitives.WorkspaceRoot) (string, bool, error) {

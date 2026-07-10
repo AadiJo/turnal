@@ -26,7 +26,7 @@ func TestResolveDefaultsWhenFilesAreMissing(t *testing.T) {
 	if effective.Hooks.Command == "" {
 		t.Fatal("hooks command default is empty")
 	}
-	if !effective.Bootstrap.InitWorkspaceGit || !effective.Bootstrap.UpdateGitignore {
+	if !effective.Bootstrap.UpdateGitignore {
 		t.Fatalf("bootstrap defaults = %+v", effective.Bootstrap)
 	}
 	if effective.GitSync.Enabled {
@@ -57,7 +57,6 @@ quiet = true
 command = "global-turnal"
 
 [bootstrap]
-init_workspace_git = false
 update_gitignore = true
 
 [git_sync]
@@ -103,9 +102,6 @@ enabled = false
 	}
 	if effective.Hooks.Command != "workspace-turnal" {
 		t.Fatalf("hooks command = %q, want workspace command", effective.Hooks.Command)
-	}
-	if effective.Bootstrap.InitWorkspaceGit {
-		t.Fatal("global bootstrap init_workspace_git=false was not applied")
 	}
 	if effective.Bootstrap.UpdateGitignore {
 		t.Fatal("workspace bootstrap update_gitignore=false was not applied")

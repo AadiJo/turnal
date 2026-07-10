@@ -50,9 +50,8 @@ func initCmd() *cobra.Command {
 			}
 
 			result, err := checkpoint.BootstrapWithOptions(root, checkpoint.BootstrapOptions{
-				InitWorkspaceGit: effective.Bootstrap.InitWorkspaceGit,
-				UpdateGitignore:  effective.Bootstrap.UpdateGitignore,
-				StorePath:        storePath,
+				UpdateGitignore: effective.Bootstrap.UpdateGitignore,
+				StorePath:       storePath,
 			})
 			if err != nil {
 				return err
@@ -64,15 +63,6 @@ func initCmd() *cobra.Command {
 			} else {
 				fmt.Fprintf(cmd.OutOrStdout(), "initialized hidden git repo: %s\n", result.Repo.GitDir)
 				fmt.Fprintf(cmd.OutOrStdout(), "worktree id: %s\n", result.Repo.WorktreeID)
-			}
-			if effective.Bootstrap.InitWorkspaceGit {
-				if result.WorkspaceGitInitialized {
-					fmt.Fprintf(cmd.OutOrStdout(), "initialized workspace git repo: %s\n", result.WorkspaceGitPath)
-				} else {
-					fmt.Fprintf(cmd.OutOrStdout(), "workspace git already configured: %s\n", result.WorkspaceGitPath)
-				}
-			} else {
-				fmt.Fprintln(cmd.OutOrStdout(), "workspace git skipped")
 			}
 			if effective.Bootstrap.UpdateGitignore {
 				if result.GitignoreUpdated {

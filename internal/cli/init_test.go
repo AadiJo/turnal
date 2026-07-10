@@ -10,7 +10,7 @@ import (
 	"github.com/AadiJo/turnal/internal/checkpoint"
 )
 
-func TestInitCommandInitializesWorkspaceGitAndGitignore(t *testing.T) {
+func TestInitCommandInitializesHiddenGitAndGitignoreOnly(t *testing.T) {
 	requireGit(t)
 	isolateAgentConfig(t)
 
@@ -26,8 +26,8 @@ func TestInitCommandInitializesWorkspaceGitAndGitignore(t *testing.T) {
 		t.Fatalf("init command: %v\n%s", err, out.String())
 	}
 
-	if _, err := os.Stat(filepath.Join(root.String(), ".git")); err != nil {
-		t.Fatalf("expected workspace .git: %v", err)
+	if _, err := os.Lstat(filepath.Join(root.String(), ".git")); !os.IsNotExist(err) {
+		t.Fatalf("workspace .git exists or could not be checked: %v", err)
 	}
 
 	gitignore, err := os.ReadFile(filepath.Join(root.String(), ".gitignore"))
@@ -41,7 +41,6 @@ func TestInitCommandInitializesWorkspaceGitAndGitignore(t *testing.T) {
 	output := out.String()
 	for _, want := range []string{
 		"initialized hidden git repo:",
-		"initialized workspace git repo:",
 		"updated gitignore:",
 		"adapter hooks skipped",
 	} {
@@ -60,7 +59,6 @@ version = 1
 agent = "none"
 
 [bootstrap]
-init_workspace_git = false
 update_gitignore = false
 `)
 
@@ -85,7 +83,6 @@ update_gitignore = false
 
 	output := out.String()
 	for _, want := range []string{
-		"workspace git skipped",
 		"gitignore update skipped",
 		"adapter hooks skipped",
 	} {

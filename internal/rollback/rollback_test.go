@@ -152,6 +152,7 @@ func TestRunFinalizesRestoredWorkspaceGitJournalWithChangeSummary(t *testing.T) 
 	requireGit(t)
 
 	root := workspaceRoot(t)
+	runWorkspaceGit(t, root, "init")
 	bootstrapped, err := checkpoint.Bootstrap(root)
 	if err != nil {
 		t.Fatalf("Bootstrap: %v", err)
@@ -514,6 +515,7 @@ func TestRunWorkspaceGitRestoresCapturedDirtyState(t *testing.T) {
 	requireGit(t)
 
 	root := workspaceRoot(t)
+	runWorkspaceGit(t, root, "init")
 	bootstrapped, err := checkpoint.Bootstrap(root)
 	if err != nil {
 		t.Fatalf("Bootstrap: %v", err)

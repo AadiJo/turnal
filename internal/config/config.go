@@ -54,8 +54,7 @@ type HooksFile struct {
 }
 
 type BootstrapFile struct {
-	InitWorkspaceGit *bool `toml:"init_workspace_git,omitempty"`
-	UpdateGitignore  *bool `toml:"update_gitignore,omitempty"`
+	UpdateGitignore *bool `toml:"update_gitignore,omitempty"`
 }
 
 type GitSyncFile struct {
@@ -98,8 +97,7 @@ type Hooks struct {
 }
 
 type Bootstrap struct {
-	InitWorkspaceGit bool
-	UpdateGitignore  bool
+	UpdateGitignore bool
 }
 
 type GitSync struct {
@@ -117,18 +115,17 @@ type Secrets struct {
 }
 
 type Overrides struct {
-	InitAgent                 *string
-	InitInstallHooks          *bool
-	RunInstallHooks           *bool
-	RunQuiet                  *bool
-	RunBypassHookTrust        *bool
-	BootstrapInitWorkspaceGit *bool
-	BootstrapUpdateGitignore  *bool
-	GitSyncEnabled            *bool
-	RollbackMode              *primitives.RollbackMode
-	SecretsStorePrompts       *bool
-	SecretsStoreToolIO        *bool
-	SecretsSnapshotDenyGlobs  []string
+	InitAgent                *string
+	InitInstallHooks         *bool
+	RunInstallHooks          *bool
+	RunQuiet                 *bool
+	RunBypassHookTrust       *bool
+	BootstrapUpdateGitignore *bool
+	GitSyncEnabled           *bool
+	RollbackMode             *primitives.RollbackMode
+	SecretsStorePrompts      *bool
+	SecretsStoreToolIO       *bool
+	SecretsSnapshotDenyGlobs []string
 }
 
 type Loader struct {
@@ -160,8 +157,7 @@ func Defaults() Effective {
 			Command: hookcmd.Default(),
 		},
 		Bootstrap: Bootstrap{
-			InitWorkspaceGit: true,
-			UpdateGitignore:  true,
+			UpdateGitignore: true,
 		},
 		GitSync: GitSync{
 			Enabled: false,
@@ -303,19 +299,18 @@ func (l Loader) lookupEnv() func(string) (string, bool) {
 
 func defaultOrigins() map[string]Origin {
 	return map[string]Origin{
-		"init.agent":                   OriginDefault,
-		"init.install_hooks":           OriginDefault,
-		"run.install_hooks":            OriginDefault,
-		"run.quiet":                    OriginDefault,
-		"run.bypass_hook_trust":        OriginDefault,
-		"hooks.command":                OriginDefault,
-		"bootstrap.init_workspace_git": OriginDefault,
-		"bootstrap.update_gitignore":   OriginDefault,
-		"git_sync.enabled":             OriginDefault,
-		"rollback.mode":                OriginDefault,
-		"secrets.store_prompts":        OriginDefault,
-		"secrets.store_tool_io":        OriginDefault,
-		"secrets.snapshot_deny_globs":  OriginDefault,
+		"init.agent":                  OriginDefault,
+		"init.install_hooks":          OriginDefault,
+		"run.install_hooks":           OriginDefault,
+		"run.quiet":                   OriginDefault,
+		"run.bypass_hook_trust":       OriginDefault,
+		"hooks.command":               OriginDefault,
+		"bootstrap.update_gitignore":  OriginDefault,
+		"git_sync.enabled":            OriginDefault,
+		"rollback.mode":               OriginDefault,
+		"secrets.store_prompts":       OriginDefault,
+		"secrets.store_tool_io":       OriginDefault,
+		"secrets.snapshot_deny_globs": OriginDefault,
 	}
 }
 
@@ -362,10 +357,6 @@ func applyFile(effective *Effective, origins map[string]Origin, file File, origi
 		}
 	}
 	if file.Bootstrap != nil {
-		if file.Bootstrap.InitWorkspaceGit != nil {
-			effective.Bootstrap.InitWorkspaceGit = *file.Bootstrap.InitWorkspaceGit
-			origins["bootstrap.init_workspace_git"] = origin
-		}
 		if file.Bootstrap.UpdateGitignore != nil {
 			effective.Bootstrap.UpdateGitignore = *file.Bootstrap.UpdateGitignore
 			origins["bootstrap.update_gitignore"] = origin
@@ -432,10 +423,6 @@ func applyOverrides(effective *Effective, origins map[string]Origin, overrides O
 	if overrides.RunBypassHookTrust != nil {
 		effective.Run.BypassHookTrust = *overrides.RunBypassHookTrust
 		origins["run.bypass_hook_trust"] = OriginFlag
-	}
-	if overrides.BootstrapInitWorkspaceGit != nil {
-		effective.Bootstrap.InitWorkspaceGit = *overrides.BootstrapInitWorkspaceGit
-		origins["bootstrap.init_workspace_git"] = OriginFlag
 	}
 	if overrides.BootstrapUpdateGitignore != nil {
 		effective.Bootstrap.UpdateGitignore = *overrides.BootstrapUpdateGitignore

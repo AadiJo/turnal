@@ -48,7 +48,6 @@ version = 1
 # command = "turnal"
 #
 # [bootstrap]
-# init_workspace_git = true
 # update_gitignore = true
 #
 # [git_sync]

@@ -157,6 +157,7 @@ func TestAppendCheckpointRecordsUserGitContext(t *testing.T) {
 	requireGit(t)
 
 	root := workspaceRoot(t)
+	runGit(t, root.String(), "init", "-q")
 	bootstrapped, err := checkpoint.Bootstrap(root)
 	if err != nil {
 		t.Fatalf("Bootstrap: %v", err)
