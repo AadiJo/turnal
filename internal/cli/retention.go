@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 
+	"github.com/AadiJo/turnal/internal/adapters"
 	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/AadiJo/turnal/internal/retention"
 	"github.com/spf13/cobra"
@@ -19,6 +20,7 @@ func sessionCmd() *cobra.Command {
 
 func sessionDropCmd() *cobra.Command {
 	var dryRun bool
+	var purge bool
 	cmd := &cobra.Command{
 		Use:          "drop <session>",
 		Aliases:      []string{"delete"},
@@ -26,6 +28,9 @@ func sessionDropCmd() *cobra.Command {
 		SilenceUsage: true,
 		Args:         cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if dryRun && purge {
+				return fmt.Errorf("--dry-run and --purge cannot be combined")
+			}
 			sessionID, err := primitives.ParseSessionID(args[0])
 			if err != nil {
 				return err
@@ -38,15 +43,32 @@ func sessionDropCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if purge {
+				if _, err := retention.PruneOrphanRefs(repo, false); err != nil {
+					return err
+				}
+				if _, err := retention.RunHiddenGitGC(repo, false); err != nil {
+					return err
+				}
+			}
 			prefix := "dropped"
 			if dryRun {
 				prefix = "would drop"
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "%s session %s: %d refs, %d files\n", prefix, sessionID, len(result.DeletedRefs), len(result.DeletedFiles))
+			fmt.Fprintf(cmd.OutOrStdout(), "%s session %s: %d refs, %d files, %d raw logs redacted; query index invalidated\n", prefix, sessionID, len(result.DeletedRefs), len(result.DeletedFiles), len(result.RedactedFiles))
+			if purge {
+				fmt.Fprintln(cmd.OutOrStdout(), "purged unreferenced hidden-Git objects; filesystem backups, sync history, and disk snapshots remain outside Turnal's deletion boundary")
+			} else if !dryRun {
+				fmt.Fprintln(cmd.OutOrStdout(), "hidden-Git reflogs or unreachable objects may remain; rerun with --purge for immediate local GC")
+			}
+			for _, residual := range result.Residuals {
+				fmt.Fprintf(cmd.OutOrStdout(), "residual: %s\n", residual)
+			}
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show what would be deleted without deleting it")
+	cmd.Flags().BoolVar(&purge, "purge", false, "Also prune unreferenced private refs and immediately garbage-collect hidden Git objects")
 	return cmd
 }
 
@@ -92,6 +114,34 @@ func maintenanceCmd() *cobra.Command {
 		Short: "Run explicit maintenance tasks",
 	}
 	cmd.AddCommand(maintenanceGCCmd())
+	cmd.AddCommand(maintenanceClearHookFailuresCmd())
+	return cmd
+}
+
+func maintenanceClearHookFailuresCmd() *cobra.Command {
+	var yes bool
+	cmd := &cobra.Command{
+		Use:          "clear-hook-failures",
+		Short:        "Acknowledge and clear recorded hook capture failures",
+		SilenceUsage: true,
+		Args:         cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !yes {
+				return fmt.Errorf("review turnal status, then rerun with --yes to acknowledge hook capture failures")
+			}
+			repo, err := openCheckpointRepo()
+			if err != nil {
+				return err
+			}
+			count, err := adapters.ClearHookFailures(repo.MetadataDir)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "cleared %d hook capture failure(s)\n", count)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&yes, "yes", false, "Confirm the failures were reviewed")
 	return cmd
 }
 

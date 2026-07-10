@@ -1,12 +1,16 @@
 package retention
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/AadiJo/turnal/internal/adapters"
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/primitives"
@@ -49,6 +53,143 @@ func TestDropSessionDeletesEventLogAndPrivateRefs(t *testing.T) {
 	}
 	if len(sessions) != 0 {
 		t.Fatalf("sessions after drop = %#v, want none", sessions)
+	}
+}
+
+func TestDropSessionRedactsRawPayloadAndInvalidatesIndex(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	sessionID := sessionID(t, "demo")
+	adapterDir := filepath.Join(repo.MetadataDir, "log", "adapter")
+	if err := os.MkdirAll(adapterDir, 0o700); err != nil {
+		t.Fatalf("mkdir adapter log: %v", err)
+	}
+	raw := `{"v":1,"adapter":"codex","hook":"turn","received_at":"2026-01-01T00:00:00Z","payload":{"session_id":"demo","secret":"remove-me"}}` + "\n"
+	adapterPath := filepath.Join(adapterDir, "codex.jsonl")
+	if err := os.WriteFile(adapterPath, []byte(raw), 0o600); err != nil {
+		t.Fatalf("write raw log: %v", err)
+	}
+	v2Dir := filepath.Join(repo.MetadataDir, "log", "raw", "demo")
+	if err := os.MkdirAll(v2Dir, 0o700); err != nil {
+		t.Fatalf("mkdir v2 raw log: %v", err)
+	}
+	v2Path := filepath.Join(v2Dir, "codex.jsonl")
+	if err := os.WriteFile(v2Path, []byte(raw), 0o600); err != nil {
+		t.Fatalf("write v2 raw log: %v", err)
+	}
+	indexDir := filepath.Join(repo.MetadataDir, "index")
+	if err := os.MkdirAll(indexDir, 0o700); err != nil {
+		t.Fatalf("mkdir index: %v", err)
+	}
+	indexPath := filepath.Join(indexDir, "index.sqlite")
+	if err := os.WriteFile(indexPath, []byte("stale search data"), 0o600); err != nil {
+		t.Fatalf("write stale index: %v", err)
+	}
+
+	result, err := DropSession(repo, sessionID, false)
+	if err != nil {
+		t.Fatalf("DropSession: %v", err)
+	}
+	if len(result.RedactedFiles) != 1 {
+		t.Fatalf("redacted files = %#v, want adapter log", result.RedactedFiles)
+	}
+	data, err := os.ReadFile(adapterPath)
+	if err != nil {
+		t.Fatalf("read adapter log: %v", err)
+	}
+	if bytes.Contains(data, []byte("remove-me")) || bytes.Contains(data, []byte(`"session_id":"demo"`)) {
+		t.Fatalf("deleted session remains in adapter log: %s", data)
+	}
+	if _, err := os.Stat(indexPath); !os.IsNotExist(err) {
+		t.Fatalf("index stat error = %v, want removed", err)
+	}
+	if _, err := os.Stat(v2Dir); !os.IsNotExist(err) {
+		t.Fatalf("v2 session raw dir stat error = %v, want removed", err)
+	}
+}
+
+func TestDropSessionSerializesWithHookCapture(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	sessionID := sessionID(t, "demo")
+	rawDir := filepath.Join(repo.MetadataDir, "log", "raw", sessionID.String())
+	if err := os.MkdirAll(rawDir, 0o700); err != nil {
+		t.Fatalf("mkdir raw dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rawDir, "codex.jsonl"), []byte("payload\n"), 0o600); err != nil {
+		t.Fatalf("write raw record: %v", err)
+	}
+	release, err := adapters.AcquireSessionLock(repo, sessionID)
+	if err != nil {
+		t.Fatalf("AcquireSessionLock: %v", err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, dropErr := DropSession(repo, sessionID, false)
+		result <- dropErr
+	}()
+	select {
+	case err := <-result:
+		release()
+		t.Fatalf("DropSession completed while capture lock held: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	release()
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("DropSession after release: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("DropSession did not resume after capture lock release")
+	}
+	if _, err := os.Stat(rawDir); !os.IsNotExist(err) {
+		t.Fatalf("raw session directory survived serialized drop: %v", err)
+	}
+}
+
+func TestDropSessionRemovesManagedReplayState(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	sessionsDir := filepath.Join(repo.TmpDir, "replay", "sessions")
+	worktree := filepath.Join(repo.TmpDir, "replay", "worktrees", "replay-one")
+	if err := os.MkdirAll(sessionsDir, 0o700); err != nil {
+		t.Fatalf("mkdir replay sessions: %v", err)
+	}
+	if err := os.MkdirAll(worktree, 0o700); err != nil {
+		t.Fatalf("mkdir replay worktree: %v", err)
+	}
+	metadata := fmt.Sprintf(`{"id":"replay-one","path":%q,"sequence":[{"session_id":"demo"}]}`, worktree)
+	metadataPath := filepath.Join(sessionsDir, "replay-one.json")
+	if err := os.WriteFile(metadataPath, []byte(metadata), 0o600); err != nil {
+		t.Fatalf("write replay metadata: %v", err)
+	}
+	activePath := filepath.Join(repo.TmpDir, "replay", "active")
+	if err := os.WriteFile(activePath, []byte("replay-one\n"), 0o600); err != nil {
+		t.Fatalf("write active replay: %v", err)
+	}
+
+	demo := sessionID(t, "demo")
+	if _, err := DropSession(repo, demo, false); err != nil {
+		t.Fatalf("DropSession: %v", err)
+	}
+	for _, path := range []string{metadataPath, activePath, worktree} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("replay path %s remains: %v", path, err)
+		}
 	}
 }
 

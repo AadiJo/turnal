@@ -362,7 +362,7 @@ func (manager Manager) removeSession(session Session, removeWorktree bool) (bool
 }
 
 func (manager Manager) writeSession(session Session) error {
-	if err := os.MkdirAll(manager.sessionsDir(), 0o755); err != nil {
+	if err := os.MkdirAll(manager.sessionsDir(), 0o700); err != nil {
 		return fmt.Errorf("create replay sessions dir: %w", err)
 	}
 	data, err := json.MarshalIndent(session, "", "  ")
@@ -370,7 +370,7 @@ func (manager Manager) writeSession(session Session) error {
 		return fmt.Errorf("marshal replay session: %w", err)
 	}
 	data = append(data, '\n')
-	if err := os.WriteFile(manager.sessionPath(session.ID), data, 0o644); err != nil {
+	if err := os.WriteFile(manager.sessionPath(session.ID), data, 0o600); err != nil {
 		return fmt.Errorf("write replay session: %w", err)
 	}
 	return nil
@@ -427,10 +427,10 @@ func (manager Manager) findSession(selector string) (Session, error) {
 }
 
 func (manager Manager) setActive(id string) error {
-	if err := os.MkdirAll(manager.replayDir(), 0o755); err != nil {
+	if err := os.MkdirAll(manager.replayDir(), 0o700); err != nil {
 		return fmt.Errorf("create replay dir: %w", err)
 	}
-	if err := os.WriteFile(manager.activePath(), []byte(id+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(manager.activePath(), []byte(id+"\n"), 0o600); err != nil {
 		return fmt.Errorf("write active replay session: %w", err)
 	}
 	return nil
