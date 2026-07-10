@@ -16,6 +16,8 @@ It combines an append-only activity log with private Git checkpoints. Your proje
 
 Turnal should be piloted before company-wide adoption. Pin a version and validate hook compatibility, retention, and rollback behavior on representative repositories; see the [compatibility policy](docs/compatibility.md), [retention semantics](docs/retention.md), and [recovery runbook](docs/recovery.md).
 
+Telemetry networking is disabled. The local-only client foundation and the gates that must pass before any collection can be enabled are documented in the [telemetry policy](docs/telemetry.md).
+
 ## What you can do
 
 - Inspect agent sessions, prompts, assistant responses, and tool activity.
