@@ -156,9 +156,9 @@ discarding a batch.
 
 ## Deletion
 
-The analytics status command must eventually expose the current installation UUID
-so a request can reference it. Reset creates a never-reused UUID. While deletion
-is in progress the old identifier is placed on a temporary denylist.
+The analytics status command exposes the current installation UUID so a request
+can reference it. Reset creates a never-reused UUID. While deletion is in
+progress the old identifier is placed on a temporary denylist.
 
 The pre-launch rehearsal must verify asynchronous completion for PostHog events,
 collector outbox rows, exports, cached query results, and derived aggregates. The
