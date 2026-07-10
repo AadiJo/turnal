@@ -9,6 +9,7 @@ import (
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	agentconfig "github.com/AadiJo/turnal/internal/config"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/telemetry"
 	"github.com/pelletier/go-toml/v2"
 	"github.com/spf13/cobra"
 )
@@ -56,6 +57,7 @@ func initCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			recordTelemetryMetrics(telemetry.MetricWorkspaceInitialized)
 			if result.Attached {
 				fmt.Fprintf(cmd.OutOrStdout(), "initialized worktree: %s\n", result.Repo.WorkspaceRoot)
 				fmt.Fprintf(cmd.OutOrStdout(), "attached turnal store: %s\n", result.Repo.MetadataDir)
@@ -108,6 +110,12 @@ func initCmd() *cobra.Command {
 			}
 			for _, adapter := range installed {
 				fmt.Fprintf(cmd.OutOrStdout(), "configured %s hooks: %s\n", adapter.Target, adapter.ConfigPath)
+				switch adapter.Target {
+				case adapters.TargetClaude:
+					recordTelemetryMetrics(telemetry.MetricAdapterConfiguredClaude)
+				case adapters.TargetCodex:
+					recordTelemetryMetrics(telemetry.MetricAdapterConfiguredCodex)
+				}
 				if adapter.BackupPath != "" {
 					fmt.Fprintf(cmd.OutOrStdout(), "backed up invalid hook config: %s\n", adapter.BackupPath)
 				}

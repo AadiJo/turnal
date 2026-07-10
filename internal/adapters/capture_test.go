@@ -136,6 +136,48 @@ func TestHandleHookPayloadIsIdempotentForDuplicatePrompt(t *testing.T) {
 	}
 }
 
+func TestCaptureCallbackRunsOnlyForNewCompletedTurn(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	if _, err := checkpoint.Init(root); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+	encode := func(payload map[string]any) []byte {
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	prompt := encode(map[string]any{
+		"cwd": root.String(), "session_id": "callback-session", "prompt": "change app.txt",
+	})
+	stop := encode(map[string]any{
+		"cwd": root.String(), "session_id": "callback-session", "last_assistant_message": "done",
+	})
+	completed := 0
+	options := CaptureOptions{OnTurnRecorded: func(adapter primitives.AdapterName) {
+		if adapter != primitives.AdapterClaudeCode {
+			t.Fatalf("callback adapter = %s", adapter)
+		}
+		completed++
+	}}
+	if err := HandleHookPayloadWithOptions(primitives.AdapterClaudeCode, "UserPromptSubmit", prompt, options); err != nil {
+		t.Fatal(err)
+	}
+	if err := HandleHookPayloadWithOptions(primitives.AdapterClaudeCode, "Stop", stop, options); err != nil {
+		t.Fatal(err)
+	}
+	if err := HandleHookPayloadWithOptions(primitives.AdapterClaudeCode, "Stop", stop, options); err != nil {
+		t.Fatal(err)
+	}
+	if completed != 1 {
+		t.Fatalf("completion callbacks = %d, want 1", completed)
+	}
+}
+
 func TestHandleHookPayloadAppliesSecretsRedactionPolicy(t *testing.T) {
 	requireGit(t)
 

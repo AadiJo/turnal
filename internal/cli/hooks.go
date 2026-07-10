@@ -7,6 +7,7 @@ import (
 
 	"github.com/AadiJo/turnal/internal/adapters"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/telemetry"
 	"github.com/spf13/cobra"
 )
 
@@ -65,7 +66,16 @@ func readHookPayload(reader io.Reader) ([]byte, error) {
 }
 
 func handleHookFailure(cmd *cobra.Command, adapter primitives.AdapterName, hookName string, raw []byte) {
-	err := adapters.HandleHookPayload(adapter, hookName, raw)
+	err := adapters.HandleHookPayloadWithOptions(adapter, hookName, raw, adapters.CaptureOptions{
+		OnTurnRecorded: func(recordedAdapter primitives.AdapterName) {
+			switch recordedAdapter {
+			case primitives.AdapterClaudeCode:
+				recordTelemetryMetrics(telemetry.MetricTurnRecordedClaude)
+			case primitives.AdapterCodex:
+				recordTelemetryMetrics(telemetry.MetricTurnRecordedCodex)
+			}
+		},
+	})
 	if err == nil {
 		return
 	}

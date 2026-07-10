@@ -111,6 +111,14 @@ type errorPayload struct {
 }
 
 func HandleHookPayload(adapter primitives.AdapterName, hookName string, raw []byte) error {
+	return HandleHookPayloadWithOptions(adapter, hookName, raw, CaptureOptions{})
+}
+
+type CaptureOptions struct {
+	OnTurnRecorded func(primitives.AdapterName)
+}
+
+func HandleHookPayloadWithOptions(adapter primitives.AdapterName, hookName string, raw []byte, options CaptureOptions) error {
 	if repo, sessionID, ok := hookSessionContext(raw); ok {
 		unlock, err := AcquireSessionLock(repo, sessionID)
 		if err != nil {
@@ -124,7 +132,7 @@ func HandleHookPayload(adapter primitives.AdapterName, hookName string, raw []by
 		if rawRef == "" {
 			return nil
 		}
-		return processHookPayload(adapter, hookName, rawRef, raw, true)
+		return processHookPayload(adapter, hookName, rawRef, raw, true, options)
 	}
 	rawRef, recordErr := RecordHookPayload(adapter, hookName, raw)
 	if recordErr != nil {
@@ -133,14 +141,14 @@ func HandleHookPayload(adapter primitives.AdapterName, hookName string, raw []by
 	if rawRef == "" {
 		return nil
 	}
-	return processHookPayload(adapter, hookName, rawRef, raw, false)
+	return processHookPayload(adapter, hookName, rawRef, raw, false, options)
 }
 
 func ProcessHookPayload(adapter primitives.AdapterName, hookName, rawRef string, raw []byte) error {
-	return processHookPayload(adapter, hookName, rawRef, raw, false)
+	return processHookPayload(adapter, hookName, rawRef, raw, false, CaptureOptions{})
 }
 
-func processHookPayload(adapter primitives.AdapterName, hookName, rawRef string, raw []byte, sessionLockHeld bool) error {
+func processHookPayload(adapter primitives.AdapterName, hookName, rawRef string, raw []byte, sessionLockHeld bool, options CaptureOptions) error {
 	parsedAdapter, err := primitives.ParseAdapterName(adapter.String())
 	if err != nil {
 		return err
@@ -188,7 +196,7 @@ func processHookPayload(adapter primitives.AdapterName, hookName, rawRef string,
 	if err := turnevents.RecoverCheckpointJournals(log, repo); err != nil {
 		return err
 	}
-	if err := processHook(log, manager, parsedAdapter, hookName, rawRef, raw, sessionID, payload, effective.Secrets); err != nil {
+	if err := processHook(log, manager, parsedAdapter, hookName, rawRef, raw, sessionID, payload, effective.Secrets, options); err != nil {
 		_ = appendErrorEvent(log, parsedAdapter, sessionID, rawRef, hookName, err)
 		return err
 	}
@@ -240,7 +248,7 @@ func decodeHookPayload(adapter primitives.AdapterName, raw []byte) (hookPayload,
 	return payload, nil
 }
 
-func processHook(log eventlog.Log, manager turns.Manager, adapter primitives.AdapterName, hookName, rawRef string, raw []byte, sessionID primitives.SessionID, payload hookPayload, secrets agentconfig.Secrets) error {
+func processHook(log eventlog.Log, manager turns.Manager, adapter primitives.AdapterName, hookName, rawRef string, raw []byte, sessionID primitives.SessionID, payload hookPayload, secrets agentconfig.Secrets, options CaptureOptions) error {
 	sourceID := sourceIDFor(adapter, hookName, payload.SessionID, payload.TurnID, payload.ToolUseID, raw)
 	if seen, err := log.ContainsSourceID(sessionID, sourceID); err != nil {
 		return err
@@ -256,7 +264,7 @@ func processHook(log eventlog.Log, manager turns.Manager, adapter primitives.Ada
 		if err := ensureSessionStarted(log, adapter, sessionID, rawRef, payload); err != nil {
 			return err
 		}
-		turnID, err := startPromptTurn(log, manager, adapter, sessionID, rawRef, payload)
+		turnID, err := startPromptTurn(log, manager, adapter, sessionID, rawRef, payload, options)
 		if err != nil {
 			return err
 		}
@@ -284,7 +292,7 @@ func processHook(log eventlog.Log, manager turns.Manager, adapter primitives.Ada
 		if err := appendAssistant(log, adapter, sessionID, active.TurnID, rawRef, sourceID, payload, secrets); err != nil {
 			return err
 		}
-		return finishTurn(log, manager, adapter, sessionID, active.TurnID, rawRef)
+		return finishTurn(log, manager, adapter, sessionID, active.TurnID, rawRef, options)
 	default:
 		return appendAdapterRawEvent(log, adapter, sessionID, rawRef, sourceID, hookName)
 	}
@@ -338,7 +346,7 @@ func appendSessionStart(log eventlog.Log, adapter primitives.AdapterName, sessio
 	})
 }
 
-func startPromptTurn(log eventlog.Log, manager turns.Manager, adapter primitives.AdapterName, sessionID primitives.SessionID, rawRef string, payload hookPayload) (primitives.TurnID, error) {
+func startPromptTurn(log eventlog.Log, manager turns.Manager, adapter primitives.AdapterName, sessionID primitives.SessionID, rawRef string, payload hookPayload, options CaptureOptions) (primitives.TurnID, error) {
 	manager = manager.WithCheckpointEvents(adapter, rawRef)
 	active, ok, err := manager.Active(sessionID)
 	if err != nil {
@@ -352,7 +360,7 @@ func startPromptTurn(log eventlog.Log, manager turns.Manager, adapter primitives
 		if !turnHasPrompt(events, active.TurnID) {
 			return active.TurnID, nil
 		}
-		if err := finishTurn(log, manager, adapter, sessionID, active.TurnID, rawRef); err != nil {
+		if err := finishTurn(log, manager, adapter, sessionID, active.TurnID, rawRef, options); err != nil {
 			return 0, err
 		}
 	}
@@ -392,7 +400,7 @@ func ensureActiveTurn(log eventlog.Log, manager turns.Manager, adapter primitive
 	return started.TurnID, nil
 }
 
-func finishTurn(log eventlog.Log, manager turns.Manager, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, rawRef string) error {
+func finishTurn(log eventlog.Log, manager turns.Manager, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, rawRef string, options CaptureOptions) error {
 	manager = manager.WithCheckpointEvents(adapter, rawRef)
 	finished, err := manager.Finish(sessionID, turnID)
 	if err != nil {
@@ -404,7 +412,13 @@ func finishTurn(log eventlog.Log, manager turns.Manager, adapter primitives.Adap
 	if err := appendTurnFinish(log, adapter, sessionID, finished.TurnID, rawRef); err != nil {
 		return err
 	}
-	return appendCheckpoint(log, adapter, sessionID, finished.TurnID, primitives.CheckpointPhasePost, finished.Post, finished.GitSync, rawRef)
+	if err := appendCheckpoint(log, adapter, sessionID, finished.TurnID, primitives.CheckpointPhasePost, finished.Post, finished.GitSync, rawRef); err != nil {
+		return err
+	}
+	if options.OnTurnRecorded != nil {
+		options.OnTurnRecorded(adapter)
+	}
+	return nil
 }
 
 func appendTurnStart(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, rawRef string) error {

@@ -17,6 +17,7 @@ import (
 	agentconfig "github.com/AadiJo/turnal/internal/config"
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/telemetry"
 	"github.com/AadiJo/turnal/internal/turns"
 	"github.com/spf13/cobra"
 )
@@ -125,6 +126,9 @@ func runCmd() *cobra.Command {
 			childErr := runChildCommand(cmd, childArgs)
 
 			finishErr := finishRunTurn(repo, sessionID, started.TurnID)
+			if finishErr == nil {
+				recordTelemetryMetrics(telemetry.MetricTurnRecordedCodex)
+			}
 			afterRawCount, countErr := codexRawRecordCount(repo.MetadataDir)
 
 			if !effective.Run.Quiet {
