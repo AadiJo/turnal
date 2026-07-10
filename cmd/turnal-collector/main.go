@@ -46,6 +46,7 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go runRetention(ctx, store, logger)
 	if token := strings.TrimSpace(os.Getenv("POSTHOG_PROJECT_TOKEN")); token != "" {
 		posthog, err := collector.NewPostHogClient(collector.PostHogConfig{
 			Host:  envOr("POSTHOG_HOST", collector.PostHogUSHost),
@@ -99,6 +100,22 @@ func run() error {
 	stop()
 	<-shutdownDone
 	return err
+}
+
+func runRetention(ctx context.Context, store *collector.Store, logger *log.Logger) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		result, err := store.PurgeExpired(ctx, collector.PurgeOptions{Now: time.Now()})
+		if err == nil && (result.OutboxRows > 0 || result.VolumeRows > 0 || result.DeletionRows > 0) {
+			logger.Printf("retention purge outbox=%d volume=%d deletion=%d", result.OutboxRows, result.VolumeRows, result.DeletionRows)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 func envOr(name, fallback string) string {

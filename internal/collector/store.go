@@ -76,6 +76,20 @@ type DeletionResult struct {
 	DailyVolumeRows int
 }
 
+type PurgeOptions struct {
+	Now                        time.Time
+	DeliveredMetadataRetention time.Duration
+	QuarantineRetention        time.Duration
+	DailyVolumeRetention       time.Duration
+	DeletionAuditRetention     time.Duration
+}
+
+type PurgeResult struct {
+	OutboxRows   int
+	VolumeRows   int
+	DeletionRows int
+}
+
 func OpenStore(path string) (*Store, error) {
 	if path == "" {
 		return nil, errors.New("collector database path is required")
@@ -535,4 +549,64 @@ func (store *Store) InstallationDenied(ctx context.Context, id telemetry.UUID) (
 		return false, nil
 	}
 	return err == nil, err
+}
+
+func (store *Store) PurgeExpired(ctx context.Context, options PurgeOptions) (PurgeResult, error) {
+	now := options.Now.UTC().Truncate(time.Second)
+	if now.IsZero() {
+		now = time.Now().UTC().Truncate(time.Second)
+	}
+	if options.DeliveredMetadataRetention <= 0 {
+		options.DeliveredMetadataRetention = 7 * 24 * time.Hour
+	}
+	if options.QuarantineRetention <= 0 {
+		options.QuarantineRetention = 7 * 24 * time.Hour
+	}
+	if options.DailyVolumeRetention <= 0 {
+		options.DailyVolumeRetention = 14 * 24 * time.Hour
+	}
+	if options.DeletionAuditRetention <= 0 {
+		options.DeletionAuditRetention = 90 * 24 * time.Hour
+	}
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return PurgeResult{}, err
+	}
+	defer tx.Rollback()
+	delivered, err := tx.ExecContext(ctx, `DELETE FROM outbox WHERE state = ? AND delivered_at < ?`, StateDelivered, now.Add(-options.DeliveredMetadataRetention).Format(time.RFC3339))
+	if err != nil {
+		return PurgeResult{}, err
+	}
+	quarantined, err := tx.ExecContext(ctx, `DELETE FROM outbox WHERE state = ? AND updated_at < ?`, StateQuarantined, now.Add(-options.QuarantineRetention).Format(time.RFC3339))
+	if err != nil {
+		return PurgeResult{}, err
+	}
+	volumeCutoff := now.Add(-options.DailyVolumeRetention).Format(time.DateOnly)
+	volume, err := tx.ExecContext(ctx, `DELETE FROM daily_volume WHERE event_date < ?`, volumeCutoff)
+	if err != nil {
+		return PurgeResult{}, err
+	}
+	auditCutoff := now.Add(-options.DeletionAuditRetention).Format(time.RFC3339)
+	audit, err := tx.ExecContext(ctx, `DELETE FROM deletion_audit WHERE verified_at IS NOT NULL AND verified_at < ?`, auditCutoff)
+	if err != nil {
+		return PurgeResult{}, err
+	}
+	denylist, err := tx.ExecContext(ctx, `DELETE FROM deletion_denylist WHERE state = 'completed' AND completed_at < ?`, auditCutoff)
+	if err != nil {
+		return PurgeResult{}, err
+	}
+	deliveredRows, _ := delivered.RowsAffected()
+	quarantinedRows, _ := quarantined.RowsAffected()
+	volumeRows, _ := volume.RowsAffected()
+	auditRows, _ := audit.RowsAffected()
+	denylistRows, _ := denylist.RowsAffected()
+	result := PurgeResult{
+		OutboxRows:   int(deliveredRows + quarantinedRows),
+		VolumeRows:   int(volumeRows),
+		DeletionRows: int(auditRows + denylistRows),
+	}
+	if err := tx.Commit(); err != nil {
+		return PurgeResult{}, err
+	}
+	return result, nil
 }

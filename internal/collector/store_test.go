@@ -183,6 +183,49 @@ func TestStoreDeletionPurgesAndDeniesIdentifier(t *testing.T) {
 	}
 }
 
+func TestStorePurgesOperationalDataAtDocumentedBounds(t *testing.T) {
+	store := testStore(t)
+	start := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	delivered := testAggregate(t, "2026-01-01", telemetry.MetricInstallationActive, 1)
+	if _, err := store.Accept(context.Background(), []telemetry.DailyAggregate{delivered}, AcceptOptions{Now: start}); err != nil {
+		t.Fatal(err)
+	}
+	items, err := store.Claim(context.Background(), 1, start, time.Minute)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("claim = %#v, %v", items, err)
+	}
+	if err := store.MarkDelivered(context.Background(), delivered.BatchID, start); err != nil {
+		t.Fatal(err)
+	}
+	quarantined := testAggregate(t, "2026-01-02", telemetry.MetricTurnRecordedClaude, 2)
+	if _, err := store.Accept(context.Background(), []telemetry.DailyAggregate{quarantined}, AcceptOptions{Now: start.Add(24 * time.Hour), DailyVolumeLimit: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := store.PurgeExpired(context.Background(), PurgeOptions{Now: start.Add(30 * 24 * time.Hour)})
+	if err != nil || result.OutboxRows != 2 || result.VolumeRows != 2 {
+		t.Fatalf("purge result = %#v, %v", result, err)
+	}
+	stats, err := store.Stats(context.Background())
+	if err != nil || stats.Delivered != 0 || stats.Quarantined != 0 {
+		t.Fatalf("post-purge stats = %#v, %v", stats, err)
+	}
+	if _, err := store.BeginDeletion(context.Background(), delivered.AnonymousID, start); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CompleteDeletion(context.Background(), delivered.AnonymousID, start); err != nil {
+		t.Fatal(err)
+	}
+	result, err = store.PurgeExpired(context.Background(), PurgeOptions{Now: start.Add(100 * 24 * time.Hour)})
+	if err != nil || result.DeletionRows != 2 {
+		t.Fatalf("deletion audit purge = %#v, %v", result, err)
+	}
+	denied, err := store.InstallationDenied(context.Background(), delivered.AnonymousID)
+	if err != nil || denied {
+		t.Fatalf("expired denylist = %v, %v", denied, err)
+	}
+}
+
 func testStore(t *testing.T) *Store {
 	t.Helper()
 	store, err := OpenStore(":memory:")
