@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 
 	"github.com/AadiJo/turnal/internal/adapters"
 	"github.com/AadiJo/turnal/internal/primitives"
@@ -18,16 +17,19 @@ func claudeHookCmd() *cobra.Command {
 		Hidden:       true,
 		SilenceUsage: true,
 		Args:         cobra.ExactArgs(1),
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
+			raw, err := readHookPayload(cmd.InOrStdin())
+			if err != nil {
+				reportHookFailure(cmd, primitives.AdapterClaudeCode, "UnknownClaudeHook", raw, err)
+				return nil
+			}
 			hookName, err := claudeHookName(args[0])
 			if err != nil {
-				return
+				reportHookFailure(cmd, primitives.AdapterClaudeCode, "UnknownClaudeHook", raw, err)
+				return nil
 			}
-			raw, err := io.ReadAll(os.Stdin)
-			if err != nil {
-				return
-			}
-			_ = adapters.HandleHookPayload(primitives.AdapterClaudeCode, hookName, raw)
+			handleHookFailure(cmd, primitives.AdapterClaudeCode, hookName, raw)
+			return nil
 		},
 	}
 	return cmd
@@ -39,13 +41,41 @@ func codexHookCmd() *cobra.Command {
 		Short:        "Internal: Codex hook adapter",
 		Hidden:       true,
 		SilenceUsage: true,
-		Run: func(cmd *cobra.Command, args []string) {
-			raw, err := io.ReadAll(os.Stdin)
+		RunE: func(cmd *cobra.Command, args []string) error {
+			raw, err := readHookPayload(cmd.InOrStdin())
 			if err != nil {
-				return
+				reportHookFailure(cmd, primitives.AdapterCodex, codexHookName(raw), raw, err)
+				return nil
 			}
-			_ = adapters.HandleHookPayload(primitives.AdapterCodex, codexHookName(raw), raw)
+			handleHookFailure(cmd, primitives.AdapterCodex, codexHookName(raw), raw)
+			return nil
 		},
+	}
+}
+
+func readHookPayload(reader io.Reader) ([]byte, error) {
+	raw, err := io.ReadAll(io.LimitReader(reader, adapters.MaxHookPayloadBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read hook payload: %w", err)
+	}
+	if len(raw) > adapters.MaxHookPayloadBytes {
+		return raw[:adapters.MaxHookPayloadBytes], fmt.Errorf("hook payload exceeds %d-byte limit", adapters.MaxHookPayloadBytes)
+	}
+	return raw, nil
+}
+
+func handleHookFailure(cmd *cobra.Command, adapter primitives.AdapterName, hookName string, raw []byte) {
+	err := adapters.HandleHookPayload(adapter, hookName, raw)
+	if err == nil {
+		return
+	}
+	reportHookFailure(cmd, adapter, hookName, raw, err)
+}
+
+func reportHookFailure(cmd *cobra.Command, adapter primitives.AdapterName, hookName string, raw []byte, err error) {
+	fmt.Fprintf(cmd.ErrOrStderr(), "turnal: %s hook capture failed (%s): %v\n", adapter, hookName, err)
+	if ledgerErr := adapters.RecordHookFailure(adapter, hookName, raw, err); ledgerErr != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "turnal: could not persist hook failure diagnostic: %v\n", ledgerErr)
 	}
 }
 

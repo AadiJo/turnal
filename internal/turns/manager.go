@@ -426,7 +426,7 @@ func (manager Manager) readActive(sessionID primitives.SessionID) (*parsedActive
 
 func (manager Manager) writeActive(sessionID primitives.SessionID, turnID primitives.TurnID, pre checkpoint.Checkpoint) error {
 	dir := filepath.Dir(manager.activeStatePath(sessionID))
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create active turn state dir: %w", err)
 	}
 

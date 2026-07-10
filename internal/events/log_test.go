@@ -155,6 +155,10 @@ func TestVerifyDetectsCorruption(t *testing.T) {
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatalf("write corrupted log: %v", err)
 	}
+	future := time.Now().Add(time.Second)
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatalf("change corrupted log timestamp: %v", err)
+	}
 
 	err = log.Verify(sessionID)
 	if err == nil {
@@ -162,6 +166,13 @@ func TestVerifyDetectsCorruption(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "hash") {
 		t.Fatalf("Verify error = %v, want hash invariant", err)
+	}
+	if _, err := log.Append(AppendInput{
+		SessionID: sessionID,
+		Type:      primitives.EventTypePromptUser,
+		Payload:   json.RawMessage(`{"text":"must not append"}`),
+	}); err == nil || !strings.Contains(err.Error(), "hash") {
+		t.Fatalf("Append error = %v, want validated tail-state corruption refusal", err)
 	}
 }
 
@@ -261,6 +272,38 @@ func TestContainsSourceID(t *testing.T) {
 	}
 	if ok {
 		t.Fatal("ContainsSourceID missing=true, want false")
+	}
+}
+
+func TestSourceMarkerIsIgnoredAfterEventLogTruncation(t *testing.T) {
+	log := Open(t.TempDir())
+	sessionID := sessionID(t, "demo")
+	if _, err := log.Append(AppendInput{
+		SessionID: sessionID,
+		Type:      primitives.EventTypePromptUser,
+		SourceID:  "provider-event-1",
+		Payload:   json.RawMessage(`{"text":"hello"}`),
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := os.Truncate(log.sessionPath(sessionID), 0); err != nil {
+		t.Fatalf("Truncate: %v", err)
+	}
+	if _, err := log.Append(AppendInput{
+		SessionID: sessionID,
+		Type:      primitives.EventTypePromptUser,
+		SourceID:  "replacement-event",
+		Payload:   json.RawMessage(`{"text":"replacement"}`),
+	}); err != nil {
+		t.Fatalf("Append replacement: %v", err)
+	}
+
+	ok, err := log.ContainsSourceID(sessionID, "provider-event-1")
+	if err != nil {
+		t.Fatalf("ContainsSourceID after truncate: %v", err)
+	}
+	if ok {
+		t.Fatal("ContainsSourceID=true after source event was truncated")
 	}
 }
 

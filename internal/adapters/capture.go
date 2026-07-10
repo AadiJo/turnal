@@ -5,13 +5,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	agentconfig "github.com/AadiJo/turnal/internal/config"
 	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/filelock"
 	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/AadiJo/turnal/internal/turnevents"
 	"github.com/AadiJo/turnal/internal/turns"
@@ -110,6 +111,21 @@ type errorPayload struct {
 }
 
 func HandleHookPayload(adapter primitives.AdapterName, hookName string, raw []byte) error {
+	if repo, sessionID, ok := hookSessionContext(raw); ok {
+		unlock, err := AcquireSessionLock(repo, sessionID)
+		if err != nil {
+			return err
+		}
+		defer unlock()
+		rawRef, recordErr := RecordHookPayload(adapter, hookName, raw)
+		if recordErr != nil {
+			return recordErr
+		}
+		if rawRef == "" {
+			return nil
+		}
+		return processHookPayload(adapter, hookName, rawRef, raw, true)
+	}
 	rawRef, recordErr := RecordHookPayload(adapter, hookName, raw)
 	if recordErr != nil {
 		return recordErr
@@ -117,10 +133,14 @@ func HandleHookPayload(adapter primitives.AdapterName, hookName string, raw []by
 	if rawRef == "" {
 		return nil
 	}
-	return ProcessHookPayload(adapter, hookName, rawRef, raw)
+	return processHookPayload(adapter, hookName, rawRef, raw, false)
 }
 
 func ProcessHookPayload(adapter primitives.AdapterName, hookName, rawRef string, raw []byte) error {
+	return processHookPayload(adapter, hookName, rawRef, raw, false)
+}
+
+func processHookPayload(adapter primitives.AdapterName, hookName, rawRef string, raw []byte, sessionLockHeld bool) error {
 	parsedAdapter, err := primitives.ParseAdapterName(adapter.String())
 	if err != nil {
 		return err
@@ -158,11 +178,13 @@ func ProcessHookPayload(adapter primitives.AdapterName, hookName, rawRef string,
 
 	log := repo.EventLog()
 	manager := turns.NewManager(repo)
-	unlock, err := acquireHookProcessLock(repo, sessionID)
-	if err != nil {
-		return err
+	if !sessionLockHeld {
+		unlock, err := AcquireSessionLock(repo, sessionID)
+		if err != nil {
+			return err
+		}
+		defer unlock()
 	}
-	defer unlock()
 	if err := turnevents.RecoverCheckpointJournals(log, repo); err != nil {
 		return err
 	}
@@ -173,19 +195,33 @@ func ProcessHookPayload(adapter primitives.AdapterName, hookName, rawRef string,
 	return nil
 }
 
-func acquireHookProcessLock(repo *checkpoint.Repo, sessionID primitives.SessionID) (func(), error) {
-	name := sessionID.String() + ".lock"
-	if streamID, err := repo.StreamID(sessionID); err == nil {
-		name = repo.WorktreeID.String() + "-" + streamID.String() + "-" + name
-	}
-	lockDir := filepath.Join(repo.TmpDir, "hooks", name)
-	if err := os.MkdirAll(filepath.Dir(lockDir), 0o755); err != nil {
-		return nil, fmt.Errorf("create hook lock dir: %w", err)
-	}
-	if err := acquireDirLock(lockDir); err != nil {
+func AcquireSessionLock(repo *checkpoint.Repo, sessionID primitives.SessionID) (func(), error) {
+	lockDir := filepath.Join(repo.TmpDir, "hooks", sessionID.String()+".lock")
+	lock, err := filelock.Acquire(lockDir, 30*time.Second)
+	if err != nil {
 		return nil, err
 	}
-	return func() { _ = os.Remove(lockDir) }, nil
+	return func() { _ = lock.Release() }, nil
+}
+
+func hookSessionContext(raw []byte) (*checkpoint.Repo, primitives.SessionID, bool) {
+	sessionID := sessionIDFromRawPayload(raw)
+	if sessionID == "" {
+		return nil, "", false
+	}
+	cwd, err := hookWorkspaceCWD(raw)
+	if err != nil {
+		return nil, "", false
+	}
+	root, err := checkpoint.FindRoot(cwd)
+	if err != nil {
+		return nil, "", false
+	}
+	repo, err := checkpoint.Open(root)
+	if err != nil {
+		return nil, "", false
+	}
+	return repo, sessionID, true
 }
 
 func decodeHookPayload(adapter primitives.AdapterName, raw []byte) (hookPayload, error) {
