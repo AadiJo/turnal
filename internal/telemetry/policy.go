@@ -8,7 +8,7 @@ import (
 type Preference string
 
 const (
-	PreferenceUnset Preference = ""
+	PreferenceUnset Preference = "unset"
 	PreferenceOff   Preference = "off"
 	PreferenceOn    Preference = "on"
 )
