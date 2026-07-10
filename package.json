@@ -12,7 +12,9 @@
     "go.mod",
     "go.sum",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "SECURITY.md",
+    "docs/"
   ],
   "scripts": {
     "build": "go build -o bin/turnal ./cmd/turnal",
