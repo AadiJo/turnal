@@ -23,9 +23,9 @@ func TestCodexHookFailsOpenButRecordsVisibleFailure(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 	t.Chdir(rootPath)
-	blockedPath := filepath.Join(repo.MetadataDir, "log", "raw", "failed-hook", "codex.jsonl")
+	blockedPath := filepath.Join(repo.MetadataDir, "log", "raw", "failed-hook", "codex.jsonl.lock")
 	if err := os.MkdirAll(blockedPath, 0o700); err != nil {
-		t.Fatalf("create blocking adapter log directory: %v", err)
+		t.Fatalf("create blocking adapter log lock directory: %v", err)
 	}
 
 	payload := `{"cwd":` + strconvQuote(rootPath) + `,"session_id":"failed-hook","hook_event_name":"after_agent"}`

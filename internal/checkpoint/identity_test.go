@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/fsidentity"
 	"github.com/AadiJo/turnal/internal/primitives"
 )
 
@@ -53,7 +54,7 @@ func TestLinkedWorktreeDiscoversSharedStoreAndKeepsIndependentHistory(t *testing
 		t.Fatalf("Open linked through registry: %v", err)
 	}
 
-	if linkedRepo.MetadataDir != mainRepo.MetadataDir || linkedRepo.StoreID != mainRepo.StoreID || linkedRepo.RepoID != mainRepo.RepoID {
+	if !fsidentity.Same(linkedRepo.MetadataDir, mainRepo.MetadataDir) || linkedRepo.StoreID != mainRepo.StoreID || linkedRepo.RepoID != mainRepo.RepoID {
 		t.Fatalf("linked repo did not reuse store: main=%#v linked=%#v", mainRepo, linkedRepo)
 	}
 	if linkedRepo.WorktreeID == mainRepo.WorktreeID || linkedRepo.EventProducerID == mainRepo.EventProducerID {
