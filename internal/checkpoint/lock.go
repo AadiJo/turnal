@@ -1,21 +1,27 @@
 package checkpoint
 
 import (
+	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
+
+	"github.com/AadiJo/turnal/internal/filelock"
 )
 
 const workspaceLockName = "workspace.lock"
 
 var workspaceLocks = struct {
 	sync.Mutex
-	held map[string]int
+	held map[string]workspaceLock
 }{
-	held: map[string]int{},
+	held: map[string]workspaceLock{},
+}
+
+type workspaceLock struct {
+	count int
+	lock  *filelock.Lock
 }
 
 func (repo *Repo) WorkspaceLockPath() string {
@@ -23,8 +29,12 @@ func (repo *Repo) WorkspaceLockPath() string {
 }
 
 func (repo *Repo) WorkspaceLockHeld() bool {
-	_, err := os.Stat(repo.WorkspaceLockPath())
-	return err == nil
+	held, _ := repo.WorkspaceLockStatus()
+	return held
+}
+
+func (repo *Repo) WorkspaceLockStatus() (bool, error) {
+	return filelock.Held(repo.WorkspaceLockPath())
 }
 
 func (repo *Repo) WithWorkspaceLock(operation string, fn func() error) error {
@@ -40,17 +50,23 @@ func (repo *Repo) acquireWorkspaceLock(operation string) (func(), error) {
 	lockDir := repo.WorkspaceLockPath()
 
 	workspaceLocks.Lock()
-	if workspaceLocks.held[lockDir] > 0 {
-		workspaceLocks.held[lockDir]++
+	if held, ok := workspaceLocks.held[lockDir]; ok {
+		held.count++
+		workspaceLocks.held[lockDir] = held
 		workspaceLocks.Unlock()
-		return func() { releaseWorkspaceLock(lockDir, false) }, nil
+		return func() { releaseWorkspaceLock(lockDir) }, nil
 	}
 	workspaceLocks.Unlock()
 
-	if err := os.MkdirAll(filepath.Dir(lockDir), 0o755); err != nil {
-		return nil, fmt.Errorf("create workspace lock dir: %w", err)
+	timeout := repo.LockTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
 	}
-	if err := acquireWorkspaceDirLock(lockDir); err != nil {
+	lock, err := filelock.Acquire(lockDir, timeout)
+	if err != nil {
+		if errors.Is(err, filelock.ErrBusy) {
+			err = fmt.Errorf("workspace lock busy: %s", repo.MetadataDir)
+		}
 		if operation == "" {
 			return nil, err
 		}
@@ -58,36 +74,25 @@ func (repo *Repo) acquireWorkspaceLock(operation string) (func(), error) {
 	}
 
 	workspaceLocks.Lock()
-	workspaceLocks.held[lockDir] = 1
+	workspaceLocks.held[lockDir] = workspaceLock{count: 1, lock: lock}
 	workspaceLocks.Unlock()
 
-	return func() { releaseWorkspaceLock(lockDir, true) }, nil
+	return func() { releaseWorkspaceLock(lockDir) }, nil
 }
 
-func releaseWorkspaceLock(lockDir string, removeDir bool) {
+func releaseWorkspaceLock(lockDir string) {
 	workspaceLocks.Lock()
 	defer workspaceLocks.Unlock()
 
-	count := workspaceLocks.held[lockDir]
-	if count <= 1 {
-		delete(workspaceLocks.held, lockDir)
-		if removeDir {
-			_ = os.Remove(lockDir)
-		}
+	held, ok := workspaceLocks.held[lockDir]
+	if !ok {
 		return
 	}
-	workspaceLocks.held[lockDir] = count - 1
-}
-
-func acquireWorkspaceDirLock(lockDir string) error {
-	const attempts = 100
-	for i := 0; i < attempts; i++ {
-		if err := os.Mkdir(lockDir, 0o700); err == nil {
-			return nil
-		} else if !os.IsExist(err) {
-			return fmt.Errorf("create workspace lock: %w", err)
-		}
-		time.Sleep(10 * time.Millisecond)
+	if held.count <= 1 {
+		delete(workspaceLocks.held, lockDir)
+		_ = held.lock.Release()
+		return
 	}
-	return fmt.Errorf("workspace lock busy: %s", strings.TrimSuffix(lockDir, ".lock"))
+	held.count--
+	workspaceLocks.held[lockDir] = held
 }
