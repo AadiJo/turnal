@@ -117,6 +117,24 @@ func TestDetachedSchedulerDoesNothingWhileNetworkDisabled(t *testing.T) {
 	}
 }
 
+func TestDetachedSchedulerRequiresRolloutEligibleInstallation(t *testing.T) {
+	oldRollout := collectorRolloutPercent
+	collectorRolloutPercent = "100"
+	t.Cleanup(func() { collectorRolloutPercent = oldRollout })
+	called := false
+	scheduler := DetachedScheduler{
+		Sender: Sender{endpoint: CollectorURL, version: "0.4.2"},
+		Executable: func() (string, error) {
+			called = true
+			return "/turnal", nil
+		},
+	}
+	scheduled, err := scheduler.Schedule()
+	if err != nil || scheduled || called {
+		t.Fatalf("Schedule() = %v, %v, called=%v", scheduled, err, called)
+	}
+}
+
 func enabledTestFlusher(t *testing.T, status int) (Flusher, *captureTransport) {
 	t.Helper()
 	oldRollout := collectorRolloutPercent

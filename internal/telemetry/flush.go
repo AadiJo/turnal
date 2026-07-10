@@ -138,7 +138,7 @@ type DetachedScheduler struct {
 }
 
 func (scheduler DetachedScheduler) Schedule() (bool, error) {
-	if !scheduler.Sender.Enabled() || (scheduler.InstallationID != nil && !scheduler.Sender.EnabledFor(*scheduler.InstallationID)) {
+	if !scheduler.Sender.Enabled() || scheduler.InstallationID == nil || !scheduler.Sender.EnabledFor(*scheduler.InstallationID) {
 		return false, nil
 	}
 	executable := scheduler.Executable
