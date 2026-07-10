@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- turnal glyph, without the app tile. The rollback sweep and checkpoint
+       turns use currentColor so the mark adapts to its surrounding context;
+       the live recording light remains international orange. -->
+  <defs>
+    <mask id="turnal-checkpoint-gaps">
+      <rect width="256" height="256" fill="#fff"/>
+      <circle cx="83.3" cy="187.6" r="19" fill="#000"/>
+      <circle cx="160.6" cy="191" r="19" fill="#000"/>
+      <circle cx="196.6" cy="128.6" r="19" fill="#000"/>
+    </mask>
+  </defs>
+
+  <!-- tapered trail -->
+  <path d="M59.9 97.1 L53 108.1 L57.8 109.5 Z" fill="currentColor" opacity="0.45"/>
+  <path d="M53.7 116.1 A72 72 0 0 0 52.7 133.6" fill="none" stroke="currentColor" stroke-width="5.5" opacity="0.65"/>
+
+  <!-- rollback sweep and dart -->
+  <path d="M50.7 141.6 A78.5 78.5 0 1 0 103.7 53.3 L100.9 66.9 A65.5 65.5 0 1 1 56.6 140.6 Z" fill="currentColor" mask="url(#turnal-checkpoint-gaps)"/>
+  <path d="M75.7 68.7 L101.8 39.2 L114.2 77.2 Z" fill="currentColor" stroke="currentColor" stroke-width="6" stroke-linejoin="round"/>
+
+  <!-- checkpoint turns -->
+  <circle cx="83.3" cy="187.6" r="13" fill="currentColor"/>
+  <circle cx="160.6" cy="191" r="13" fill="currentColor"/>
+  <circle cx="196.6" cy="128.6" r="13" fill="currentColor"/>
+
+  <!-- REC: always recording -->
+  <circle cx="128" cy="128" r="22.5" fill="none" stroke="#FF4F00" stroke-width="5"/>
+  <circle cx="128" cy="128" r="13" fill="#FF4F00"/>
+</svg>
