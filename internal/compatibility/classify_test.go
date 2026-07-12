@@ -2,6 +2,7 @@ package compatibility
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -126,6 +127,36 @@ func TestClassifyCodexHooksIgnoresUnrelatedHooksAndPreservesWarnings(t *testing.
 	}
 	if len(result.Warnings) != 1 || result.Warnings[0] != "project warning" {
 		t.Fatalf("warnings = %#v", result.Warnings)
+	}
+}
+
+func TestClassifyCodexHooksAcceptsRootCheckoutSourceForLinkedWorktree(t *testing.T) {
+	rootCheckout := t.TempDir()
+	linkedWorktree := filepath.Join(t.TempDir(), "linked")
+	gitDir := filepath.Join(rootCheckout, ".git", "worktrees", "linked")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(linkedWorktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(linkedWorktree, ".git"), []byte("gitdir: "+gitDir+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "commondir"), []byte("../..\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var hooks []CodexHook
+	for _, event := range expectedCodexEventNames {
+		hook := projectCodexHook(linkedWorktree, event, "turnal codex-hook")
+		hook.SourcePath = filepath.Join(rootCheckout, ".codex", "config.toml")
+		hook.TrustStatus = "untrusted"
+		hooks = append(hooks, hook)
+	}
+	result := ClassifyCodexHooks(linkedWorktree, "turnal codex-hook", configuredCodexHealth(), CodexHooksResult{Hooks: hooks})
+	if result.Discovered != 4 || result.Enabled != 4 || result.Trusted != 0 || result.Execution != ExecutionUntrusted {
+		t.Fatalf("linked-worktree result = %#v", result)
 	}
 }
 
