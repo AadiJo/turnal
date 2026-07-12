@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/AadiJo/turnal/internal/fsidentity"
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -132,7 +133,7 @@ func TestCodexHookLifecycleUsesRootCheckoutFromLinkedWorktree(t *testing.T) {
 		t.Fatalf("install linked-worktree Codex hooks: %v", err)
 	}
 	rootConfig := filepath.Join(rootCheckout, ".codex", "config.toml")
-	if installed.ConfigPath != rootConfig {
+	if !fsidentity.Same(installed.ConfigPath, rootConfig) {
 		t.Fatalf("installed config = %q, want %q", installed.ConfigPath, rootConfig)
 	}
 	if _, err := os.Stat(filepath.Join(linkedWorktree, ".codex", "config.toml")); !os.IsNotExist(err) {
@@ -146,7 +147,7 @@ func TestCodexHookLifecycleUsesRootCheckoutFromLinkedWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("uninstall linked-worktree Codex hooks: %v", err)
 	}
-	if removed.ConfigPath != rootConfig || removed.RemovedCommands != 4 {
+	if !fsidentity.Same(removed.ConfigPath, rootConfig) || removed.RemovedCommands != 4 {
 		t.Fatalf("uninstall result = %#v", removed)
 	}
 	data, err := os.ReadFile(rootConfig)
