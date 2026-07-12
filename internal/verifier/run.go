@@ -196,6 +196,12 @@ func classifyWaitResult(result *Check, waitErr error, contextErr error, processS
 		result.ExitCode = &code
 		return
 	}
+	if errors.Is(waitErr, exec.ErrWaitDelay) && processState != nil && processState.Success() {
+		result.Status = StatusPassed
+		code := 0
+		result.ExitCode = &code
+		return
+	}
 	if errors.Is(contextErr, context.DeadlineExceeded) {
 		result.Status = StatusTimedOut
 		result.TimedOut = true
