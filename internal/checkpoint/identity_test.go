@@ -160,6 +160,35 @@ func TestRekeyStorePreservesEventsAndCommits(t *testing.T) {
 	}
 }
 
+func TestValidateReadOnlyWorktreeIdentityRejectsStaleGitBinding(t *testing.T) {
+	root := t.TempDir()
+	storedGit := filepath.Join(t.TempDir(), "stored.git")
+	currentGit := filepath.Join(t.TempDir(), "current.git")
+	for _, path := range []string{storedGit, currentGit} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", path, err)
+		}
+	}
+	binding := WorktreeIdentity{
+		Root:         root,
+		GitTopLevel:  root,
+		GitCommonDir: storedGit,
+		GitDir:       storedGit,
+		Primary:      true,
+	}
+	identity := &UserGitIdentity{
+		TopLevel:     root,
+		GitCommonDir: currentGit,
+		GitDir:       currentGit,
+		PrimaryRoot:  root,
+	}
+
+	err := validateReadOnlyWorktreeIdentity(binding, root, identity)
+	if err == nil || !strings.Contains(err.Error(), "Git common directory") {
+		t.Fatalf("validateReadOnlyWorktreeIdentity error = %v", err)
+	}
+}
+
 func runUserGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)

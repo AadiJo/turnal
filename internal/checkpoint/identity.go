@@ -276,6 +276,9 @@ func (repo *Repo) readIdentity(gitIdentity *UserGitIdentity) error {
 	if binding == nil {
 		return fmt.Errorf("worktree identity invariant failed: no existing binding for %s; a read-only open cannot attach a worktree", root)
 	}
+	if err := validateReadOnlyWorktreeIdentity(*binding, root, gitIdentity); err != nil {
+		return err
+	}
 
 	repo.IdentityVersion = identity.Version
 	repo.RepoID = identity.RepoID
@@ -288,6 +291,38 @@ func (repo *Repo) readIdentity(gitIdentity *UserGitIdentity) error {
 	repo.UserGitDir = binding.GitDir
 	repo.PrimaryWorktree = binding.Primary
 	repo.ScopedRefs = !binding.Primary && binding.GitCommonDir != ""
+	return nil
+}
+
+func validateReadOnlyWorktreeIdentity(binding WorktreeIdentity, root string, gitIdentity *UserGitIdentity) error {
+	if !sameIdentityPath(binding.Root, root) {
+		return fmt.Errorf("worktree identity invariant failed: binding root %s does not match current root %s; a read-only open cannot refresh it", binding.Root, root)
+	}
+	if gitIdentity == nil {
+		if binding.GitTopLevel != "" || binding.GitCommonDir != "" || binding.GitDir != "" {
+			return fmt.Errorf("worktree identity invariant failed: binding for %s records Git identity but the current workspace is not a Git worktree", root)
+		}
+		return nil
+	}
+
+	expectedPrimary := sameIdentityPath(root, gitIdentity.PrimaryRoot)
+	checks := []struct {
+		name    string
+		stored  string
+		current string
+	}{
+		{name: "Git top-level", stored: binding.GitTopLevel, current: gitIdentity.TopLevel},
+		{name: "Git common directory", stored: binding.GitCommonDir, current: gitIdentity.GitCommonDir},
+		{name: "Git directory", stored: binding.GitDir, current: gitIdentity.GitDir},
+	}
+	for _, check := range checks {
+		if check.stored == "" || check.current == "" || !sameIdentityPath(check.stored, check.current) {
+			return fmt.Errorf("worktree identity invariant failed: stored %s %s does not match current %s; a read-only open cannot refresh it", check.name, check.stored, check.current)
+		}
+	}
+	if binding.Primary != expectedPrimary {
+		return fmt.Errorf("worktree identity invariant failed: stored primary status %t does not match current status %t; a read-only open cannot refresh it", binding.Primary, expectedPrimary)
+	}
 	return nil
 }
 
