@@ -59,6 +59,12 @@ version = 1
 # [rollback]
 # mode = "checkpoint" # checkpoint | workspace-git
 #
+# [[verify]]
+# name = "unit-tests"
+# command = "go"
+# args = ["test", "./..."]
+# timeout = "2m"
+#
 # [retention]
 # Hidden Git objects are retained while private refs exist. Use
 # turnal session drop, turnal retention prune, then explicit
@@ -173,7 +179,8 @@ type RestorePlan struct {
 }
 
 type MaterializeOptions struct {
-	PreservePaths []string
+	PreservePaths               []string
+	ApplyCurrentSecretDenyGlobs bool
 }
 
 func Init(root primitives.WorkspaceRoot) (*Repo, error) {
@@ -1359,6 +1366,14 @@ func (repo *Repo) MaterializeCommit(commit primitives.CommitSHA, root string, op
 	if err != nil {
 		return err
 	}
+	var denyGlobs []string
+	if options.ApplyCurrentSecretDenyGlobs {
+		denyGlobs, err = repo.secretDenyGlobs()
+		if err != nil {
+			return fmt.Errorf("resolve current materialization secret policy: %w", err)
+		}
+		entries = filterSecretDeniedTreeEntries(entries, denyGlobs)
+	}
 	modes, err := repo.readModeManifest(parsedCommit)
 	if err != nil {
 		return err
@@ -1366,6 +1381,11 @@ func (repo *Repo) MaterializeCommit(commit primitives.CommitSHA, root string, op
 	preservePaths, err := materializePreserveSet(options.PreservePaths)
 	if err != nil {
 		return err
+	}
+	for preservedPath := range preservePaths {
+		if secretDeniedPath(preservedPath, denyGlobs) {
+			delete(preservePaths, preservedPath)
+		}
 	}
 	for _, entry := range entries {
 		mode, hasMode := modes[entry.Path]
@@ -1383,6 +1403,19 @@ func (repo *Repo) MaterializeCommit(commit primitives.CommitSHA, root string, op
 		return err
 	}
 	return materializeRemoveEmptyDirs(materializeRoot)
+}
+
+func filterSecretDeniedTreeEntries(entries []TreeEntry, denyGlobs []string) []TreeEntry {
+	if len(entries) == 0 || len(denyGlobs) == 0 {
+		return entries
+	}
+	filtered := make([]TreeEntry, 0, len(entries))
+	for _, entry := range entries {
+		if !secretDeniedPath(entry.Path, denyGlobs) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
 }
 
 func (repo *Repo) restoreCommit(commit primitives.CommitSHA) error {

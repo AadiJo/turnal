@@ -24,6 +24,7 @@ Turnal should be piloted before company-wide adoption. Pin a version and validat
 - Roll the workspace back with a safety checkpoint created first.
 - Search recorded turns without making SQLite the source of truth.
 - Replay checkpoints in isolated worktrees.
+- Run repository-defined checks against the live workspace or a recorded checkpoint.
 - Share one Turnal store across linked Git worktrees.
 
 ## Requirements
@@ -238,6 +239,50 @@ turnal replay stop
 
 Use `turnal replay list` to find active replay sessions and `turnal replay --help` for path and retention controls.
 
+## Repository verification
+
+Declare an ordered set of verifier commands in the repository's `.turnal/config.toml`:
+
+```toml
+[[verify]]
+name = "unit-tests"
+command = "go"
+args = ["test", "./..."]
+timeout = "2m"
+
+[[verify]]
+name = "race-detector"
+command = "go"
+args = ["test", "-race", "./..."]
+timeout = "5m"
+```
+
+Each command and argument is passed directly to the operating system in declaration order; Turnal does not invoke a shell or expand variables, globs, pipes, or redirects. Names must be unique printable UTF-8 text without formatting controls, commands and timeouts are required, and malformed or excessive definitions make verification fail before any check starts.
+
+Run the checks directly in the current workspace:
+
+```sh
+turnal verify
+turnal verify --json
+```
+
+Live verification does not create a checkpoint or move the project's branch, HEAD, index, or Git configuration. The checks run in the mutable workspace and may modify it themselves, so the report identifies this target as live and does not claim that the result is reproducible.
+
+Run the same declarations against a recorded state:
+
+```sh
+turnal verify <session>:<turn>:pre
+turnal verify <session>:<turn>:post --json
+```
+
+The canonical `<session>:turn:<turn>:pre|post` spelling is accepted too. Turnal verifies the durable checkpoint metadata and refs before launching a command, then materializes the captured project surface into a Turnal-owned temporary directory. It never runs checkpoint checks in the active workspace and never moves or initializes the project's `.git/`. The evaluation omits `.git/`, `.turnal/`, ignored paths, uncaptured files, and empty directories that were not represented by the checkpoint tree. Turnal reapplies the current `secrets.snapshot_deny_globs` during verifier materialization, so a newly denied path stays absent even if an older checkpoint captured it; exact replay materialization retains the historical surface.
+
+Checks run sequentially and continue after ordinary failures. Turnal terminates remaining supervised descendants when the direct verifier exits, and a configured timeout terminates the supervised process tree through a Windows Job Object or the child's process group on Unix. If containment cleanup fails, the check keeps its original result while JSON and human output report a separate infrastructure error and the aggregate verification remains unsuccessful. A Unix descendant that deliberately detaches from that process group is outside Turnal's containment boundary, but retained output pipes have a bounded one-second wait so such a descendant cannot keep `turnal verify` blocked indefinitely. Ctrl+C and SIGTERM cancel the active verifier and trigger owned checkpoint-directory cleanup. Stdout and stderr are captured separately, with the first 1 MiB retained for each stream and independent truncation flags in JSON. Children inherit the caller's environment, toolchain, network access, and current external-service state, but reports record only that inheritance policy and never serialize environment-variable values.
+
+The command exits `0` when every check passes and `3` after running every eligible check when any check fails, times out, or cannot start. Invalid configuration, unresolved or corrupt targets, materialization failures, and cleanup errors are ordinary Turnal errors and exit `1`. A passing verifier is evidence for the property that command checks; it is not proof that the entire change is correct.
+
+Verifier reports are currently returned and printed only. They are not yet attached to logical Attempts because Attempt identity and reconciliation are outside this release.
+
 ## Fork readiness
 
 Before rerunning a recorded task, inspect what Turnal can reconstruct:
@@ -323,6 +368,12 @@ enabled = false
 
 [rollback]
 mode = "checkpoint"     # checkpoint | workspace-git
+
+[[verify]]
+name = "unit-tests"
+command = "go"
+args = ["test", "./..."]
+timeout = "2m"
 
 [secrets]
 store_prompts = true

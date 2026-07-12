@@ -54,6 +54,23 @@ func TestInspectRequiresUnrecordedConversationContext(t *testing.T) {
 	}
 }
 
+func TestInspectDistinguishesConfiguredRepositoryVerifiers(t *testing.T) {
+	repo, sessionID, turnID := readinessFixture(t, "Fix the parser", true)
+	configPath := filepath.Join(repo.MetadataDir, "config.toml")
+	data := []byte("version = 1\n[[verify]]\nname = \"tests\"\ncommand = \"go\"\nargs = [\"test\", \"./...\"]\ntimeout = \"2m\"\n")
+	if err := os.WriteFile(configPath, data, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	report, err := NewAnalyzer(repo).Inspect(sessionID, turnID)
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	if report.Conditions.Evaluators.Status != "configured" || !strings.Contains(report.Conditions.Evaluators.Detail, "1 repository verifier") {
+		t.Fatalf("evaluators = %#v", report.Conditions.Evaluators)
+	}
+}
+
 func TestInspectReportsRedactedInstructionWithoutExposingMarker(t *testing.T) {
 	repo, sessionID, turnID := readinessFixture(t, primitives.SecretsRedactionText, true)
 
