@@ -352,7 +352,7 @@ func sessionMetadata(events []eventlog.Event, adapter primitives.AdapterName) (s
 			return "", "", false, fmt.Errorf("multiple session.start events for adapter %s at events %s and %s", event.Adapter, previous, event.Seq)
 		}
 		seenAdapters[event.Adapter] = event.Seq
-		if !found && event.Adapter == adapter {
+		if adapter != "" && !found && event.Adapter == adapter {
 			model = strings.TrimSpace(parsedModel)
 			permissionMode = strings.TrimSpace(parsedPermissionMode)
 			found = true
