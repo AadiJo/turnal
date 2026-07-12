@@ -33,6 +33,7 @@ func TestForkDryRunReportsReadinessWithoutWritingState(t *testing.T) {
 		"fidelity:       L1",
 		"source turn:    fork-cli:1 (complete)",
 		"adapter:        codex",
+		"metadata adapter: codex",
 		"model:          cli-test-model",
 		"base:           refs/agent-vcs/",
 		"captured files: 1",
