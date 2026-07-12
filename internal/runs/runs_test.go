@@ -243,6 +243,31 @@ func TestRecoverySkipsSameStoreJournalFromAnotherWorktree(t *testing.T) {
 	}
 }
 
+func TestRecoveryDoesNotTrustTamperedJournalWorktree(t *testing.T) {
+	repo := testRepo(t)
+	runID, _ := primitives.NewRunID()
+	release, err := Begin(repo, runID, session(t, "wrapper"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	journal, err := readLifecycleJournal(lifecycleJournalPath(repo, runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal.WorktreeID, _ = primitives.NewWorktreeID()
+	if err := writeLifecycleJournal(repo, journal); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecoverAbandoned(repo); err == nil || !strings.Contains(err.Error(), "does not match durable run start") {
+		t.Fatalf("tampered recovery error = %v", err)
+	}
+	projection, err := Read(repo, runID)
+	if err != nil || projection.WorktreeID != repo.WorktreeID {
+		t.Fatalf("durable projection = %+v, %v", projection, err)
+	}
+}
+
 func TestCaptureAuthorizationRequiresLockedMatchingLifecycle(t *testing.T) {
 	repo := testRepo(t)
 	runID, _ := primitives.NewRunID()
@@ -302,7 +327,7 @@ func TestRecoveryRejectsJournalSessionDifferentFromRunStart(t *testing.T) {
 		t.Fatal(err)
 	}
 	release()
-	if err := RecoverAbandoned(repo); err == nil || !strings.Contains(err.Error(), "does not match run-start session") {
+	if err := RecoverAbandoned(repo); err == nil || !strings.Contains(err.Error(), "does not match durable run start") {
 		t.Fatalf("recovery error = %v", err)
 	}
 	projection, err := Read(repo, runID)

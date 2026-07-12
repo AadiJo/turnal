@@ -98,16 +98,23 @@ func RecoverAbandoned(repo *checkpoint.Repo) error {
 			}
 			return err
 		}
-		if journal.RepoID == repo.RepoID && journal.StoreID == repo.StoreID && journal.WorktreeID != repo.WorktreeID {
-			// Lifecycle journals share the store, but only their owning worktree
-			// may recover or mutate the corresponding Run.
-			continue
-		}
 		unlock, err := acquireRunMutation(repo, journal.RunID)
 		if err != nil {
 			return err
 		}
-		err = recoverJournalLocked(repo, journal)
+		projection, found, projectionErr := validatedJournalProjection(repo, journal)
+		switch {
+		case projectionErr != nil:
+			err = projectionErr
+		case !found:
+			err = clearLifecycleJournal(repo, journal.RunID)
+		case projection.RepoID == repo.RepoID && projection.StoreID == repo.StoreID && projection.WorktreeID != repo.WorktreeID:
+			// Durable history, not writable journal metadata, identifies the
+			// linked worktree that owns this Run.
+			err = nil
+		default:
+			err = recoverProjectionLocked(repo, journal, projection)
+		}
 		unlock()
 		if err != nil {
 			return err
@@ -117,21 +124,33 @@ func RecoverAbandoned(repo *checkpoint.Repo) error {
 }
 
 func recoverJournalLocked(repo *checkpoint.Repo, journal lifecycleJournal) error {
-	if journal.RepoID != repo.RepoID || journal.StoreID != repo.StoreID || journal.WorktreeID != repo.WorktreeID {
-		return fmt.Errorf("run lifecycle invariant failed for %s: repository store or worktree identity mismatch", journal.RunID)
+	projection, found, err := validatedJournalProjection(repo, journal)
+	if err != nil {
+		return err
 	}
+	if !found {
+		return clearLifecycleJournal(repo, journal.RunID)
+	}
+	return recoverProjectionLocked(repo, journal, projection)
+}
+
+func validatedJournalProjection(repo *checkpoint.Repo, journal lifecycleJournal) (Projection, bool, error) {
 	projection, err := Read(repo, journal.RunID)
 	if err != nil {
 		if strings.Contains(err.Error(), "does not exist") {
-			return clearLifecycleJournal(repo, journal.RunID)
+			return Projection{}, false, nil
 		}
-		return err
+		return Projection{}, false, err
 	}
-	if journal.SessionID != projection.Start.SessionID {
-		return fmt.Errorf("run lifecycle invariant failed for %s: journal session %s does not match run-start session %s", journal.RunID, journal.SessionID, projection.Start.SessionID)
+	if journal.RunID != projection.ID || journal.RepoID != projection.RepoID || journal.StoreID != projection.StoreID || journal.WorktreeID != projection.WorktreeID || journal.SessionID != projection.Start.SessionID || journal.OwnerPID != projection.OwnerPID || journal.OwnerStart != projection.OwnerStart {
+		return Projection{}, false, fmt.Errorf("run lifecycle invariant failed for %s: journal does not match durable run start", journal.RunID)
 	}
-	if journal.OwnerPID != projection.OwnerPID || journal.OwnerStart != projection.OwnerStart {
-		return fmt.Errorf("run lifecycle invariant failed for %s: journal wrapper identity does not match run start", journal.RunID)
+	return projection, true, nil
+}
+
+func recoverProjectionLocked(repo *checkpoint.Repo, journal lifecycleJournal, projection Projection) error {
+	if projection.RepoID != repo.RepoID || projection.StoreID != repo.StoreID || projection.WorktreeID != repo.WorktreeID {
+		return fmt.Errorf("run lifecycle invariant failed for %s: repository store or worktree identity mismatch", journal.RunID)
 	}
 	held, err := filelock.Held(lifecycleLockPath(repo, journal.RunID))
 	if err != nil {
