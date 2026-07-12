@@ -271,7 +271,7 @@ func runEnvironment(existing []string, runID primitives.RunID) []string {
 	result := make([]string, 0, len(existing)+1)
 	for _, entry := range existing {
 		name, _, found := strings.Cut(entry, "=")
-		if found && strings.EqualFold(name, runs.EnvRunID) {
+		if found && environmentNamesEqual(name, runs.EnvRunID) {
 			continue
 		}
 		result = append(result, entry)

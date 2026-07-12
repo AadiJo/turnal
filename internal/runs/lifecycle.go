@@ -261,6 +261,9 @@ func writeLifecycleJournal(repo *checkpoint.Repo, journal lifecycleJournal) erro
 	if err := os.Rename(tmpPath, lifecycleJournalPath(repo, journal.RunID)); err != nil {
 		return fmt.Errorf("commit run lifecycle journal: %w", err)
 	}
+	if err := syncDirectory(dir); err != nil {
+		return fmt.Errorf("sync run lifecycle directory: %w", err)
+	}
 	return nil
 }
 

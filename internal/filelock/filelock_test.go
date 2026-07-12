@@ -70,6 +70,52 @@ func TestAcquireRefusesLegacyLockDirectory(t *testing.T) {
 	}
 }
 
+func TestAcquireRefusesSymlinkWithoutChangingTarget(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "sentinel")
+	want := []byte("must remain unchanged\n")
+	if err := os.WriteFile(target, want, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "crafted.lock")
+	if err := os.Symlink(target, path); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := Acquire(path, time.Second); err == nil {
+		t.Fatal("Acquire accepted a symlink lock path")
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("symlink target changed to %q", got)
+	}
+}
+
+func TestAcquireRefusesHardLinkWithoutChangingTarget(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "sentinel")
+	want := []byte("must remain unchanged\n")
+	if err := os.WriteFile(target, want, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "crafted.lock")
+	if err := os.Link(target, path); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+	if _, err := Acquire(path, time.Second); err == nil {
+		t.Fatal("Acquire accepted a multiply linked lock file")
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("hard-link target changed to %q", got)
+	}
+}
+
 func TestHeldDoesNotRewriteOwnerMetadata(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "owner.lock")
 	lock, err := Acquire(path, time.Second)

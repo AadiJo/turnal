@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -34,7 +35,7 @@ func Acquire(path string, timeout time.Duration) (*Lock, error) {
 	} else if err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("inspect lock path: %w", err)
 	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	file, err := openRegularLockFile(path, true)
 	if err != nil {
 		return nil, fmt.Errorf("open lock file: %w", err)
 	}
@@ -82,9 +83,17 @@ func Inspect(path string) (Identity, bool, error) {
 	if err != nil || !held {
 		return Identity{}, held, err
 	}
-	data, err := os.ReadFile(path)
+	file, err := openRegularLockFile(path, false)
+	if err != nil {
+		return Identity{}, false, fmt.Errorf("open lock owner: %w", err)
+	}
+	data, err := io.ReadAll(file)
+	closeErr := file.Close()
 	if err != nil {
 		return Identity{}, false, fmt.Errorf("read lock owner: %w", err)
+	}
+	if closeErr != nil {
+		return Identity{}, false, fmt.Errorf("close lock owner: %w", closeErr)
 	}
 	var identity Identity
 	if err := json.Unmarshal(data, &identity); err != nil {
@@ -110,7 +119,7 @@ func Held(path string) (bool, error) {
 	if info.IsDir() {
 		return false, fmt.Errorf("legacy directory lock present at %s", path)
 	}
-	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	file, err := openRegularLockFile(path, false)
 	if err != nil {
 		return false, fmt.Errorf("open lock file: %w", err)
 	}
@@ -131,6 +140,23 @@ func Held(path string) (bool, error) {
 		return false, err
 	}
 	return false, nil
+}
+
+func openRegularLockFile(path string, create bool) (*os.File, error) {
+	file, err := openLockFileNoFollow(path, create)
+	if err != nil {
+		return nil, err
+	}
+	regular, err := isRegularLockFile(file)
+	if err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("inspect opened lock file: %w", err)
+	}
+	if !regular {
+		_ = file.Close()
+		return nil, fmt.Errorf("lock path %s is not a regular file", path)
+	}
+	return file, nil
 }
 
 func (lock *Lock) Release() error {
