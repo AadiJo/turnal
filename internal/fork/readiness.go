@@ -162,6 +162,20 @@ func (analyzer Analyzer) Inspect(sessionID primitives.SessionID, turnID primitiv
 			turn.PreCheckpoint.CommitSHA,
 		)
 	}
+	if turn.PreCheckpoint.CanonicalRef != "" {
+		canonicalCommit, err := analyzer.Repo.CheckpointCommit(turn.PreCheckpoint.CanonicalRef)
+		if err != nil {
+			return Report{}, fmt.Errorf("resolve canonical pre-turn checkpoint ref: %w", err)
+		}
+		if canonicalCommit != turn.PreCheckpoint.CommitSHA {
+			return Report{}, fmt.Errorf(
+				"fork readiness invariant failed: canonical pre-turn checkpoint ref %s points to %s, event records %s",
+				turn.PreCheckpoint.CanonicalRef,
+				canonicalCommit,
+				turn.PreCheckpoint.CommitSHA,
+			)
+		}
+	}
 	tree, err := analyzer.Repo.ListCommitTree(turn.PreCheckpoint.CommitSHA)
 	if err != nil {
 		return Report{}, fmt.Errorf("inspect pre-turn checkpoint tree: %w", err)

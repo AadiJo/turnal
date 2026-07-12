@@ -95,6 +95,27 @@ func TestInspectRejectsCheckpointRefCommitMismatch(t *testing.T) {
 	}
 }
 
+func TestInspectRejectsCanonicalCheckpointRefCommitMismatch(t *testing.T) {
+	repo, sessionID, turnID := readinessFixture(t, "Fix the parser", true)
+	infos, err := repo.FindCheckpointTargets(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("FindCheckpointTargets: %v", err)
+	}
+	if len(infos) != 1 || infos[0].CanonicalRef == "" {
+		t.Fatalf("pre checkpoint infos = %#v", infos)
+	}
+	if _, err := repo.CreateSyntheticSnapshotRef(infos[0].CanonicalRef.String(), "replace canonical pre ref", []checkpoint.SyntheticTreeEntry{
+		{Path: "other.txt", Mode: primitives.GitFileModeRegular, Content: []byte("other\n")},
+	}); err != nil {
+		t.Fatalf("replace canonical checkpoint ref: %v", err)
+	}
+
+	_, err = NewAnalyzer(repo).Inspect(sessionID, turnID)
+	if err == nil || !strings.Contains(err.Error(), "canonical pre-turn checkpoint ref") {
+		t.Fatalf("Inspect error = %v", err)
+	}
+}
+
 func TestInspectAllowsIncompleteTurnWhenPreCheckpointExists(t *testing.T) {
 	repo, sessionID, turnID := readinessFixture(t, "Continue from here", false)
 
