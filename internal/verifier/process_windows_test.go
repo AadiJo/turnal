@@ -49,6 +49,33 @@ func TestWindowsTimeoutTerminatesProcessTree(t *testing.T) {
 	}
 }
 
+func TestWindowsFastParentCannotEscapeJob(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "fast-child.pid")
+	t.Cleanup(func() { terminateWindowsPIDFromMarker(marker) })
+	definition := config.Verifier{
+		Name:    "windows-fast-parent",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=^TestVerifierWindowsTreeHelperProcess$", "--", "fast-parent", marker},
+		Timeout: 5 * time.Second,
+	}
+	report, err := Run(context.Background(), Request{
+		Root:        t.TempDir(),
+		Target:      Target{Kind: TargetLiveWorkspace},
+		Verifiers:   []config.Verifier{definition},
+		OutputLimit: DefaultOutputLimit,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if report.Checks[0].Status != StatusPassed {
+		t.Fatalf("check = %#v, want pass", report.Checks[0])
+	}
+	pid := readWindowsPIDMarker(t, marker)
+	if !waitForWindowsProcessExit(pid, 3*time.Second) {
+		t.Fatalf("descendant process %d escaped the verifier job", pid)
+	}
+}
+
 func TestVerifierWindowsTreeHelperProcess(t *testing.T) {
 	separator := -1
 	for index, arg := range os.Args {
@@ -68,7 +95,7 @@ func TestVerifierWindowsTreeHelperProcess(t *testing.T) {
 		time.Sleep(30 * time.Second)
 		os.Exit(0)
 	}
-	if mode != "parent" {
+	if mode != "parent" && mode != "fast-parent" {
 		os.Exit(42)
 	}
 	child := exec.Command(os.Args[0], "-test.run=^TestVerifierWindowsTreeHelperProcess$", "--", "child", marker)
@@ -81,6 +108,9 @@ func TestVerifierWindowsTreeHelperProcess(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(marker); err == nil {
+			if mode == "fast-parent" {
+				os.Exit(0)
+			}
 			time.Sleep(30 * time.Second)
 			os.Exit(0)
 		}
