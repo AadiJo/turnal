@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,6 +31,9 @@ func Run(ctx context.Context, request Request) (Report, error) {
 	}
 	if len(request.Verifiers) == 0 {
 		return Report{}, fmt.Errorf("no repository verifiers are configured")
+	}
+	if err := validateDefinitions(request.Verifiers); err != nil {
+		return Report{}, err
 	}
 	if request.OutputLimit <= 0 {
 		request.OutputLimit = DefaultOutputLimit
@@ -66,6 +70,54 @@ func Run(ctx context.Context, request Request) (Report, error) {
 	report.FinishedAt = request.Now().UTC()
 	report.DurationMS = elapsedMilliseconds(report.StartedAt, report.FinishedAt)
 	return report, nil
+}
+
+func validateDefinitions(definitions []config.Verifier) error {
+	if len(definitions) > config.MaxVerifierCount {
+		return fmt.Errorf("verify must contain at most %d entries", config.MaxVerifierCount)
+	}
+	seen := make(map[string]int, len(definitions))
+	for index, definition := range definitions {
+		position := index + 1
+		name := strings.TrimSpace(definition.Name)
+		label := fmt.Sprintf("verify[%d]", position)
+		if name != "" {
+			label += fmt.Sprintf(" %q", name)
+		}
+		switch {
+		case name == "":
+			return fmt.Errorf("%s: name must not be empty", label)
+		case strings.ContainsRune(name, 0):
+			return fmt.Errorf("%s: name must not contain NUL", label)
+		case len(name) > config.MaxVerifierNameBytes:
+			return fmt.Errorf("%s: name must be at most %d bytes", label, config.MaxVerifierNameBytes)
+		case strings.TrimSpace(definition.Command) == "":
+			return fmt.Errorf("%s: command must not be empty", label)
+		case strings.ContainsRune(definition.Command, 0):
+			return fmt.Errorf("%s: command must not contain NUL", label)
+		case len(definition.Command) > config.MaxVerifierCommandBytes:
+			return fmt.Errorf("%s: command must be at most %d bytes", label, config.MaxVerifierCommandBytes)
+		case len(definition.Args) > config.MaxVerifierArgCount:
+			return fmt.Errorf("%s: args must contain at most %d arguments", label, config.MaxVerifierArgCount)
+		case definition.Timeout <= 0:
+			return fmt.Errorf("%s: timeout must be positive", label)
+		case definition.Timeout > config.MaxVerifierTimeout:
+			return fmt.Errorf("%s: timeout must not exceed %s", label, config.MaxVerifierTimeout)
+		}
+		if previous, ok := seen[name]; ok {
+			return fmt.Errorf("%s: name duplicates verify[%d]", label, previous)
+		}
+		seen[name] = position
+		for argIndex, arg := range definition.Args {
+			if strings.ContainsRune(arg, 0) {
+				return fmt.Errorf("%s: args[%d] must not contain NUL", label, argIndex+1)
+			}
+			if len(arg) > config.MaxVerifierArgBytes {
+				return fmt.Errorf("%s: args[%d] must be at most %d bytes", label, argIndex+1, config.MaxVerifierArgBytes)
+			}
+		}
+	}
+	return nil
 }
 
 func runOne(parent context.Context, request Request, definition config.Verifier) Check {
