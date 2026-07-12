@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -88,8 +87,8 @@ func statusCmdWithProbe(codexProbe compatibility.CodexProbe) *cobra.Command {
 				}
 			}
 			var captureReport compatibility.Report
-			if probeAgentCapture && configErr == nil && effective.Init.InstallHooks {
-				captureReport = compatibility.Diagnose(context.Background(), compatibility.Options{
+			if probeAgentCapture && rootErr == nil && configErr == nil && effective.Init.InstallHooks {
+				captureReport = compatibility.Diagnose(cmd.Context(), compatibility.Options{
 					WorkspaceRoot: root.String(),
 					HookCommand:   effective.Hooks.Command,
 					Targets:       targets,
