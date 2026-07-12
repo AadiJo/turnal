@@ -55,9 +55,12 @@ From the root of the project you want to record:
 ```sh
 turnal init
 turnal status
+turnal status --probe-agent-capture
 ```
 
 `turnal init` creates a `.turnal/` store, adds `.turnal/` to `.gitignore`, and configures hooks according to the `--agent` selection. The default `auto` mode detects Claude Code and Codex, falling back to configuring both when neither is discoverable. Initialization does not change your existing `.git/`.
+
+Normal status is offline. The explicit capture probe starts Codex app-server only long enough to call `hooks/list`; it does not start a thread or turn, invoke a model, modify workspace files, or change provider trust or configuration. Codex may still update its own local cache and runtime state while app-server starts. The probe also explains the Claude Agent SDK limitation that only the host knows whether it loads project settings.
 
 Now use your agent normally. After it has completed a turn:
 
@@ -92,6 +95,8 @@ turnal run -- codex
 ```
 
 Wrapper checkpoints remain available even when Codex hook payloads are unavailable. Prompt, tool, and assistant details still depend on Codex hooks.
+
+An application embedding Codex app-server does not automatically pass through this wrapper. App-server may discover Turnal's project hooks but skip untrusted definitions until you review and trust them in the host's hooks UI; Turnal diagnoses trust but never grants it.
 
 ### Manual turns
 
@@ -343,11 +348,14 @@ Start with:
 
 ```sh
 turnal status
+turnal status --probe-agent-capture
 turnal sessions
 turnal recovery status
 ```
 
-- **Hooks need attention:** rerun `turnal init --agent claude`, `--agent codex`, or `--agent all`.
+- **Hooks need attention:** status distinguishes a missing event from an event configured with a different command; rerun `turnal init --agent claude`, `--agent codex`, or `--agent all` only after reviewing the reported configuration.
+- **Claude Agent SDK is host-controlled:** the host must omit `settingSources` or include `"project"`. Turnal cannot infer arbitrary SDK host configuration and does not consume the SDK stream directly.
+- **Codex app-server hooks are untrusted:** review the project and exact hook definitions in Codex's hooks UI. Turnal does not change project trust, hook trust, or private provider trust databases.
 - **No Codex hook payloads:** review Codex hook trust, or use `turnal run -- codex` for wrapper checkpoints.
 - **A session is active after an interrupted agent run:** resume the same session so the next prompt can close the stale turn, or finalize it manually with `turnal turn finish --session <session>` after inspecting the workspace.
 - **Search index missing or stale:** run `turnal reindex`.

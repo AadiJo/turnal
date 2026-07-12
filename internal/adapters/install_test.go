@@ -3,12 +3,14 @@ package adapters
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/AadiJo/turnal/internal/fsidentity"
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -121,6 +123,114 @@ command = "echo keep"
 	postToolUseCommands := hookCommands(t, hooks["PostToolUse"])
 	if countCommand(postToolUseCommands, "echo keep") != 1 {
 		t.Fatalf("existing PostToolUse hook not preserved: %#v", postToolUseCommands)
+	}
+}
+
+func TestCodexHookLifecycleUsesRootCheckoutFromLinkedWorktree(t *testing.T) {
+	rootCheckout, linkedWorktree := createAdapterLinkedWorktree(t)
+	installed, err := InstallCodexHookWithOptions(linkedWorktree, InstallOptions{HookCommand: "turnal"})
+	if err != nil {
+		t.Fatalf("install linked-worktree Codex hooks: %v", err)
+	}
+	rootConfig := filepath.Join(rootCheckout, ".codex", "config.toml")
+	if !fsidentity.Same(installed.ConfigPath, rootConfig) {
+		t.Fatalf("installed config = %q, want %q", installed.ConfigPath, rootConfig)
+	}
+	if _, err := os.Stat(filepath.Join(linkedWorktree, ".codex", "config.toml")); !os.IsNotExist(err) {
+		t.Fatalf("linked worktree config exists or could not be checked: %v", err)
+	}
+	if health := inspectCodexHooks(linkedWorktree, "turnal"); !health.OK() || !fsidentity.Same(health.ConfigPath, rootConfig) {
+		t.Fatalf("linked-worktree health = %#v", health)
+	}
+
+	removed, err := UninstallCodexHookWithOptions(linkedWorktree, UninstallOptions{})
+	if err != nil {
+		t.Fatalf("uninstall linked-worktree Codex hooks: %v", err)
+	}
+	if !fsidentity.Same(removed.ConfigPath, rootConfig) || removed.RemovedCommands != 4 {
+		t.Fatalf("uninstall result = %#v", removed)
+	}
+	data, err := os.ReadFile(rootConfig)
+	if err != nil {
+		t.Fatalf("read root-checkout config: %v", err)
+	}
+	if strings.Contains(string(data), "turnal codex-hook") {
+		t.Fatalf("root-checkout Turnal hooks remain:\n%s", data)
+	}
+}
+
+func TestCodexHookInstallRejectsFabricatedLinkedWorktreeMetadata(t *testing.T) {
+	workspace := t.TempDir()
+	outside := t.TempDir()
+	fakeGitDir := filepath.Join(outside, ".git", "worktrees", "crafted")
+	if err := os.MkdirAll(fakeGitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, ".git"), []byte("gitdir: "+fakeGitDir+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fakeGitDir, "commondir"), []byte("../..\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fakeGitDir, "gitdir"), []byte(filepath.Join(workspace, ".git")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	installed, err := InstallCodexHookWithOptions(workspace, InstallOptions{HookCommand: "turnal"})
+	if err != nil {
+		t.Fatalf("install with fabricated metadata: %v", err)
+	}
+	wantConfig := filepath.Join(workspace, ".codex", "config.toml")
+	if installed.ConfigPath != wantConfig {
+		t.Fatalf("installed config = %q, want local %q", installed.ConfigPath, wantConfig)
+	}
+	if _, err := os.Stat(filepath.Join(outside, ".codex", "config.toml")); !os.IsNotExist(err) {
+		t.Fatalf("outside config exists or could not be checked: %v", err)
+	}
+}
+
+func TestEffectiveHookRootRejectsMismatchedWorktreeBacklink(t *testing.T) {
+	_, linkedWorktree := createAdapterLinkedWorktree(t)
+	gitDir, err := readGitPathFile(filepath.Join(linkedWorktree, ".git"), linkedWorktree, "gitdir:")
+	if err != nil {
+		t.Fatalf("read linked gitdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "gitdir"), []byte(filepath.Join(t.TempDir(), ".git")+"\n"), 0o644); err != nil {
+		t.Fatalf("replace worktree backlink: %v", err)
+	}
+	if got := EffectiveHookRoot(linkedWorktree, TargetCodex); got != linkedWorktree {
+		t.Fatalf("effective root = %q, want local fallback %q", got, linkedWorktree)
+	}
+}
+
+func createAdapterLinkedWorktree(t *testing.T) (string, string) {
+	t.Helper()
+	requireGit(t)
+	parent := t.TempDir()
+	rootCheckout := filepath.Join(parent, "main")
+	linkedWorktree := filepath.Join(parent, "linked")
+	if err := os.MkdirAll(rootCheckout, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runAdapterTestGit(t, rootCheckout, "init")
+	runAdapterTestGit(t, rootCheckout, "config", "user.email", "turnal@example.test")
+	runAdapterTestGit(t, rootCheckout, "config", "user.name", "Turnal Test")
+	if err := os.WriteFile(filepath.Join(rootCheckout, "tracked.txt"), []byte("tracked\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runAdapterTestGit(t, rootCheckout, "add", "tracked.txt")
+	runAdapterTestGit(t, rootCheckout, "commit", "-m", "initial")
+	runAdapterTestGit(t, rootCheckout, "worktree", "add", "-b", "adapter-linked-test", linkedWorktree)
+	return rootCheckout, linkedWorktree
+}
+
+func runAdapterTestGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	command := exec.Command("git", args...)
+	command.Dir = dir
+	command.Env = cleanHookGitEnvironment(os.Environ())
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
 	}
 }
 
