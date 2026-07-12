@@ -1,0 +1,763 @@
+---
+import Base from '../layouts/Base.astro';
+
+// Visual reference and copied assets:
+// https://clerk.com/cli
+// https://clerk.com/_next/static/media/claude-code.09tetpaei1zba.svg
+// https://clerk.com/_next/static/media/bg-brand-bw.0e.txl_3s2o~v.jpg
+
+const topics = [
+  'Tell your agent what to build',
+  'Configure authentication',
+  'Set up organizations',
+  'Onboard the first customer',
+  'Test webhooks locally',
+  'Go live with confidence',
+];
+---
+
+<Base
+  theme="claude-animation-lab"
+  title="Claude Code animation prototype - Turnal"
+  description="An unlisted prototype of a DOM, SVG, CSS, and JavaScript terminal animation."
+>
+  <meta slot="head" name="robots" content="noindex, nofollow" />
+
+  <main class="lab-page">
+    <section class="agent-showcase" aria-label="Claude Code terminal animation">
+      <div class="showcase-layout" data-agent-showcase>
+        <div class="visual" data-terminal-boundary>
+          <img
+            class="visual-background"
+            src="/labs/clerk-cli/bg-brand-bw.jpg"
+            alt=""
+            width="1200"
+            height="817"
+            loading="eager"
+            decoding="async"
+          />
+          <div class="visual-scrim" aria-hidden="true"></div>
+
+          <div class="terminal-positioner" data-terminal-positioner>
+            <div class="terminal-shell">
+              <div class="terminal-glass" aria-hidden="true"></div>
+              <div class="terminal-border" aria-hidden="true"></div>
+
+              <div class="terminal-window">
+                <div class="terminal-bar">
+                  <div class="traffic-lights" aria-hidden="true">
+                    <span></span><span></span><span></span>
+                  </div>
+                  <div class="terminal-path">
+                    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                      <path d="M1.75 4.75A1.75 1.75 0 0 1 3.5 3h2.125c.39 0 .765.13 1.069.37l1.056.835c.152.12.34.185.534.185h4.216A1.75 1.75 0 0 1 14.25 6.14v5.11A1.75 1.75 0 0 1 12.5 13H3.5a1.75 1.75 0 0 1-1.75-1.75v-6.5Z" fill="currentColor"></path>
+                      <path d="M1.75 6.125h12.5" stroke="rgba(255,255,255,0.22)" stroke-width="0.75"></path>
+                    </svg>
+                    <span>~/Dev/taskflow-web</span>
+                  </div>
+                </div>
+
+                <div class="terminal-body">
+                  <div class="terminal-scroll" data-terminal-scroll>
+                    <img
+                      class="claude-code-ui"
+                      src="/labs/clerk-cli/claude-code.svg"
+                      alt="Claude Code terminal interface"
+                      width="725"
+                      height="189"
+                      draggable="false"
+                    />
+                    <div class="transcript" data-transcript></div>
+                  </div>
+
+                  <div class="terminal-divider"></div>
+                  <div class="composer">
+                    <span>❯</span>
+                    <div><span data-composer-text></span><i aria-hidden="true"></i></div>
+                  </div>
+                  <div class="terminal-divider"></div>
+                  <p class="shortcuts">? for shortcuts</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="scene-dots" aria-label="Animation scenes">
+            {topics.map((topic, index) => (
+              <button
+                type="button"
+                data-scene-dot={index}
+                aria-label={`Show ${topic}`}
+                aria-pressed={index === 0 ? 'true' : 'false'}
+              ><span></span></button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</Base>
+
+<script>
+  type PromptEntry = { type: 'prompt'; text: string };
+  type ToolEntry = { type: 'tool'; label: string; output: string[] };
+  type AssistantEntry = { type: 'assistant'; lines: string[] };
+  type Entry = PromptEntry | ToolEntry | AssistantEntry;
+  type Scene = { entries: Entry[]; durationMs: number; responsePauseMs?: number };
+
+  const scenes: Scene[] = [
+    {
+      entries: [
+        { type: 'prompt', text: 'Use Clerk CLI to add auth to this Next.js app.' },
+        { type: 'tool', label: 'Bash(clerk auth login)', output: ['Opening browser for OAuth', 'Authenticated with Clerk'] },
+        { type: 'tool', label: 'Bash(clerk init -y)', output: ['Detected Next.js', 'Clerk added to the app'] },
+        { type: 'assistant', lines: ['You are signed in and Clerk is initialized in the Next.js app.'] },
+      ],
+      durationMs: 11000,
+    },
+    {
+      entries: [
+        { type: 'prompt', text: 'Configure Google and GitHub sign-in with clean redirects.' },
+        { type: 'tool', label: 'Bash(clerk config schema --keys social_login)', output: ['Loaded schema for social_login'] },
+        { type: 'tool', label: 'Bash(clerk config patch --dry-run --file auth.config.json)', output: ['Preview looks good', 'Google + GitHub enabled'] },
+        { type: 'assistant', lines: ['Social sign-in and redirects are configured cleanly.'] },
+      ],
+      durationMs: 11000,
+    },
+    {
+      entries: [
+        { type: 'prompt', text: 'Set up organizations for this Next.js app.' },
+        { type: 'tool', label: 'Bash(clerk enable orgs --auto-create --max-members 10 --yes)', output: ['Organizations enabled'] },
+        { type: 'tool', label: 'Bash(clerk config pull --keys organization_settings --output clerk.config.json)', output: ['Config written to clerk.config.json'] },
+        { type: 'assistant', lines: ['Organizations are enabled with auto-create and a 10-member cap, ready for the first customer.'] },
+      ],
+      durationMs: 12000,
+      responsePauseMs: 250,
+    },
+    {
+      entries: [
+        { type: 'prompt', text: 'Onboard the first customer with orgs and billing.' },
+        { type: 'tool', label: 'Bash(clerk enable billing --for orgs)', output: ['Billing enabled for organizations'] },
+        { type: 'tool', label: 'Bash(clerk api /organizations -X POST -d \'{"name":"Acme","slug":"acme"}\')', output: ['POST /v1/organizations', 'Created organization org_2wAcme'] },
+        { type: 'tool', label: 'Bash(clerk api /organizations/org_2wAcme/invitations -X POST -d \'{"inviter_user_id":"user_2wSteve","email_address":"owner@acme.com","role":"org:admin"}\')', output: ['POST /v1/organizations/org_2wAcme/invitations', 'Invitation sent to owner@acme.com'] },
+        { type: 'tool', label: 'Bash(clerk api /billing/plans)', output: ['GET /v1/billing/plans', 'Loaded plan catalog for the SaaS flow'] },
+        { type: 'assistant', lines: ['The app now has org onboarding plus the billing primitives for a basic SaaS flow.'] },
+      ],
+      durationMs: 15000,
+      responsePauseMs: 400,
+    },
+    {
+      entries: [
+        { type: 'prompt', text: 'Set up Clerk webhooks and test them against this app locally.' },
+        { type: 'tool', label: 'Bash(clerk webhooks token)', output: ['c_AbCd123456'] },
+        { type: 'tool', label: 'Bash(clerk webhooks listen --token c_AbCd123456 --forward-to http://localhost:3000/api/webhooks)', output: ['Relay ready at https://webhooks.clerk.com/in/c_AbCd123456/', 'Forwarding deliveries to /api/webhooks'] },
+        { type: 'tool', label: 'Bash(clerk webhooks verify --secret whsec_2xX --delivery @event.json)', output: ['Signature valid (v1)'] },
+        { type: 'assistant', lines: ['Webhooks relay to your local handler and every delivery verifies against the signing secret.'] },
+      ],
+      durationMs: 14000,
+      responsePauseMs: 300,
+    },
+    {
+      entries: [
+        { type: 'prompt', text: 'Run final checks and prep the production handoff.' },
+        { type: 'tool', label: 'Bash(clerk doctor --spotlight)', output: ['✓ No blocking issues found'] },
+        {
+          type: 'tool',
+          label: 'Bash(clerk deploy --mode agent)',
+          output: [
+            '{',
+            '  "complete": false,',
+            '  "state": "not_started",',
+            '  "domain": null,',
+            '  "productionInstanceId": null,',
+            '  "domainStatus": null,',
+            '  "pendingDnsRecords": [],',
+            '  "oauth": { "complete": false, "configured": [], "pending": [], "unsupported": [] },',
+            '  "nextAction": "No production instance yet. Ask the user to run `clerk deploy`, then run `clerk deploy status` to verify."',
+            '}',
+          ],
+        },
+        { type: 'assistant', lines: ['Everything passes, and the repo is ready for production. Run `clerk deploy` to take it live.'] },
+      ],
+      durationMs: 14000,
+    },
+  ];
+
+  const root = document.querySelector<HTMLElement>('[data-agent-showcase]');
+
+  if (root) {
+    const transcript = root.querySelector<HTMLElement>('[data-transcript]')!;
+    const composerText = root.querySelector<HTMLElement>('[data-composer-text]')!;
+    const scroller = root.querySelector<HTMLElement>('[data-terminal-scroll]')!;
+    const positioner = root.querySelector<HTMLElement>('[data-terminal-positioner]')!;
+    const boundary = root.querySelector<HTMLElement>('[data-terminal-boundary]')!;
+    const dotButtons = [...root.querySelectorAll<HTMLButtonElement>('[data-scene-dot]')];
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+
+    let activeIndex = 0;
+    let runId = 0;
+    let isInView = true;
+    let autoAdvance: number | undefined;
+    const pendingTimers = new Set<number>();
+
+    const makeElement = <K extends keyof HTMLElementTagNameMap>(
+      tag: K,
+      className?: string,
+      text?: string,
+    ) => {
+      const element = document.createElement(tag);
+      if (className) element.className = className;
+      if (text !== undefined) element.textContent = text;
+      return element;
+    };
+
+    const scrollToLatest = () => {
+      scroller.scrollTop = scroller.scrollHeight;
+    };
+
+    const wait = (ms: number, id: number) => new Promise<boolean>((resolve) => {
+      const timer = window.setTimeout(() => {
+        pendingTimers.delete(timer);
+        resolve(id === runId);
+      }, ms);
+      pendingTimers.add(timer);
+    });
+
+    const clearRun = () => {
+      runId += 1;
+      pendingTimers.forEach((timer) => window.clearTimeout(timer));
+      pendingTimers.clear();
+      if (autoAdvance !== undefined) window.clearTimeout(autoAdvance);
+      autoAdvance = undefined;
+    };
+
+    const appendPrompt = (text: string) => {
+      const row = makeElement('div', 'prompt-entry');
+      row.append(makeElement('span', 'prompt-chevron', '❯'));
+      row.append(makeElement('span', 'prompt-text', text));
+      transcript.append(row);
+      scrollToLatest();
+    };
+
+    const appendTool = (entry: ToolEntry) => {
+      const tool = makeElement('div', 'tool-entry');
+      const header = makeElement('div', 'tool-header');
+      header.append(makeElement('span', 'tool-status'));
+      const label = makeElement('span', 'tool-label', entry.label);
+      label.title = entry.label;
+      header.append(label);
+      tool.append(header);
+      const output = makeElement('div', 'tool-output');
+      tool.append(output);
+      transcript.append(tool);
+      scrollToLatest();
+      return output;
+    };
+
+    const appendOutputLine = (container: HTMLElement, text: string, index: number) => {
+      const line = makeElement('div', 'output-line');
+      line.append(makeElement('span', 'output-branch', index === 0 ? '└' : ''));
+      line.append(makeElement('span', 'output-text', text));
+      container.append(line);
+      scrollToLatest();
+    };
+
+    const appendAssistant = (entry: AssistantEntry) => {
+      const row = makeElement('div', 'assistant-entry');
+      row.append(makeElement('span', 'assistant-status'));
+      const lines = makeElement('span', 'assistant-lines');
+      entry.lines.forEach((line) => lines.append(makeElement('span', '', line)));
+      row.append(lines);
+      transcript.append(row);
+      scrollToLatest();
+      return lines;
+    };
+
+    const renderCompleteScene = (scene: Scene) => {
+      transcript.replaceChildren();
+      composerText.textContent = '';
+      scene.entries.forEach((entry) => {
+        if (entry.type === 'prompt') {
+          appendPrompt(entry.text);
+          return;
+        }
+        if (entry.type === 'tool') {
+          const output = appendTool(entry);
+          entry.output.forEach((line, index) => appendOutputLine(output, line, index));
+          return;
+        }
+        appendAssistant(entry);
+      });
+      scrollToLatest();
+    };
+
+    const typeDelay = (character: string) => {
+      let delay = character === ' '
+        ? 56 + Math.floor(22 * Math.random())
+        : ['.', ',', '-'].includes(character)
+          ? 72 + Math.floor(34 * Math.random())
+          : 40 + Math.floor(18 * Math.random());
+      if (Math.random() < 0.08) delay += 14 + Math.floor(28 * Math.random());
+      return delay;
+    };
+
+    const playScene = async (scene: Scene, id: number) => {
+      const prompt = scene.entries.find((entry): entry is PromptEntry => entry.type === 'prompt')?.text ?? '';
+      const responses = scene.entries.filter((entry): entry is ToolEntry | AssistantEntry => entry.type !== 'prompt');
+      const responsePause = scene.responsePauseMs ?? 0;
+
+      transcript.replaceChildren();
+      composerText.textContent = '';
+
+      if (!(await wait(260, id))) return;
+      let typed = '';
+      for (const character of prompt) {
+        if (id !== runId) return;
+        typed += character;
+        composerText.textContent = typed;
+        if (!(await wait(typeDelay(character), id))) return;
+      }
+
+      if (!(await wait(800, id))) return;
+      appendPrompt(prompt);
+      composerText.textContent = '';
+      if (!(await wait(200, id))) return;
+
+      for (const entry of responses) {
+        if (id !== runId) return;
+        if (entry.type === 'tool') {
+          const output = appendTool(entry);
+          if (!(await wait(180, id))) return;
+          for (const [index, line] of entry.output.entries()) {
+            appendOutputLine(output, line, index);
+            if (!(await wait(180 + Math.floor(120 * Math.random()), id))) return;
+          }
+          if (!(await wait(220 + responsePause, id))) return;
+          continue;
+        }
+
+        const assistant = appendAssistant({ ...entry, lines: [] });
+        if (!(await wait(160, id))) return;
+        for (const line of entry.lines) {
+          assistant.append(makeElement('span', '', line));
+          scrollToLatest();
+          if (!(await wait(200 + Math.floor(120 * Math.random()), id))) return;
+        }
+        await wait(200 + responsePause, id);
+      }
+    };
+
+    const updateControls = () => {
+      dotButtons.forEach((button, index) => button.setAttribute('aria-pressed', String(index === activeIndex)));
+    };
+
+    const scheduleNext = () => {
+      if (!isInView || reduceMotion.matches) return;
+      autoAdvance = window.setTimeout(() => activate((activeIndex + 1) % scenes.length), scenes[activeIndex].durationMs);
+    };
+
+    const activate = (index: number) => {
+      clearRun();
+      activeIndex = index;
+      updateControls();
+      const id = runId;
+      if (reduceMotion.matches) renderCompleteScene(scenes[index]);
+      else void playScene(scenes[index], id);
+      scheduleNext();
+    };
+
+    dotButtons.forEach((button, index) => button.addEventListener('click', () => activate(index)));
+
+    const visibilityObserver = new IntersectionObserver(([entry]) => {
+      const wasInView = isInView;
+      isInView = entry.isIntersecting && entry.intersectionRatio >= 0.35;
+      if (isInView && !wasInView) activate(0);
+      if (!isInView && autoAdvance !== undefined) {
+        window.clearTimeout(autoAdvance);
+        autoAdvance = undefined;
+      }
+    }, { threshold: [0, 0.35, 1] });
+    visibilityObserver.observe(root);
+
+    const fitTerminal = () => {
+      const bounds = boundary.getBoundingClientRect();
+      const scale = Math.min(0.95, Math.max((bounds.width - 32) / 672, 0), Math.max((bounds.height - 44) / 499.52, 0));
+      positioner.style.setProperty('--terminal-scale', String(scale));
+    };
+    const sizeObserver = new ResizeObserver(fitTerminal);
+    sizeObserver.observe(boundary);
+    window.addEventListener('resize', fitTerminal, { passive: true });
+    fitTerminal();
+
+    const handleMotionPreference = () => activate(activeIndex);
+    reduceMotion.addEventListener('change', handleMotionPreference);
+
+    activate(0);
+
+    window.addEventListener('pagehide', () => {
+      clearRun();
+      visibilityObserver.disconnect();
+      sizeObserver.disconnect();
+      window.removeEventListener('resize', fitTerminal);
+      reduceMotion.removeEventListener('change', handleMotionPreference);
+    }, { once: true });
+  }
+</script>
+
+<style is:global>
+  .claude-animation-lab {
+    --lab-bg: #111110;
+    --lab-text: #eeecec;
+    --lab-muted: #999999;
+    --lab-blue: #70b8ff;
+    background: var(--lab-bg);
+    color: var(--lab-text);
+    min-height: 100dvh;
+  }
+
+  .claude-animation-lab .lab-page {
+    display: grid;
+    min-height: 100dvh;
+    padding: 24px;
+    place-items: center;
+  }
+
+  .claude-animation-lab .agent-showcase {
+    width: min(100%, 800px, calc((100dvh - 48px) * 1.3));
+  }
+
+  .claude-animation-lab .showcase-layout {
+    width: 100%;
+  }
+
+  .claude-animation-lab .visual {
+    position: relative;
+    width: 100%;
+    min-width: 0;
+    aspect-ratio: 1.3;
+    overflow: hidden;
+    background: #191918;
+  }
+
+  .claude-animation-lab .visual-background {
+    position: absolute;
+    inset: -8px -2px -16px;
+    width: calc(100% + 4px);
+    height: calc(100% + 24px);
+    max-width: none;
+    object-fit: cover;
+    user-select: none;
+    pointer-events: none;
+  }
+
+  .claude-animation-lab .visual-scrim {
+    position: absolute;
+    inset: 0 0 -16px;
+    background: linear-gradient(180deg, rgba(18, 18, 18, 0.12), rgba(18, 18, 18, 0.2));
+    pointer-events: none;
+  }
+
+  .claude-animation-lab .terminal-positioner {
+    --terminal-scale: 0.95;
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 672px;
+    height: 499.52px;
+    transform: translate(-50%, -50%) scale(var(--terminal-scale));
+    transform-origin: center;
+    will-change: transform;
+  }
+
+  .claude-animation-lab .terminal-shell {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    border-radius: 14px;
+    background: rgba(19, 19, 18, 0.66);
+    box-shadow: 0 26px 70px -22px rgba(0, 0, 0, 0.65);
+    backdrop-filter: blur(24px);
+  }
+
+  .claude-animation-lab .terminal-glass,
+  .claude-animation-lab .terminal-border {
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+  }
+
+  .claude-animation-lab .terminal-glass { background: rgba(19, 19, 18, 0.06); }
+  .claude-animation-lab .terminal-border { border: 0.5px solid rgba(255, 255, 255, 0.4); z-index: 2; }
+
+  .claude-animation-lab .terminal-window {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+    border-radius: inherit;
+  }
+
+  .claude-animation-lab .terminal-bar {
+    position: relative;
+    display: flex;
+    align-items: center;
+    width: 100%;
+    padding: 8px 16px;
+    background: rgba(31, 31, 31, 0.72);
+    border-bottom: 0.5px solid rgba(255, 255, 255, 0.15);
+    user-select: none;
+  }
+
+  .claude-animation-lab .traffic-lights {
+    display: flex;
+    gap: 8px;
+    margin-left: -7px;
+  }
+
+  .claude-animation-lab .traffic-lights span {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.2);
+    transition: background-color 180ms ease;
+  }
+
+  .claude-animation-lab .terminal-shell:hover .traffic-lights span:nth-child(1) { background: #ff5f57; }
+  .claude-animation-lab .terminal-shell:hover .traffic-lights span:nth-child(2) { background: #febc2e; }
+  .claude-animation-lab .terminal-shell:hover .traffic-lights span:nth-child(3) { background: #28c840; }
+
+  .claude-animation-lab .terminal-path {
+    position: absolute;
+    left: 50%;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    transform: translateX(-50%);
+    color: var(--lab-muted);
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1;
+    opacity: 0.5;
+    transition: opacity 180ms ease;
+  }
+
+  .claude-animation-lab .terminal-path svg { width: 14px; height: 14px; }
+  .claude-animation-lab .terminal-shell:hover .terminal-path { opacity: 1; }
+  .claude-animation-lab .terminal-shell:hover .terminal-path svg { color: var(--lab-blue); }
+
+  .claude-animation-lab .terminal-body {
+    display: flex;
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
+    overflow: hidden;
+    padding: 0 18px 16px 16px;
+    background: rgba(25, 25, 24, 0.52);
+    user-select: none;
+  }
+
+  .claude-animation-lab .terminal-scroll {
+    min-height: 0;
+    flex: 1;
+    overflow-y: auto;
+    margin-inline: -16px;
+    padding: 16px 16px 0;
+    scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+    scrollbar-width: thin;
+  }
+
+  .claude-animation-lab .claude-code-ui {
+    width: 100%;
+    height: auto;
+    user-select: none;
+  }
+
+  .claude-animation-lab .transcript {
+    display: grid;
+    gap: 6px;
+    padding-top: 16px;
+    color: var(--lab-muted);
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .claude-animation-lab .prompt-entry,
+  .claude-animation-lab .tool-header,
+  .claude-animation-lab .assistant-entry {
+    display: grid;
+    grid-template-columns: 12px minmax(0, 1fr);
+    column-gap: 6px;
+    color: var(--lab-text);
+  }
+
+  .claude-animation-lab .prompt-entry {
+    width: 100%;
+    padding-block: 1px;
+    background: rgba(255, 255, 255, 0.15);
+    line-height: 1.2;
+  }
+
+  .claude-animation-lab .tool-status,
+  .claude-animation-lab .assistant-status {
+    align-self: center;
+    justify-self: center;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #27b08b;
+  }
+
+  .claude-animation-lab .assistant-status { background: currentColor; }
+
+  .claude-animation-lab .tool-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .claude-animation-lab .tool-output {
+    display: grid;
+    gap: 2px;
+    margin-top: 4px;
+    padding-left: 18px;
+    color: var(--lab-muted);
+  }
+
+  .claude-animation-lab .output-line {
+    display: grid;
+    grid-template-columns: 1ch minmax(0, 1fr);
+    column-gap: 6px;
+  }
+
+  .claude-animation-lab .output-text { min-width: 0; white-space: pre-wrap; }
+  .claude-animation-lab .assistant-lines > span { display: block; }
+
+  .claude-animation-lab .terminal-divider {
+    width: 100%;
+    height: 1px;
+    flex: none;
+    background: var(--lab-muted);
+  }
+
+  .claude-animation-lab .composer {
+    display: grid;
+    grid-template-columns: 12px minmax(0, 1fr);
+    column-gap: 6px;
+    padding: 7px 0 9px;
+    color: var(--lab-muted);
+    font-family: var(--mono);
+    font-size: 13.4px;
+    line-height: 1;
+  }
+
+  .claude-animation-lab .composer > div {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    color: var(--lab-text);
+    font-size: 12px;
+  }
+
+  .claude-animation-lab .composer [data-composer-text] {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .claude-animation-lab .composer i {
+    display: inline-block;
+    width: 1ch;
+    height: 1.05em;
+    flex: none;
+    background: var(--lab-text);
+    animation: terminal-cursor-blink 1s steps(1, end) infinite;
+  }
+
+  .claude-animation-lab .shortcuts {
+    padding-top: 12px;
+    color: var(--lab-muted);
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1;
+  }
+
+  .claude-animation-lab .scene-dots {
+    position: absolute;
+    z-index: 3;
+    bottom: 24px;
+    left: 50%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    transform: translateX(-50%);
+    border: 0.5px solid rgba(255, 255, 255, 0.1);
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.15);
+    backdrop-filter: blur(12px);
+  }
+
+  .claude-animation-lab .scene-dots button {
+    display: grid;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    place-items: center;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    outline: none;
+    transition: transform 100ms ease;
+  }
+
+  .claude-animation-lab .scene-dots button:hover { transform: scale(1.1); }
+  .claude-animation-lab .scene-dots button:active { transform: scale(0.94); }
+  .claude-animation-lab .scene-dots button:focus-visible { outline: 2px solid var(--lab-blue); outline-offset: 2px; }
+
+  .claude-animation-lab .scene-dots button span {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.1);
+    transition: background-color 100ms ease, box-shadow 100ms ease;
+  }
+
+  .claude-animation-lab .scene-dots button:hover span { background: rgba(255, 255, 255, 0.2); }
+  .claude-animation-lab .scene-dots button[aria-pressed='true'] span {
+    background: var(--lab-text);
+    box-shadow: 0 0 10px rgba(238, 238, 238, 0.2);
+  }
+
+  @keyframes terminal-cursor-blink {
+    50% { opacity: 0; }
+  }
+
+  @media (max-width: 640px) {
+    .claude-animation-lab .lab-page { padding: 16px; }
+    .claude-animation-lab .agent-showcase {
+      width: min(100%, calc((100dvh - 32px) * 1.3));
+    }
+    .claude-animation-lab .scene-dots { bottom: 16px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .claude-animation-lab *,
+    .claude-animation-lab *::before,
+    .claude-animation-lab *::after {
+      scroll-behavior: auto !important;
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+    }
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    .claude-animation-lab .terminal-shell { background: #191918; backdrop-filter: none; }
+    .claude-animation-lab .scene-dots { background: rgba(18, 18, 17, 0.96); backdrop-filter: none; }
+  }
+</style>
