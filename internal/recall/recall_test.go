@@ -400,6 +400,36 @@ func TestValidateSelectedWorktreeRejectsMissingV2Identity(t *testing.T) {
 	}
 }
 
+func TestApplyEventMetadataRejectsDuplicatePreCheckpoint(t *testing.T) {
+	sessionID, _ := primitives.ParseSessionID("duplicate-pre")
+	turnID, _ := primitives.NewTurnID(1)
+	ref, err := primitives.NewCheckpointRef(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("NewCheckpointRef: %v", err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"turn":       1,
+		"phase":      "pre",
+		"commit_sha": strings.Repeat("a", 40),
+		"ref":        ref,
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	turn := Turn{SessionID: sessionID, TurnID: turnID}
+	if err := applyEventMetadata(&turn, eventlog.Event{Seq: 1, Type: primitives.EventTypeTurnStart}); err != nil {
+		t.Fatalf("apply turn start: %v", err)
+	}
+	checkpointEvent := eventlog.Event{Seq: 2, Type: primitives.EventTypeCheckpoint, Payload: payload}
+	if err := applyEventMetadata(&turn, checkpointEvent); err != nil {
+		t.Fatalf("apply pre checkpoint: %v", err)
+	}
+	checkpointEvent.Seq = 3
+	if err := applyEventMetadata(&turn, checkpointEvent); err == nil || !strings.Contains(err.Error(), "duplicate pre checkpoint") {
+		t.Fatalf("duplicate pre checkpoint error = %v", err)
+	}
+}
+
 func transcriptText(transcript *Transcript) string {
 	var values []string
 	for _, message := range transcript.Messages {
