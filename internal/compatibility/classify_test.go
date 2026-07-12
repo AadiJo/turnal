@@ -172,11 +172,18 @@ func TestClassifyCodexHooksIgnoresUnrelatedHooksAndPreservesWarnings(t *testing.
 
 func TestClassifyCodexHooksAcceptsRootCheckoutSourceForLinkedWorktree(t *testing.T) {
 	rootCheckout, linkedWorktree := createLinkedWorktree(t)
+	configPath := filepath.Join(rootCheckout, ".codex", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("[features]\nhooks = true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	var hooks []CodexHook
 	for _, event := range expectedCodexEventNames {
 		hook := projectCodexHook(linkedWorktree, event, "turnal codex-hook")
-		hook.SourcePath = filepath.Join(rootCheckout, ".codex", "config.toml")
+		hook.SourcePath = configPath
 		hook.TrustStatus = "untrusted"
 		hooks = append(hooks, hook)
 	}

@@ -517,6 +517,9 @@ func normalizeFilePath(path string) string {
 	if absolute, err := filepath.Abs(path); err == nil {
 		path = absolute
 	}
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
 	path = filepath.Clean(path)
 	if runtime.GOOS == "windows" {
 		path = strings.ToLower(path)
