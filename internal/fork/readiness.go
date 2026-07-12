@@ -108,6 +108,16 @@ func (analyzer Analyzer) Inspect(sessionID primitives.SessionID, turnID primitiv
 	if err != nil {
 		return Report{}, fmt.Errorf("fork readiness integrity failed: %w", err)
 	}
+	if turn.PreCheckpoint != nil {
+		if err := verifyCheckpoint(analyzer.Repo, *turn.PreCheckpoint, "pre-turn"); err != nil {
+			return Report{}, err
+		}
+	}
+	if turn.PostCheckpoint != nil {
+		if err := verifyCheckpoint(analyzer.Repo, *turn.PostCheckpoint, "post-turn"); err != nil {
+			return Report{}, err
+		}
+	}
 
 	report := Report{
 		Version:       reportVersion,
@@ -150,32 +160,6 @@ func (analyzer Analyzer) Inspect(sessionID primitives.SessionID, turnID primitiv
 	if turn.PreCheckpoint == nil {
 		return report, nil
 	}
-	resolvedCommit, err := analyzer.Repo.CheckpointCommit(turn.PreCheckpoint.Ref)
-	if err != nil {
-		return Report{}, fmt.Errorf("resolve pre-turn checkpoint ref: %w", err)
-	}
-	if resolvedCommit != turn.PreCheckpoint.CommitSHA {
-		return Report{}, fmt.Errorf(
-			"fork readiness invariant failed: pre-turn checkpoint ref %s points to %s, event records %s",
-			turn.PreCheckpoint.Ref,
-			resolvedCommit,
-			turn.PreCheckpoint.CommitSHA,
-		)
-	}
-	if turn.PreCheckpoint.CanonicalRef != "" {
-		canonicalCommit, err := analyzer.Repo.CheckpointCommit(turn.PreCheckpoint.CanonicalRef)
-		if err != nil {
-			return Report{}, fmt.Errorf("resolve canonical pre-turn checkpoint ref: %w", err)
-		}
-		if canonicalCommit != turn.PreCheckpoint.CommitSHA {
-			return Report{}, fmt.Errorf(
-				"fork readiness invariant failed: canonical pre-turn checkpoint ref %s points to %s, event records %s",
-				turn.PreCheckpoint.CanonicalRef,
-				canonicalCommit,
-				turn.PreCheckpoint.CommitSHA,
-			)
-		}
-	}
 	tree, err := analyzer.Repo.ListCommitTree(turn.PreCheckpoint.CommitSHA)
 	if err != nil {
 		return Report{}, fmt.Errorf("inspect pre-turn checkpoint tree: %w", err)
@@ -213,6 +197,39 @@ func (analyzer Analyzer) Inspect(sessionID primitives.SessionID, turnID primitiv
 		report.Readiness = ReadinessNeedsInstruction
 	}
 	return report, nil
+}
+
+func verifyCheckpoint(repo *checkpoint.Repo, recorded recall.Checkpoint, label string) error {
+	resolvedCommit, err := repo.CheckpointCommit(recorded.Ref)
+	if err != nil {
+		return fmt.Errorf("resolve %s checkpoint ref: %w", label, err)
+	}
+	if resolvedCommit != recorded.CommitSHA {
+		return fmt.Errorf(
+			"fork readiness invariant failed: %s checkpoint ref %s points to %s, event records %s",
+			label,
+			recorded.Ref,
+			resolvedCommit,
+			recorded.CommitSHA,
+		)
+	}
+	if recorded.CanonicalRef == "" {
+		return nil
+	}
+	canonicalCommit, err := repo.CheckpointCommit(recorded.CanonicalRef)
+	if err != nil {
+		return fmt.Errorf("resolve canonical %s checkpoint ref: %w", label, err)
+	}
+	if canonicalCommit != recorded.CommitSHA {
+		return fmt.Errorf(
+			"fork readiness invariant failed: canonical %s checkpoint ref %s points to %s, event records %s",
+			label,
+			recorded.CanonicalRef,
+			canonicalCommit,
+			recorded.CommitSHA,
+		)
+	}
+	return nil
 }
 
 func inspectInstruction(events []eventlog.Event) (Instruction, error) {
