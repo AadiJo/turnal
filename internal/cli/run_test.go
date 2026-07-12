@@ -14,7 +14,21 @@ import (
 	"time"
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
+	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/runs"
 )
+
+func TestRunEnvironmentPreservesExistingValuesAndReplacesCorrelation(t *testing.T) {
+	runID, _ := primitives.ParseRunID("run_0123456789abcdef0123456789abcdef")
+	got := runEnvironment([]string{"PATH=/tools", "EMPTY=", "TURNAL_RUN_ID=run_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, runID)
+	joined := strings.Join(got, "\n")
+	if !strings.Contains(joined, "PATH=/tools") || !strings.Contains(joined, "EMPTY=") {
+		t.Fatalf("existing environment was discarded: %#v", got)
+	}
+	if strings.Count(joined, runs.EnvRunID+"=") != 1 || !strings.Contains(joined, runs.EnvRunID+"="+runID.String()) {
+		t.Fatalf("run correlation was not replaced safely: %#v", got)
+	}
+}
 
 func TestRunCodexWrapperCreatesCheckpointsAndEnablesHooks(t *testing.T) {
 	requireGit(t)
@@ -70,6 +84,13 @@ func TestRunCodexWrapperCreatesCheckpointsAndEnablesHooks(t *testing.T) {
 	}
 	if len(journals) != 0 {
 		t.Fatalf("wrapper left checkpoint journals: %#v", journals)
+	}
+	inventory, err := runs.Inspect(repo)
+	if err != nil {
+		t.Fatalf("inspect runs: %v", err)
+	}
+	if len(inventory.Runs) != 1 || inventory.Runs[0].Shape != "wrapper-only" || inventory.Runs[0].Status != runs.StatusSucceeded {
+		t.Fatalf("wrapper-only run projection = %+v", inventory)
 	}
 	sessionID := infos[0].SessionID
 	turnID := infos[0].TurnID
@@ -209,6 +230,13 @@ func TestRunCodexWrapperPropagatesChildExitCodeAndFinishesTurn(t *testing.T) {
 	}
 	if len(infos) != 2 {
 		t.Fatalf("checkpoint refs = %d, want pre and post despite child failure: %#v", len(infos), infos)
+	}
+	inventory, inspectErr := runs.Inspect(repo)
+	if inspectErr != nil {
+		t.Fatalf("inspect failed run: %v", inspectErr)
+	}
+	if len(inventory.Runs) != 1 || inventory.Runs[0].Status != runs.StatusFailed || inventory.Runs[0].Shape != "wrapper-only" {
+		t.Fatalf("failed run projection = %+v", inventory)
 	}
 
 	argsData, err := os.ReadFile(filepath.Join(root.String(), "fake-codex-args.txt"))
