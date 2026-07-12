@@ -386,6 +386,20 @@ func TestValidateSelectedWorktreeRejectsForeignEvent(t *testing.T) {
 	}
 }
 
+func TestValidateSelectedWorktreeRejectsMissingV2Identity(t *testing.T) {
+	sessionID, _ := primitives.ParseSessionID("missing-v2-worktree")
+	turnID, _ := primitives.NewTurnID(1)
+	selected, err := primitives.NewWorktreeID()
+	if err != nil {
+		t.Fatalf("NewWorktreeID: %v", err)
+	}
+
+	err = validateSelectedWorktree(sessionID, turnID, selected, eventlog.Event{Version: 2, Seq: 4})
+	if err == nil || !strings.Contains(err.Error(), "does not match selected worktree") {
+		t.Fatalf("validateSelectedWorktree error = %v", err)
+	}
+}
+
 func transcriptText(transcript *Transcript) string {
 	var values []string
 	for _, message := range transcript.Messages {

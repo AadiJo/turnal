@@ -121,10 +121,25 @@ func (reader Reader) RecallTurn(sessionID primitives.SessionID, turnID primitive
 		if options.StreamID != "" && event.StreamID != options.StreamID {
 			continue
 		}
-		if options.WorktreeID != "" && event.WorktreeID != "" && event.WorktreeID != options.WorktreeID {
-			continue
+		eventWorktree := event.WorktreeID
+		if options.WorktreeID != "" {
+			if eventWorktree == "" {
+				if event.Version != 1 {
+					return Turn{}, fmt.Errorf("recall invariant failed for session %s turn %s: event %s in scoped lookup has no worktree identity", parsedSessionID, parsedTurnID, event.Seq)
+				}
+				eventWorktree = options.WorktreeID
+			}
+			if eventWorktree != options.WorktreeID {
+				continue
+			}
 		}
-		candidateStreams[event.StreamID] = event.WorktreeID
+		if existing, ok := candidateStreams[event.StreamID]; ok && existing != eventWorktree {
+			return Turn{}, fmt.Errorf("recall invariant failed for session %s turn %s: stream %s contains conflicting worktrees %s and %s", parsedSessionID, parsedTurnID, event.StreamID, existing, eventWorktree)
+		}
+		candidateStreams[event.StreamID] = eventWorktree
+	}
+	if len(candidateStreams) == 0 {
+		return Turn{}, fmt.Errorf("recall invariant failed for session %s turn %s: no events found for requested scope", parsedSessionID, parsedTurnID)
 	}
 	if len(candidateStreams) > 1 && options.StreamID == "" {
 		var choices []string
@@ -139,6 +154,9 @@ func (reader Reader) RecallTurn(sessionID primitives.SessionID, turnID primitive
 	for streamID, worktreeID := range candidateStreams {
 		selectedStream = streamID
 		selectedWorktree = worktreeID
+	}
+	if options.WorktreeID != "" {
+		selectedWorktree = options.WorktreeID
 	}
 
 	turn := Turn{
@@ -198,6 +216,9 @@ func (reader Reader) RecallTurn(sessionID primitives.SessionID, turnID primitive
 
 func validateSelectedWorktree(sessionID primitives.SessionID, turnID primitives.TurnID, selected primitives.WorktreeID, event eventlog.Event) error {
 	if selected == "" {
+		return nil
+	}
+	if event.WorktreeID == "" && event.Version == 1 {
 		return nil
 	}
 	if event.WorktreeID != selected {
