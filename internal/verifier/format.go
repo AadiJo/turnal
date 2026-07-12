@@ -3,6 +3,7 @@ package verifier
 import (
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -23,11 +24,11 @@ func WriteHuman(writer io.Writer, report Report) error {
 	}
 	for _, check := range report.Checks {
 		label, detail := humanStatus(check)
-		if _, err := fmt.Fprintf(writer, "%-7s %-24s %8s%s\n", label, check.Name, humanDuration(check.DurationMS), detail); err != nil {
+		if _, err := fmt.Fprintf(writer, "%-7s %-24s %8s%s\n", label, terminalSafe(check.Name), humanDuration(check.DurationMS), detail); err != nil {
 			return err
 		}
 		for _, infrastructureError := range check.InfrastructureErrors {
-			if _, err := fmt.Fprintf(writer, "INFRA   %-24s          %s: %s\n", check.Name, infrastructureError.Stage, infrastructureError.Message); err != nil {
+			if _, err := fmt.Fprintf(writer, "INFRA   %-24s          %s: %s\n", terminalSafe(check.Name), terminalSafe(infrastructureError.Stage), terminalSafe(infrastructureError.Message)); err != nil {
 				return err
 			}
 		}
@@ -57,7 +58,7 @@ func humanStatus(check Check) (string, string) {
 	case StatusTimedOut:
 		return "TIMEOUT", "  limit " + check.Timeout
 	case StatusLaunchError:
-		detail := strings.TrimSpace(check.LaunchError)
+		detail := terminalSafe(strings.TrimSpace(check.LaunchError))
 		if detail != "" {
 			return "ERROR", "  " + detail
 		}
@@ -65,6 +66,11 @@ func humanStatus(check Check) (string, string) {
 	default:
 		return "ERROR", "  unknown result"
 	}
+}
+
+func terminalSafe(value string) string {
+	quoted := strconv.Quote(value)
+	return quoted[1 : len(quoted)-1]
 }
 
 func humanDuration(milliseconds int64) string {

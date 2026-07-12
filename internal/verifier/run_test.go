@@ -161,6 +161,8 @@ func TestRunRejectsInvalidDefinitionBeforeLaunching(t *testing.T) {
 		wantErr string
 	}{
 		{name: "empty", value: "", wantErr: "name must not be empty"},
+		{name: "leading newline", value: "\nPASS forged", wantErr: "found U+000A"},
+		{name: "trailing newline", value: "PASS forged\n", wantErr: "found U+000A"},
 		{name: "newline", value: "forged\nPASS fake", wantErr: "found U+000A"},
 		{name: "carriage return", value: "forged\rPASS fake", wantErr: "found U+000D"},
 		{name: "ANSI escape", value: "forged\x1b[2J", wantErr: "found U+001B"},
@@ -179,6 +181,17 @@ func TestRunRejectsInvalidDefinitionBeforeLaunching(t *testing.T) {
 				t.Fatalf("invalid definition launched a command: %v", statErr)
 			}
 		})
+	}
+}
+
+func TestRunNormalizesPrintableNameWhitespace(t *testing.T) {
+	definition := helperVerifier("  padded name  ", "pass")
+	report := runDefinitions(t, definition)
+	if report.Checks[0].Name != "padded name" {
+		t.Fatalf("check name = %q, want normalized name", report.Checks[0].Name)
+	}
+	if definition.Name != "  padded name  " {
+		t.Fatalf("Run mutated caller definition name to %q", definition.Name)
 	}
 }
 
@@ -263,6 +276,30 @@ func TestReportJSONVersionAndHumanFailureSummary(t *testing.T) {
 	for _, want := range []string{"0 passed, 1 failed", "FAIL", "broken-check", "exit 17"} {
 		if !strings.Contains(output.String(), want) {
 			t.Fatalf("human output missing %q:\n%s", want, output.String())
+		}
+	}
+}
+
+func TestHumanOutputEscapesLaunchErrorControls(t *testing.T) {
+	definition := config.Verifier{
+		Name:    "missing-command",
+		Command: filepath.Join(t.TempDir(), "missing\nPASS forged\x1b[2J"),
+		Timeout: time.Second,
+	}
+	report := runDefinitions(t, definition)
+	if report.Checks[0].Status != StatusLaunchError {
+		t.Fatalf("check = %#v, want launch error", report.Checks[0])
+	}
+	var output bytes.Buffer
+	if err := WriteHuman(&output, report); err != nil {
+		t.Fatalf("WriteHuman: %v", err)
+	}
+	if strings.Contains(output.String(), "\x1b") || strings.Contains(output.String(), "\nPASS forged\n") {
+		t.Fatalf("human output contains raw terminal controls:\n%q", output.String())
+	}
+	for _, want := range []string{`\nPASS forged`, `\x1b[2J`} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("human output missing escaped text %q:\n%s", want, output.String())
 		}
 	}
 }

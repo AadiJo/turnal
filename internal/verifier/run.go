@@ -35,6 +35,7 @@ func Run(ctx context.Context, request Request) (Report, error) {
 	if len(request.Verifiers) == 0 {
 		return Report{}, fmt.Errorf("no repository verifiers are configured")
 	}
+	request.Verifiers = append([]config.Verifier(nil), request.Verifiers...)
 	if err := validateDefinitions(request.Verifiers); err != nil {
 		return Report{}, err
 	}
@@ -98,14 +99,19 @@ func validateDefinitions(definitions []config.Verifier) error {
 	seen := make(map[string]int, len(definitions))
 	for index, definition := range definitions {
 		position := index + 1
-		name := strings.TrimSpace(definition.Name)
+		rawName := definition.Name
+		name := strings.TrimSpace(rawName)
 		label := fmt.Sprintf("verify[%d]", position)
 		if name != "" {
 			label += fmt.Sprintf(" %q", name)
 		}
-		if err := config.ValidateVerifierName(name); err != nil {
+		if name == "" {
+			return fmt.Errorf("%s: name must not be empty", label)
+		}
+		if err := config.ValidateVerifierName(rawName); err != nil {
 			return fmt.Errorf("%s: %w", label, err)
 		}
+		definitions[index].Name = name
 		switch {
 		case strings.TrimSpace(definition.Command) == "":
 			return fmt.Errorf("%s: command must not be empty", label)
