@@ -105,11 +105,20 @@ func (probe AppServerProbe) Probe(parent context.Context, workspaceRoot, expecte
 		_, _ = io.Copy(&stderrCapture, stderr)
 		close(stderrDone)
 	}()
-	waitDone := make(chan error, 1)
-	go func() { waitDone <- command.Wait() }()
+	readDone := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = stdout.Close()
+		case <-readDone:
+		}
+	}()
 
 	defer func() {
+		close(readDone)
 		_ = stdin.Close()
+		waitDone := make(chan error, 1)
+		go func() { waitDone <- command.Wait() }()
 		returnedErr = finishAppServer(command, processTree, waitDone, stderrDone, &stderrCapture, probe.ShutdownTimeout, returnedErr, stdout, stderr)
 		if returnedErr == nil {
 			if stderrText := strings.TrimSpace(stderrCapture.String()); stderrText != "" {
