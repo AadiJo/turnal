@@ -32,6 +32,18 @@ func TestOrdinaryStatusDoesNotStartAppServer(t *testing.T) {
 	}
 }
 
+func TestStatusProbeReportsNoConfiguredSurfaces(t *testing.T) {
+	root := captureStatusWorkspace(t, "none")
+	t.Chdir(root)
+	output, err := executeStatus(t, &recordingCodexProbe{panicOnCall: true}, "--probe-agent-capture")
+	if err != nil {
+		t.Fatalf("status probe: %v\n%s", err, output)
+	}
+	if !strings.Contains(output, "no configured agent capture surfaces") {
+		t.Fatalf("status output missing no-surfaces result:\n%s", output)
+	}
+}
+
 func TestStatusProbeDoesNotStartAppServerOutsideTurnalWorkspace(t *testing.T) {
 	isolateAgentConfig(t)
 	t.Chdir(t.TempDir())
@@ -217,6 +229,8 @@ func captureStatusWorkspace(t *testing.T, agent string) string {
 		targets = []adapters.Target{adapters.TargetCodex}
 	case "all":
 		targets = []adapters.Target{adapters.TargetClaude, adapters.TargetCodex}
+	case "none":
+		targets = nil
 	default:
 		t.Fatalf("unsupported test agent %q", agent)
 	}
