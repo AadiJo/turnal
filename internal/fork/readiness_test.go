@@ -116,6 +116,24 @@ func TestInspectRejectsCanonicalCheckpointRefCommitMismatch(t *testing.T) {
 	}
 }
 
+func TestInspectRejectsPostCheckpointRefCommitMismatch(t *testing.T) {
+	repo, sessionID, turnID := readinessFixture(t, "Fix the parser", true)
+	ref, err := repo.CheckpointRefFor(sessionID, turnID, primitives.CheckpointPhasePost)
+	if err != nil {
+		t.Fatalf("CheckpointRefFor: %v", err)
+	}
+	if _, err := repo.CreateSyntheticSnapshotRef(ref.String(), "replace post ref", []checkpoint.SyntheticTreeEntry{
+		{Path: "other.txt", Mode: primitives.GitFileModeRegular, Content: []byte("other\n")},
+	}); err != nil {
+		t.Fatalf("replace post checkpoint ref: %v", err)
+	}
+
+	_, err = NewAnalyzer(repo).Inspect(sessionID, turnID)
+	if err == nil || !strings.Contains(err.Error(), "post-turn checkpoint ref") {
+		t.Fatalf("Inspect error = %v", err)
+	}
+}
+
 func TestInspectAllowsIncompleteTurnWhenPreCheckpointExists(t *testing.T) {
 	repo, sessionID, turnID := readinessFixture(t, "Continue from here", false)
 
