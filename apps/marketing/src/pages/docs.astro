@@ -120,8 +120,11 @@ const githubUrl = `https://${product.repo}`;
     display: flex;
     height: 28px;
     align-items: center;
-    gap: 10px;
+    gap: 0;
   }
+  /* The lockup SVG carries a little empty space to the right of the wordmark;
+     pull "docs" back over it so it reads tight against the logo. */
+  .header-product .docs-label { margin-left: 0.5px; }
 
   .brand,
   .docs-label {
@@ -132,6 +135,10 @@ const githubUrl = `https://${product.repo}`;
   }
 
   .brand { color: var(--fg); }
+  /* The lockup is vertically centered inside its own artboard, which leaves
+     the icon and wordmark baseline ~1.8px above the adjacent "docs" text.
+     Nudge the whole mark down so both land on the docs baseline. */
+  .header-product .brand img { transform: translateY(1.8px); }
   .docs-header .brand .wordmark {
     font-size: 15px;
     font-weight: 650;
@@ -228,8 +235,7 @@ const githubUrl = `https://${product.repo}`;
   .typeset-docs :where(strong) { color: var(--fg); }
   .typeset-docs :where(hr) { border-color: var(--hair); }
   .typeset-docs :where(blockquote) {
-    border: 1px solid var(--hair-strong);
-    border-inline-start: 2px solid var(--accent);
+    border: 1px solid var(--accent);
     border-radius: 8px;
     background: rgba(236, 227, 212, 0.025);
     padding: 14px 16px;

@@ -4,4 +4,5 @@ import { defineConfig } from 'astro/config';
 export default defineConfig({
   site: 'https://turnal.dev',
   compressHTML: true,
+  devToolbar: { enabled: false },
 });

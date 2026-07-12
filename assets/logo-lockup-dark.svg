@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 620 220">
+  <!-- turnal lockup, for dark backgrounds. The mark geometry is embedded
+       directly from logo.svg; the wordmark has a 6° forward lean and
+       turned terminals that echo the rollback loop. -->
+  <g transform="translate(20 20) scale(0.703125)">
+    <rect width="256" height="256" rx="58" fill="#171512"/>
+    <path d="M59.9 97.1 L53 108.1 L57.8 109.5 Z" fill="#ECE3D4" opacity="0.45"/>
+    <path d="M53.7 116.1 A72 72 0 0 0 52.7 133.6" fill="none" stroke="#ECE3D4" stroke-width="5.5" opacity="0.65"/>
+    <path d="M50.7 141.6 A78.5 78.5 0 1 0 103.7 53.3 L100.9 66.9 A65.5 65.5 0 1 1 56.6 140.6 Z" fill="#ECE3D4"/>
+    <path d="M75.7 68.7 L101.8 39.2 L114.2 77.2 Z" fill="#ECE3D4" stroke="#ECE3D4" stroke-width="6" stroke-linejoin="round"/>
+    <g>
+      <circle cx="83.3" cy="187.6" r="19" fill="#171512"/>
+      <circle cx="160.6" cy="191" r="19" fill="#171512"/>
+      <circle cx="196.6" cy="128.6" r="19" fill="#171512"/>
+      <circle cx="83.3" cy="187.6" r="13" fill="#ECE3D4"/>
+      <circle cx="160.6" cy="191" r="13" fill="#ECE3D4"/>
+      <circle cx="196.6" cy="128.6" r="13" fill="#ECE3D4"/>
+    </g>
+    <circle cx="128" cy="128" r="22.5" fill="none" stroke="#FF4F00" stroke-width="5"/>
+    <circle cx="128" cy="128" r="13" fill="#FF4F00"/>
+  </g>
+  <g fill="none" stroke="#ECE3D4" stroke-width="14" stroke-linecap="round" transform="translate(14 0) skewX(-6)">
+    <path d="M258 58 V128 A14 14 0 0 0 272 142"/>
+    <path d="M242 78 H284"/>
+    <path d="M304 78 V123 A19 19 0 0 0 342 123"/>
+    <path d="M342 78 V128 A14 14 0 0 0 356 142"/>
+    <path d="M378 78 V142"/>
+    <path d="M378 104 A24 24 0 0 1 402 80 V92"/>
+    <path d="M424 78 V142"/>
+    <path d="M424 100 A20 20 0 0 1 464 100 V142"/>
+    <circle cx="511" cy="110" r="25"/>
+    <path d="M536 78 V128 A14 14 0 0 0 550 142"/>
+    <path d="M572 52 V128 A14 14 0 0 0 586 142"/>
+  </g>
+</svg>

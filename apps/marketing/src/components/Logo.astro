@@ -1,56 +1,35 @@
 ---
-/*
- * Turnal mark, rebuilt inline from the documented brand concept:
- * checkpoint beads threaded on a counter-clockwise rollback loop around a
- * central REC dot. The loop + beads use currentColor; the REC dot uses the
- * accent (international orange — the color real flight recorders are painted).
- *
- * Props:
- *   size       glyph size in px (default 28)
- *   wordmark   render "turnal" alongside the mark
- */
+import logoUrl from '../../../../assets/logo.svg?url';
+import lockupDarkUrl from '../../../../assets/logo-lockup-dark.svg?url';
+
 interface Props {
   size?: number;
   wordmark?: boolean;
 }
+
 const { size = 28, wordmark = true } = Astro.props;
+const src = wordmark ? lockupDarkUrl : logoUrl;
+const width = wordmark ? Math.round(size * (620 / 220)) : size;
 ---
 
 <span class="logo">
-  <svg width={size} height={size} viewBox="0 0 48 48" fill="none" aria-hidden="true">
-    <!-- rollback loop: open ring with a dart, sweeping counter-clockwise -->
-    <path
-      d="M32.4 12.9 A14 14 0 1 1 15.6 12.9"
-      stroke="currentColor"
-      stroke-width="2.6"
-      stroke-linecap="round"
-    />
-    <!-- dart / arrowhead closing the loop at the top-left -->
-    <path
-      d="M15.9 6.4 L15.2 13.3 L21.9 11.4 Z"
-      fill="currentColor"
-    />
-    <!-- checkpoint beads along the loop -->
-    <circle cx="34.7" cy="33" r="2.5" fill="currentColor" />
-    <circle cx="24" cy="38" r="2.5" fill="currentColor" />
-    <circle cx="13.3" cy="33" r="2.5" fill="currentColor" />
-    <!-- central REC dot -->
-    <circle cx="24" cy="24" r="4.6" fill="var(--accent, #ff4f00)" />
-  </svg>
-  {wordmark && <span class="wordmark">turnal</span>}
+  <img
+    src={src}
+    width={width}
+    height={size}
+    alt={wordmark ? 'Turnal' : ''}
+    decoding="async"
+  />
 </span>
 
 <style>
   .logo {
     display: inline-flex;
+    flex: none;
     align-items: center;
-    gap: 9px;
-    color: var(--logo-fg, currentColor);
   }
-  .wordmark {
-    font-weight: 650;
-    font-size: 1.05em;
-    letter-spacing: -0.02em;
-    color: var(--logo-word, currentColor);
+  img {
+    display: block;
+    max-width: none;
   }
 </style>

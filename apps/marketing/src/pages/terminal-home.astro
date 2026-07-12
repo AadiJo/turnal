@@ -1,0 +1,508 @@
+---
+import Base from '../layouts/Base.astro';
+import Logo from '../components/Logo.astro';
+import CopyButton from '../components/CopyButton.astro';
+import PolishedTerminal from '../components/PolishedTerminal.astro';
+import TurnalWorkflow from '../components/TurnalWorkflow.astro';
+import { commandPanels, graphOutput, installCommand } from '../data/terminalHome';
+import { product } from '../data/content';
+
+const capabilities = [
+  {
+    title: 'Private by construction.',
+    body: 'Checkpoints and durable event logs live under .turnal, separate from your workspace Git history.',
+  },
+  {
+    title: 'One history model.',
+    body: 'Claude Code and Codex hooks normalize prompts, tool calls, and turn boundaries into the same local record.',
+  },
+  {
+    title: 'Parallel work stays connected.',
+    body: 'Every checkpoint retains repository and worktree identity, keeping concurrent sessions traceable without merging their state.',
+  },
+  {
+    title: 'Rollback preserves an exit.',
+    body: 'Before restoring a checkpoint, Turnal saves the current workspace to a dedicated rollback-safety ref.',
+  },
+];
+---
+
+<Base
+  theme="terminal-home-theme"
+  title="Turnal - local history for AI coding agents"
+  description="Turnal records Claude Code and Codex prompts, tools, and file changes as searchable, reversible local checkpoints."
+>
+  <meta slot="head" name="robots" content="noindex, nofollow" />
+
+  <a class="skip-link" href="#main-content">Skip to content</a>
+
+  <div class="terminal-home-page">
+    <header class="site-nav">
+      <div class="th-wrap nav-row">
+        <a class="nav-brand" href="#top" aria-label="Turnal home"><Logo size={27} /></a>
+        <nav class="nav-links" aria-label="Primary navigation">
+          <a href="/docs">Docs</a>
+          <a href={`https://${product.repo}`} target="_blank" rel="noopener noreferrer">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main-content">
+      <section id="top" class="hero th-wrap">
+        <div class="hero-intro">
+          <h1>Every agent turn,<span>on the record.</span></h1>
+
+          <div class="hero-copy">
+            <p>Turnal records Claude Code and Codex turns as searchable, reversible checkpoints in a hidden Git repository beside your code.</p>
+
+            <div class="hero-actions">
+              <div class="install-command" id="install">
+                <span>$</span>
+                <code>{installCommand}</code>
+                <CopyButton text={installCommand} />
+              </div>
+              <a class="docs-link" href="/docs">Read the docs <span aria-hidden="true">→</span></a>
+            </div>
+          </div>
+        </div>
+
+        <div class="hero-visual" aria-label="Interleaved Turnal checkpoint history">
+          <PolishedTerminal
+            title=""
+            prompt="aadijo@MacBook-Pro Project %"
+            command="turnal log --all-worktrees --no-pager"
+            output={graphOutput}
+            size="hero"
+          />
+        </div>
+      </section>
+
+      <section class="adapter-strip th-wrap" aria-label="Supported coding agents">
+        <img src="/brands/claude.svg" alt="Claude Code" width="34" height="34" />
+        <img src="/brands/codex.svg" alt="Codex" width="34" height="34" />
+      </section>
+
+      <section id="features" class="capabilities th-wrap">
+        <header class="section-heading">
+          <h2>A recorder, not another agent.</h2>
+          <p>Turnal stays beneath the tools you already use, preserving their work locally without changing how they operate.</p>
+        </header>
+
+        <div class="capability-ledger">
+          {capabilities.map((capability) => (
+            <article>
+              <h3>{capability.title}</h3>
+              <p>{capability.body}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section id="how" class="workflow-section th-wrap">
+        <header class="workflow-heading">
+          <h2>Record. Inspect. Recover.</h2>
+          <p>One continuous workflow, from setup to a safe rollback.</p>
+        </header>
+        <TurnalWorkflow />
+      </section>
+
+      <section class="commands-section th-wrap">
+        <header class="commands-heading">
+          <h2>Inspect beyond the timeline.</h2>
+          <p>Check workspace health, open a turn record, compare checkpoints, or inspect one safely in an isolated replay worktree.</p>
+        </header>
+
+        <div class="command-workbench" data-command-workbench>
+          <div class="command-menu" role="tablist" aria-label="Turnal commands" aria-orientation="vertical">
+            {commandPanels.map((panel, index) => (
+              <button
+                id={`command-tab-${panel.id}`}
+                type="button"
+                role="tab"
+                data-command-tab={index}
+                aria-selected={index === 0 ? 'true' : 'false'}
+                aria-controls={`command-panel-${panel.id}`}
+                tabindex={index === 0 ? 0 : -1}
+              >
+                <code>{panel.label}</code>
+                <span>{panel.description}</span>
+              </button>
+            ))}
+          </div>
+
+          <div class="command-panels">
+            {commandPanels.map((panel, index) => (
+              <div
+                id={`command-panel-${panel.id}`}
+                role="tabpanel"
+                data-command-panel={index}
+                aria-labelledby={`command-tab-${panel.id}`}
+                hidden={index !== 0}
+              >
+                <PolishedTerminal
+                  title=""
+                  prompt="aadijo@MacBook-Pro Project %"
+                  command={panel.command}
+                  output={panel.output}
+                  size="panel"
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section class="final-cta">
+        <div class="th-wrap final-cta-inner">
+          <h2>Keep the story next to the code.</h2>
+          <p>Install Turnal, initialize the repo, then let Claude Code and Codex work normally.</p>
+          <div class="install-command install-command-large">
+            <span>$</span>
+            <code>{installCommand}</code>
+            <CopyButton text={installCommand} />
+          </div>
+          <div class="final-links">
+            <a href="/docs">Read the docs</a>
+            <a href={`https://${product.repo}`}>View on GitHub</a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="th-wrap footer-row">
+        <Logo size={22} />
+        <span>Apache-2.0</span>
+        <a href={`https://${product.repo}`}>{product.repo}</a>
+      </div>
+    </footer>
+  </div>
+</Base>
+
+<script>
+  document.querySelectorAll<HTMLElement>('[data-command-workbench]').forEach((workbench) => {
+    const tabs = [...workbench.querySelectorAll<HTMLButtonElement>('[data-command-tab]')];
+    const panels = [...workbench.querySelectorAll<HTMLElement>('[data-command-panel]')];
+
+    const select = (index: number, moveFocus = false) => {
+      tabs.forEach((tab, tabIndex) => {
+        const selected = tabIndex === index;
+        tab.setAttribute('aria-selected', String(selected));
+        tab.tabIndex = selected ? 0 : -1;
+        if (selected && moveFocus) tab.focus();
+      });
+      panels.forEach((panel, panelIndex) => { panel.hidden = panelIndex !== index; });
+    };
+
+    tabs.forEach((tab, index) => {
+      tab.addEventListener('click', () => select(index));
+      tab.addEventListener('keydown', (event) => {
+        let next = index;
+        if (event.key === 'ArrowDown' || event.key === 'ArrowRight') next = (index + 1) % tabs.length;
+        else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') next = (index - 1 + tabs.length) % tabs.length;
+        else if (event.key === 'Home') next = 0;
+        else if (event.key === 'End') next = tabs.length - 1;
+        else return;
+        event.preventDefault();
+        select(next, true);
+      });
+    });
+  });
+
+  const heroTerminal = document.querySelector<HTMLElement>('.hero-visual .polished-terminal');
+  const heroIntro = document.querySelector<HTMLElement>('.hero-intro');
+  const desktopHero = window.matchMedia('(min-width: 821px)');
+
+  if (heroTerminal && heroIntro) {
+    const terminalBar = heroTerminal.querySelector<HTMLElement>('.pt-bar');
+    const terminalBody = heroTerminal.querySelector<HTMLElement>('.pt-body');
+    const terminalCode = terminalBody?.querySelector<HTMLElement>('code');
+    const syncHeroTerminalHeight = () => {
+      if (!desktopHero.matches || !terminalBar || !terminalBody || !terminalCode) {
+        heroTerminal.style.removeProperty('--pt-hero-body-height');
+        heroTerminal.style.removeProperty('--pt-hero-line-shift');
+        return;
+      }
+
+      const viewportHeight = document.documentElement.clientHeight;
+      const terminalTop = heroTerminal.getBoundingClientRect().top;
+      const overshoot = Math.max(112, Math.min(156, viewportHeight * 0.115));
+      heroTerminal.style.setProperty('--pt-hero-line-shift', '0px');
+      let bodyStyle = window.getComputedStyle(terminalBody);
+      const codeStyle = window.getComputedStyle(terminalCode);
+      const lineHeight = Number.parseFloat(codeStyle.lineHeight);
+      const basePaddingTop = Number.parseFloat(bodyStyle.paddingTop);
+      const foldOffset = viewportHeight - terminalTop - terminalBar.offsetHeight - basePaddingTop;
+      const foldRemainder = ((foldOffset % lineHeight) + lineHeight) % lineHeight;
+      const lineShift = foldRemainder - lineHeight / 2;
+      heroTerminal.style.setProperty('--pt-hero-line-shift', `${lineShift.toFixed(2)}px`);
+      bodyStyle = window.getComputedStyle(terminalBody);
+      const verticalPadding = Number.parseFloat(bodyStyle.paddingTop) + Number.parseFloat(bodyStyle.paddingBottom);
+      const contentHeight = Math.ceil(terminalCode.scrollHeight + verticalPadding);
+      const foldHeight = viewportHeight + overshoot - terminalTop - terminalBar.offsetHeight;
+      const bodyHeight = Math.min(contentHeight, Math.max(600, foldHeight));
+      heroTerminal.style.setProperty('--pt-hero-body-height', `${Math.ceil(bodyHeight)}px`);
+    };
+
+    const heroObserver = new ResizeObserver(syncHeroTerminalHeight);
+    heroObserver.observe(document.documentElement);
+    heroObserver.observe(heroIntro);
+    desktopHero.addEventListener('change', syncHeroTerminalHeight);
+    void document.fonts.ready.then(syncHeroTerminalHeight);
+    syncHeroTerminalHeight();
+
+    window.addEventListener('pagehide', () => {
+      heroObserver.disconnect();
+      desktopHero.removeEventListener('change', syncHeroTerminalHeight);
+    }, { once: true });
+  }
+</script>
+
+<style is:global>
+  .terminal-home-theme {
+    --accent: #ff4f00;
+    --bg: #100f0d;
+    --surface: #17130f;
+    --surface-strong: #0c0b09;
+    --fg: #ece3d4;
+    --muted: rgba(236, 227, 212, 0.58);
+    --soft: rgba(236, 227, 212, 0.08);
+    --hair: rgba(236, 227, 212, 0.11);
+    --copy-bg: rgba(236, 227, 212, 0.08);
+    --copy-fg: rgba(236, 227, 212, 0.58);
+    min-height: 100dvh;
+    background: var(--bg);
+    color: var(--fg);
+  }
+
+  .terminal-home-theme .terminal-home-page { min-height: 100dvh; overflow: clip; }
+  .terminal-home-theme .th-wrap { width: min(100%, 1240px); margin-inline: auto; padding-inline: 28px; }
+
+  .terminal-home-theme .skip-link {
+    position: fixed;
+    z-index: 80;
+    top: 10px;
+    left: 10px;
+    padding: 9px 12px;
+    transform: translateY(-160%);
+    border-radius: 8px;
+    background: var(--fg);
+    color: var(--bg);
+    font-weight: 600;
+  }
+  .terminal-home-theme .skip-link:focus { transform: translateY(0); }
+
+  .terminal-home-theme .site-nav {
+    position: sticky;
+    z-index: 40;
+    top: 0;
+    border-bottom: 1px solid var(--hair);
+    background: rgba(16, 15, 13, 0.76);
+    backdrop-filter: blur(16px);
+  }
+  .terminal-home-theme .nav-row { display: flex; height: 68px; align-items: center; gap: 26px; }
+  .terminal-home-theme .nav-brand { flex: none; color: var(--fg); }
+  .terminal-home-theme .nav-links { display: flex; margin-left: auto; align-items: center; gap: 28px; color: var(--muted); font-size: 13px; font-weight: 500; }
+  .terminal-home-theme .nav-links a,
+  .terminal-home-theme .nav-install,
+  .terminal-home-theme .docs-link,
+  .terminal-home-theme .final-links a,
+  .terminal-home-theme .site-footer a { transition: color 160ms ease, background-color 160ms ease, transform 120ms ease; }
+  .terminal-home-theme .nav-links a:hover,
+  .terminal-home-theme .nav-links a:focus-visible { color: var(--fg); }
+  .terminal-home-theme .nav-install {
+    flex: none;
+    padding: 9px 14px;
+    border: 1px solid var(--hair);
+    border-radius: 10px;
+    color: var(--fg);
+    font-size: 12.5px;
+    font-weight: 600;
+  }
+  .terminal-home-theme .nav-install:hover { background: rgba(236, 227, 212, 0.06); }
+  .terminal-home-theme .nav-install:active { transform: scale(0.98); }
+
+  .terminal-home-theme .hero {
+    min-height: 0;
+    padding-top: 60px;
+    padding-bottom: 22px;
+  }
+  .terminal-home-theme .hero-intro {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 24px;
+    text-align: center;
+  }
+  .terminal-home-theme .hero h1 { max-width: 13ch; margin: 0; font-size: clamp(48px, 5vw, 70px); font-weight: 660; letter-spacing: -0.052em; line-height: 0.96; text-wrap: balance; }
+  .terminal-home-theme .hero h1 span { display: block; color: rgba(236, 227, 212, 0.48); }
+  .terminal-home-theme .hero-copy { display: flex; max-width: 650px; flex-direction: column; align-items: center; }
+  .terminal-home-theme .hero-copy > p { max-width: 58ch; margin: 0; color: var(--muted); font-size: 15.5px; line-height: 1.58; text-wrap: pretty; }
+
+  .terminal-home-theme .hero-actions { display: flex; margin-top: 22px; flex-wrap: wrap; align-items: center; justify-content: center; gap: 16px; }
+  .terminal-home-theme .install-command {
+    display: inline-flex;
+    max-width: 100%;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 7px 7px 15px;
+    border: 1px solid var(--hair);
+    border-radius: 12px;
+    background: rgba(12, 11, 9, 0.78);
+    box-shadow: inset 0 1px 0 rgba(236, 227, 212, 0.045);
+    font-family: var(--mono);
+    font-size: 12.5px;
+  }
+  .terminal-home-theme .install-command > span { color: var(--accent); font-weight: 700; }
+  .terminal-home-theme .install-command code { overflow: hidden; color: var(--fg); text-overflow: ellipsis; white-space: nowrap; }
+  .terminal-home-theme .docs-link { color: var(--muted); font-size: 13px; font-weight: 600; white-space: nowrap; }
+  .terminal-home-theme .docs-link:hover { color: var(--fg); transform: translateX(2px); }
+
+  .terminal-home-theme .hero-visual { min-width: 0; margin-top: 34px; }
+
+  .terminal-home-theme .adapter-strip {
+    display: flex;
+    min-height: 78px;
+    align-items: center;
+    justify-content: center;
+    gap: 32px;
+    border-top: 1px solid var(--hair);
+    border-bottom: 1px solid var(--hair);
+  }
+  .terminal-home-theme .adapter-strip img { width: 30px; height: 30px; object-fit: contain; opacity: 0.65; filter: saturate(0.55); transition: opacity 160ms ease, filter 160ms ease; }
+  .terminal-home-theme .adapter-strip img:hover { opacity: 1; filter: none; }
+
+  .terminal-home-theme .capabilities { padding-top: 145px; padding-bottom: 74px; scroll-margin-top: 82px; }
+  .terminal-home-theme .section-heading { max-width: 700px; }
+  .terminal-home-theme .section-heading h2,
+  .terminal-home-theme .workflow-heading h2,
+  .terminal-home-theme .commands-heading h2,
+  .terminal-home-theme .final-cta h2 { margin: 0; font-size: clamp(34px, 4vw, 54px); font-weight: 650; letter-spacing: -0.045em; line-height: 1; text-wrap: balance; }
+  .terminal-home-theme .section-heading > p:last-child,
+  .terminal-home-theme .workflow-heading p,
+  .terminal-home-theme .commands-heading p,
+  .terminal-home-theme .final-cta-inner > p { max-width: 60ch; margin-top: 18px; color: var(--muted); font-size: 15.5px; line-height: 1.6; }
+
+  .terminal-home-theme .capability-ledger {
+    display: grid;
+    grid-template-columns: 1.18fr 0.82fr 1fr 1fr;
+    margin-top: 54px;
+    border-top: 1px solid var(--hair);
+    border-bottom: 1px solid var(--hair);
+  }
+  .terminal-home-theme .capability-ledger article { min-width: 0; padding: 64px 26px 36px; border-right: 1px solid var(--hair); }
+  .terminal-home-theme .capability-ledger article:first-child { padding-left: 0; }
+  .terminal-home-theme .capability-ledger article:last-child { padding-right: 0; border-right: 0; }
+  .terminal-home-theme .capability-ledger h3 { margin-top: 0; font-size: 18px; font-weight: 620; letter-spacing: -0.025em; line-height: 1.18; }
+  .terminal-home-theme .capability-ledger p { margin-top: 11px; color: var(--muted); font-size: 13.5px; line-height: 1.55; }
+
+  .terminal-home-theme .workflow-section { padding-top: 104px; padding-bottom: 104px; scroll-margin-top: 82px; }
+  .terminal-home-theme .workflow-heading { max-width: 660px; margin-bottom: 24px; }
+
+  .terminal-home-theme .commands-section { padding-top: 104px; padding-bottom: 112px; border-top: 1px solid var(--hair); }
+  .terminal-home-theme .commands-heading { max-width: 710px; margin-bottom: 48px; }
+  .terminal-home-theme .command-workbench { display: grid; grid-template-columns: minmax(250px, 0.72fr) minmax(0, 1.62fr); gap: 30px; align-items: stretch; }
+  .terminal-home-theme .command-menu { min-width: 0; padding-right: 8px; }
+  .terminal-home-theme .command-menu button {
+    display: block;
+    width: 100%;
+    padding: 18px 14px;
+    border: 0;
+    border-bottom: 1px solid var(--hair);
+    background: transparent;
+    color: var(--muted);
+    text-align: left;
+    outline: none;
+    transition: background-color 160ms ease, color 160ms ease, transform 120ms ease;
+  }
+  .terminal-home-theme .command-menu button:hover { color: var(--fg); background: rgba(236, 227, 212, 0.025); }
+  .terminal-home-theme .command-menu button:active { transform: scale(0.99); }
+  .terminal-home-theme .command-menu button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .terminal-home-theme .command-menu button[aria-selected='true'] { color: var(--fg); background: rgba(236, 227, 212, 0.045); }
+  .terminal-home-theme .command-menu code { display: block; color: inherit; font-family: var(--mono); font-size: 12px; font-weight: 600; }
+  .terminal-home-theme .command-menu button[aria-selected='true'] code { color: #ff7040; }
+  .terminal-home-theme .command-menu span { display: block; margin-top: 8px; color: var(--muted); font-size: 12.5px; line-height: 1.48; }
+  .terminal-home-theme .command-panels,
+  .terminal-home-theme .command-panels > div { min-width: 0; height: 100%; }
+  .terminal-home-theme .command-panels > div[hidden] { display: none; }
+
+  .terminal-home-theme .final-cta { padding: 122px 0 112px; border-top: 1px solid var(--hair); background: #13110f; }
+  .terminal-home-theme .final-cta-inner { display: flex; flex-direction: column; align-items: center; text-align: center; }
+  .terminal-home-theme .final-cta-inner > p { max-width: 54ch; }
+  .terminal-home-theme .install-command-large { margin-top: 32px; padding: 10px 10px 10px 18px; font-size: 14px; -webkit-user-select: none; user-select: none; }
+  .terminal-home-theme .final-links { display: flex; margin-top: 22px; gap: 24px; color: var(--muted); font-size: 13px; font-weight: 600; }
+  .terminal-home-theme .final-links a:hover { color: var(--fg); }
+
+  .terminal-home-theme .site-footer { border-top: 1px solid var(--hair); padding: 32px 0 72px; }
+  .terminal-home-theme .footer-row { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 20px; color: var(--muted); font-size: 12.5px; }
+  .terminal-home-theme .footer-row > span { text-align: center; }
+  .terminal-home-theme .footer-row > a { justify-self: end; }
+  .terminal-home-theme .site-footer a:hover { color: var(--fg); }
+
+  @media (max-width: 1040px) {
+    .terminal-home-theme .hero h1 { font-size: clamp(44px, 5.8vw, 62px); }
+    .terminal-home-theme .capability-ledger { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .terminal-home-theme .capability-ledger article { border-bottom: 1px solid var(--hair); }
+    .terminal-home-theme .capability-ledger article:nth-child(2) { border-right: 0; }
+    .terminal-home-theme .capability-ledger article:nth-child(3) { padding-left: 0; border-bottom: 0; }
+    .terminal-home-theme .capability-ledger article:nth-child(4) { border-bottom: 0; }
+  }
+
+  @media (max-width: 820px) {
+    .terminal-home-theme .th-wrap { padding-inline: 20px; }
+    .terminal-home-theme .nav-links { margin-left: auto; gap: 18px; font-size: 12px; }
+    .terminal-home-theme .hero {
+      min-height: 0;
+      padding-top: 84px;
+      padding-bottom: 74px;
+    }
+    .terminal-home-theme .hero-intro { gap: 24px; }
+    .terminal-home-theme .hero-copy { max-width: 590px; }
+    .terminal-home-theme .hero h1 { max-width: 12ch; font-size: clamp(46px, 10vw, 68px); }
+    .terminal-home-theme .hero-visual { margin-top: 34px; }
+    .terminal-home-theme .command-workbench { grid-template-columns: 1fr; }
+    .terminal-home-theme .command-menu { display: flex; overflow-x: auto; padding: 0 0 7px; scroll-snap-type: x mandatory; }
+    .terminal-home-theme .command-menu button { width: min(76vw, 300px); flex: none; scroll-snap-align: start; border-right: 1px solid var(--hair); }
+  }
+
+  @media (max-width: 560px) {
+    .terminal-home-theme .th-wrap { padding-inline: 16px; }
+    .terminal-home-theme .nav-row { height: 62px; }
+    .terminal-home-theme .hero { padding-top: 66px; padding-bottom: 58px; }
+    .terminal-home-theme .hero h1 { font-size: 44px; line-height: 0.98; }
+    .terminal-home-theme .hero-copy > p { font-size: 15px; }
+    .terminal-home-theme .hero-actions { align-items: stretch; flex-direction: column; }
+    .terminal-home-theme .install-command { width: 100%; }
+    .terminal-home-theme .docs-link { padding: 7px 2px; }
+    .terminal-home-theme .adapter-strip { min-height: 80px; }
+    .terminal-home-theme .capabilities { padding-top: 115px; padding-bottom: 50px; }
+    .terminal-home-theme .capability-ledger { grid-template-columns: 1fr; }
+    .terminal-home-theme .capability-ledger article,
+    .terminal-home-theme .capability-ledger article:first-child,
+    .terminal-home-theme .capability-ledger article:nth-child(3),
+    .terminal-home-theme .capability-ledger article:last-child { padding: 58px 0 29px; border-right: 0; border-bottom: 1px solid var(--hair); }
+    .terminal-home-theme .capability-ledger article:last-child { border-bottom: 0; }
+    .terminal-home-theme .workflow-section,
+    .terminal-home-theme .commands-section { padding-top: 84px; padding-bottom: 88px; }
+    .terminal-home-theme .final-cta { padding: 92px 0 86px; }
+    .terminal-home-theme .install-command-large { font-size: 12px; }
+    .terminal-home-theme .footer-row { grid-template-columns: 1fr; justify-items: start; }
+    .terminal-home-theme .footer-row > span { text-align: left; }
+    .terminal-home-theme .footer-row > a { justify-self: start; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .terminal-home-theme *,
+    .terminal-home-theme *::before,
+    .terminal-home-theme *::after {
+      scroll-behavior: auto !important;
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+    }
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    .terminal-home-theme .site-nav { background: var(--bg); backdrop-filter: none; }
+  }
+</style>
