@@ -1982,7 +1982,7 @@ func (repo *Repo) validatePrivateRef(ref string) (string, error) {
 	if strings.ContainsRune(ref, 0) {
 		return "", fmt.Errorf("private ref %q must not contain NUL", ref)
 	}
-	if _, err := runHiddenGit(repo, "", "check-ref-format", ref); err != nil {
+	if _, err := runHiddenGitReadOnly(repo, "check-ref-format", ref); err != nil {
 		return "", err
 	}
 	return ref, nil
