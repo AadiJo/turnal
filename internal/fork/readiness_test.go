@@ -370,6 +370,20 @@ func TestSessionMetadataRejectsDuplicateAdapterStarts(t *testing.T) {
 	}
 }
 
+func TestSessionMetadataDoesNotSelectEmptyAdapter(t *testing.T) {
+	model, permissionMode, found, err := sessionMetadata([]eventlog.Event{{
+		Seq:     1,
+		Type:    primitives.EventTypeSessionStart,
+		Payload: json.RawMessage(`{"provider_session_id":"legacy","model":"unscoped-model","permission_mode":"unknown"}`),
+	}}, "")
+	if err != nil {
+		t.Fatalf("sessionMetadata: %v", err)
+	}
+	if found || model != "" || permissionMode != "" {
+		t.Fatalf("metadata = %q / %q / %t", model, permissionMode, found)
+	}
+}
+
 func readinessFixture(t *testing.T, prompt string, finish bool) (*checkpoint.Repo, primitives.SessionID, primitives.TurnID) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
