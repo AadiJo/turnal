@@ -3,57 +3,104 @@ package adapters
 import (
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/AadiJo/turnal/internal/fsidentity"
 )
 
 // EffectiveHookRoot returns the project root where a provider reads and writes
-// hook configuration. Codex uses the root checkout's project configuration for
-// linked worktrees, while Claude uses the current worktree.
+// hook configuration. Codex uses a verified root checkout for real linked
+// worktrees, while Claude and unverified workspaces stay local.
 func EffectiveHookRoot(projectRoot string, target Target) string {
 	if target != TargetCodex {
 		return projectRoot
 	}
-	if rootCheckout, ok := linkedWorktreeRootCheckout(projectRoot); ok {
+	if rootCheckout, ok := verifiedLinkedWorktreeRoot(projectRoot); ok {
 		return rootCheckout
 	}
 	return projectRoot
 }
 
-func linkedWorktreeRootCheckout(projectRoot string) (string, bool) {
+type gitWorktreeLayout struct {
+	topLevel  string
+	gitDir    string
+	commonDir string
+}
+
+func verifiedLinkedWorktreeRoot(projectRoot string) (string, bool) {
 	dotGit := filepath.Join(projectRoot, ".git")
-	info, err := os.Stat(dotGit)
-	if err != nil || info.IsDir() {
+	info, err := os.Lstat(dotGit)
+	if err != nil || !info.Mode().IsRegular() {
 		return "", false
 	}
-	data, err := readSmallGitMetadataFile(dotGit)
+	pointer, err := readGitPathFile(dotGit, projectRoot, "gitdir:")
 	if err != nil {
 		return "", false
 	}
-	gitDirText, found := strings.CutPrefix(strings.TrimSpace(string(data)), "gitdir:")
-	if !found {
+	layout, ok := inspectGitWorktree(projectRoot)
+	if !ok || !fsidentity.Same(layout.topLevel, projectRoot) || !fsidentity.Same(layout.gitDir, pointer) {
 		return "", false
 	}
-	gitDir := strings.TrimSpace(gitDirText)
-	if !filepath.IsAbs(gitDir) {
-		gitDir = filepath.Join(projectRoot, gitDir)
+	worktreesDir := filepath.Join(layout.commonDir, "worktrees")
+	if !fsidentity.Same(filepath.Dir(layout.gitDir), worktreesDir) {
+		return "", false
 	}
-	gitDir = filepath.Clean(gitDir)
+	backlink, err := readGitPathFile(filepath.Join(layout.gitDir, "gitdir"), layout.gitDir, "")
+	if err != nil || !fsidentity.Same(backlink, dotGit) {
+		return "", false
+	}
 
-	commonDir := ""
-	if data, err := readSmallGitMetadataFile(filepath.Join(gitDir, "commondir")); err == nil {
-		commonDir = strings.TrimSpace(string(data))
-		if !filepath.IsAbs(commonDir) {
-			commonDir = filepath.Join(gitDir, commonDir)
-		}
-		commonDir = filepath.Clean(commonDir)
-	} else if filepath.Base(filepath.Dir(gitDir)) == "worktrees" {
-		commonDir = filepath.Dir(filepath.Dir(gitDir))
-	}
-	if filepath.Base(commonDir) != ".git" {
+	if filepath.Base(layout.commonDir) != ".git" {
 		return "", false
 	}
-	return filepath.Dir(commonDir), true
+	rootCheckout := filepath.Dir(layout.commonDir)
+	rootLayout, ok := inspectGitWorktree(rootCheckout)
+	if !ok || !fsidentity.Same(rootLayout.topLevel, rootCheckout) ||
+		!fsidentity.Same(rootLayout.gitDir, layout.commonDir) ||
+		!fsidentity.Same(rootLayout.commonDir, layout.commonDir) {
+		return "", false
+	}
+	return rootCheckout, true
+}
+
+func inspectGitWorktree(root string) (gitWorktreeLayout, bool) {
+	command := exec.Command("git", "-C", root, "rev-parse", "--path-format=absolute", "--show-toplevel", "--absolute-git-dir", "--git-common-dir")
+	command.Env = append(cleanHookGitEnvironment(os.Environ()), "GIT_OPTIONAL_LOCKS=0")
+	output, err := command.Output()
+	if err != nil {
+		return gitWorktreeLayout{}, false
+	}
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	if len(lines) != 3 {
+		return gitWorktreeLayout{}, false
+	}
+	return gitWorktreeLayout{
+		topLevel:  strings.TrimSpace(lines[0]),
+		gitDir:    strings.TrimSpace(lines[1]),
+		commonDir: strings.TrimSpace(lines[2]),
+	}, true
+}
+
+func readGitPathFile(path, relativeTo, prefix string) (string, error) {
+	data, err := readSmallGitMetadataFile(path)
+	if err != nil {
+		return "", err
+	}
+	value := strings.TrimSpace(string(data))
+	if prefix != "" {
+		var found bool
+		value, found = strings.CutPrefix(value, prefix)
+		if !found {
+			return "", os.ErrInvalid
+		}
+		value = strings.TrimSpace(value)
+	}
+	if !filepath.IsAbs(value) {
+		value = filepath.Join(relativeTo, value)
+	}
+	return filepath.Clean(value), nil
 }
 
 func readSmallGitMetadataFile(path string) ([]byte, error) {
@@ -70,4 +117,16 @@ func readSmallGitMetadataFile(path string) ([]byte, error) {
 		return nil, io.ErrShortBuffer
 	}
 	return data, nil
+}
+
+func cleanHookGitEnvironment(environment []string) []string {
+	clean := make([]string, 0, len(environment))
+	for _, item := range environment {
+		name, _, found := strings.Cut(item, "=")
+		if !found || strings.HasPrefix(name, "GIT_") {
+			continue
+		}
+		clean = append(clean, item)
+	}
+	return clean
 }

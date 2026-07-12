@@ -3,6 +3,7 @@ package compatibility
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -187,22 +188,42 @@ func TestClassifyCodexHooksAcceptsRootCheckoutSourceForLinkedWorktree(t *testing
 
 func createLinkedWorktree(t *testing.T) (string, string) {
 	t.Helper()
-	rootCheckout := t.TempDir()
-	linkedWorktree := filepath.Join(t.TempDir(), "linked")
-	gitDir := filepath.Join(rootCheckout, ".git", "worktrees", "linked")
-	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git executable not found")
+	}
+	parent := t.TempDir()
+	rootCheckout := filepath.Join(parent, "main")
+	linkedWorktree := filepath.Join(parent, "linked")
+	if err := os.MkdirAll(rootCheckout, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(linkedWorktree, 0o755); err != nil {
+	runCompatibilityTestGit(t, rootCheckout, "init")
+	runCompatibilityTestGit(t, rootCheckout, "config", "user.email", "turnal@example.test")
+	runCompatibilityTestGit(t, rootCheckout, "config", "user.name", "Turnal Test")
+	if err := os.WriteFile(filepath.Join(rootCheckout, "tracked.txt"), []byte("tracked\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(linkedWorktree, ".git"), []byte("gitdir: "+gitDir+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(gitDir, "commondir"), []byte("../..\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	runCompatibilityTestGit(t, rootCheckout, "add", "tracked.txt")
+	runCompatibilityTestGit(t, rootCheckout, "commit", "-m", "initial")
+	runCompatibilityTestGit(t, rootCheckout, "worktree", "add", "-b", "compatibility-linked-test", linkedWorktree)
 	return rootCheckout, linkedWorktree
+}
+
+func runCompatibilityTestGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	command := exec.Command("git", args...)
+	command.Dir = dir
+	cleanEnvironment := make([]string, 0, len(os.Environ()))
+	for _, item := range os.Environ() {
+		name, _, found := strings.Cut(item, "=")
+		if found && !strings.HasPrefix(name, "GIT_") {
+			cleanEnvironment = append(cleanEnvironment, item)
+		}
+	}
+	command.Env = cleanEnvironment
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
 }
 
 func TestClassifyCodexHooksStillRequiresAllEventsWhenStaticConfigIsMissing(t *testing.T) {
