@@ -223,6 +223,26 @@ func TestRecoverAbandonedRunWithoutTouchingLiveRun(t *testing.T) {
 	}
 }
 
+func TestRecoverySkipsSameStoreJournalFromAnotherWorktree(t *testing.T) {
+	repo := testRepo(t)
+	runID, _ := primitives.NewRunID()
+	release, err := Begin(repo, runID, session(t, "wrapper"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	linked := *repo
+	linked.WorktreeID, _ = primitives.NewWorktreeID()
+	linked.EventProducerID, _ = primitives.NewEventProducerID()
+	if err := RecoverAbandoned(&linked); err != nil {
+		t.Fatalf("linked-worktree recovery: %v", err)
+	}
+	projection, err := Read(repo, runID)
+	if err != nil || projection.Status != StatusRunning {
+		t.Fatalf("foreign recovery changed run: %+v, %v", projection, err)
+	}
+}
+
 func TestCaptureAuthorizationRequiresLockedMatchingLifecycle(t *testing.T) {
 	repo := testRepo(t)
 	runID, _ := primitives.NewRunID()

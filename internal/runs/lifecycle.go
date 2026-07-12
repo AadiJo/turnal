@@ -98,6 +98,11 @@ func RecoverAbandoned(repo *checkpoint.Repo) error {
 			}
 			return err
 		}
+		if journal.RepoID == repo.RepoID && journal.StoreID == repo.StoreID && journal.WorktreeID != repo.WorktreeID {
+			// Lifecycle journals share the store, but only their owning worktree
+			// may recover or mutate the corresponding Run.
+			continue
+		}
 		unlock, err := acquireRunMutation(repo, journal.RunID)
 		if err != nil {
 			return err
