@@ -1,12 +1,16 @@
 package processidentity
 
 import (
+	"errors"
 	"os"
 	"testing"
 )
 
 func TestCurrentProcessIdentityMatchesKernelState(t *testing.T) {
 	identity, err := Current()
+	if errors.Is(err, ErrUnsupported) {
+		t.Skip(err)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
