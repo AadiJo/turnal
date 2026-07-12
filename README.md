@@ -73,6 +73,9 @@ turnal log --transcript
 turnal show <session>:<turn>
 turnal diff <session>:<turn>
 
+# Check what Turnal could reconstruct before rerunning a task.
+turnal fork <session>:<turn> --dry-run
+
 # See what would be restored, then perform the rollback.
 turnal rollback --to <session>:<turn>:pre --dry-run
 turnal rollback --to <session>:<turn>:pre
@@ -229,6 +232,25 @@ turnal replay stop
 ```
 
 Use `turnal replay list` to find active replay sessions and `turnal replay --help` for path and retention controls.
+
+## Fork readiness
+
+Before rerunning a recorded task, inspect what Turnal can reconstruct:
+
+```sh
+turnal fork <session>:<turn> --dry-run
+turnal fork <session>:<turn> --dry-run --json
+```
+
+The report identifies the exact pre-turn checkpoint, captured file count,
+observable instruction status, provider metadata, and known gaps such as the
+unpinned toolchain, live external services, and secrets that require fresh
+authorization. A redacted or missing prompt is reported as requiring new user
+input and is never recovered from raw storage.
+
+This command is currently inspection-only. It does not create a worktree or run
+an agent. Use `turnal replay checkout <session>:<turn>:pre` to materialize the
+captured files for manual inspection.
 
 ## Worktrees and store history
 
