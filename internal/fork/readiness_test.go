@@ -203,6 +203,20 @@ func TestWorkspaceVCSConditionDistinguishesMetadataFromSnapshot(t *testing.T) {
 	}
 }
 
+func TestMetadataAdapterFallsBackToSoleTurnAdapter(t *testing.T) {
+	adapter := metadataAdapterFor(Instruction{Status: InstructionMissing}, []primitives.AdapterName{primitives.AdapterCodex})
+	if adapter != primitives.AdapterCodex {
+		t.Fatalf("metadata adapter = %q, want codex", adapter)
+	}
+	adapter = metadataAdapterFor(Instruction{Status: InstructionMissing}, []primitives.AdapterName{
+		primitives.AdapterClaudeCode,
+		primitives.AdapterCodex,
+	})
+	if adapter != "" {
+		t.Fatalf("ambiguous metadata adapter = %q, want empty", adapter)
+	}
+}
+
 func TestInspectInstructionRejectsMalformedPayloads(t *testing.T) {
 	for name, payload := range map[string]json.RawMessage{
 		"invalid json":        json.RawMessage(`{"text":`),
