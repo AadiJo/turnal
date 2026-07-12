@@ -59,6 +59,7 @@ func TestPrepareCheckpointAppliesCurrentSecretPolicyToOlderCapture(t *testing.T)
 	repo, sessionID, _ := recordedCheckpointFixture(t)
 	root := repo.WorkspaceRoot.String()
 	writeVerifierFixtureFile(t, root, "historical-secret.txt", "captured before policy tightened\n")
+	writeVerifierFixtureFile(t, root, "secret-dir/key.txt", "captured below directory before policy tightened\n")
 	turnID, _ := primitives.NewTurnID(2)
 	log := eventlog.OpenFor(repo.MetadataDir, root, repo.RepoID, repo.StoreID, repo.WorktreeID, repo.EventProducerID)
 	recorder := turnevents.Recorder{Log: log, Manager: turns.NewManager(repo), Adapter: primitives.AdapterManual}
@@ -71,7 +72,7 @@ func TestPrepareCheckpointAppliesCurrentSecretPolicyToOlderCapture(t *testing.T)
 
 	writeVerifierFixtureFile(t, root, ".turnal/config.toml", `version = 1
 [secrets]
-snapshot_deny_globs = ["historical-secret.txt"]
+snapshot_deny_globs = ["historical-secret.txt", "secret-dir"]
 `)
 	ref, err := repo.CheckpointRefFor(sessionID, turnID, primitives.CheckpointPhasePre)
 	if err != nil {
@@ -86,6 +87,7 @@ snapshot_deny_globs = ["historical-secret.txt"]
 		t.Fatalf("exact MaterializeCommit: %v", err)
 	}
 	assertVerifierFixtureFile(t, exactRoot, "historical-secret.txt", "captured before policy tightened\n")
+	assertVerifierFixtureFile(t, exactRoot, "secret-dir/key.txt", "captured below directory before policy tightened\n")
 
 	prepared, err := PrepareCheckpoint(repo, sessionID, turnID, primitives.CheckpointPhasePre)
 	if err != nil {
@@ -96,8 +98,10 @@ snapshot_deny_globs = ["historical-secret.txt"]
 			t.Errorf("Cleanup: %v", err)
 		}
 	}()
-	if _, err := os.Lstat(filepath.Join(prepared.Root, "historical-secret.txt")); !os.IsNotExist(err) {
-		t.Fatalf("historical secret present in verifier evaluation: %v", err)
+	for _, denied := range []string{"historical-secret.txt", "secret-dir/key.txt"} {
+		if _, err := os.Lstat(filepath.Join(prepared.Root, filepath.FromSlash(denied))); !os.IsNotExist(err) {
+			t.Fatalf("historical secret %s present in verifier evaluation: %v", denied, err)
+		}
 	}
 	assertVerifierFixtureFile(t, prepared.Root, "app.txt", "after\n")
 }

@@ -6,13 +6,16 @@ import (
 	"strings"
 )
 
-// Denied reports whether repoPath is excluded by the configured snapshot
-// deny-list. Paths and patterns use repository-style forward slashes.
+// Denied reports whether repoPath or any of its directory ancestors is
+// excluded by the configured snapshot deny-list. Paths and patterns use
+// repository-style forward slashes.
 func Denied(repoPath string, patterns []string) bool {
 	repoPath = filepath.ToSlash(repoPath)
-	for _, pattern := range patterns {
-		if globMatches(filepath.ToSlash(pattern), repoPath) {
-			return true
+	for candidate := repoPath; candidate != "." && candidate != "/"; candidate = path.Dir(candidate) {
+		for _, pattern := range patterns {
+			if globMatches(filepath.ToSlash(pattern), candidate) {
+				return true
+			}
 		}
 	}
 	return false
