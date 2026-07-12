@@ -20,10 +20,16 @@ type CodexProbe interface {
 }
 
 func Diagnose(ctx context.Context, options Options) Report {
-	static := adapters.InspectHooksForTargets(options.WorkspaceRoot, options.HookCommand, options.Targets)
-	byTarget := make(map[adapters.Target]adapters.HookHealth, len(static))
-	for _, health := range static {
-		byTarget[health.Target] = health
+	byTarget := make(map[adapters.Target]adapters.HookHealth, len(options.Targets))
+	for _, target := range options.Targets {
+		inspectionRoot := options.WorkspaceRoot
+		if target == adapters.TargetCodex {
+			inspectionRoot = codexStaticInspectionRoot(options.WorkspaceRoot)
+		}
+		static := adapters.InspectHooksForTargets(inspectionRoot, options.HookCommand, []adapters.Target{target})
+		if len(static) == 1 {
+			byTarget[target] = static[0]
+		}
 	}
 
 	var report Report

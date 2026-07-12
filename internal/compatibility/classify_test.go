@@ -63,6 +63,45 @@ func (panicProbe) Probe(context.Context, string, string) (CodexHooksResult, erro
 	panic("Claude-only diagnostics launched Codex")
 }
 
+type fixedCodexProbe struct {
+	result CodexHooksResult
+}
+
+func (probe fixedCodexProbe) Probe(context.Context, string, string) (CodexHooksResult, error) {
+	return probe.result, nil
+}
+
+func TestDiagnoseUsesRootCheckoutCodexConfigurationForLinkedWorktree(t *testing.T) {
+	rootCheckout, linkedWorktree := createLinkedWorktree(t)
+	if _, err := adapters.InstallCodexHookWithOptions(rootCheckout, adapters.InstallOptions{HookCommand: "turnal"}); err != nil {
+		t.Fatalf("install root-checkout Codex hooks: %v", err)
+	}
+	var hooks []CodexHook
+	for _, event := range expectedCodexEventNames {
+		hook := projectCodexHook(linkedWorktree, event, "turnal codex-hook")
+		hook.SourcePath = filepath.Join(rootCheckout, ".codex", "config.toml")
+		hook.TrustStatus = "untrusted"
+		hooks = append(hooks, hook)
+	}
+	report := Diagnose(context.Background(), Options{
+		WorkspaceRoot: linkedWorktree,
+		HookCommand:   "turnal",
+		Targets:       []adapters.Target{adapters.TargetCodex},
+		ProbeCodex:    true,
+		CodexProbe:    fixedCodexProbe{result: CodexHooksResult{Hooks: hooks}},
+	})
+	if len(report.Surfaces) != 2 {
+		t.Fatalf("surfaces = %#v", report.Surfaces)
+	}
+	cli, appServer := report.Surfaces[0], report.Surfaces[1]
+	if cli.Configuration != adapters.HookConfigurationConfigured || cli.Expectation != CaptureAvailable {
+		t.Fatalf("Codex CLI = %#v", cli)
+	}
+	if appServer.Configuration != adapters.HookConfigurationConfigured || appServer.Discovered != 4 || appServer.Enabled != 4 || appServer.Trusted != 0 || appServer.Execution != ExecutionUntrusted || appServer.Certainty != CertaintyConfirmed {
+		t.Fatalf("Codex app-server = %#v", appServer)
+	}
+}
+
 func configuredCodexHealth() adapters.HookHealth {
 	return adapters.HookHealth{
 		Target: adapters.TargetCodex,
@@ -131,6 +170,23 @@ func TestClassifyCodexHooksIgnoresUnrelatedHooksAndPreservesWarnings(t *testing.
 }
 
 func TestClassifyCodexHooksAcceptsRootCheckoutSourceForLinkedWorktree(t *testing.T) {
+	rootCheckout, linkedWorktree := createLinkedWorktree(t)
+
+	var hooks []CodexHook
+	for _, event := range expectedCodexEventNames {
+		hook := projectCodexHook(linkedWorktree, event, "turnal codex-hook")
+		hook.SourcePath = filepath.Join(rootCheckout, ".codex", "config.toml")
+		hook.TrustStatus = "untrusted"
+		hooks = append(hooks, hook)
+	}
+	result := ClassifyCodexHooks(linkedWorktree, "turnal codex-hook", configuredCodexHealth(), CodexHooksResult{Hooks: hooks})
+	if result.Discovered != 4 || result.Enabled != 4 || result.Trusted != 0 || result.Execution != ExecutionUntrusted {
+		t.Fatalf("linked-worktree result = %#v", result)
+	}
+}
+
+func createLinkedWorktree(t *testing.T) (string, string) {
+	t.Helper()
 	rootCheckout := t.TempDir()
 	linkedWorktree := filepath.Join(t.TempDir(), "linked")
 	gitDir := filepath.Join(rootCheckout, ".git", "worktrees", "linked")
@@ -146,18 +202,7 @@ func TestClassifyCodexHooksAcceptsRootCheckoutSourceForLinkedWorktree(t *testing
 	if err := os.WriteFile(filepath.Join(gitDir, "commondir"), []byte("../..\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-
-	var hooks []CodexHook
-	for _, event := range expectedCodexEventNames {
-		hook := projectCodexHook(linkedWorktree, event, "turnal codex-hook")
-		hook.SourcePath = filepath.Join(rootCheckout, ".codex", "config.toml")
-		hook.TrustStatus = "untrusted"
-		hooks = append(hooks, hook)
-	}
-	result := ClassifyCodexHooks(linkedWorktree, "turnal codex-hook", configuredCodexHealth(), CodexHooksResult{Hooks: hooks})
-	if result.Discovered != 4 || result.Enabled != 4 || result.Trusted != 0 || result.Execution != ExecutionUntrusted {
-		t.Fatalf("linked-worktree result = %#v", result)
-	}
+	return rootCheckout, linkedWorktree
 }
 
 func TestClassifyCodexHooksStillRequiresAllEventsWhenStaticConfigIsMissing(t *testing.T) {

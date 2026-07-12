@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -139,10 +140,36 @@ func TestCodexAppServerHelperProcess(t *testing.T) {
 		return
 	}
 	if os.Getenv("TURNAL_APP_SERVER_DESCENDANT") == "1" {
+		if marker := os.Getenv("TURNAL_APP_SERVER_DESCENDANT_MARKER"); marker != "" {
+			if err := os.WriteFile(marker, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+				os.Exit(11)
+			}
+		}
 		time.Sleep(time.Hour)
 		return
 	}
 	scenario := os.Args[len(os.Args)-1]
+	if scenario == "fast-descendant" {
+		marker := os.Getenv("TURNAL_APP_SERVER_DESCENDANT_MARKER")
+		descendant := exec.Command(os.Args[0], "-test.run=TestCodexAppServerHelperProcess")
+		descendant.Env = append(os.Environ(), "TURNAL_APP_SERVER_HELPER=1", "TURNAL_APP_SERVER_DESCENDANT=1", "TURNAL_APP_SERVER_DESCENDANT_MARKER="+marker)
+		descendant.Stdout = io.Discard
+		descendant.Stderr = os.Stderr
+		if err := descendant.Start(); err != nil {
+			os.Exit(12)
+		}
+		defer descendant.Process.Release()
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			if _, err := os.Stat(marker); err == nil {
+				os.Exit(0)
+			}
+			if time.Now().After(deadline) {
+				os.Exit(13)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
 	reader := bufio.NewScanner(os.Stdin)
 	if !reader.Scan() {
 		os.Exit(2)
