@@ -224,6 +224,37 @@ func TestRecoverAbandonedRunWithoutTouchingLiveRun(t *testing.T) {
 	}
 }
 
+func TestUnlockedRecoveryDoesNotRequireProcessIdentity(t *testing.T) {
+	repo := testRepo(t)
+	runID, _ := primitives.NewRunID()
+	release, err := Begin(repo, runID, session(t, "wrapper"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	projection, err := Read(repo, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// An invalid PID makes process identity inspection fail if recovery calls it.
+	projection.OwnerPID = 0
+	unlock, err := acquireRunMutation(repo, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = recoverProjectionLocked(repo, runID, lifecycleJournalPath(repo, runID), projection)
+	unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	projection, err = Read(repo, runID)
+	if err != nil || projection.Status != StatusIncomplete {
+		t.Fatalf("unlocked recovery = %+v, %v", projection, err)
+	}
+}
+
 func TestRecoverySkipsSameStoreJournalFromAnotherWorktree(t *testing.T) {
 	repo := testRepo(t)
 	runID, _ := primitives.NewRunID()

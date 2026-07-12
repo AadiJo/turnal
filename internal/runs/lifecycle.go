@@ -160,12 +160,14 @@ func recoverProjectionLocked(repo *checkpoint.Repo, runID primitives.RunID, jour
 	if err != nil {
 		return err
 	}
-	ownerAlive, err := processidentity.Matches(projection.OwnerPID, projection.OwnerStart)
-	if err != nil {
-		return err
-	}
-	if held && ownerAlive {
-		return nil
+	if held {
+		ownerAlive, err := processidentity.Matches(projection.OwnerPID, projection.OwnerStart)
+		if err != nil {
+			return err
+		}
+		if ownerAlive {
+			return nil
+		}
 	}
 	if projection.Status == StatusRunning {
 		if err := finish(repo, projection, projection.Start.SessionID, StatusIncomplete, "recovered abandoned run after its owner process exited"); err != nil {
