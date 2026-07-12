@@ -118,6 +118,7 @@ func writeForkReadiness(writer io.Writer, report forkengine.Report) error {
 	}{
 		{name: "workspace files", condition: report.Conditions.WorkspaceFiles},
 		{name: "workspace VCS", condition: report.Conditions.WorkspaceVCS},
+		{name: "conversation", condition: report.Conditions.ConversationContext},
 		{name: "toolchain", condition: report.Conditions.Toolchain},
 		{name: "secrets", condition: report.Conditions.Secrets},
 		{name: "network", condition: report.Conditions.Network},

@@ -27,7 +27,7 @@ func TestForkDryRunReportsReadinessWithoutWritingState(t *testing.T) {
 
 	output := runRootStdout(t, "fork", sessionID.String()+":1", "--dry-run")
 	for _, want := range []string{
-		"fork readiness: ready",
+		"fork readiness: needs_context",
 		"target:         fork-cli:turn:1:pre",
 		"fidelity:       L1",
 		"source turn:    fork-cli:1 (complete)",
@@ -38,6 +38,7 @@ func TestForkDryRunReportsReadinessWithoutWritingState(t *testing.T) {
 		"instruction:    available",
 		"Fix the parser",
 		"workspace files",
+		"conversation     not_recorded",
 		"reauthorization_required",
 		"Git-ignored and secrets-denied paths",
 	} {
@@ -61,7 +62,7 @@ func TestForkDryRunJSONIsStructuredAndStable(t *testing.T) {
 	if err := json.Unmarshal([]byte(output), &report); err != nil {
 		t.Fatalf("decode fork JSON: %v\n%s", err, output)
 	}
-	if report.Version != 1 || report.Readiness != forkengine.ReadinessReady || report.FidelityLevel != "L1" {
+	if report.Version != 1 || report.Readiness != forkengine.ReadinessNeedsContext || report.FidelityLevel != "L1" {
 		t.Fatalf("report header = %#v", report)
 	}
 	if report.Target != "fork-cli:turn:1:pre" || report.Source.SessionID != sessionID || report.Source.TurnID.Uint64() != 1 {

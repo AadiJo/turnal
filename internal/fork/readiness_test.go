@@ -16,14 +16,14 @@ import (
 	"github.com/AadiJo/turnal/internal/turns"
 )
 
-func TestInspectReportsReadyCapturedTurn(t *testing.T) {
+func TestInspectRequiresUnrecordedConversationContext(t *testing.T) {
 	repo, sessionID, turnID := readinessFixture(t, "Fix the parser", true)
 
 	report, err := NewAnalyzer(repo).Inspect(sessionID, turnID)
 	if err != nil {
 		t.Fatalf("Inspect: %v", err)
 	}
-	if report.Readiness != ReadinessReady || report.FidelityLevel != "L1" {
+	if report.Readiness != ReadinessNeedsContext || report.FidelityLevel != "L1" {
 		t.Fatalf("readiness = %q fidelity = %q", report.Readiness, report.FidelityLevel)
 	}
 	if report.Instruction.Status != InstructionAvailable || report.Instruction.Text != "Fix the parser" {
@@ -37,6 +37,9 @@ func TestInspectReportsReadyCapturedTurn(t *testing.T) {
 	}
 	if report.Source.Model != "test-model" || report.Source.PermissionMode != "workspace" {
 		t.Fatalf("source metadata = %#v", report.Source)
+	}
+	if report.Conditions.ConversationContext.Status != "not_recorded" {
+		t.Fatalf("conversation context = %#v", report.Conditions.ConversationContext)
 	}
 	if !report.Source.Complete {
 		t.Fatal("complete turn reported incomplete")
@@ -93,7 +96,7 @@ func TestInspectAllowsIncompleteTurnWhenPreCheckpointExists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Inspect: %v", err)
 	}
-	if report.Readiness != ReadinessReady || report.Source.Complete {
+	if report.Readiness != ReadinessNeedsContext || report.Source.Complete {
 		t.Fatalf("report = %#v", report)
 	}
 	if report.Base.Status != "available" || report.FidelityLevel != "L1" {

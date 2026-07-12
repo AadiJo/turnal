@@ -244,9 +244,10 @@ turnal fork <session>:<turn> --dry-run --json
 
 The report identifies the exact pre-turn checkpoint, captured file count,
 observable instruction status, provider metadata, and known gaps such as the
-unpinned toolchain, live external services, and secrets that require fresh
-authorization. A redacted or missing prompt is reported as requiring new user
-input and is never recovered from raw storage.
+conversation context that cannot currently be reconstructed, unpinned
+toolchain, live external services, and secrets that require fresh authorization.
+A redacted or missing prompt is reported as requiring new user input and is
+never recovered from raw storage.
 
 This command is currently inspection-only. It does not create a worktree or run
 an agent. Use `turnal replay checkout <session>:<turn>:pre` to materialize the
