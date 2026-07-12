@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -86,6 +87,71 @@ func TestRunMissingExecutableIsLaunchError(t *testing.T) {
 	if check.Status != StatusLaunchError || check.LaunchError == "" || check.ExitCode != nil {
 		t.Fatalf("launch check = %#v", check)
 	}
+}
+
+func TestContainmentCleanupErrorPreservesCheckResult(t *testing.T) {
+	tests := []struct {
+		name       string
+		definition config.Verifier
+		wantStatus Status
+	}{
+		{name: "passed", definition: helperVerifier("passing", "pass"), wantStatus: StatusPassed},
+		{name: "failed", definition: helperVerifier("failing", "fail"), wantStatus: StatusFailed},
+		{name: "timed out", definition: func() config.Verifier {
+			definition := helperVerifier("slow", "sleep")
+			definition.Timeout = 50 * time.Millisecond
+			return definition
+		}(), wantStatus: StatusTimedOut},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			report := runRequest(t, Request{
+				Verifiers: []config.Verifier{test.definition},
+				newProcessControllerFunc: func(cmd *exec.Cmd) (processController, error) {
+					controller, err := newProcessController(cmd)
+					if err != nil {
+						return nil, err
+					}
+					return closeErrorController{processController: controller}, nil
+				},
+			})
+			check := report.Checks[0]
+			if check.Status != test.wantStatus {
+				t.Fatalf("status = %q, want %q", check.Status, test.wantStatus)
+			}
+			if report.Successful() || report.Summary.InfrastructureErrors != 1 {
+				t.Fatalf("summary = %#v", report.Summary)
+			}
+			if len(check.InfrastructureErrors) != 1 || check.InfrastructureErrors[0].Stage != "containment_cleanup" || check.InfrastructureErrors[0].Message != "injected cleanup failure" {
+				t.Fatalf("infrastructure errors = %#v", check.InfrastructureErrors)
+			}
+
+			data, err := json.Marshal(report)
+			if err != nil {
+				t.Fatalf("Marshal: %v", err)
+			}
+			if !bytes.Contains(data, []byte(`"infrastructure_errors":[{"stage":"containment_cleanup","message":"injected cleanup failure"}]`)) {
+				t.Fatalf("JSON missing infrastructure evidence: %s", data)
+			}
+			var output bytes.Buffer
+			if err := WriteHuman(&output, report); err != nil {
+				t.Fatalf("WriteHuman: %v", err)
+			}
+			for _, want := range []string{"1 infrastructure errors", "INFRA", "containment_cleanup", "injected cleanup failure"} {
+				if !strings.Contains(output.String(), want) {
+					t.Fatalf("human output missing %q:\n%s", want, output.String())
+				}
+			}
+		})
+	}
+}
+
+type closeErrorController struct {
+	processController
+}
+
+func (controller closeErrorController) Close() error {
+	return errors.Join(controller.processController.Close(), errors.New("injected cleanup failure"))
 }
 
 func TestRunRejectsInvalidDefinitionBeforeLaunching(t *testing.T) {
