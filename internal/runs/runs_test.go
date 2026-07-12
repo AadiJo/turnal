@@ -94,6 +94,11 @@ func TestRejectsFabricatedAndForeignRun(t *testing.T) {
 	if _, err := AcceptsCapture(foreign, runID); err == nil {
 		t.Fatal("foreign store accepted run")
 	}
+	incompatible := *repo
+	incompatible.WorktreeID, _ = primitives.NewWorktreeID()
+	if _, err := AcceptsCapture(&incompatible, runID); err == nil {
+		t.Fatal("incompatible worktree accepted run")
+	}
 	fabricated, _ := primitives.NewRunID()
 	if _, err := AcceptsCapture(repo, fabricated); err == nil {
 		t.Fatal("fabricated run accepted")
@@ -107,6 +112,13 @@ func TestLegacySessionRemainsUnlinked(t *testing.T) {
 	runID, _ := primitives.NewRunID()
 	if _, err := Read(repo, runID); err == nil {
 		t.Fatal("legacy session was heuristically linked")
+	}
+	inventory, err := Inspect(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inventory.Runs) != 0 || len(inventory.UnlinkedCaptures) != 1 || inventory.UnlinkedCaptures[0].SessionID != legacy {
+		t.Fatalf("legacy inventory = %+v", inventory)
 	}
 }
 
