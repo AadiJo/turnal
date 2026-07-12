@@ -259,12 +259,42 @@ func TestRecoveryDoesNotTrustTamperedJournalWorktree(t *testing.T) {
 	if err := writeLifecycleJournal(repo, journal); err != nil {
 		t.Fatal(err)
 	}
-	if err := RecoverAbandoned(repo); err == nil || !strings.Contains(err.Error(), "does not match durable run start") {
-		t.Fatalf("tampered recovery error = %v", err)
+	if err := RecoverAbandoned(repo); err != nil {
+		t.Fatal(err)
 	}
 	projection, err := Read(repo, runID)
-	if err != nil || projection.WorktreeID != repo.WorktreeID {
+	if err != nil || projection.WorktreeID != repo.WorktreeID || projection.Status != StatusIncomplete {
 		t.Fatalf("durable projection = %+v, %v", projection, err)
+	}
+}
+
+func TestRecoveryUsesFilenameWhenJournalRunIDIsCorrupt(t *testing.T) {
+	repo := testRepo(t)
+	runID, _ := primitives.NewRunID()
+	release, err := Begin(repo, runID, session(t, "wrapper"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := lifecycleJournalPath(repo, runID)
+	journal, err := readLifecycleJournal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal.RunID, _ = primitives.NewRunID()
+	data, _ := json.Marshal(journal)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if err := RecoverAbandoned(repo); err != nil {
+		t.Fatal(err)
+	}
+	projection, err := Read(repo, runID)
+	if err != nil || projection.Status != StatusIncomplete {
+		t.Fatalf("recovered projection = %+v, %v", projection, err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("scanned journal still exists: %v", err)
 	}
 }
 
@@ -327,11 +357,11 @@ func TestRecoveryRejectsJournalSessionDifferentFromRunStart(t *testing.T) {
 		t.Fatal(err)
 	}
 	release()
-	if err := RecoverAbandoned(repo); err == nil || !strings.Contains(err.Error(), "does not match durable run start") {
-		t.Fatalf("recovery error = %v", err)
+	if err := RecoverAbandoned(repo); err != nil {
+		t.Fatal(err)
 	}
 	projection, err := Read(repo, runID)
-	if err != nil || projection.Status != StatusRunning {
+	if err != nil || projection.Status != StatusIncomplete {
 		t.Fatalf("mismatched recovery mutated run: %+v, %v", projection, err)
 	}
 }
