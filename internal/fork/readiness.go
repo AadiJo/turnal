@@ -331,6 +331,12 @@ func sessionMetadata(events []eventlog.Event, adapter primitives.AdapterName) (s
 		if _, err := optionalPayloadString(payload, "transcript_path"); err != nil {
 			return "", "", false, malformedPayloadError(event, err)
 		}
+		if _, err := optionalPayloadString(payload, "source"); err != nil {
+			return "", "", false, malformedPayloadError(event, err)
+		}
+		if err := optionalPayloadStringList(payload, "command"); err != nil {
+			return "", "", false, malformedPayloadError(event, err)
+		}
 		if previous, ok := seenAdapters[event.Adapter]; ok {
 			return "", "", false, fmt.Errorf("multiple session.start events for adapter %s at events %s and %s", event.Adapter, previous, event.Seq)
 		}
@@ -374,6 +380,27 @@ func optionalPayloadBool(payload map[string]json.RawMessage, name string) (bool,
 		return false, true, fmt.Errorf("%s must be a boolean", name)
 	}
 	return boolean, true, nil
+}
+
+func optionalPayloadStringList(payload map[string]json.RawMessage, name string) error {
+	raw, ok := payload[name]
+	if !ok {
+		return nil
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return fmt.Errorf("%s is invalid: %w", name, err)
+	}
+	items, ok := value.([]any)
+	if !ok {
+		return fmt.Errorf("%s must be an array of strings", name)
+	}
+	for _, item := range items {
+		if _, ok := item.(string); !ok {
+			return fmt.Errorf("%s must be an array of strings", name)
+		}
+	}
+	return nil
 }
 
 func payloadString(raw json.RawMessage, name string) (string, error) {

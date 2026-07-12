@@ -286,12 +286,14 @@ func TestInspectInstructionKeepsAdapterForEmptyPrompt(t *testing.T) {
 
 func TestSessionMetadataRejectsMalformedPayloads(t *testing.T) {
 	for name, payload := range map[string]json.RawMessage{
-		"invalid json":          json.RawMessage(`{"model":`),
-		"missing provider":      json.RawMessage(`{"model":"valid"}`),
-		"null provider":         json.RawMessage(`{"provider_session_id":null}`),
-		"null field":            json.RawMessage(`{"provider_session_id":"session","model":null}`),
-		"wrong field type":      json.RawMessage(`{"provider_session_id":"session","model":false}`),
-		"wrong transcript type": json.RawMessage(`{"provider_session_id":"session","transcript_path":42}`),
+		"invalid json":           json.RawMessage(`{"model":`),
+		"missing provider":       json.RawMessage(`{"model":"valid"}`),
+		"null provider":          json.RawMessage(`{"provider_session_id":null}`),
+		"null field":             json.RawMessage(`{"provider_session_id":"session","model":null}`),
+		"wrong field type":       json.RawMessage(`{"provider_session_id":"session","model":false}`),
+		"wrong transcript type":  json.RawMessage(`{"provider_session_id":"session","transcript_path":42}`),
+		"wrong run source type":  json.RawMessage(`{"provider_session_id":"session","source":false}`),
+		"wrong run command type": json.RawMessage(`{"provider_session_id":"session","command":["codex",42]}`),
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, _, _, err := sessionMetadata([]eventlog.Event{{
