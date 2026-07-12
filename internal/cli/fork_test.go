@@ -91,14 +91,14 @@ func TestForkRequiresDryRunUntilExecutionExists(t *testing.T) {
 }
 
 func TestForkDryRunDoesNotExposeRedactedPrompt(t *testing.T) {
-	root, sessionID, _ := createForkReadyTurn(t, "[redacted by turnal secrets policy]", true)
+	root, sessionID, _ := createForkReadyTurn(t, primitives.SecretsRedactionText, true)
 	t.Chdir(root.String())
 
 	output := runRootStdout(t, "fork", sessionID.String()+":1", "--dry-run")
 	if !strings.Contains(output, "fork readiness: needs_instruction") || !strings.Contains(output, "instruction:    redacted") {
 		t.Fatalf("fork output = %s", output)
 	}
-	if strings.Contains(output, "[redacted by turnal secrets policy]") {
+	if strings.Contains(output, primitives.SecretsRedactionText) {
 		t.Fatalf("fork output exposes redaction marker: %s", output)
 	}
 }
