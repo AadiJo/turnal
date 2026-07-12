@@ -174,6 +174,19 @@ func RecoverCheckpointJournals(log eventlog.Log, repo *checkpoint.Repo) error {
 				return err
 			}
 		case "committed":
+			if journal.Adapter == "" {
+				event, found, err := findRecordedCheckpointEvent(log, journal)
+				if err != nil {
+					return err
+				}
+				if !found {
+					return fmt.Errorf("checkpoint invariant failed: committed checkpoint journal for session %s turn %s %s has no adapter and no matching recorded event", journal.SessionID, journal.TurnID, journal.Phase)
+				}
+				if err := repo.FinalizeCheckpointJournal(journal.SessionID, journal.TurnID, journal.Phase, event.Seq, event.Hash); err != nil {
+					return err
+				}
+				continue
+			}
 			if err := recoverCheckpointJournal(log, repo, journal); err != nil {
 				return err
 			}
@@ -186,6 +199,30 @@ func RecoverCheckpointJournals(log eventlog.Log, repo *checkpoint.Repo) error {
 		}
 	}
 	return nil
+}
+
+func findRecordedCheckpointEvent(log eventlog.Log, journal checkpoint.CheckpointJournal) (eventlog.Event, bool, error) {
+	events, err := log.Read(journal.SessionID)
+	if err != nil {
+		return eventlog.Event{}, false, err
+	}
+	for _, event := range events {
+		if event.Type != primitives.EventTypeCheckpoint || event.TurnID == nil || *event.TurnID != journal.TurnID {
+			continue
+		}
+		var payload struct {
+			Phase     string `json:"phase"`
+			CommitSHA string `json:"commit_sha"`
+			Ref       string `json:"ref"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			return eventlog.Event{}, false, fmt.Errorf("checkpoint invariant failed: parse recorded checkpoint event %s: %w", event.Seq, err)
+		}
+		if payload.Phase == journal.Phase.String() && payload.CommitSHA == journal.CommitSHA.String() && payload.Ref == journal.Ref.String() {
+			return event, true, nil
+		}
+	}
+	return eventlog.Event{}, false, nil
 }
 
 func recoverIntentCheckpointJournal(log eventlog.Log, repo *checkpoint.Repo, journal checkpoint.CheckpointJournal) (bool, error) {
