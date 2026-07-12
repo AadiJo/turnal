@@ -121,8 +121,11 @@ func TestInitUsesRootCheckoutCodexHooksFromLinkedWorktree(t *testing.T) {
 		t.Fatalf("linked-worktree init: %v\n%s", err, initOut.String())
 	}
 	rootConfig := filepath.Join(mainPath, ".codex", "config.toml")
-	if !strings.Contains(initOut.String(), "configured codex hooks: "+rootConfig) {
-		t.Fatalf("init output did not report root-checkout config:\n%s", initOut.String())
+	if !strings.Contains(initOut.String(), "configured codex hooks:") {
+		t.Fatalf("init output did not report configured Codex hooks:\n%s", initOut.String())
+	}
+	if _, err := os.Stat(rootConfig); err != nil {
+		t.Fatalf("root-checkout config was not installed: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(linkedPath, ".codex", "config.toml")); !os.IsNotExist(err) {
 		t.Fatalf("linked worktree config exists or could not be checked: %v", err)
