@@ -116,10 +116,11 @@ func TestInspectRequiresRepo(t *testing.T) {
 
 func TestInspectInstructionRejectsMalformedPayloads(t *testing.T) {
 	for name, payload := range map[string]json.RawMessage{
-		"invalid json":     json.RawMessage(`{"text":`),
-		"missing field":    json.RawMessage(`{}`),
-		"null field":       json.RawMessage(`{"text":null}`),
-		"wrong field type": json.RawMessage(`{"text":42}`),
+		"invalid json":        json.RawMessage(`{"text":`),
+		"missing field":       json.RawMessage(`{}`),
+		"null field":          json.RawMessage(`{"text":null}`),
+		"wrong field type":    json.RawMessage(`{"text":42}`),
+		"wrong provider type": json.RawMessage(`{"text":"fix","provider_turn_id":42}`),
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := inspectInstruction([]eventlog.Event{{
@@ -147,9 +148,12 @@ func TestInspectInstructionRejectsMultiplePrompts(t *testing.T) {
 
 func TestSessionMetadataRejectsMalformedPayloads(t *testing.T) {
 	for name, payload := range map[string]json.RawMessage{
-		"invalid json":     json.RawMessage(`{"model":`),
-		"null field":       json.RawMessage(`{"model":null}`),
-		"wrong field type": json.RawMessage(`{"model":false}`),
+		"invalid json":          json.RawMessage(`{"model":`),
+		"missing provider":      json.RawMessage(`{"model":"valid"}`),
+		"null provider":         json.RawMessage(`{"provider_session_id":null}`),
+		"null field":            json.RawMessage(`{"provider_session_id":"session","model":null}`),
+		"wrong field type":      json.RawMessage(`{"provider_session_id":"session","model":false}`),
+		"wrong transcript type": json.RawMessage(`{"provider_session_id":"session","transcript_path":42}`),
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, _, _, err := sessionMetadata([]eventlog.Event{{
@@ -171,13 +175,13 @@ func TestSessionMetadataUsesInstructionAdapter(t *testing.T) {
 			Seq:     1,
 			Type:    primitives.EventTypeSessionStart,
 			Adapter: primitives.AdapterClaudeCode,
-			Payload: json.RawMessage(`{"model":"claude-model","permission_mode":"claude-mode"}`),
+			Payload: json.RawMessage(`{"provider_session_id":"claude-session","model":"claude-model","permission_mode":"claude-mode"}`),
 		},
 		{
 			Seq:     2,
 			Type:    primitives.EventTypeSessionStart,
 			Adapter: primitives.AdapterCodex,
-			Payload: json.RawMessage(`{"model":"codex-model","permission_mode":"codex-mode"}`),
+			Payload: json.RawMessage(`{"provider_session_id":"codex-session","model":"codex-model","permission_mode":"codex-mode"}`),
 		},
 	}
 
