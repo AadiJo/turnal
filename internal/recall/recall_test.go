@@ -430,6 +430,55 @@ func TestApplyEventMetadataRejectsDuplicatePreCheckpoint(t *testing.T) {
 	}
 }
 
+func TestParseCheckpointPayloadRejectsMalformedExtendedFields(t *testing.T) {
+	sessionID, _ := primitives.ParseSessionID("malformed-checkpoint-fields")
+	turnID, _ := primitives.NewTurnID(1)
+	ref, err := primitives.NewCheckpointRef(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("NewCheckpointRef: %v", err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"turn":          1,
+		"phase":         "pre",
+		"checkpoint_id": 42,
+		"commit_sha":    strings.Repeat("a", 40),
+		"ref":           ref,
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	_, err = parseCheckpointPayload(sessionID, turnID, eventlog.Event{Seq: 2, Payload: payload})
+	if err == nil || !strings.Contains(err.Error(), "malformed checkpoint payload") {
+		t.Fatalf("parseCheckpointPayload error = %v", err)
+	}
+}
+
+func TestParseCheckpointPayloadRejectsMismatchedEventSequence(t *testing.T) {
+	sessionID, _ := primitives.ParseSessionID("mismatched-checkpoint-sequence")
+	turnID, _ := primitives.NewTurnID(1)
+	ref, err := primitives.NewCheckpointRef(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("NewCheckpointRef: %v", err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"turn":            1,
+		"phase":           "pre",
+		"commit_sha":      strings.Repeat("a", 40),
+		"ref":             ref,
+		"event_seq_start": 1,
+		"event_seq_end":   3,
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	_, err = parseCheckpointPayload(sessionID, turnID, eventlog.Event{Seq: 4, Payload: payload})
+	if err == nil || !strings.Contains(err.Error(), "does not match event sequence") {
+		t.Fatalf("parseCheckpointPayload error = %v", err)
+	}
+}
+
 func transcriptText(transcript *Transcript) string {
 	var values []string
 	for _, message := range transcript.Messages {

@@ -46,8 +46,11 @@ type Turn struct {
 
 type Checkpoint struct {
 	Phase         primitives.CheckpointPhase `json:"phase"`
+	CheckpointID  primitives.CheckpointID    `json:"checkpoint_id,omitempty"`
 	CommitSHA     primitives.CommitSHA       `json:"commit_sha"`
 	Ref           primitives.CheckpointRef   `json:"ref"`
+	CanonicalRef  primitives.CheckpointRef   `json:"canonical_ref,omitempty"`
+	GitSyncRef    string                     `json:"git_sync_ref,omitempty"`
 	EventSeqStart *primitives.EventSeq       `json:"event_seq_start,omitempty"`
 	EventSeqEnd   *primitives.EventSeq       `json:"event_seq_end,omitempty"`
 	UserGit       *workspacegit.Context      `json:"user_git,omitempty"`
@@ -66,10 +69,13 @@ type RawRecordError struct {
 type checkpointPayload struct {
 	Turn          uint64                `json:"turn"`
 	Phase         string                `json:"phase"`
+	CheckpointID  string                `json:"checkpoint_id,omitempty"`
 	WorktreeID    string                `json:"worktree_id,omitempty"`
 	StreamID      string                `json:"stream_id,omitempty"`
 	CommitSHA     string                `json:"commit_sha"`
 	Ref           string                `json:"ref"`
+	CanonicalRef  string                `json:"canonical_ref,omitempty"`
+	GitSyncRef    string                `json:"git_sync_ref,omitempty"`
 	EventSeqStart uint64                `json:"event_seq_start,omitempty"`
 	EventSeqEnd   uint64                `json:"event_seq_end,omitempty"`
 	UserGit       *workspacegit.Context `json:"user_git,omitempty"`
@@ -275,6 +281,9 @@ func applyEventMetadata(turn *Turn, event eventlog.Event) error {
 			if turn.PreCheckpoint == nil || turn.FinishedAt == nil {
 				return fmt.Errorf("recall invariant failed for session %s turn %s: post checkpoint event %s is out of order", turn.SessionID, turn.TurnID, event.Seq)
 			}
+			if checkpoint.EventSeqStart != nil && turn.PreCheckpoint.EventSeqEnd != nil && checkpoint.EventSeqStart.Uint64() != turn.PreCheckpoint.EventSeqEnd.Uint64()+1 {
+				return fmt.Errorf("recall invariant failed for session %s turn %s: post checkpoint event range does not continue after pre checkpoint", turn.SessionID, turn.TurnID)
+			}
 			turn.PostCheckpoint = &checkpoint
 		}
 	}
@@ -343,7 +352,31 @@ func parseCheckpointPayload(sessionID primitives.SessionID, turnID primitives.Tu
 	if err != nil {
 		return Checkpoint{}, fmt.Errorf("recall invariant failed for session %s turn %s: %w", sessionID, turnID, err)
 	}
-	checkpoint := Checkpoint{Phase: phase, CommitSHA: commit, Ref: ref, UserGit: parsed.UserGit}
+	checkpoint := Checkpoint{Phase: phase, CommitSHA: commit, Ref: ref, GitSyncRef: parsed.GitSyncRef, UserGit: parsed.UserGit}
+	if (parsed.CheckpointID == "") != (parsed.CanonicalRef == "") {
+		return Checkpoint{}, fmt.Errorf("recall invariant failed for session %s turn %s: checkpoint_id and canonical_ref must be recorded together", sessionID, turnID)
+	}
+	if parsed.CheckpointID != "" {
+		checkpointID, err := primitives.ParseCheckpointID(parsed.CheckpointID)
+		if err != nil {
+			return Checkpoint{}, fmt.Errorf("recall invariant failed for session %s turn %s: checkpoint id: %w", sessionID, turnID, err)
+		}
+		canonicalRef, err := primitives.ParseCheckpointRef(parsed.CanonicalRef)
+		if err != nil {
+			return Checkpoint{}, fmt.Errorf("recall invariant failed for session %s turn %s: canonical checkpoint ref: %w", sessionID, turnID, err)
+		}
+		canonicalParts, err := canonicalRef.Parts()
+		if err != nil || !canonicalParts.Canonical || canonicalParts.CheckpointID != checkpointID {
+			return Checkpoint{}, fmt.Errorf("recall invariant failed for session %s turn %s: canonical checkpoint ref does not match checkpoint id %s", sessionID, turnID, checkpointID)
+		}
+		checkpoint.CheckpointID = checkpointID
+		checkpoint.CanonicalRef = canonicalRef
+	}
+	if parsed.GitSyncRef != "" {
+		if err := validateCheckpointGitSyncRef(parsed.GitSyncRef, sessionID, turnID, phase, event.WorktreeID, event.StreamID); err != nil {
+			return Checkpoint{}, fmt.Errorf("recall invariant failed for session %s turn %s: %w", sessionID, turnID, err)
+		}
+	}
 	if parsed.EventSeqStart != 0 || parsed.EventSeqEnd != 0 {
 		eventSeqStart, err := primitives.NewEventSeq(parsed.EventSeqStart)
 		if err != nil {
@@ -356,10 +389,31 @@ func parseCheckpointPayload(sessionID primitives.SessionID, turnID primitives.Tu
 		if eventSeqStart.Uint64() > eventSeqEnd.Uint64() {
 			return Checkpoint{}, fmt.Errorf("recall invariant failed for session %s turn %s: checkpoint event sequence range %s-%s is invalid", sessionID, turnID, eventSeqStart, eventSeqEnd)
 		}
+		if event.Seq != 0 && eventSeqEnd != event.Seq {
+			return Checkpoint{}, fmt.Errorf("recall invariant failed for session %s turn %s: checkpoint event_seq_end %s does not match event sequence %s", sessionID, turnID, eventSeqEnd, event.Seq)
+		}
 		checkpoint.EventSeqStart = &eventSeqStart
 		checkpoint.EventSeqEnd = &eventSeqEnd
 	}
 	return checkpoint, nil
+}
+
+func validateCheckpointGitSyncRef(value string, sessionID primitives.SessionID, turnID primitives.TurnID, phase primitives.CheckpointPhase, worktreeID primitives.WorktreeID, streamID primitives.EventStreamID) error {
+	if ref, err := primitives.ParseGitSyncRef(value); err == nil {
+		parts, err := ref.Parts()
+		if err == nil && parts.SessionID == sessionID && parts.TurnID == turnID && parts.Phase == phase {
+			return nil
+		}
+		return fmt.Errorf("git_sync_ref %s does not match checkpoint target", value)
+	}
+	if worktreeID == "" || streamID == "" {
+		return fmt.Errorf("git_sync_ref %s is invalid for an unscoped checkpoint", value)
+	}
+	expected := fmt.Sprintf("refs/agent-vcs/git-sync/by-worktree/%s/%s/%s/turn/%s/%s", worktreeID, streamID, sessionID, turnID.RefSegment(), phase)
+	if value != expected {
+		return fmt.Errorf("git_sync_ref %s does not match checkpoint target", value)
+	}
+	return nil
 }
 
 func (reader Reader) rawRecords(turn Turn) ([]RawRecord, []RawRecordError) {
