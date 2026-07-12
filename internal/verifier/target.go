@@ -103,7 +103,7 @@ func PrepareCheckpoint(repo *checkpoint.Repo, sessionID primitives.SessionID, tu
 		return PreparedTarget{}, err
 	}
 	root := filepath.Join(ownedPath, materializedDirName)
-	if err := repo.MaterializeCommit(recorded.CommitSHA, root, checkpoint.MaterializeOptions{}); err != nil {
+	if err := repo.MaterializeCommit(recorded.CommitSHA, root, checkpoint.MaterializeOptions{ApplyCurrentSecretDenyGlobs: true}); err != nil {
 		cleanupErr := prepared.Cleanup()
 		return PreparedTarget{}, errors.Join(fmt.Errorf("materialize verifier checkpoint: %w", err), cleanupErr)
 	}

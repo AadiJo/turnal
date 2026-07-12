@@ -55,6 +55,53 @@ func TestPrepareCheckpointMaterializesPreAndPostInIsolation(t *testing.T) {
 	}
 }
 
+func TestPrepareCheckpointAppliesCurrentSecretPolicyToOlderCapture(t *testing.T) {
+	repo, sessionID, _ := recordedCheckpointFixture(t)
+	root := repo.WorkspaceRoot.String()
+	writeVerifierFixtureFile(t, root, "historical-secret.txt", "captured before policy tightened\n")
+	turnID, _ := primitives.NewTurnID(2)
+	log := eventlog.OpenFor(repo.MetadataDir, root, repo.RepoID, repo.StoreID, repo.WorktreeID, repo.EventProducerID)
+	recorder := turnevents.Recorder{Log: log, Manager: turns.NewManager(repo), Adapter: primitives.AdapterManual}
+	if _, err := recorder.Start(sessionID, turnID); err != nil {
+		t.Fatalf("start recorded turn: %v", err)
+	}
+	if _, err := recorder.Finish(sessionID, turnID); err != nil {
+		t.Fatalf("finish recorded turn: %v", err)
+	}
+
+	writeVerifierFixtureFile(t, root, ".turnal/config.toml", `version = 1
+[secrets]
+snapshot_deny_globs = ["historical-secret.txt"]
+`)
+	ref, err := repo.CheckpointRefFor(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("CheckpointRefFor: %v", err)
+	}
+	commit, err := repo.CheckpointCommit(ref)
+	if err != nil {
+		t.Fatalf("CheckpointCommit: %v", err)
+	}
+	exactRoot := filepath.Join(t.TempDir(), "exact-replay")
+	if err := repo.MaterializeCommit(commit, exactRoot, checkpoint.MaterializeOptions{}); err != nil {
+		t.Fatalf("exact MaterializeCommit: %v", err)
+	}
+	assertVerifierFixtureFile(t, exactRoot, "historical-secret.txt", "captured before policy tightened\n")
+
+	prepared, err := PrepareCheckpoint(repo, sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("PrepareCheckpoint: %v", err)
+	}
+	defer func() {
+		if err := prepared.Cleanup(); err != nil {
+			t.Errorf("Cleanup: %v", err)
+		}
+	}()
+	if _, err := os.Lstat(filepath.Join(prepared.Root, "historical-secret.txt")); !os.IsNotExist(err) {
+		t.Fatalf("historical secret present in verifier evaluation: %v", err)
+	}
+	assertVerifierFixtureFile(t, prepared.Root, "app.txt", "after\n")
+}
+
 func TestPreparedCheckpointCleansAfterVerifierFailure(t *testing.T) {
 	repo, sessionID, turnID := recordedCheckpointFixture(t)
 	prepared, err := PrepareCheckpoint(repo, sessionID, turnID, primitives.CheckpointPhasePost)
