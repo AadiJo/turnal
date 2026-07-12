@@ -20,13 +20,19 @@ import (
 
 func TestRunEnvironmentPreservesExistingValuesAndReplacesCorrelation(t *testing.T) {
 	runID, _ := primitives.ParseRunID("run_0123456789abcdef0123456789abcdef")
-	got := runEnvironment([]string{"PATH=/tools", "EMPTY=", "TURNAL_RUN_ID=run_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, runID)
+	got := runEnvironment([]string{"PATH=/tools", "EMPTY=", "turnal_run_id=lowercase", "TURNAL_RUN_ID=run_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, runID)
 	joined := strings.Join(got, "\n")
 	if !strings.Contains(joined, "PATH=/tools") || !strings.Contains(joined, "EMPTY=") {
 		t.Fatalf("existing environment was discarded: %#v", got)
 	}
 	if strings.Count(joined, runs.EnvRunID+"=") != 1 || !strings.Contains(joined, runs.EnvRunID+"="+runID.String()) {
 		t.Fatalf("run correlation was not replaced safely: %#v", got)
+	}
+	if runtime.GOOS == "windows" && strings.Contains(joined, "turnal_run_id=lowercase") {
+		t.Fatalf("case-insensitive Windows correlation was retained: %#v", got)
+	}
+	if runtime.GOOS != "windows" && !strings.Contains(joined, "turnal_run_id=lowercase") {
+		t.Fatalf("distinct POSIX environment variable was removed: %#v", got)
 	}
 }
 
