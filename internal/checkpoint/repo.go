@@ -260,6 +260,30 @@ func Open(root primitives.WorkspaceRoot) (*Repo, error) {
 	return OpenAt(root, store.StorePath)
 }
 
+// OpenReadOnly opens an existing checkpoint store without refreshing identity,
+// registry, permissions, hidden Git configuration, or other durable metadata.
+func OpenReadOnly(root primitives.WorkspaceRoot) (*Repo, error) {
+	local := paths(root)
+	if info, err := os.Stat(local.GitDir); err == nil && info.IsDir() {
+		return OpenAtReadOnly(root, local.MetadataDir)
+	} else if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("stat hidden git repo: %w", err)
+	}
+
+	gitIdentity, err := discoverUserGit(root.String())
+	if err != nil {
+		return nil, fmt.Errorf("hidden git repo not initialized at %s and attached store discovery failed: %w", local.GitDir, err)
+	}
+	store, ok, err := resolveRegisteredStore(gitIdentity)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("hidden git repo not initialized at %s and no attached Turnal store is registered for %s", local.GitDir, gitIdentity.GitCommonDir)
+	}
+	return OpenAtReadOnly(root, store.StorePath)
+}
+
 func OpenAt(root primitives.WorkspaceRoot, metadataDir string) (*Repo, error) {
 	metadataDir, err := filepath.Abs(metadataDir)
 	if err != nil {
@@ -285,6 +309,32 @@ func OpenAt(root primitives.WorkspaceRoot, metadataDir string) (*Repo, error) {
 		return nil, err
 	}
 	if err := ensureSecureMetadataPermissions(repo); err != nil {
+		return nil, err
+	}
+	return repo, nil
+}
+
+// OpenAtReadOnly loads an existing store and worktree binding without writing
+// migrations or last-seen bookkeeping.
+func OpenAtReadOnly(root primitives.WorkspaceRoot, metadataDir string) (*Repo, error) {
+	metadataDir, err := filepath.Abs(metadataDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve metadata dir: %w", err)
+	}
+	repo := pathsAt(root, metadataDir)
+	if _, err := os.Stat(repo.GitDir); err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("hidden git repo not initialized at %s", repo.GitDir)
+		}
+		return nil, fmt.Errorf("stat hidden git repo: %w", err)
+	}
+	var gitIdentity *UserGitIdentity
+	if discovered, discoverErr := discoverUserGit(root.String()); discoverErr == nil {
+		gitIdentity = &discovered
+	} else if !isNoGitRepository(discoverErr) {
+		return nil, fmt.Errorf("discover workspace git identity: %w", discoverErr)
+	}
+	if err := repo.readIdentity(gitIdentity); err != nil {
 		return nil, err
 	}
 	return repo, nil
@@ -1141,7 +1191,7 @@ func (repo *Repo) RefCommit(ref string) (primitives.CommitSHA, error) {
 	if err != nil {
 		return "", err
 	}
-	output, err := runHiddenGit(repo, "", "rev-parse", parsedRef+"^{commit}")
+	output, err := runHiddenGitReadOnly(repo, "rev-parse", parsedRef+"^{commit}")
 	if err != nil {
 		return "", err
 	}
@@ -1387,7 +1437,7 @@ func (repo *Repo) ListCommitTree(commit primitives.CommitSHA) ([]TreeEntry, erro
 	if err != nil {
 		return nil, err
 	}
-	output, err := runHiddenGit(repo, "", "ls-tree", "-r", "-z", "--full-tree", parsedCommit.String())
+	output, err := runHiddenGitReadOnly(repo, "ls-tree", "-r", "-z", "--full-tree", parsedCommit.String())
 	if err != nil {
 		return nil, err
 	}
@@ -2258,6 +2308,21 @@ func runHiddenGit(repo *Repo, indexPath string, args ...string) (string, error) 
 
 func runHiddenGitWithInput(repo *Repo, indexPath string, stdin io.Reader, args ...string) (string, error) {
 	return runHiddenGitCommand(repo, indexPath, stdin, args...)
+}
+
+func runHiddenGitReadOnly(repo *Repo, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = repo.WorkspaceRoot.String()
+	cmd.Env = append(cleanGitEnv(os.Environ()),
+		"GIT_DIR="+repo.GitDir,
+		"GIT_WORK_TREE="+repo.WorkspaceRoot.String(),
+		"GIT_OPTIONAL_LOCKS=0",
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+	}
+	return string(output), nil
 }
 
 func runHiddenGitCommand(repo *Repo, indexPath string, stdin io.Reader, args ...string) (string, error) {

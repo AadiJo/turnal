@@ -248,6 +248,49 @@ func (repo *Repo) ensureIdentity(gitIdentity *UserGitIdentity) error {
 	return nil
 }
 
+func (repo *Repo) readIdentity(gitIdentity *UserGitIdentity) error {
+	identity, err := readOrCreateStoreIdentityReadOnly(repo)
+	if err != nil {
+		return err
+	}
+	bindings, err := listWorktreeIdentities(repo.MetadataDir)
+	if err != nil {
+		return err
+	}
+	root := cleanIdentityPath(repo.WorkspaceRoot.String())
+	gitDir := ""
+	if gitIdentity != nil {
+		gitDir = cleanIdentityPath(gitIdentity.GitDir)
+	}
+	var binding *WorktreeIdentity
+	for i := range bindings {
+		if gitDir != "" && bindings[i].GitDir != "" && sameIdentityPath(bindings[i].GitDir, gitDir) {
+			binding = &bindings[i]
+			break
+		}
+		if sameIdentityPath(bindings[i].Root, root) {
+			binding = &bindings[i]
+			break
+		}
+	}
+	if binding == nil {
+		return fmt.Errorf("worktree identity invariant failed: no existing binding for %s; a read-only open cannot attach a worktree", root)
+	}
+
+	repo.IdentityVersion = identity.Version
+	repo.RepoID = identity.RepoID
+	repo.StoreID = identity.StoreID
+	repo.GitObjectFormat = identity.GitObjectFormat
+	repo.WorktreeID = binding.WorktreeID
+	repo.EventProducerID = binding.ProducerID
+	repo.GitTopLevel = binding.GitTopLevel
+	repo.GitCommonDir = binding.GitCommonDir
+	repo.UserGitDir = binding.GitDir
+	repo.PrimaryWorktree = binding.Primary
+	repo.ScopedRefs = !binding.Primary && binding.GitCommonDir != ""
+	return nil
+}
+
 func readOrCreateStoreIdentity(repo *Repo) (StoreIdentity, error) {
 	path := filepath.Join(repo.MetadataDir, identityFileName)
 	data, err := os.ReadFile(path)

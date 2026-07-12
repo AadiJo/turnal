@@ -27,7 +27,7 @@ func forkCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			repo, err := openCheckpointRepo()
+			repo, err := openCheckpointRepoReadOnly()
 			if err != nil {
 				return err
 			}

@@ -21,9 +21,10 @@ import (
 )
 
 func TestForkDryRunReportsReadinessWithoutWritingState(t *testing.T) {
+	t.Setenv("TURNAL_STATE_DIR", t.TempDir())
 	root, sessionID, _ := createForkReadyTurn(t, "Fix the parser", true)
 	t.Chdir(root.String())
-	before := snapshotForkMetadata(t, filepath.Join(root.String(), ".turnal"))
+	before := snapshotForkPaths(t, filepath.Join(root.String(), ".turnal"), os.Getenv("TURNAL_STATE_DIR"))
 
 	output := runRootStdout(t, "fork", sessionID.String()+":1", "--dry-run")
 	for _, want := range []string{
@@ -47,7 +48,7 @@ func TestForkDryRunReportsReadinessWithoutWritingState(t *testing.T) {
 		}
 	}
 
-	after := snapshotForkMetadata(t, filepath.Join(root.String(), ".turnal"))
+	after := snapshotForkPaths(t, filepath.Join(root.String(), ".turnal"), os.Getenv("TURNAL_STATE_DIR"))
 	if !reflect.DeepEqual(before, after) {
 		t.Fatalf("fork dry-run changed durable metadata\nbefore: %#v\nafter:  %#v", before, after)
 	}
@@ -151,33 +152,32 @@ func createForkReadyTurn(t *testing.T, prompt string, finish bool) (primitives.W
 	return root, sessionID, turnID
 }
 
-func snapshotForkMetadata(t *testing.T, root string) map[string]string {
+func snapshotForkPaths(t *testing.T, roots ...string) map[string]string {
 	t.Helper()
 	snapshot := map[string]string{}
-	if err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
+	for _, root := range roots {
+		if err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() {
+				return nil
+			}
+			relative, err := filepath.Rel(root, path)
+			if err != nil {
+				return err
+			}
+			relative = filepath.ToSlash(relative)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			digest := sha256.Sum256(data)
+			snapshot[filepath.ToSlash(root)+":"+relative] = hex.EncodeToString(digest[:])
 			return nil
+		}); err != nil {
+			t.Fatalf("snapshot metadata: %v", err)
 		}
-		relative, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		relative = filepath.ToSlash(relative)
-		if strings.HasPrefix(relative, "tmp/") || strings.HasPrefix(relative, "worktrees/") {
-			return nil
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		digest := sha256.Sum256(data)
-		snapshot[relative] = hex.EncodeToString(digest[:])
-		return nil
-	}); err != nil {
-		t.Fatalf("snapshot metadata: %v", err)
 	}
 	return snapshot
 }
