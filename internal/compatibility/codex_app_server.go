@@ -356,16 +356,27 @@ func ClassifyCodexHooks(workspaceRoot, expectedCommand string, health adapters.H
 	for _, event := range health.Events {
 		expectedEvents[normalizeEventName(event.Name)] = struct{}{}
 	}
-	matching := make(map[string]CodexHook)
+	type eventState struct {
+		enabled bool
+		trusted bool
+	}
+	matching := make(map[string]eventState)
+	expectedSource := filepath.Join(workspaceRoot, ".codex", "config.toml")
 	for _, hook := range probed.Hooks {
 		eventName := normalizeEventName(hook.EventName)
-		if filepath.Clean(hook.CWD) != filepath.Clean(workspaceRoot) || hook.Command != expectedCommand {
+		if filepath.Clean(hook.CWD) != filepath.Clean(workspaceRoot) ||
+			hook.Command != expectedCommand ||
+			!strings.EqualFold(hook.Source, "project") ||
+			filepath.Clean(hook.SourcePath) != filepath.Clean(expectedSource) {
 			continue
 		}
 		if _, expected := expectedEvents[eventName]; !expected {
 			continue
 		}
-		matching[eventName] = hook
+		state := matching[eventName]
+		state.enabled = state.enabled || hook.Enabled
+		state.trusted = state.trusted || (hook.Enabled && strings.EqualFold(hook.TrustStatus, "trusted"))
+		matching[eventName] = state
 	}
 
 	result := SurfaceResult{
@@ -381,11 +392,11 @@ func ClassifyCodexHooks(workspaceRoot, expectedCommand string, health adapters.H
 		Warnings:      append(append([]string{}, probed.Warnings...), probed.Errors...),
 		Guidance:      []string{"review project and hook definitions before trusting them in Codex's hooks UI"},
 	}
-	for _, hook := range matching {
-		if hook.Enabled {
+	for _, state := range matching {
+		if state.enabled {
 			result.Enabled++
 		}
-		if strings.EqualFold(hook.TrustStatus, "trusted") {
+		if state.trusted {
 			result.Trusted++
 		}
 	}

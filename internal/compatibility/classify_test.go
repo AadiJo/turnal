@@ -2,6 +2,7 @@ package compatibility
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -79,10 +80,10 @@ func TestClassifyCodexHooks(t *testing.T) {
 	expected := "turnal codex-hook"
 	health := configuredCodexHealth()
 	all := []CodexHook{
-		{CWD: root, EventName: "stop", Command: expected, Enabled: true, TrustStatus: "trusted"},
-		{CWD: root, EventName: "post_tool_use", Command: expected, Enabled: true, TrustStatus: "trusted"},
-		{CWD: root, EventName: "sessionStart", Command: expected, Enabled: true, TrustStatus: "trusted"},
-		{CWD: root, EventName: "user-prompt-submit", Command: expected, Enabled: true, TrustStatus: "trusted"},
+		projectCodexHook(root, "stop", expected),
+		projectCodexHook(root, "post_tool_use", expected),
+		projectCodexHook(root, "sessionStart", expected),
+		projectCodexHook(root, "user-prompt-submit", expected),
 	}
 
 	tests := []struct {
@@ -111,12 +112,13 @@ func TestClassifyCodexHooksIgnoresUnrelatedHooksAndPreservesWarnings(t *testing.
 	root := t.TempDir()
 	health := configuredCodexHealth()
 	hooks := []CodexHook{
-		{CWD: root, EventName: "SessionStart", Command: "turnal codex-hook", Enabled: true, TrustStatus: "trusted"},
-		{CWD: root, EventName: "UserPromptSubmit", Command: "turnal codex-hook", Enabled: true, TrustStatus: "trusted"},
-		{CWD: root, EventName: "PostToolUse", Command: "turnal codex-hook", Enabled: true, TrustStatus: "trusted"},
-		{CWD: root, EventName: "Stop", Command: "turnal codex-hook", Enabled: true, TrustStatus: "trusted"},
-		{CWD: root, EventName: "Stop", Command: "plugin-tool", Enabled: false, TrustStatus: "untrusted"},
-		{CWD: t.TempDir(), EventName: "Stop", Command: "turnal codex-hook", Enabled: false, TrustStatus: "untrusted"},
+		projectCodexHook(root, "SessionStart", "turnal codex-hook"),
+		projectCodexHook(root, "UserPromptSubmit", "turnal codex-hook"),
+		projectCodexHook(root, "PostToolUse", "turnal codex-hook"),
+		projectCodexHook(root, "Stop", "turnal codex-hook"),
+		{CWD: root, EventName: "Stop", Command: "plugin-tool", Source: "plugin", Enabled: false, TrustStatus: "untrusted"},
+		{CWD: root, EventName: "Stop", Command: "turnal codex-hook", Source: "plugin", SourcePath: filepath.Join(root, "plugin", "hooks.json"), Enabled: false, TrustStatus: "untrusted"},
+		projectCodexHook(t.TempDir(), "Stop", "turnal codex-hook"),
 	}
 	result := ClassifyCodexHooks(root, "turnal codex-hook", health, CodexHooksResult{Hooks: hooks, Warnings: []string{"project warning"}})
 	if result.Expectation != CaptureAvailable || result.Discovered != 4 || result.Enabled != 4 || result.Trusted != 4 {
@@ -131,4 +133,11 @@ func replaceHook(hooks []CodexHook, index int, change func(*CodexHook)) []CodexH
 	copyOfHooks := append([]CodexHook(nil), hooks...)
 	change(&copyOfHooks[index])
 	return copyOfHooks
+}
+
+func projectCodexHook(root, event, command string) CodexHook {
+	return CodexHook{
+		CWD: root, EventName: event, Command: command, Source: "project",
+		SourcePath: filepath.Join(root, ".codex", "config.toml"), Enabled: true, TrustStatus: "trusted",
+	}
 }
