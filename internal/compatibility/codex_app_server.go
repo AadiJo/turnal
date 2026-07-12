@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -410,13 +411,14 @@ func ClassifyCodexHooks(workspaceRoot, expectedCommand string, health adapters.H
 		trusted bool
 	}
 	matching := make(map[string]eventState)
-	expectedSource := filepath.Join(workspaceRoot, ".codex", "config.toml")
+	expectedSources := codexProjectSourcePaths(workspaceRoot)
 	for _, hook := range probed.Hooks {
 		eventName := normalizeEventName(hook.EventName)
+		_, expectedSource := expectedSources[normalizeFilePath(hook.SourcePath)]
 		if filepath.Clean(hook.CWD) != filepath.Clean(workspaceRoot) ||
 			hook.Command != expectedCommand ||
 			!strings.EqualFold(hook.Source, "project") ||
-			filepath.Clean(hook.SourcePath) != filepath.Clean(expectedSource) {
+			!expectedSource {
 			continue
 		}
 		if _, expected := expectedEvents[eventName]; !expected {
@@ -475,6 +477,80 @@ func ClassifyCodexHooks(workspaceRoot, expectedCommand string, health adapters.H
 		result.Guidance = append([]string{"Codex app-server will skip untrusted hooks; Turnal cannot grant hook trust"}, result.Guidance...)
 	}
 	return applyStaticCodexHealth(result, health)
+}
+
+func codexProjectSourcePaths(workspaceRoot string) map[string]struct{} {
+	paths := map[string]struct{}{
+		normalizeFilePath(filepath.Join(workspaceRoot, ".codex", "config.toml")): {},
+	}
+	if rootCheckout, ok := linkedWorktreeRootCheckout(workspaceRoot); ok {
+		paths[normalizeFilePath(filepath.Join(rootCheckout, ".codex", "config.toml"))] = struct{}{}
+	}
+	return paths
+}
+
+func linkedWorktreeRootCheckout(workspaceRoot string) (string, bool) {
+	dotGit := filepath.Join(workspaceRoot, ".git")
+	info, err := os.Stat(dotGit)
+	if err != nil || info.IsDir() {
+		return "", false
+	}
+	data, err := readSmallMetadataFile(dotGit)
+	if err != nil {
+		return "", false
+	}
+	line := strings.TrimSpace(string(data))
+	gitDirText, found := strings.CutPrefix(line, "gitdir:")
+	if !found {
+		return "", false
+	}
+	gitDir := strings.TrimSpace(gitDirText)
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(workspaceRoot, gitDir)
+	}
+	gitDir = filepath.Clean(gitDir)
+
+	commonDir := ""
+	if data, err := readSmallMetadataFile(filepath.Join(gitDir, "commondir")); err == nil {
+		commonDir = strings.TrimSpace(string(data))
+		if !filepath.IsAbs(commonDir) {
+			commonDir = filepath.Join(gitDir, commonDir)
+		}
+		commonDir = filepath.Clean(commonDir)
+	} else if filepath.Base(filepath.Dir(gitDir)) == "worktrees" {
+		commonDir = filepath.Dir(filepath.Dir(gitDir))
+	}
+	if filepath.Base(commonDir) != ".git" {
+		return "", false
+	}
+	return filepath.Dir(commonDir), true
+}
+
+func readSmallMetadataFile(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, 4097))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > 4096 {
+		return nil, fmt.Errorf("Git metadata file exceeds 4096-byte limit: %s", path)
+	}
+	return data, nil
+}
+
+func normalizeFilePath(path string) string {
+	if absolute, err := filepath.Abs(path); err == nil {
+		path = absolute
+	}
+	path = filepath.Clean(path)
+	if runtime.GOOS == "windows" {
+		path = strings.ToLower(path)
+	}
+	return path
 }
 
 func applyStaticCodexHealth(result SurfaceResult, health adapters.HookHealth) SurfaceResult {

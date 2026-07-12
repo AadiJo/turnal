@@ -60,7 +60,7 @@ turnal status --probe-agent-capture
 
 `turnal init` creates a `.turnal/` store, adds `.turnal/` to `.gitignore`, and configures hooks according to the `--agent` selection. The default `auto` mode detects Claude Code and Codex, falling back to configuring both when neither is discoverable. Initialization does not change your existing `.git/`.
 
-Normal status is offline. The explicit capture probe starts Codex app-server only long enough to call `hooks/list`; it does not start a thread or turn, invoke a model, modify files, or change provider trust. It also explains the Claude Agent SDK limitation that only the host knows whether it loads project settings.
+Normal status is offline. The explicit capture probe starts Codex app-server only long enough to call `hooks/list`; it does not start a thread or turn, invoke a model, modify workspace files, or change provider trust or configuration. Codex may still update its own local cache and runtime state while app-server starts. The probe also explains the Claude Agent SDK limitation that only the host knows whether it loads project settings.
 
 Now use your agent normally. After it has completed a turn:
 
