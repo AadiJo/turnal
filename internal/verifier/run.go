@@ -16,12 +16,13 @@ import (
 const processWaitDelay = time.Second
 
 type Request struct {
-	Root        string
-	Target      Target
-	Verifiers   []config.Verifier
-	Environment []string
-	OutputLimit int
-	Now         func() time.Time
+	Root                     string
+	Target                   Target
+	Verifiers                []config.Verifier
+	Environment              []string
+	OutputLimit              int
+	Now                      func() time.Time
+	newProcessControllerFunc func(*exec.Cmd) (processController, error)
 }
 
 func Run(ctx context.Context, request Request) (Report, error) {
@@ -45,6 +46,9 @@ func Run(ctx context.Context, request Request) (Report, error) {
 	}
 	if request.Environment == nil {
 		request.Environment = os.Environ()
+	}
+	if request.newProcessControllerFunc == nil {
+		request.newProcessControllerFunc = newProcessController
 	}
 
 	started := request.Now().UTC()
@@ -70,6 +74,10 @@ func Run(ctx context.Context, request Request) (Report, error) {
 			report.Summary.Outcome = "failed"
 		case StatusLaunchError:
 			report.Summary.LaunchError++
+			report.Summary.Outcome = "failed"
+		}
+		if len(result.InfrastructureErrors) > 0 {
+			report.Summary.InfrastructureErrors += len(result.InfrastructureErrors)
 			report.Summary.Outcome = "failed"
 		}
 		if err := ctx.Err(); err != nil {
@@ -148,7 +156,7 @@ func runOne(parent context.Context, request Request, definition config.Verifier)
 	cmd.Dir = request.Root
 	cmd.Env = append([]string(nil), request.Environment...)
 	cmd.WaitDelay = processWaitDelay
-	controller, err := newProcessController(cmd)
+	controller, err := request.newProcessControllerFunc(cmd)
 	if err != nil {
 		result.LaunchError = fmt.Sprintf("prepare process containment: %v", err)
 		finishCheck(&result, request.Now().UTC(), newBoundedBuffer(request.OutputLimit), newBoundedBuffer(request.OutputLimit))
@@ -181,10 +189,11 @@ func runOne(parent context.Context, request Request, definition config.Verifier)
 	closeErr := controller.Close()
 	finishCheck(&result, request.Now().UTC(), stdout, stderr)
 	classifyWaitResult(&result, waitErr, ctx.Err(), cmd.ProcessState)
-	if closeErr != nil && result.Status == StatusPassed {
-		result.Status = StatusLaunchError
-		result.ExitCode = nil
-		result.LaunchError = fmt.Sprintf("release process containment: %v", closeErr)
+	if closeErr != nil {
+		result.InfrastructureErrors = append(result.InfrastructureErrors, InfrastructureError{
+			Stage:   "containment_cleanup",
+			Message: closeErr.Error(),
+		})
 	}
 	return result
 }

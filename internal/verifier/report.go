@@ -40,30 +40,37 @@ type Target struct {
 }
 
 type Check struct {
-	Name            string    `json:"name"`
-	Command         string    `json:"command"`
-	Args            []string  `json:"args"`
-	Status          Status    `json:"status"`
-	StartedAt       time.Time `json:"started_at"`
-	FinishedAt      time.Time `json:"finished_at"`
-	DurationMS      int64     `json:"duration_ms"`
-	Timeout         string    `json:"timeout"`
-	TimedOut        bool      `json:"timed_out"`
-	ExitCode        *int      `json:"exit_code,omitempty"`
-	LaunchError     string    `json:"launch_error,omitempty"`
-	Stdout          string    `json:"stdout"`
-	Stderr          string    `json:"stderr"`
-	StdoutTruncated bool      `json:"stdout_truncated"`
-	StderrTruncated bool      `json:"stderr_truncated"`
+	Name                 string                `json:"name"`
+	Command              string                `json:"command"`
+	Args                 []string              `json:"args"`
+	Status               Status                `json:"status"`
+	StartedAt            time.Time             `json:"started_at"`
+	FinishedAt           time.Time             `json:"finished_at"`
+	DurationMS           int64                 `json:"duration_ms"`
+	Timeout              string                `json:"timeout"`
+	TimedOut             bool                  `json:"timed_out"`
+	ExitCode             *int                  `json:"exit_code,omitempty"`
+	LaunchError          string                `json:"launch_error,omitempty"`
+	InfrastructureErrors []InfrastructureError `json:"infrastructure_errors,omitempty"`
+	Stdout               string                `json:"stdout"`
+	Stderr               string                `json:"stderr"`
+	StdoutTruncated      bool                  `json:"stdout_truncated"`
+	StderrTruncated      bool                  `json:"stderr_truncated"`
+}
+
+type InfrastructureError struct {
+	Stage   string `json:"stage"`
+	Message string `json:"message"`
 }
 
 type Summary struct {
-	Outcome     string `json:"outcome"`
-	Total       int    `json:"total"`
-	Passed      int    `json:"passed"`
-	Failed      int    `json:"failed"`
-	TimedOut    int    `json:"timed_out"`
-	LaunchError int    `json:"launch_error"`
+	Outcome              string `json:"outcome"`
+	Total                int    `json:"total"`
+	Passed               int    `json:"passed"`
+	Failed               int    `json:"failed"`
+	TimedOut             int    `json:"timed_out"`
+	LaunchError          int    `json:"launch_error"`
+	InfrastructureErrors int    `json:"infrastructure_errors"`
 }
 
 type Report struct {
