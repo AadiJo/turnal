@@ -5,10 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -21,10 +24,44 @@ import (
 )
 
 func TestForkDryRunReportsReadinessWithoutWritingState(t *testing.T) {
-	t.Setenv("TURNAL_STATE_DIR", t.TempDir())
-	root, sessionID, _ := createForkReadyTurn(t, "Fix the parser", true)
-	t.Chdir(root.String())
-	before := snapshotForkPaths(t, filepath.Join(root.String(), ".turnal"), os.Getenv("TURNAL_STATE_DIR"))
+	stateDir := t.TempDir()
+	t.Setenv("TURNAL_STATE_DIR", stateDir)
+	parent := t.TempDir()
+	mainPath := filepath.Join(parent, "main")
+	linkedPath := filepath.Join(parent, "linked")
+	if err := os.MkdirAll(mainPath, 0o755); err != nil {
+		t.Fatalf("mkdir main worktree: %v", err)
+	}
+	runForkUserGit(t, mainPath, "init")
+	runForkUserGit(t, mainPath, "config", "user.email", "turnal@example.test")
+	runForkUserGit(t, mainPath, "config", "user.name", "Turnal Test")
+	if err := os.WriteFile(filepath.Join(mainPath, "tracked.txt"), []byte("tracked\n"), 0o644); err != nil {
+		t.Fatalf("write tracked file: %v", err)
+	}
+	runForkUserGit(t, mainPath, "add", "tracked.txt")
+	runForkUserGit(t, mainPath, "commit", "-m", "initial")
+	mainRoot, err := primitives.ParseWorkspaceRoot(mainPath)
+	if err != nil {
+		t.Fatalf("ParseWorkspaceRoot(main): %v", err)
+	}
+	if _, err := checkpoint.Init(mainRoot); err != nil {
+		t.Fatalf("Init(main): %v", err)
+	}
+	runForkUserGit(t, mainPath, "worktree", "add", "-b", "fork-readonly-test", linkedPath)
+	linkedRoot, err := primitives.ParseWorkspaceRoot(linkedPath)
+	if err != nil {
+		t.Fatalf("ParseWorkspaceRoot(linked): %v", err)
+	}
+	linkedRepo, err := checkpoint.Open(linkedRoot)
+	if err != nil {
+		t.Fatalf("Open(linked): %v", err)
+	}
+	sessionID, _ := recordForkReadyTurn(t, linkedRepo, linkedRoot, "Fix the parser", true)
+	t.Chdir(linkedRoot.String())
+
+	snapshotRoots := []string{filepath.Join(mainPath, ".turnal"), stateDir, filepath.Join(mainPath, ".git")}
+	makeForkPathsReadOnly(t, snapshotRoots...)
+	before := snapshotForkPaths(t, snapshotRoots...)
 
 	output := runRootStdout(t, "fork", sessionID.String()+":1", "--dry-run")
 	for _, want := range []string{
@@ -36,7 +73,7 @@ func TestForkDryRunReportsReadinessWithoutWritingState(t *testing.T) {
 		"metadata adapter: codex",
 		"model:          cli-test-model",
 		"base:           refs/agent-vcs/",
-		"captured files: 1",
+		"captured files: 2",
 		"instruction:    available",
 		"Fix the parser",
 		"workspace files",
@@ -49,7 +86,7 @@ func TestForkDryRunReportsReadinessWithoutWritingState(t *testing.T) {
 		}
 	}
 
-	after := snapshotForkPaths(t, filepath.Join(root.String(), ".turnal"), os.Getenv("TURNAL_STATE_DIR"))
+	after := snapshotForkPaths(t, snapshotRoots...)
 	if !reflect.DeepEqual(before, after) {
 		t.Fatalf("fork dry-run changed durable metadata\nbefore: %#v\nafter:  %#v", before, after)
 	}
@@ -114,6 +151,12 @@ func createForkReadyTurn(t *testing.T, prompt string, finish bool) (primitives.W
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
+	sessionID, turnID := recordForkReadyTurn(t, repo, root, prompt, finish)
+	return root, sessionID, turnID
+}
+
+func recordForkReadyTurn(t *testing.T, repo *checkpoint.Repo, root primitives.WorkspaceRoot, prompt string, finish bool) (primitives.SessionID, primitives.TurnID) {
+	t.Helper()
 	writeFile(t, root, "app.txt", "before\n")
 	sessionID := sessionID(t, "fork-cli")
 	turnID, err := primitives.NewTurnID(1)
@@ -150,7 +193,7 @@ func createForkReadyTurn(t *testing.T, prompt string, finish bool) (primitives.W
 			t.Fatalf("finish turn: %v", err)
 		}
 	}
-	return root, sessionID, turnID
+	return sessionID, turnID
 }
 
 func snapshotForkPaths(t *testing.T, roots ...string) map[string]string {
@@ -161,24 +204,95 @@ func snapshotForkPaths(t *testing.T, roots ...string) map[string]string {
 			if err != nil {
 				return err
 			}
-			if entry.IsDir() {
-				return nil
-			}
 			relative, err := filepath.Rel(root, path)
 			if err != nil {
 				return err
 			}
 			relative = filepath.ToSlash(relative)
-			data, err := os.ReadFile(path)
+			info, err := os.Lstat(path)
 			if err != nil {
 				return err
 			}
-			digest := sha256.Sum256(data)
-			snapshot[filepath.ToSlash(root)+":"+relative] = hex.EncodeToString(digest[:])
+			value := fmt.Sprintf("mode=%s mtime=%d", info.Mode(), info.ModTime().UnixNano())
+			switch {
+			case info.Mode().IsRegular():
+				data, err := os.ReadFile(path)
+				if err != nil {
+					return err
+				}
+				digest := sha256.Sum256(data)
+				value += " sha256=" + hex.EncodeToString(digest[:])
+			case info.Mode()&os.ModeSymlink != 0:
+				target, err := os.Readlink(path)
+				if err != nil {
+					return err
+				}
+				value += " target=" + target
+			}
+			snapshot[filepath.ToSlash(root)+":"+relative] = value
 			return nil
 		}); err != nil {
 			t.Fatalf("snapshot metadata: %v", err)
 		}
 	}
 	return snapshot
+}
+
+func makeForkPathsReadOnly(t *testing.T, roots ...string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		return
+	}
+	originalModes := map[string]fs.FileMode{}
+	for _, root := range roots {
+		if err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			info, err := os.Lstat(path)
+			if err != nil {
+				return err
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				return nil
+			}
+			originalModes[path] = info.Mode().Perm()
+			mode := fs.FileMode(0o400)
+			if info.IsDir() {
+				mode = 0o500
+			}
+			return os.Chmod(path, mode)
+		}); err != nil {
+			t.Fatalf("make fork metadata read-only: %v", err)
+		}
+	}
+	t.Cleanup(func() {
+		for path, mode := range originalModes {
+			_ = os.Chmod(path, mode)
+		}
+	})
+}
+
+func runForkUserGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = cleanForkGitEnv(os.Environ())
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
+	return string(output)
+}
+
+func cleanForkGitEnv(env []string) []string {
+	clean := make([]string, 0, len(env))
+	for _, item := range env {
+		name, _, _ := strings.Cut(item, "=")
+		if strings.HasPrefix(name, "GIT_") {
+			continue
+		}
+		clean = append(clean, item)
+	}
+	return clean
 }
