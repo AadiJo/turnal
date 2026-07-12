@@ -20,16 +20,10 @@ type CodexProbe interface {
 }
 
 func Diagnose(ctx context.Context, options Options) Report {
-	byTarget := make(map[adapters.Target]adapters.HookHealth, len(options.Targets))
-	for _, target := range options.Targets {
-		inspectionRoot := options.WorkspaceRoot
-		if target == adapters.TargetCodex {
-			inspectionRoot = codexStaticInspectionRoot(options.WorkspaceRoot)
-		}
-		static := adapters.InspectHooksForTargets(inspectionRoot, options.HookCommand, []adapters.Target{target})
-		if len(static) == 1 {
-			byTarget[target] = static[0]
-		}
+	static := InspectStaticHooks(options.WorkspaceRoot, options.HookCommand, options.Targets)
+	byTarget := make(map[adapters.Target]adapters.HookHealth, len(static))
+	for _, health := range static {
+		byTarget[health.Target] = health
 	}
 
 	var report Report
@@ -47,6 +41,20 @@ func Diagnose(ctx context.Context, options Options) Report {
 		}
 	}
 	return report
+}
+
+// InspectStaticHooks resolves the provider configuration location used by each
+// execution surface before inspecting its project hooks.
+func InspectStaticHooks(workspaceRoot, hookCommand string, targets []adapters.Target) []adapters.HookHealth {
+	health := make([]adapters.HookHealth, 0, len(targets))
+	for _, target := range targets {
+		inspectionRoot := workspaceRoot
+		if target == adapters.TargetCodex {
+			inspectionRoot = codexStaticInspectionRoot(workspaceRoot)
+		}
+		health = append(health, adapters.InspectHooksForTargets(inspectionRoot, hookCommand, []adapters.Target{target})...)
+	}
+	return health
 }
 
 func classifyClaudeCode(health adapters.HookHealth) SurfaceResult {

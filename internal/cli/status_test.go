@@ -13,6 +13,7 @@ import (
 	"github.com/AadiJo/turnal/internal/adapters"
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	"github.com/AadiJo/turnal/internal/compatibility"
+	"github.com/AadiJo/turnal/internal/primitives"
 )
 
 func TestOrdinaryStatusDoesNotStartAppServer(t *testing.T) {
@@ -29,6 +30,67 @@ func TestOrdinaryStatusDoesNotStartAppServer(t *testing.T) {
 	}
 	if strings.Contains(output, "Agent capture compatibility") {
 		t.Fatalf("ordinary status included capture probe output:\n%s", output)
+	}
+}
+
+func TestOrdinaryStatusUsesRootCheckoutCodexHooksInLinkedWorktree(t *testing.T) {
+	requireGit(t)
+	isolateAgentConfig(t)
+	parent := t.TempDir()
+	mainPath := filepath.Join(parent, "main")
+	linkedPath := filepath.Join(parent, "linked")
+	if err := os.MkdirAll(mainPath, 0o755); err != nil {
+		t.Fatalf("mkdir main worktree: %v", err)
+	}
+	runForkUserGit(t, mainPath, "init")
+	runForkUserGit(t, mainPath, "config", "user.email", "turnal@example.test")
+	runForkUserGit(t, mainPath, "config", "user.name", "Turnal Test")
+	if err := os.WriteFile(filepath.Join(mainPath, ".gitignore"), []byte(checkpoint.GitignoreEntry+"\n"), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(mainPath, "tracked.txt"), []byte("tracked\n"), 0o644); err != nil {
+		t.Fatalf("write tracked file: %v", err)
+	}
+	runForkUserGit(t, mainPath, "add", ".gitignore", "tracked.txt")
+	runForkUserGit(t, mainPath, "commit", "-m", "initial")
+
+	mainRoot, err := primitives.ParseWorkspaceRoot(mainPath)
+	if err != nil {
+		t.Fatalf("parse main root: %v", err)
+	}
+	repo, err := checkpoint.Init(mainRoot)
+	if err != nil {
+		t.Fatalf("initialize checkpoint repo: %v", err)
+	}
+	if _, err := adapters.InstallCodexHookWithOptions(mainRoot.String(), adapters.InstallOptions{HookCommand: "turnal"}); err != nil {
+		t.Fatalf("install root-checkout Codex hooks: %v", err)
+	}
+	config := "version = 1\n\n[init]\nagent = 'codex'\ninstall_hooks = true\n\n[hooks]\ncommand = 'turnal'\n"
+	if err := os.WriteFile(filepath.Join(repo.MetadataDir, "config.toml"), []byte(config), 0o644); err != nil {
+		t.Fatalf("write Turnal config: %v", err)
+	}
+	runForkUserGit(t, mainPath, "worktree", "add", "-b", "status-linked-test", linkedPath)
+	linkedRoot, err := primitives.ParseWorkspaceRoot(linkedPath)
+	if err != nil {
+		t.Fatalf("parse linked root: %v", err)
+	}
+	if _, err := checkpoint.Open(linkedRoot); err != nil {
+		t.Fatalf("attach linked worktree: %v", err)
+	}
+	t.Chdir(linkedPath)
+
+	probe := &recordingCodexProbe{panicOnCall: true}
+	output, err := executeStatus(t, probe)
+	if err != nil {
+		t.Fatalf("status: %v\n%s", err, output)
+	}
+	if probe.calls != 0 {
+		t.Fatalf("ordinary status made %d probe calls", probe.calls)
+	}
+	for _, want := range []string{"hooks:      ok", "state:      ok"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("status output missing %q:\n%s", want, output)
+		}
 	}
 }
 
