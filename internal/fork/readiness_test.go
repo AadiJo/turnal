@@ -252,6 +252,23 @@ func TestInspectInstructionDistinguishesLiteralRedactionMarker(t *testing.T) {
 	}
 }
 
+func TestInspectInstructionKeepsAdapterForEmptyPrompt(t *testing.T) {
+	turnID, _ := primitives.NewTurnID(1)
+	instruction, err := inspectInstruction([]eventlog.Event{{
+		Seq:     1,
+		TurnID:  &turnID,
+		Type:    primitives.EventTypePromptUser,
+		Adapter: primitives.AdapterCodex,
+		Payload: json.RawMessage(`{"text":"","redacted":false}`),
+	}})
+	if err != nil {
+		t.Fatalf("inspectInstruction: %v", err)
+	}
+	if instruction.Status != InstructionMissing || instruction.Adapter != primitives.AdapterCodex {
+		t.Fatalf("instruction = %#v", instruction)
+	}
+}
+
 func TestSessionMetadataRejectsMalformedPayloads(t *testing.T) {
 	for name, payload := range map[string]json.RawMessage{
 		"invalid json":          json.RawMessage(`{"model":`),
