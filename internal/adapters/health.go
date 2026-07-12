@@ -12,7 +12,33 @@ import (
 type HookHealth struct {
 	Target     Target
 	ConfigPath string
+	Status     HookConfigurationStatus
+	Events     []HookEventHealth
 	Problems   []string
+}
+
+type HookConfigurationStatus string
+
+const (
+	HookConfigurationConfigured HookConfigurationStatus = "configured"
+	HookConfigurationMissing    HookConfigurationStatus = "missing"
+	HookConfigurationIncomplete HookConfigurationStatus = "incomplete"
+	HookConfigurationMalformed  HookConfigurationStatus = "malformed"
+	HookConfigurationDisabled   HookConfigurationStatus = "disabled"
+)
+
+type HookEventStatus string
+
+const (
+	HookEventConfigured       HookEventStatus = "configured"
+	HookEventMissing          HookEventStatus = "missing"
+	HookEventDifferentCommand HookEventStatus = "different-command"
+)
+
+type HookEventHealth struct {
+	Name     string
+	Status   HookEventStatus
+	Commands []string
 }
 
 func (health HookHealth) OK() bool {
@@ -45,77 +71,104 @@ func inspectAllHooks(projectRoot string, command string) []HookHealth {
 
 func inspectClaudeHooks(projectRoot string, command string) HookHealth {
 	settingsPath := filepath.Join(projectRoot, ".claude", "settings.json")
-	health := HookHealth{Target: TargetClaude, ConfigPath: settingsPath}
+	health := HookHealth{Target: TargetClaude, ConfigPath: settingsPath, Status: HookConfigurationConfigured}
 
 	data, err := os.ReadFile(settingsPath)
 	if os.IsNotExist(err) {
+		health.Status = HookConfigurationMissing
 		health.Problems = append(health.Problems, fmt.Sprintf("claude hooks missing: %s", settingsPath))
 		return health
 	}
 	if err != nil {
+		health.Status = HookConfigurationMalformed
 		health.Problems = append(health.Problems, fmt.Sprintf("read claude hooks: %v", err))
 		return health
 	}
 
 	var settings map[string]any
 	if err := json.Unmarshal(data, &settings); err != nil {
+		health.Status = HookConfigurationMalformed
 		health.Problems = append(health.Problems, fmt.Sprintf("parse claude hooks: %v", err))
 		return health
 	}
 	hooks, _ := settings["hooks"].(map[string]any)
 	if hooks == nil {
+		health.Status = HookConfigurationIncomplete
 		health.Problems = append(health.Problems, "claude hooks missing hooks table")
 		return health
 	}
 
-	for eventName, expected := range map[string]string{
-		"UserPromptSubmit": claudeUserHook(command),
-		"Stop":             claudeAssistantHook(command),
-		"PostToolUse":      claudeToolUseHook(command),
+	for _, expected := range []struct{ eventName, command string }{
+		{"UserPromptSubmit", claudeUserHook(command)},
+		{"PostToolUse", claudeToolUseHook(command)},
+		{"Stop", claudeAssistantHook(command)},
 	} {
-		if !containsHookCommand(collectHookCommands(hooks[eventName]), expected) {
-			health.Problems = append(health.Problems, fmt.Sprintf("claude hook %s missing command %q", eventName, expected))
-		}
+		inspectHookEvent(&health, "claude", hooks, expected.eventName, expected.command)
 	}
 	return health
 }
 
 func inspectCodexHooks(projectRoot string, command string) HookHealth {
 	configPath := filepath.Join(projectRoot, ".codex", "config.toml")
-	health := HookHealth{Target: TargetCodex, ConfigPath: configPath}
+	health := HookHealth{Target: TargetCodex, ConfigPath: configPath, Status: HookConfigurationConfigured}
 
 	data, err := os.ReadFile(configPath)
 	if os.IsNotExist(err) {
+		health.Status = HookConfigurationMissing
 		health.Problems = append(health.Problems, fmt.Sprintf("codex hooks missing: %s", configPath))
 		return health
 	}
 	if err != nil {
+		health.Status = HookConfigurationMalformed
 		health.Problems = append(health.Problems, fmt.Sprintf("read codex hooks: %v", err))
 		return health
 	}
 
 	var config map[string]any
 	if err := toml.Unmarshal(data, &config); err != nil {
+		health.Status = HookConfigurationMalformed
 		health.Problems = append(health.Problems, fmt.Sprintf("parse codex hooks: %v", err))
 		return health
 	}
 	features, _ := config["features"].(map[string]any)
 	if features == nil || features["hooks"] != true {
+		health.Status = HookConfigurationDisabled
 		health.Problems = append(health.Problems, "codex hooks feature flag is not enabled")
 	}
 	hooks, _ := config["hooks"].(map[string]any)
 	if hooks == nil {
+		if health.Status != HookConfigurationDisabled {
+			health.Status = HookConfigurationIncomplete
+		}
 		health.Problems = append(health.Problems, "codex hooks missing hooks table")
 		return health
 	}
 
 	expected := codexHookCommand(command)
 	for _, eventName := range []string{"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"} {
-		if !containsHookCommand(collectHookCommands(hooks[eventName]), expected) {
-			health.Problems = append(health.Problems, fmt.Sprintf("codex hook %s missing command %q", eventName, expected))
-		}
+		inspectHookEvent(&health, "codex", hooks, eventName, expected)
 	}
 	return health
+}
+
+func inspectHookEvent(health *HookHealth, provider string, hooks map[string]any, eventName, expected string) {
+	value, exists := hooks[eventName]
+	commands := collectHookCommands(value)
+	event := HookEventHealth{Name: eventName, Commands: commands}
+	switch {
+	case !exists:
+		event.Status = HookEventMissing
+		health.Problems = append(health.Problems, fmt.Sprintf("%s hook %s has no hook definition", provider, eventName))
+	case !containsHookCommand(commands, expected):
+		event.Status = HookEventDifferentCommand
+		health.Problems = append(health.Problems, fmt.Sprintf("%s hook %s uses a different command; expected %q", provider, eventName, expected))
+	default:
+		event.Status = HookEventConfigured
+	}
+	if event.Status != HookEventConfigured && health.Status == HookConfigurationConfigured {
+		health.Status = HookConfigurationIncomplete
+	}
+	health.Events = append(health.Events, event)
 }
 
 func collectHookCommands(value any) []string {
