@@ -175,7 +175,15 @@ func start(repo *checkpoint.Repo, runID primitives.RunID, wrapperSession primiti
 }
 
 func LinkCapture(repo *checkpoint.Repo, runID primitives.RunID, kind string, sessionID primitives.SessionID, adapter primitives.AdapterName) error {
-	projection, err := AcceptsCapture(repo, runID)
+	unlock, err := acquireRunMutation(repo, runID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := recoverRunLocked(repo, runID); err != nil {
+		return err
+	}
+	projection, err := acceptsCaptureLocked(repo, runID)
 	if err != nil {
 		return err
 	}
@@ -215,7 +223,15 @@ func LinkCapture(repo *checkpoint.Repo, runID primitives.RunID, kind string, ses
 }
 
 func EnsureAttempt(repo *checkpoint.Repo, runID primitives.RunID, sessionID primitives.SessionID, turnID primitives.TurnID, adapter primitives.AdapterName) (primitives.AttemptID, error) {
-	projection, err := AcceptsCapture(repo, runID)
+	unlock, err := acquireRunMutation(repo, runID)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+	if err := recoverRunLocked(repo, runID); err != nil {
+		return "", err
+	}
+	projection, err := acceptsCaptureLocked(repo, runID)
 	if err != nil {
 		return "", err
 	}
@@ -262,7 +278,15 @@ func Finish(repo *checkpoint.Repo, runID primitives.RunID, wrapperSession primit
 	if status != StatusSucceeded && status != StatusFailed && status != StatusIncomplete {
 		return fmt.Errorf("invalid run status %q", status)
 	}
-	projection, err := AcceptsCapture(repo, runID)
+	unlock, err := acquireRunMutation(repo, runID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := recoverRunLocked(repo, runID); err != nil {
+		return err
+	}
+	projection, err := acceptsCaptureLocked(repo, runID)
 	if err != nil {
 		return err
 	}
@@ -284,11 +308,18 @@ func finish(repo *checkpoint.Repo, projection Projection, wrapperSession primiti
 }
 
 func AcceptsCapture(repo *checkpoint.Repo, runID primitives.RunID) (Projection, error) {
-	// A hook may outlive a crashed wrapper process. Recover unlocked lifecycle
-	// journals before treating a durable running status as authorization.
-	if err := RecoverAbandoned(repo); err != nil {
+	unlock, err := acquireRunMutation(repo, runID)
+	if err != nil {
 		return Projection{}, err
 	}
+	defer unlock()
+	if err := recoverRunLocked(repo, runID); err != nil {
+		return Projection{}, err
+	}
+	return acceptsCaptureLocked(repo, runID)
+}
+
+func acceptsCaptureLocked(repo *checkpoint.Repo, runID primitives.RunID) (Projection, error) {
 	projection, err := Read(repo, runID)
 	if err != nil {
 		return Projection{}, err

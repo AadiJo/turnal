@@ -5,12 +5,136 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/filelock"
 	"github.com/AadiJo/turnal/internal/primitives"
 )
+
+func TestLifecycleLockTakeoverDoesNotAuthorizeDescendant(t *testing.T) {
+	repo := testRepo(t)
+	runID, _ := primitives.NewRunID()
+	wrapper := session(t, "wrapper")
+	release, err := Begin(repo, runID, wrapper, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	takeover, err := filelock.Acquire(lifecycleLockPath(repo, runID), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = takeover.Release() }()
+	if _, err := AcceptsCapture(repo, runID); err == nil {
+		t.Fatal("replacement lifecycle owner authorized capture")
+	}
+	projection, err := Read(repo, runID)
+	if err != nil || projection.Status != StatusIncomplete {
+		t.Fatalf("takeover projection = %+v, %v", projection, err)
+	}
+}
+
+func TestBeginRejectsExistingRunID(t *testing.T) {
+	repo := testRepo(t)
+	runID, _ := primitives.NewRunID()
+	wrapper := session(t, "wrapper")
+	release, err := Begin(repo, runID, wrapper, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if _, err := Begin(repo, runID, session(t, "other"), nil); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("duplicate Begin error = %v", err)
+	}
+	projection, err := Read(repo, runID)
+	if err != nil || projection.Start.SessionID != wrapper {
+		t.Fatalf("duplicate Begin changed run: %+v, %v", projection, err)
+	}
+}
+
+func TestRecoveryAndCaptureMutationSerialize(t *testing.T) {
+	repo := testRepo(t)
+	runID, _ := primitives.NewRunID()
+	wrapper := session(t, "wrapper")
+	provider := session(t, "provider")
+	release, err := Begin(repo, runID, wrapper, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var group sync.WaitGroup
+	group.Add(2)
+	go func() { defer group.Done(); <-start; errs <- RecoverAbandoned(repo) }()
+	go func() {
+		defer group.Done()
+		<-start
+		errs <- LinkCapture(repo, runID, CaptureProvider, provider, primitives.AdapterCodex)
+	}()
+	close(start)
+	group.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil && !strings.Contains(err.Error(), "cannot accept capture") {
+			t.Fatalf("concurrent mutation error = %v", err)
+		}
+	}
+	projection, err := Read(repo, runID)
+	if err != nil || projection.Status != StatusIncomplete || len(projection.Captures) != 0 {
+		t.Fatalf("concurrent projection = %+v, %v", projection, err)
+	}
+	if finishes := countRunEvents(t, repo, primitives.EventTypeRunFinish); finishes != 1 {
+		t.Fatalf("run.finish events = %d, want 1", finishes)
+	}
+}
+
+func TestConcurrentRecoveriesAppendOneFinish(t *testing.T) {
+	repo := testRepo(t)
+	runID, _ := primitives.NewRunID()
+	wrapper := session(t, "wrapper")
+	release, err := Begin(repo, runID, wrapper, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	var group sync.WaitGroup
+	errs := make(chan error, 8)
+	for index := 0; index < 8; index++ {
+		group.Add(1)
+		go func() { defer group.Done(); errs <- RecoverAbandoned(repo) }()
+	}
+	group.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if finishes := countRunEvents(t, repo, primitives.EventTypeRunFinish); finishes != 1 {
+		t.Fatalf("run.finish events = %d, want 1", finishes)
+	}
+}
+
+func countRunEvents(t *testing.T, repo *checkpoint.Repo, eventType primitives.EventType) int {
+	t.Helper()
+	streams, err := eventlog.ListDurableStreams(repo.MetadataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, stream := range streams {
+		for _, event := range stream.Events {
+			if event.Type == eventType {
+				count++
+			}
+		}
+	}
+	return count
+}
 
 func TestRecoverAbandonedRunWithoutTouchingLiveRun(t *testing.T) {
 	repo := testRepo(t)
@@ -89,7 +213,11 @@ func TestRecoveryRejectsJournalSessionDifferentFromRunStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	journal := lifecycleJournal{Version: lifecycleJournalVersion, RunID: runID, SessionID: session(t, "wrong"), RepoID: repo.RepoID, StoreID: repo.StoreID, WorktreeID: repo.WorktreeID}
+	journal, err := readLifecycleJournal(lifecycleJournalPath(repo, runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal.SessionID = session(t, "wrong")
 	if err := writeLifecycleJournal(repo, journal); err != nil {
 		t.Fatal(err)
 	}
