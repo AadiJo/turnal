@@ -44,6 +44,9 @@ func TestInspectRequiresUnrecordedConversationContext(t *testing.T) {
 	if report.Conditions.ConversationContext.Status != "not_recorded" {
 		t.Fatalf("conversation context = %#v", report.Conditions.ConversationContext)
 	}
+	if report.Conditions.WorkspaceVCS.Status != "not_applicable" {
+		t.Fatalf("workspace VCS = %#v", report.Conditions.WorkspaceVCS)
+	}
 	if !report.Source.Complete {
 		t.Fatal("complete turn reported incomplete")
 	}

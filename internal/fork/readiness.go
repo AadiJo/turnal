@@ -179,9 +179,16 @@ func (analyzer Analyzer) Inspect(sessionID primitives.SessionID, turnID primitiv
 		Detail: fmt.Sprintf("%d captured files can be materialized byte-exactly from the pre-turn checkpoint.", len(tree)),
 	}
 	if turn.PreCheckpoint.UserGit != nil {
-		report.Conditions.WorkspaceVCS = Condition{
-			Status: "recorded",
-			Detail: "Workspace Git branch, HEAD, index, and dirty context were recorded where available; restoration remains policy-bound.",
+		if turn.PreCheckpoint.UserGit.Exists {
+			report.Conditions.WorkspaceVCS = Condition{
+				Status: "recorded",
+				Detail: "Workspace Git branch, HEAD, index, and dirty context were recorded where available; restoration remains policy-bound.",
+			}
+		} else {
+			report.Conditions.WorkspaceVCS = Condition{
+				Status: "not_applicable",
+				Detail: "The workspace was recorded as not being inside a Git worktree.",
+			}
 		}
 	}
 
