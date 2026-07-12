@@ -12,7 +12,7 @@ import (
 )
 
 func startedAt(pid int) (string, error) {
-	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.SYNCHRONIZE, false, uint32(pid))
 	if err != nil {
 		if errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
 			return "", os.ErrNotExist
@@ -20,12 +20,15 @@ func startedAt(pid int) (string, error) {
 		return "", err
 	}
 	defer windows.CloseHandle(handle)
-	var exitCode uint32
-	if err := windows.GetExitCodeProcess(handle, &exitCode); err != nil {
-		return "", fmt.Errorf("get process exit code: %w", err)
+	state, err := windows.WaitForSingleObject(handle, 0)
+	if err != nil {
+		return "", fmt.Errorf("query process liveness: %w", err)
 	}
-	if exitCode != 259 {
+	if state == windows.WAIT_OBJECT_0 {
 		return "", os.ErrNotExist
+	}
+	if state != uint32(windows.WAIT_TIMEOUT) {
+		return "", fmt.Errorf("query process liveness: unexpected wait state %d", state)
 	}
 	var creation, exit, kernel, user windows.Filetime
 	if err := windows.GetProcessTimes(handle, &creation, &exit, &kernel, &user); err != nil {
