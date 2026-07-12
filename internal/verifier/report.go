@@ -58,11 +58,12 @@ type Check struct {
 }
 
 type Summary struct {
-	Total       int `json:"total"`
-	Passed      int `json:"passed"`
-	Failed      int `json:"failed"`
-	TimedOut    int `json:"timed_out"`
-	LaunchError int `json:"launch_error"`
+	Outcome     string `json:"outcome"`
+	Total       int    `json:"total"`
+	Passed      int    `json:"passed"`
+	Failed      int    `json:"failed"`
+	TimedOut    int    `json:"timed_out"`
+	LaunchError int    `json:"launch_error"`
 }
 
 type Report struct {
@@ -76,5 +77,5 @@ type Report struct {
 }
 
 func (report Report) Successful() bool {
-	return report.Summary.Failed == 0 && report.Summary.TimedOut == 0 && report.Summary.LaunchError == 0
+	return report.Summary.Outcome == "passed"
 }

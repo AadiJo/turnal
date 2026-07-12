@@ -138,8 +138,8 @@ func TestReportJSONVersionAndHumanFailureSummary(t *testing.T) {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if decoded.SchemaVersion != SchemaVersion {
-		t.Fatalf("schema version = %d, want %d", decoded.SchemaVersion, SchemaVersion)
+	if decoded.SchemaVersion != SchemaVersion || decoded.Summary.Outcome != "failed" {
+		t.Fatalf("decoded report = %#v", decoded)
 	}
 
 	var output bytes.Buffer
