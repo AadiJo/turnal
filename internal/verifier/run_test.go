@@ -123,8 +123,16 @@ func TestRunPassesArgumentsLiterallyAndSupportsSpaces(t *testing.T) {
 	if strings.Join(got.Args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("args = %#v, want %#v", got.Args, want)
 	}
-	if got.CWD != root {
-		t.Fatalf("cwd = %q, want %q", got.CWD, root)
+	gotInfo, err := os.Stat(got.CWD)
+	if err != nil {
+		t.Fatalf("stat helper cwd %q: %v", got.CWD, err)
+	}
+	wantInfo, err := os.Stat(root)
+	if err != nil {
+		t.Fatalf("stat evaluation root %q: %v", root, err)
+	}
+	if !os.SameFile(gotInfo, wantInfo) {
+		t.Fatalf("cwd = %q, want filesystem identity of %q", got.CWD, root)
 	}
 }
 
