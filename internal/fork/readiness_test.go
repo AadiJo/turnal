@@ -134,6 +134,17 @@ func TestInspectInstructionRejectsMalformedPayloads(t *testing.T) {
 	}
 }
 
+func TestInspectInstructionRejectsMultiplePrompts(t *testing.T) {
+	turnID, _ := primitives.NewTurnID(1)
+	_, err := inspectInstruction([]eventlog.Event{
+		{Seq: 1, TurnID: &turnID, Type: primitives.EventTypePromptUser, Adapter: primitives.AdapterCodex, Payload: json.RawMessage(`{"text":"first"}`)},
+		{Seq: 2, TurnID: &turnID, Type: primitives.EventTypePromptUser, Adapter: primitives.AdapterClaudeCode, Payload: json.RawMessage(`{"text":"second"}`)},
+	})
+	if err == nil || !strings.Contains(err.Error(), "multiple prompt.user events") {
+		t.Fatalf("inspectInstruction error = %v", err)
+	}
+}
+
 func TestSessionMetadataRejectsMalformedPayloads(t *testing.T) {
 	for name, payload := range map[string]json.RawMessage{
 		"invalid json":     json.RawMessage(`{"model":`),
