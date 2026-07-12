@@ -139,7 +139,7 @@ func TestCodexHookLifecycleUsesRootCheckoutFromLinkedWorktree(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(linkedWorktree, ".codex", "config.toml")); !os.IsNotExist(err) {
 		t.Fatalf("linked worktree config exists or could not be checked: %v", err)
 	}
-	if health := inspectCodexHooks(linkedWorktree, "turnal"); !health.OK() || health.ConfigPath != rootConfig {
+	if health := inspectCodexHooks(linkedWorktree, "turnal"); !health.OK() || !fsidentity.Same(health.ConfigPath, rootConfig) {
 		t.Fatalf("linked-worktree health = %#v", health)
 	}
 
