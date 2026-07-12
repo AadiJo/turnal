@@ -136,6 +136,8 @@ func TestVerifierBackgroundHelperProcess(t *testing.T) {
 		os.Exit(36)
 	}
 	child := exec.Command(os.Args[0], "-test.run=^TestVerifierBackgroundHelperProcess$", "--", "child", marker)
+	child.Stdout = os.Stdout
+	child.Stderr = os.Stderr
 	if err := child.Start(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(37)
