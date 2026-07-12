@@ -51,6 +51,7 @@ func Run(ctx context.Context, request Request) (Report, error) {
 		Target:        request.Target,
 		StartedAt:     started,
 		Checks:        make([]Check, 0, len(request.Verifiers)),
+		Summary:       Summary{Outcome: "passed"},
 	}
 	for _, definition := range request.Verifiers {
 		result := runOne(ctx, request, definition)
@@ -61,10 +62,13 @@ func Run(ctx context.Context, request Request) (Report, error) {
 			report.Summary.Passed++
 		case StatusFailed:
 			report.Summary.Failed++
+			report.Summary.Outcome = "failed"
 		case StatusTimedOut:
 			report.Summary.TimedOut++
+			report.Summary.Outcome = "failed"
 		case StatusLaunchError:
 			report.Summary.LaunchError++
+			report.Summary.Outcome = "failed"
 		}
 	}
 	report.FinishedAt = request.Now().UTC()
