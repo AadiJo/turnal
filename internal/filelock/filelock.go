@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -12,11 +13,12 @@ import (
 var ErrBusy = errors.New("lock busy")
 
 type Lock struct {
-	file *os.File
-	path string
+	file     *os.File
+	path     string
+	identity Identity
 }
 
-type owner struct {
+type Identity struct {
 	PID        int
 	AcquiredAt string
 }
@@ -33,7 +35,7 @@ func Acquire(path string, timeout time.Duration) (*Lock, error) {
 	} else if err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("inspect lock path: %w", err)
 	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	file, err := openRegularLockFile(path, true)
 	if err != nil {
 		return nil, fmt.Errorf("open lock file: %w", err)
 	}
@@ -66,6 +68,43 @@ func Acquire(path string, timeout time.Duration) (*Lock, error) {
 	}
 }
 
+func (lock *Lock) Identity() Identity {
+	if lock == nil {
+		return Identity{}
+	}
+	return lock.identity
+}
+
+// Inspect reports both kernel lock occupancy and the identity written by the
+// process that acquired it. Callers can bind authorization to the original
+// owner rather than trusting occupancy of a predictable path.
+func Inspect(path string) (Identity, bool, error) {
+	held, err := Held(path)
+	if err != nil || !held {
+		return Identity{}, held, err
+	}
+	file, err := openRegularLockFile(path, false)
+	if err != nil {
+		return Identity{}, false, fmt.Errorf("open lock owner: %w", err)
+	}
+	data, err := io.ReadAll(file)
+	closeErr := file.Close()
+	if err != nil {
+		return Identity{}, false, fmt.Errorf("read lock owner: %w", err)
+	}
+	if closeErr != nil {
+		return Identity{}, false, fmt.Errorf("close lock owner: %w", closeErr)
+	}
+	var identity Identity
+	if err := json.Unmarshal(data, &identity); err != nil {
+		return Identity{}, false, fmt.Errorf("decode lock owner: %w", err)
+	}
+	if identity.PID <= 0 || identity.AcquiredAt == "" {
+		return Identity{}, false, fmt.Errorf("invalid lock owner identity at %s", path)
+	}
+	return identity, true, nil
+}
+
 func Held(path string) (bool, error) {
 	if path == "" {
 		return false, fmt.Errorf("lock path is required")
@@ -80,7 +119,7 @@ func Held(path string) (bool, error) {
 	if info.IsDir() {
 		return false, fmt.Errorf("legacy directory lock present at %s", path)
 	}
-	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	file, err := openRegularLockFile(path, false)
 	if err != nil {
 		return false, fmt.Errorf("open lock file: %w", err)
 	}
@@ -103,6 +142,23 @@ func Held(path string) (bool, error) {
 	return false, nil
 }
 
+func openRegularLockFile(path string, create bool) (*os.File, error) {
+	file, err := openLockFileNoFollow(path, create)
+	if err != nil {
+		return nil, err
+	}
+	regular, err := isRegularLockFile(file)
+	if err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("inspect opened lock file: %w", err)
+	}
+	if !regular {
+		_ = file.Close()
+		return nil, fmt.Errorf("lock path %s is not a regular file", path)
+	}
+	return file, nil
+}
+
 func (lock *Lock) Release() error {
 	if lock == nil || lock.file == nil {
 		return nil
@@ -120,10 +176,11 @@ func (lock *Lock) Release() error {
 }
 
 func (lock *Lock) writeOwner() error {
-	data, err := json.Marshal(owner{
+	lock.identity = Identity{
 		PID:        os.Getpid(),
 		AcquiredAt: time.Now().UTC().Format(time.RFC3339Nano),
-	})
+	}
+	data, err := json.Marshal(lock.identity)
 	if err != nil {
 		return fmt.Errorf("encode lock owner: %w", err)
 	}

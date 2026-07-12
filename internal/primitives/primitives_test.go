@@ -45,6 +45,47 @@ func TestAdapterName(t *testing.T) {
 	}
 }
 
+func TestRunAndAttemptIDValidationAndSerialization(t *testing.T) {
+	run, err := ParseRunID(" RUN_0123456789ABCDEF0123456789ABCDEF ")
+	if err != nil || run.String() != "run_0123456789abcdef0123456789abcdef" {
+		t.Fatalf("ParseRunID() = %q, %v", run, err)
+	}
+	attempt, err := ParseAttemptID("attempt_fedcba9876543210fedcba9876543210")
+	if err != nil {
+		t.Fatalf("ParseAttemptID: %v", err)
+	}
+
+	type record struct {
+		Run     RunID     `json:"run_id"`
+		Attempt AttemptID `json:"attempt_id"`
+	}
+	encoded, err := json.Marshal(record{Run: run, Attempt: attempt})
+	if err != nil {
+		t.Fatalf("marshal ids: %v", err)
+	}
+	var decoded record
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("unmarshal ids: %v", err)
+	}
+	if decoded.Run != run || decoded.Attempt != attempt {
+		t.Fatalf("round trip = %+v", decoded)
+	}
+
+	invalidIDs := []struct {
+		value string
+		parse func(string) error
+	}{
+		{"attempt_0123456789abcdef0123456789abcdef", func(value string) error { _, err := ParseRunID(value); return err }},
+		{"run_0123", func(value string) error { _, err := ParseRunID(value); return err }},
+		{"attempt_0123456789abcdef0123456789abcdeg", func(value string) error { _, err := ParseAttemptID(value); return err }},
+	}
+	for _, test := range invalidIDs {
+		if err := test.parse(test.value); err == nil {
+			t.Fatalf("expected %q to be rejected", test.value)
+		}
+	}
+}
+
 func TestTurnIDAndEventSeq(t *testing.T) {
 	turn, err := ParseTurnID("000007")
 	if err != nil {
@@ -123,6 +164,10 @@ func TestEventType(t *testing.T) {
 		EventTypeRollback,
 		EventTypeError,
 		EventTypeAdapterRaw,
+		EventTypeRunStart,
+		EventTypeRunCaptureLink,
+		EventTypeRunAttemptLink,
+		EventTypeRunFinish,
 	} {
 		if _, err := ParseEventType(eventType.String()); err != nil {
 			t.Fatalf("ParseEventType(%q): %v", eventType, err)
