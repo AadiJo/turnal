@@ -200,16 +200,22 @@ func inspectInstruction(events []eventlog.Event) (Instruction, error) {
 		if event.Type != primitives.EventTypePromptUser {
 			continue
 		}
-		var payload struct {
-			Text string `json:"text"`
-		}
+		var payload map[string]json.RawMessage
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
 			return Instruction{}, malformedPayloadError(event, err)
 		}
-		if string(event.Payload) == "null" {
+		if payload == nil {
 			return Instruction{}, malformedPayloadError(event, fmt.Errorf("payload must be an object"))
 		}
-		text := strings.TrimSpace(payload.Text)
+		rawText, ok := payload["text"]
+		if !ok {
+			return Instruction{}, malformedPayloadError(event, fmt.Errorf("text is required"))
+		}
+		textValue, err := payloadString(rawText, "text")
+		if err != nil {
+			return Instruction{}, malformedPayloadError(event, err)
+		}
+		text := strings.TrimSpace(textValue)
 		if instruction.Status != InstructionMissing {
 			continue
 		}
@@ -232,23 +238,48 @@ func sessionMetadata(events []eventlog.Event, adapter primitives.AdapterName) (s
 		if event.Type != primitives.EventTypeSessionStart {
 			continue
 		}
-		var payload struct {
-			Model          string `json:"model"`
-			PermissionMode string `json:"permission_mode"`
-		}
+		var payload map[string]json.RawMessage
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
 			return "", "", false, malformedPayloadError(event, err)
 		}
-		if string(event.Payload) == "null" {
+		if payload == nil {
 			return "", "", false, malformedPayloadError(event, fmt.Errorf("payload must be an object"))
 		}
+		parsedModel, err := optionalPayloadString(payload, "model")
+		if err != nil {
+			return "", "", false, malformedPayloadError(event, err)
+		}
+		parsedPermissionMode, err := optionalPayloadString(payload, "permission_mode")
+		if err != nil {
+			return "", "", false, malformedPayloadError(event, err)
+		}
 		if !found && event.Adapter == adapter {
-			model = strings.TrimSpace(payload.Model)
-			permissionMode = strings.TrimSpace(payload.PermissionMode)
+			model = strings.TrimSpace(parsedModel)
+			permissionMode = strings.TrimSpace(parsedPermissionMode)
 			found = true
 		}
 	}
 	return model, permissionMode, found, nil
+}
+
+func optionalPayloadString(payload map[string]json.RawMessage, name string) (string, error) {
+	raw, ok := payload[name]
+	if !ok {
+		return "", nil
+	}
+	return payloadString(raw, name)
+}
+
+func payloadString(raw json.RawMessage, name string) (string, error) {
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", fmt.Errorf("%s is invalid: %w", name, err)
+	}
+	text, ok := value.(string)
+	if !ok {
+		return "", fmt.Errorf("%s must be a string", name)
+	}
+	return text, nil
 }
 
 func malformedPayloadError(event eventlog.Event, err error) error {

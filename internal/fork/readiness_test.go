@@ -117,6 +117,8 @@ func TestInspectRequiresRepo(t *testing.T) {
 func TestInspectInstructionRejectsMalformedPayloads(t *testing.T) {
 	for name, payload := range map[string]json.RawMessage{
 		"invalid json":     json.RawMessage(`{"text":`),
+		"missing field":    json.RawMessage(`{}`),
+		"null field":       json.RawMessage(`{"text":null}`),
 		"wrong field type": json.RawMessage(`{"text":42}`),
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -135,6 +137,7 @@ func TestInspectInstructionRejectsMalformedPayloads(t *testing.T) {
 func TestSessionMetadataRejectsMalformedPayloads(t *testing.T) {
 	for name, payload := range map[string]json.RawMessage{
 		"invalid json":     json.RawMessage(`{"model":`),
+		"null field":       json.RawMessage(`{"model":null}`),
 		"wrong field type": json.RawMessage(`{"model":false}`),
 	} {
 		t.Run(name, func(t *testing.T) {
