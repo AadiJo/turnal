@@ -31,4 +31,13 @@ func (controller *unixProcessController) Cancel() error {
 	return err
 }
 
-func (controller *unixProcessController) Close() error { return nil }
+func (controller *unixProcessController) Close() error {
+	if controller.cmd.Process == nil {
+		return nil
+	}
+	err := syscall.Kill(-controller.cmd.Process.Pid, syscall.SIGKILL)
+	if errors.Is(err, syscall.ESRCH) {
+		return nil
+	}
+	return err
+}

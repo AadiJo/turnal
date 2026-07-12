@@ -7,10 +7,13 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
+
+var ntResumeProcess = windows.NewLazySystemDLL("ntdll.dll").NewProc("NtResumeProcess")
 
 type windowsProcessController struct {
 	cmd      *exec.Cmd
@@ -36,6 +39,7 @@ func newProcessController(cmd *exec.Cmd) (processController, error) {
 		_ = windows.CloseHandle(job)
 		return nil, err
 	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_SUSPENDED}
 	return &windowsProcessController{cmd: cmd, job: job}, nil
 }
 
@@ -49,7 +53,7 @@ func (controller *windowsProcessController) AfterStart() error {
 		return fmt.Errorf("process is unavailable")
 	}
 	process, err := windows.OpenProcess(
-		windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE|windows.PROCESS_QUERY_LIMITED_INFORMATION,
+		windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE|windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_SUSPEND_RESUME,
 		false,
 		uint32(controller.cmd.Process.Pid),
 	)
@@ -61,6 +65,10 @@ func (controller *windowsProcessController) AfterStart() error {
 		return err
 	}
 	controller.assigned = true
+	status, _, _ := ntResumeProcess.Call(uintptr(process))
+	if status != 0 {
+		return windows.NTStatus(status)
+	}
 	return nil
 }
 
