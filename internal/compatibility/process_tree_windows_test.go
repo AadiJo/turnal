@@ -4,6 +4,7 @@ package compatibility
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -14,7 +15,43 @@ import (
 	"time"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/AadiJo/turnal/internal/adapters"
 )
+
+func TestCodexHookCWDComparisonIgnoresWindowsPathCasing(t *testing.T) {
+	root := `C:\Users\Turnal\Workspace`
+	upperRoot := strings.ToUpper(root)
+	raw, err := json.Marshal(map[string]any{"data": []any{map[string]any{
+		"cwd": upperRoot,
+		"hooks": []any{map[string]any{
+			"eventName": "Stop", "command": "turnal codex-hook", "source": "project",
+			"sourcePath": filepath.Join(upperRoot, ".codex", "config.toml"), "enabled": true,
+			"trustStatus": "trusted",
+		}},
+	}}})
+	if err != nil {
+		t.Fatalf("marshal hooks/list result: %v", err)
+	}
+	decoded, err := decodeHooksResult(raw, root)
+	if err != nil || len(decoded.Hooks) != 1 {
+		t.Fatalf("decoded hooks = %#v, err = %v", decoded.Hooks, err)
+	}
+
+	var hooks []CodexHook
+	for _, event := range expectedCodexEventNames {
+		hooks = append(hooks, CodexHook{
+			CWD: upperRoot, EventName: event, Command: "turnal codex-hook", Source: "project",
+			SourcePath: filepath.Join(upperRoot, ".codex", "config.toml"), Enabled: true,
+			TrustStatus: "trusted",
+		})
+	}
+	health := adapters.HookHealth{Target: adapters.TargetCodex, Status: adapters.HookConfigurationConfigured}
+	classified := ClassifyCodexHooks(root, "turnal codex-hook", health, CodexHooksResult{Hooks: hooks})
+	if classified.Discovered != 4 || classified.Expectation != CaptureAvailable {
+		t.Fatalf("classified hooks = %#v", classified)
+	}
+}
 
 func TestAppServerProbeContainsFastDescendantFromStartup(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "descendant.pid")

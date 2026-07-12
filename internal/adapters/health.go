@@ -109,6 +109,7 @@ func inspectClaudeHooks(projectRoot string, command string) HookHealth {
 }
 
 func inspectCodexHooks(projectRoot string, command string) HookHealth {
+	projectRoot = EffectiveHookRoot(projectRoot, TargetCodex)
 	configPath := filepath.Join(projectRoot, ".codex", "config.toml")
 	health := HookHealth{Target: TargetCodex, ConfigPath: configPath, Status: HookConfigurationConfigured}
 

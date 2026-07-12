@@ -48,11 +48,7 @@ func Diagnose(ctx context.Context, options Options) Report {
 func InspectStaticHooks(workspaceRoot, hookCommand string, targets []adapters.Target) []adapters.HookHealth {
 	health := make([]adapters.HookHealth, 0, len(targets))
 	for _, target := range targets {
-		inspectionRoot := workspaceRoot
-		if target == adapters.TargetCodex {
-			inspectionRoot = codexStaticInspectionRoot(workspaceRoot)
-		}
-		health = append(health, adapters.InspectHooksForTargets(inspectionRoot, hookCommand, []adapters.Target{target})...)
+		health = append(health, adapters.InspectHooksForTargets(workspaceRoot, hookCommand, []adapters.Target{target})...)
 	}
 	return health
 }

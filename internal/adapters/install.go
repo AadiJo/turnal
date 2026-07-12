@@ -64,7 +64,7 @@ func ResolveTargets(projectRoot string, target Target) ([]Target, error) {
 		if pathExists(filepath.Join(projectRoot, ".claude")) || commandExists("claude") {
 			targets = append(targets, TargetClaude)
 		}
-		if pathExists(filepath.Join(projectRoot, ".codex")) || commandExists("codex") {
+		if pathExists(filepath.Join(EffectiveHookRoot(projectRoot, TargetCodex), ".codex")) || commandExists("codex") {
 			targets = append(targets, TargetCodex)
 		}
 		if len(targets) == 0 {
@@ -269,6 +269,7 @@ func InstallCodexHook(projectRoot string) (InstallResult, error) {
 }
 
 func InstallCodexHookWithOptions(projectRoot string, opts InstallOptions) (InstallResult, error) {
+	projectRoot = EffectiveHookRoot(projectRoot, TargetCodex)
 	result := InstallResult{Target: TargetCodex}
 	codexDir := filepath.Join(projectRoot, ".codex")
 	configPath := filepath.Join(codexDir, "config.toml")
@@ -333,6 +334,7 @@ func UninstallCodexHook(projectRoot string) (UninstallResult, error) {
 }
 
 func UninstallCodexHookWithOptions(projectRoot string, opts UninstallOptions) (UninstallResult, error) {
+	projectRoot = EffectiveHookRoot(projectRoot, TargetCodex)
 	result := UninstallResult{Target: TargetCodex, DryRun: opts.DryRun}
 	configPath := filepath.Join(projectRoot, ".codex", "config.toml")
 	result.ConfigPath = configPath

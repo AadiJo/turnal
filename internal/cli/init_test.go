@@ -92,6 +92,55 @@ update_gitignore = false
 	}
 }
 
+func TestInitUsesRootCheckoutCodexHooksFromLinkedWorktree(t *testing.T) {
+	requireGit(t)
+	isolateAgentConfig(t)
+	parent := t.TempDir()
+	mainPath := filepath.Join(parent, "main")
+	linkedPath := filepath.Join(parent, "linked")
+	if err := os.MkdirAll(mainPath, 0o755); err != nil {
+		t.Fatalf("mkdir main worktree: %v", err)
+	}
+	runForkUserGit(t, mainPath, "init")
+	runForkUserGit(t, mainPath, "config", "user.email", "turnal@example.test")
+	runForkUserGit(t, mainPath, "config", "user.name", "Turnal Test")
+	if err := os.WriteFile(filepath.Join(mainPath, "tracked.txt"), []byte("tracked\n"), 0o644); err != nil {
+		t.Fatalf("write tracked file: %v", err)
+	}
+	runForkUserGit(t, mainPath, "add", "tracked.txt")
+	runForkUserGit(t, mainPath, "commit", "-m", "initial")
+	runForkUserGit(t, mainPath, "worktree", "add", "-b", "init-linked-test", linkedPath)
+	t.Chdir(linkedPath)
+
+	initCmd := NewRootCmd()
+	var initOut bytes.Buffer
+	initCmd.SetOut(&initOut)
+	initCmd.SetErr(&initOut)
+	initCmd.SetArgs([]string{"init", "--agent", "codex"})
+	if err := initCmd.Execute(); err != nil {
+		t.Fatalf("linked-worktree init: %v\n%s", err, initOut.String())
+	}
+	rootConfig := filepath.Join(mainPath, ".codex", "config.toml")
+	if !strings.Contains(initOut.String(), "configured codex hooks: "+rootConfig) {
+		t.Fatalf("init output did not report root-checkout config:\n%s", initOut.String())
+	}
+	if _, err := os.Stat(filepath.Join(linkedPath, ".codex", "config.toml")); !os.IsNotExist(err) {
+		t.Fatalf("linked worktree config exists or could not be checked: %v", err)
+	}
+
+	statusCmd := NewRootCmd()
+	var statusOut bytes.Buffer
+	statusCmd.SetOut(&statusOut)
+	statusCmd.SetErr(&statusOut)
+	statusCmd.SetArgs([]string{"status"})
+	if err := statusCmd.Execute(); err != nil {
+		t.Fatalf("status after linked-worktree init: %v\n%s", err, statusOut.String())
+	}
+	if !strings.Contains(statusOut.String(), "hooks:      ok") || !strings.Contains(statusOut.String(), "state:      ok") {
+		t.Fatalf("status output not ok:\n%s", statusOut.String())
+	}
+}
+
 func TestInitCommandUsesGitSyncConfig(t *testing.T) {
 	requireGit(t)
 	writeGlobalAgentConfig(t, `

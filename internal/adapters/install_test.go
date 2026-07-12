@@ -124,6 +124,59 @@ command = "echo keep"
 	}
 }
 
+func TestCodexHookLifecycleUsesRootCheckoutFromLinkedWorktree(t *testing.T) {
+	rootCheckout, linkedWorktree := createAdapterLinkedWorktree(t)
+	installed, err := InstallCodexHookWithOptions(linkedWorktree, InstallOptions{HookCommand: "turnal"})
+	if err != nil {
+		t.Fatalf("install linked-worktree Codex hooks: %v", err)
+	}
+	rootConfig := filepath.Join(rootCheckout, ".codex", "config.toml")
+	if installed.ConfigPath != rootConfig {
+		t.Fatalf("installed config = %q, want %q", installed.ConfigPath, rootConfig)
+	}
+	if _, err := os.Stat(filepath.Join(linkedWorktree, ".codex", "config.toml")); !os.IsNotExist(err) {
+		t.Fatalf("linked worktree config exists or could not be checked: %v", err)
+	}
+	if health := inspectCodexHooks(linkedWorktree, "turnal"); !health.OK() || health.ConfigPath != rootConfig {
+		t.Fatalf("linked-worktree health = %#v", health)
+	}
+
+	removed, err := UninstallCodexHookWithOptions(linkedWorktree, UninstallOptions{})
+	if err != nil {
+		t.Fatalf("uninstall linked-worktree Codex hooks: %v", err)
+	}
+	if removed.ConfigPath != rootConfig || removed.RemovedCommands != 4 {
+		t.Fatalf("uninstall result = %#v", removed)
+	}
+	data, err := os.ReadFile(rootConfig)
+	if err != nil {
+		t.Fatalf("read root-checkout config: %v", err)
+	}
+	if strings.Contains(string(data), "turnal codex-hook") {
+		t.Fatalf("root-checkout Turnal hooks remain:\n%s", data)
+	}
+}
+
+func createAdapterLinkedWorktree(t *testing.T) (string, string) {
+	t.Helper()
+	rootCheckout := t.TempDir()
+	linkedWorktree := filepath.Join(t.TempDir(), "linked")
+	gitDir := filepath.Join(rootCheckout, ".git", "worktrees", "linked")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(linkedWorktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(linkedWorktree, ".git"), []byte("gitdir: "+gitDir+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "commondir"), []byte("../..\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return rootCheckout, linkedWorktree
+}
+
 func TestUninstallHooksRemovesTurnalCommandsAndPreservesOthers(t *testing.T) {
 	root := t.TempDir()
 
