@@ -76,7 +76,7 @@ func statusCmdWithProbe(codexProbe compatibility.CodexProbe) *cobra.Command {
 						hooksOK = false
 						status.Problems = append(status.Problems, err.Error())
 					} else {
-						hookHealth = adapters.InspectHooksForTargets(root.String(), effective.Hooks.Command, targets)
+						hookHealth = compatibility.InspectStaticHooks(root.String(), effective.Hooks.Command, targets)
 						for _, health := range hookHealth {
 							if !health.OK() {
 								hooksOK = false
