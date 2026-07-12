@@ -24,18 +24,19 @@ type turnPayload struct {
 }
 
 type checkpointPayload struct {
-	Turn          uint64               `json:"turn"`
-	Phase         string               `json:"phase"`
-	CheckpointID  string               `json:"checkpoint_id,omitempty"`
-	WorktreeID    string               `json:"worktree_id,omitempty"`
-	StreamID      string               `json:"stream_id,omitempty"`
-	CommitSHA     string               `json:"commit_sha"`
-	Ref           string               `json:"ref"`
-	CanonicalRef  string               `json:"canonical_ref,omitempty"`
-	GitSyncRef    string               `json:"git_sync_ref,omitempty"`
-	EventSeqStart uint64               `json:"event_seq_start"`
-	EventSeqEnd   uint64               `json:"event_seq_end"`
-	UserGit       workspacegit.Context `json:"user_git"`
+	Turn             uint64               `json:"turn"`
+	Phase            string               `json:"phase"`
+	CheckpointID     string               `json:"checkpoint_id,omitempty"`
+	WorktreeID       string               `json:"worktree_id,omitempty"`
+	StreamID         string               `json:"stream_id,omitempty"`
+	CommitSHA        string               `json:"commit_sha"`
+	Ref              string               `json:"ref"`
+	CanonicalRef     string               `json:"canonical_ref,omitempty"`
+	GitSyncRef       string               `json:"git_sync_ref,omitempty"`
+	GitSyncCommitSHA string               `json:"git_sync_commit_sha,omitempty"`
+	EventSeqStart    uint64               `json:"event_seq_start"`
+	EventSeqEnd      uint64               `json:"event_seq_end"`
+	UserGit          workspacegit.Context `json:"user_git"`
 }
 
 func (recorder Recorder) Start(sessionID primitives.SessionID, requestedTurnID primitives.TurnID) (turns.StartResult, error) {
@@ -106,8 +107,10 @@ func AppendCheckpoint(log eventlog.Log, adapter primitives.AdapterName, sessionI
 
 func AppendCheckpointWithGitSync(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, phase primitives.CheckpointPhase, created checkpoint.Checkpoint, gitSync *checkpoint.Snapshot, rawRef string) error {
 	gitSyncRef := ""
+	gitSyncCommitSHA := ""
 	if gitSync != nil {
 		gitSyncRef = gitSync.Ref
+		gitSyncCommitSHA = gitSync.Commit.String()
 	}
 	repo := checkpointRepoFromLog(log)
 	userGit, err := workspacegit.Open(repo.WorkspaceRoot).Context()
@@ -127,18 +130,19 @@ func AppendCheckpointWithGitSync(log eventlog.Log, adapter primitives.AdapterNam
 				return nil, err
 			}
 			return mustJSON(checkpointPayload{
-				Turn:          turnID.Uint64(),
-				Phase:         phase.String(),
-				CheckpointID:  created.ID.String(),
-				WorktreeID:    created.WorktreeID.String(),
-				StreamID:      created.StreamID.String(),
-				CommitSHA:     created.Commit.String(),
-				Ref:           created.Ref.String(),
-				CanonicalRef:  created.CanonicalRef.String(),
-				GitSyncRef:    gitSyncRef,
-				EventSeqStart: eventSeqStart.Uint64(),
-				EventSeqEnd:   context.Seq.Uint64(),
-				UserGit:       userGit,
+				Turn:             turnID.Uint64(),
+				Phase:            phase.String(),
+				CheckpointID:     created.ID.String(),
+				WorktreeID:       created.WorktreeID.String(),
+				StreamID:         created.StreamID.String(),
+				CommitSHA:        created.Commit.String(),
+				Ref:              created.Ref.String(),
+				CanonicalRef:     created.CanonicalRef.String(),
+				GitSyncRef:       gitSyncRef,
+				GitSyncCommitSHA: gitSyncCommitSHA,
+				EventSeqStart:    eventSeqStart.Uint64(),
+				EventSeqEnd:      context.Seq.Uint64(),
+				UserGit:          userGit,
 			}), nil
 		},
 	})

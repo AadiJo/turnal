@@ -479,6 +479,30 @@ func TestParseCheckpointPayloadRejectsMismatchedEventSequence(t *testing.T) {
 	}
 }
 
+func TestParseCheckpointPayloadRejectsGitSyncCommitWithoutRef(t *testing.T) {
+	sessionID, _ := primitives.ParseSessionID("git-sync-commit-without-ref")
+	turnID, _ := primitives.NewTurnID(1)
+	ref, err := primitives.NewCheckpointRef(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("NewCheckpointRef: %v", err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"turn":                1,
+		"phase":               "pre",
+		"commit_sha":          strings.Repeat("a", 40),
+		"ref":                 ref,
+		"git_sync_commit_sha": strings.Repeat("b", 40),
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	_, err = parseCheckpointPayload(sessionID, turnID, eventlog.Event{Seq: 2, Payload: payload})
+	if err == nil || !strings.Contains(err.Error(), "git_sync_commit_sha requires git_sync_ref") {
+		t.Fatalf("parseCheckpointPayload error = %v", err)
+	}
+}
+
 func transcriptText(transcript *Transcript) string {
 	var values []string
 	for _, message := range transcript.Messages {

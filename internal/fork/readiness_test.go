@@ -12,6 +12,7 @@ import (
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/recall"
 	"github.com/AadiJo/turnal/internal/turnevents"
 	"github.com/AadiJo/turnal/internal/turns"
 )
@@ -131,6 +132,37 @@ func TestInspectRejectsPostCheckpointRefCommitMismatch(t *testing.T) {
 	_, err = NewAnalyzer(repo).Inspect(sessionID, turnID)
 	if err == nil || !strings.Contains(err.Error(), "post-turn checkpoint ref") {
 		t.Fatalf("Inspect error = %v", err)
+	}
+}
+
+func TestVerifyCheckpointRejectsGitSyncRefCommitMismatch(t *testing.T) {
+	repo, sessionID, turnID := readinessFixture(t, "Fix the parser", true)
+	checkpointRef, err := repo.CheckpointRefFor(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("CheckpointRefFor: %v", err)
+	}
+	checkpointCommit, err := repo.CheckpointCommit(checkpointRef)
+	if err != nil {
+		t.Fatalf("CheckpointCommit: %v", err)
+	}
+	gitSyncRef, err := repo.GitSyncRefFor(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("GitSyncRefFor: %v", err)
+	}
+	if _, err := repo.CreateSyntheticSnapshotRef(gitSyncRef, "different Git-sync snapshot", []checkpoint.SyntheticTreeEntry{
+		{Path: "git-state.txt", Mode: primitives.GitFileModeRegular, Content: []byte("different\n")},
+	}); err != nil {
+		t.Fatalf("CreateSyntheticSnapshotRef: %v", err)
+	}
+
+	err = verifyCheckpoint(repo, recall.Checkpoint{
+		Ref:              checkpointRef,
+		CommitSHA:        checkpointCommit,
+		GitSyncRef:       gitSyncRef,
+		GitSyncCommitSHA: checkpointCommit,
+	}, "pre-turn")
+	if err == nil || !strings.Contains(err.Error(), "Git-sync ref") {
+		t.Fatalf("verifyCheckpoint error = %v", err)
 	}
 }
 
