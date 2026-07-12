@@ -131,13 +131,23 @@ func inspectCodexHooks(projectRoot string, command string) HookHealth {
 		health.Problems = append(health.Problems, fmt.Sprintf("parse codex hooks: %v", err))
 		return health
 	}
-	features, _ := config["features"].(map[string]any)
-	if features == nil || features["hooks"] != true {
+	features, featuresExist, err := configMapSection(config, "features")
+	if err != nil {
+		health.Status = HookConfigurationMalformed
+		health.Problems = append(health.Problems, fmt.Sprintf("Codex config: %v", err))
+		return health
+	}
+	if !featuresExist || features["hooks"] != true {
 		health.Status = HookConfigurationDisabled
 		health.Problems = append(health.Problems, "codex hooks feature flag is not enabled")
 	}
-	hooks, _ := config["hooks"].(map[string]any)
-	if hooks == nil {
+	hooks, hooksExist, err := configMapSection(config, "hooks")
+	if err != nil {
+		health.Status = HookConfigurationMalformed
+		health.Problems = append(health.Problems, fmt.Sprintf("Codex config: %v", err))
+		return health
+	}
+	if !hooksExist {
 		if health.Status != HookConfigurationDisabled {
 			health.Status = HookConfigurationIncomplete
 		}
