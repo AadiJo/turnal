@@ -73,7 +73,11 @@ func (probe AppServerProbe) Probe(parent context.Context, workspaceRoot, expecte
 	if command.Env == nil {
 		command.Env = os.Environ()
 	}
-	prepareProcessTree(command)
+	processTree, err := prepareProcessTree(command)
+	if err != nil {
+		return result, fmt.Errorf("prepare Codex app-server process tree: %w", err)
+	}
+	defer releaseProcessTree(processTree)
 	stdin, err := command.StdinPipe()
 	if err != nil {
 		return result, fmt.Errorf("open Codex app-server stdin: %w", err)
@@ -89,11 +93,9 @@ func (probe AppServerProbe) Probe(parent context.Context, workspaceRoot, expecte
 	if err := command.Start(); err != nil {
 		return result, fmt.Errorf("start Codex app-server: %w", err)
 	}
-	processTree, err := attachProcessTree(command)
-	if err != nil {
-		_ = command.Process.Kill()
-		_ = command.Wait()
-		return result, fmt.Errorf("supervise Codex app-server process tree: %w", err)
+	if err := attachProcessTree(processTree, command); err != nil {
+		abortErr := abortAppServerStart(command, processTree, probe.ShutdownTimeout)
+		return result, errors.Join(fmt.Errorf("supervise Codex app-server process tree: %w", err), abortErr)
 	}
 
 	var stderrCapture boundedBuffer
@@ -178,6 +180,20 @@ func (probe AppServerProbe) Probe(parent context.Context, workspaceRoot, expecte
 			}
 			return result, fmt.Errorf("read Codex app-server response: %w", readErr)
 		}
+	}
+}
+
+func abortAppServerStart(command *exec.Cmd, processTree *appServerProcessTree, timeout time.Duration) error {
+	killErr := killProcessTree(processTree, command, timeout)
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- command.Wait() }()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-waitDone:
+		return killErr
+	case <-timer.C:
+		return errors.Join(killErr, errors.New("timed out reaping Codex app-server after process-tree setup failure"))
 	}
 }
 
@@ -309,7 +325,6 @@ func stringifyMessages(messages []json.RawMessage) []string {
 }
 
 func finishAppServer(command *exec.Cmd, processTree *appServerProcessTree, waitDone <-chan error, stderrDone <-chan struct{}, stderr *boundedBuffer, timeout time.Duration, current error, pipes ...io.Closer) error {
-	defer releaseProcessTree(processTree)
 	waitErr, reaped, drained := awaitAppServerShutdown(waitDone, stderrDone, timeout, false, false)
 	var shutdownErr error
 	if !reaped || !drained {
@@ -487,6 +502,18 @@ func codexProjectSourcePaths(workspaceRoot string) map[string]struct{} {
 		paths[normalizeFilePath(filepath.Join(rootCheckout, ".codex", "config.toml"))] = struct{}{}
 	}
 	return paths
+}
+
+func codexStaticInspectionRoot(workspaceRoot string) string {
+	rootCheckout, ok := linkedWorktreeRootCheckout(workspaceRoot)
+	if !ok {
+		return workspaceRoot
+	}
+	configPath := filepath.Join(rootCheckout, ".codex", "config.toml")
+	if info, err := os.Stat(configPath); err == nil && !info.IsDir() {
+		return rootCheckout
+	}
+	return workspaceRoot
 }
 
 func linkedWorktreeRootCheckout(workspaceRoot string) (string, bool) {

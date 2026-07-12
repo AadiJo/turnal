@@ -9,13 +9,13 @@ import (
 	"time"
 )
 
-func prepareProcessTree(_ *exec.Cmd) {}
+func prepareProcessTree(_ *exec.Cmd) (*appServerProcessTree, error) {
+	return &appServerProcessTree{}, nil
+}
 
 type appServerProcessTree struct{}
 
-func attachProcessTree(_ *exec.Cmd) (*appServerProcessTree, error) {
-	return &appServerProcessTree{}, nil
-}
+func attachProcessTree(_ *appServerProcessTree, _ *exec.Cmd) error { return nil }
 
 func releaseProcessTree(_ *appServerProcessTree) {}
 
