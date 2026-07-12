@@ -196,6 +196,7 @@ func (analyzer Analyzer) Inspect(sessionID primitives.SessionID, turnID primitiv
 
 func inspectInstruction(events []eventlog.Event) (Instruction, error) {
 	instruction := Instruction{Status: InstructionMissing}
+	promptSeen := false
 	for _, event := range events {
 		if event.Type != primitives.EventTypePromptUser {
 			continue
@@ -215,10 +216,11 @@ func inspectInstruction(events []eventlog.Event) (Instruction, error) {
 		if err != nil {
 			return Instruction{}, malformedPayloadError(event, err)
 		}
-		text := strings.TrimSpace(textValue)
-		if instruction.Status != InstructionMissing {
-			continue
+		if promptSeen {
+			return Instruction{}, fmt.Errorf("multiple prompt.user events for one turn; duplicate at event %s", event.Seq)
 		}
+		promptSeen = true
+		text := strings.TrimSpace(textValue)
 		switch text {
 		case "":
 			continue
