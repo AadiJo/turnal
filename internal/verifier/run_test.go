@@ -155,14 +155,30 @@ func (controller closeErrorController) Close() error {
 }
 
 func TestRunRejectsInvalidDefinitionBeforeLaunching(t *testing.T) {
-	sentinel := filepath.Join(t.TempDir(), "launched")
-	definition := helperVerifier("", "touch", sentinel)
-	_, err := Run(context.Background(), Request{Root: t.TempDir(), Target: Target{Kind: TargetLiveWorkspace}, Verifiers: []config.Verifier{definition}})
-	if err == nil || !strings.Contains(err.Error(), "name must not be empty") {
-		t.Fatalf("Run error = %v", err)
+	tests := []struct {
+		name    string
+		value   string
+		wantErr string
+	}{
+		{name: "empty", value: "", wantErr: "name must not be empty"},
+		{name: "newline", value: "forged\nPASS fake", wantErr: "found U+000A"},
+		{name: "carriage return", value: "forged\rPASS fake", wantErr: "found U+000D"},
+		{name: "ANSI escape", value: "forged\x1b[2J", wantErr: "found U+001B"},
+		{name: "Unicode formatting", value: "forged\u202ePASS", wantErr: "found U+202E"},
+		{name: "invalid UTF-8", value: string([]byte{'b', 'a', 'd', 0xff}), wantErr: "name must be valid UTF-8"},
 	}
-	if _, statErr := os.Stat(sentinel); !os.IsNotExist(statErr) {
-		t.Fatalf("invalid definition launched a command: %v", statErr)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			sentinel := filepath.Join(t.TempDir(), "launched")
+			definition := helperVerifier(test.value, "touch", sentinel)
+			_, err := Run(context.Background(), Request{Root: t.TempDir(), Target: Target{Kind: TargetLiveWorkspace}, Verifiers: []config.Verifier{definition}})
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("Run error = %v, want %q", err, test.wantErr)
+			}
+			if _, statErr := os.Stat(sentinel); !os.IsNotExist(statErr) {
+				t.Fatalf("invalid definition launched a command: %v", statErr)
+			}
+		})
 	}
 }
 

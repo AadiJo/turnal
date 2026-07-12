@@ -252,7 +252,7 @@ args = ["test", "-race", "./..."]
 timeout = "5m"
 ```
 
-Each command and argument is passed directly to the operating system in declaration order; Turnal does not invoke a shell or expand variables, globs, pipes, or redirects. Names must be unique, commands and timeouts are required, and malformed or excessive definitions make verification fail before any check starts.
+Each command and argument is passed directly to the operating system in declaration order; Turnal does not invoke a shell or expand variables, globs, pipes, or redirects. Names must be unique printable UTF-8 text without formatting controls, commands and timeouts are required, and malformed or excessive definitions make verification fail before any check starts.
 
 Run the checks directly in the current workspace:
 
