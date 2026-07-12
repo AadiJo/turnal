@@ -84,6 +84,7 @@ func TestVerifyCurrentWorkspacePreservesTurnalAndUserGitState(t *testing.T) {
 
 func TestVerifyRecordedPreAndPostCheckpoints(t *testing.T) {
 	repo, sessionID, turnID := cliRecordedVerifyRepo(t)
+	gitBefore := captureUserGitState(t, repo.WorkspaceRoot.String())
 
 	for _, test := range []struct {
 		phase primitives.CheckpointPhase
@@ -114,6 +115,9 @@ func TestVerifyRecordedPreAndPostCheckpoints(t *testing.T) {
 	}
 	if got := readCLIFile(t, repo.WorkspaceRoot.String(), "app.txt"); got != "after\n" {
 		t.Fatalf("active workspace changed to %q", got)
+	}
+	if gitAfter := captureUserGitState(t, repo.WorkspaceRoot.String()); gitAfter != gitBefore {
+		t.Fatalf("user Git state changed during checkpoint verification\nbefore:\n%s\nafter:\n%s", gitBefore, gitAfter)
 	}
 }
 
@@ -245,7 +249,8 @@ func cliVerifyRepoWithUserGit(t *testing.T) *checkpoint.Repo {
 
 func cliRecordedVerifyRepo(t *testing.T) (*checkpoint.Repo, primitives.SessionID, primitives.TurnID) {
 	t.Helper()
-	repo := cliVerifyRepo(t)
+	repo := cliVerifyRepoWithUserGit(t)
+	initializeUserGitFixture(t, repo.WorkspaceRoot.String())
 	writeCLIFile(t, repo.WorkspaceRoot.String(), ".gitignore", "ignored/\n")
 	writeCLIFile(t, repo.WorkspaceRoot.String(), "ignored/cache.txt", "ignored\n")
 	writeCLIFile(t, repo.WorkspaceRoot.String(), ".env", "SECRET=value\n")

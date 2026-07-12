@@ -64,6 +64,18 @@ func TestRunMissingExecutableIsLaunchError(t *testing.T) {
 	}
 }
 
+func TestRunRejectsInvalidDefinitionBeforeLaunching(t *testing.T) {
+	sentinel := filepath.Join(t.TempDir(), "launched")
+	definition := helperVerifier("", "touch", sentinel)
+	_, err := Run(context.Background(), Request{Root: t.TempDir(), Target: Target{Kind: TargetLiveWorkspace}, Verifiers: []config.Verifier{definition}})
+	if err == nil || !strings.Contains(err.Error(), "name must not be empty") {
+		t.Fatalf("Run error = %v", err)
+	}
+	if _, statErr := os.Stat(sentinel); !os.IsNotExist(statErr) {
+		t.Fatalf("invalid definition launched a command: %v", statErr)
+	}
+}
+
 func TestRunCapturesAndTruncatesStreamsIndependently(t *testing.T) {
 	t.Run("separate streams", func(t *testing.T) {
 		report := runDefinitions(t, helperVerifier("streams", "streams"))
@@ -200,6 +212,10 @@ func TestVerifierHelperProcess(t *testing.T) {
 			os.Exit(18)
 		}
 		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"args": args, "cwd": cwd})
+	case "touch":
+		if len(args) != 1 || os.WriteFile(args[0], []byte("launched"), 0o600) != nil {
+			os.Exit(20)
+		}
 	default:
 		os.Exit(19)
 	}
