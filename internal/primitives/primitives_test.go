@@ -164,6 +164,10 @@ func TestEventType(t *testing.T) {
 		EventTypeRollback,
 		EventTypeError,
 		EventTypeAdapterRaw,
+		EventTypeRunStart,
+		EventTypeRunCaptureLink,
+		EventTypeRunAttemptLink,
+		EventTypeRunFinish,
 	} {
 		if _, err := ParseEventType(eventType.String()); err != nil {
 			t.Fatalf("ParseEventType(%q): %v", eventType, err)
