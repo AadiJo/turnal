@@ -368,6 +368,24 @@ func TestParseCheckpointPayloadRejectsMismatchedScopedIdentity(t *testing.T) {
 	}
 }
 
+func TestValidateSelectedWorktreeRejectsForeignEvent(t *testing.T) {
+	sessionID, _ := primitives.ParseSessionID("foreign-event")
+	turnID, _ := primitives.NewTurnID(1)
+	selected, err := primitives.NewWorktreeID()
+	if err != nil {
+		t.Fatalf("NewWorktreeID: %v", err)
+	}
+	foreign, err := primitives.NewWorktreeID()
+	if err != nil {
+		t.Fatalf("NewWorktreeID: %v", err)
+	}
+
+	err = validateSelectedWorktree(sessionID, turnID, selected, eventlog.Event{Seq: 3, WorktreeID: foreign})
+	if err == nil || !strings.Contains(err.Error(), "does not match selected worktree") {
+		t.Fatalf("validateSelectedWorktree error = %v", err)
+	}
+}
+
 func transcriptText(transcript *Transcript) string {
 	var values []string
 	for _, message := range transcript.Messages {

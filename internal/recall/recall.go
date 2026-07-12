@@ -152,10 +152,18 @@ func (reader Reader) RecallTurn(sessionID primitives.SessionID, turnID primitive
 		if selectedStream != "" && event.StreamID != selectedStream {
 			continue
 		}
-		if event.Type == primitives.EventTypeSessionStart && event.TurnID == nil {
+		isSessionEvent := event.Type == primitives.EventTypeSessionStart && event.TurnID == nil
+		isTurnEvent := event.TurnID != nil && *event.TurnID == parsedTurnID
+		if !isSessionEvent && !isTurnEvent {
+			continue
+		}
+		if err := validateSelectedWorktree(parsedSessionID, parsedTurnID, selectedWorktree, event); err != nil {
+			return Turn{}, err
+		}
+		if isSessionEvent {
 			turn.SessionEvents = append(turn.SessionEvents, event)
 		}
-		if event.TurnID == nil || *event.TurnID != parsedTurnID {
+		if !isTurnEvent {
 			continue
 		}
 		turn.Events = append(turn.Events, event)
@@ -186,6 +194,16 @@ func (reader Reader) RecallTurn(sessionID primitives.SessionID, turnID primitive
 		turn.Transcript = reader.transcript(turn, events)
 	}
 	return turn, nil
+}
+
+func validateSelectedWorktree(sessionID primitives.SessionID, turnID primitives.TurnID, selected primitives.WorktreeID, event eventlog.Event) error {
+	if selected == "" {
+		return nil
+	}
+	if event.WorktreeID != selected {
+		return fmt.Errorf("recall invariant failed for session %s turn %s: event %s worktree %s does not match selected worktree %s", sessionID, turnID, event.Seq, event.WorktreeID, selected)
+	}
+	return nil
 }
 
 func applyEventMetadata(turn *Turn, event eventlog.Event) error {
