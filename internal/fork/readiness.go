@@ -104,7 +104,8 @@ func (analyzer Analyzer) Inspect(sessionID primitives.SessionID, turnID primitiv
 	if err != nil {
 		return Report{}, fmt.Errorf("fork readiness integrity failed: %w", err)
 	}
-	model, permissionMode, hasMetadata, err := sessionMetadata(turn.SessionEvents, instruction.Adapter)
+	metadataAdapter := metadataAdapterFor(instruction, turn.Adapters)
+	model, permissionMode, hasMetadata, err := sessionMetadata(turn.SessionEvents, metadataAdapter)
 	if err != nil {
 		return Report{}, fmt.Errorf("fork readiness integrity failed: %w", err)
 	}
@@ -154,7 +155,7 @@ func (analyzer Analyzer) Inspect(sessionID primitives.SessionID, turnID primitiv
 	report.Source.Model = model
 	report.Source.PermissionMode = permissionMode
 	if hasMetadata {
-		report.Source.MetadataAdapter = instruction.Adapter
+		report.Source.MetadataAdapter = metadataAdapter
 	}
 
 	if turn.PreCheckpoint == nil {
@@ -185,6 +186,16 @@ func (analyzer Analyzer) Inspect(sessionID primitives.SessionID, turnID primitiv
 		report.Readiness = ReadinessNeedsInstruction
 	}
 	return report, nil
+}
+
+func metadataAdapterFor(instruction Instruction, adapters []primitives.AdapterName) primitives.AdapterName {
+	if instruction.Adapter != "" {
+		return instruction.Adapter
+	}
+	if len(adapters) == 1 {
+		return adapters[0]
+	}
+	return ""
 }
 
 func workspaceVCSCondition(recorded recall.Checkpoint) Condition {
