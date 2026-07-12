@@ -248,6 +248,40 @@ func TestRunCodexWrapperPropagatesChildExitCodeAndFinishesTurn(t *testing.T) {
 	}
 }
 
+func TestRunCodexSetupFailureFinalizesRunIncomplete(t *testing.T) {
+	requireGit(t)
+	isolateAgentConfig(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root.String())
+	installFakeCodex(t, root.String(), 0)
+	journalDir := filepath.Join(repo.TmpDir, "checkpoints")
+	if err := os.MkdirAll(journalDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(journalDir, "broken.json"), []byte("{broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRootCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"run", "--quiet", "--", "codex", "exec", "never-starts"})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("setup failure unexpectedly succeeded")
+	}
+	inventory, err := runs.Inspect(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inventory.Runs) != 1 || inventory.Runs[0].Status != runs.StatusIncomplete {
+		t.Fatalf("setup failure projection = %+v", inventory)
+	}
+}
+
 func TestRunCodexLiveEndToEnd(t *testing.T) {
 	if os.Getenv("TURNAL_LIVE_CODEX_TEST") != "1" {
 		t.Skip("set TURNAL_LIVE_CODEX_TEST=1 to run authenticated Codex integration test")
