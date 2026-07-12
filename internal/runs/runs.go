@@ -51,6 +51,7 @@ type finishPayload struct {
 }
 
 type Provenance struct {
+	Field     string                   `json:"field"`
 	SessionID primitives.SessionID     `json:"session_id"`
 	TurnID    *primitives.TurnID       `json:"turn_id,omitempty"`
 	StreamID  primitives.EventStreamID `json:"stream_id,omitempty"`
@@ -64,6 +65,7 @@ type Capture struct {
 	SessionID  primitives.SessionID   `json:"session_id"`
 	Adapter    primitives.AdapterName `json:"adapter"`
 	Provenance Provenance             `json:"provenance"`
+	Fields     []Provenance           `json:"field_provenance,omitempty"`
 }
 
 type Attempt struct {
@@ -87,6 +89,77 @@ type Projection struct {
 	Attempts   []Attempt             `json:"attempts"`
 	Start      Provenance            `json:"start"`
 	Finish     *Provenance           `json:"finish,omitempty"`
+}
+
+type Inventory struct {
+	Runs             []Projection `json:"runs"`
+	UnlinkedCaptures []Capture    `json:"unlinked_captures"`
+}
+
+// Inspect derives all run relationships from durable events and reports every
+// remaining session stream explicitly as an unlinked capture. It never guesses
+// relationships for legacy history.
+func Inspect(repo *checkpoint.Repo) (Inventory, error) {
+	if repo == nil {
+		return Inventory{}, fmt.Errorf("run inspection requires checkpoint repo")
+	}
+	streams, err := eventlog.ListDurableStreams(repo.MetadataDir)
+	if err != nil {
+		return Inventory{}, err
+	}
+	runIDs := map[primitives.RunID]bool{}
+	for _, stream := range streams {
+		for _, event := range stream.Events {
+			if event.Type != primitives.EventTypeRunStart {
+				continue
+			}
+			var payload startPayload
+			if json.Unmarshal(event.Payload, &payload) == nil && payload.RunID != "" {
+				runIDs[payload.RunID] = true
+			}
+		}
+	}
+	var inventory Inventory
+	linked := map[string]bool{}
+	for runID := range runIDs {
+		projection, err := Read(repo, runID)
+		if err != nil {
+			return Inventory{}, err
+		}
+		inventory.Runs = append(inventory.Runs, projection)
+		for _, capture := range projection.Captures {
+			linked[capture.Provenance.StreamID.String()] = true
+		}
+	}
+	for _, stream := range streams {
+		if linked[stream.StreamID.String()] || len(stream.Events) == 0 {
+			continue
+		}
+		first := stream.Events[0]
+		adapter := first.Adapter
+		for _, event := range stream.Events {
+			if adapter == "" && event.Adapter != "" {
+				adapter = event.Adapter
+			}
+		}
+		capture := Capture{Kind: "unlinked", SessionID: stream.SessionID, Adapter: adapter, Provenance: provenance(first)}
+		for _, event := range stream.Events {
+			if field := fieldForEvent(event); field != "" {
+				source := provenance(event)
+				source.Field = field
+				capture.Fields = append(capture.Fields, source)
+			}
+		}
+		inventory.UnlinkedCaptures = append(inventory.UnlinkedCaptures, capture)
+	}
+	sort.Slice(inventory.Runs, func(i, j int) bool { return inventory.Runs[i].ID < inventory.Runs[j].ID })
+	sort.Slice(inventory.UnlinkedCaptures, func(i, j int) bool {
+		if inventory.UnlinkedCaptures[i].SessionID != inventory.UnlinkedCaptures[j].SessionID {
+			return inventory.UnlinkedCaptures[i].SessionID < inventory.UnlinkedCaptures[j].SessionID
+		}
+		return inventory.UnlinkedCaptures[i].Provenance.StreamID < inventory.UnlinkedCaptures[j].Provenance.StreamID
+	})
+	return inventory, nil
 }
 
 func Start(repo *checkpoint.Repo, runID primitives.RunID, wrapperSession primitives.SessionID, command []string) error {
@@ -237,20 +310,46 @@ func Read(repo *checkpoint.Repo, runID primitives.RunID) (Projection, error) {
 	if result.ID == "" {
 		return Projection{}, fmt.Errorf("run %s does not exist in this Turnal store", runID)
 	}
+	for index := range result.Captures {
+		capture := &result.Captures[index]
+		for _, stream := range streams {
+			if stream.SessionID != capture.SessionID || stream.StreamID != capture.Provenance.StreamID {
+				continue
+			}
+			for _, event := range stream.Events {
+				if field := fieldForEvent(event); field != "" {
+					source := provenance(event)
+					source.Field = field
+					capture.Fields = append(capture.Fields, source)
+				}
+			}
+		}
+	}
 	// Attach observable provider fields to their attempt while retaining their exact source.
 	for index := range result.Attempts {
 		attempt := &result.Attempts[index]
 		for _, stream := range streams {
-			if stream.SessionID != attempt.SessionID {
+			if stream.SessionID != attempt.SessionID || stream.StreamID != attempt.Provenance.StreamID {
 				continue
 			}
 			for _, event := range stream.Events {
 				if event.TurnID == nil || *event.TurnID != attempt.TurnID {
 					continue
 				}
-				switch event.Type {
-				case primitives.EventTypeCheckpoint, primitives.EventTypePromptUser, primitives.EventTypeAssistantMessage, primitives.EventTypeToolCall, primitives.EventTypeToolResult:
-					attempt.Fields = append(attempt.Fields, provenance(event))
+				if field := fieldForEvent(event); field != "" && field != "transcript" {
+					source := provenance(event)
+					source.Field = field
+					attempt.Fields = append(attempt.Fields, source)
+				}
+			}
+		}
+		for _, capture := range result.Captures {
+			if capture.Kind != CaptureProvider || capture.SessionID != attempt.SessionID {
+				continue
+			}
+			for _, source := range capture.Fields {
+				if source.Field == "transcript" {
+					attempt.Fields = append(attempt.Fields, source)
 				}
 			}
 		}
@@ -297,6 +396,24 @@ func shape(run Projection) string {
 
 func provenance(event eventlog.Event) Provenance {
 	return Provenance{SessionID: event.SessionID, TurnID: event.TurnID, StreamID: event.StreamID, EventSeq: event.Seq, EventType: event.Type, Adapter: event.Adapter}
+}
+func fieldForEvent(event eventlog.Event) string {
+	switch event.Type {
+	case primitives.EventTypeSessionStart:
+		return "transcript"
+	case primitives.EventTypeCheckpoint:
+		return "checkpoint"
+	case primitives.EventTypePromptUser:
+		return "prompt"
+	case primitives.EventTypeAssistantMessage:
+		return "assistant"
+	case primitives.EventTypeToolCall:
+		return "tool_call"
+	case primitives.EventTypeToolResult:
+		return "tool_result"
+	default:
+		return ""
+	}
 }
 func validateRepoAndRun(repo *checkpoint.Repo, runID primitives.RunID) error {
 	if repo == nil {
