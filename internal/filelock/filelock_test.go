@@ -40,6 +40,26 @@ func TestLockReportsHeldAndReleases(t *testing.T) {
 	}
 }
 
+func TestInspectReadsOwnerWhileLockIsHeld(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "inspect.lock")
+	lock, err := Acquire(path, time.Second)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	t.Cleanup(func() { _ = lock.Release() })
+
+	owner, held, err := Inspect(path)
+	if err != nil {
+		t.Fatalf("Inspect while held: %v", err)
+	}
+	if !held {
+		t.Fatal("Inspect held=false while lock is acquired")
+	}
+	if owner != lock.Identity() {
+		t.Fatalf("Inspect owner = %+v, want %+v", owner, lock.Identity())
+	}
+}
+
 func TestAcquireRefusesLegacyLockDirectory(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.lock")
 	if err := os.Mkdir(path, 0o700); err != nil {
