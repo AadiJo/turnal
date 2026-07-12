@@ -1,6 +1,7 @@
 package adapters
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -136,6 +137,31 @@ func TestInspectCodexHooksReportsMissingEventAndMalformedConfig(t *testing.T) {
 	health = inspectCodexHooks(root, "turnal")
 	if health.Status != HookConfigurationMalformed || health.OK() {
 		t.Fatalf("malformed health = %#v", health)
+	}
+}
+
+func TestInspectCodexHooksReportsInvalidSectionsAsMalformed(t *testing.T) {
+	tests := []struct {
+		name     string
+		contents string
+		section  string
+	}{
+		{name: "features", contents: "features = \"invalid\"\n", section: "features"},
+		{name: "hooks", contents: "hooks = \"invalid\"\n[features]\nhooks = true\n", section: "hooks"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeHealthFile(t, filepath.Join(root, ".codex", "config.toml"), test.contents)
+			health := inspectCodexHooks(root, "turnal")
+			if health.Status != HookConfigurationMalformed || health.OK() {
+				t.Fatalf("health = %#v", health)
+			}
+			want := fmt.Sprintf("section %q must be an object/table", test.section)
+			if !strings.Contains(strings.Join(health.Problems, "\n"), want) {
+				t.Fatalf("problems = %v, want %q", health.Problems, want)
+			}
+		})
 	}
 }
 
