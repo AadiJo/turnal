@@ -158,7 +158,9 @@ func TestCodexAppServerHelperProcess(t *testing.T) {
 	fmt.Println(`{"id":1,"result":{"userAgent":"fake"}}`)
 	if scenario == "duplicate" {
 		fmt.Println(`{"id":1,"result":{"userAgent":"fake-again"}}`)
-		os.Exit(0)
+		// Keep the helper alive to accept the probe's initialized and
+		// hooks/list writes. Exiting here races duplicate-response parsing
+		// against a broken pipe on macOS.
 	}
 	if !reader.Scan() { // initialized notification
 		os.Exit(5)
