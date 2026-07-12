@@ -150,6 +150,10 @@ func statusCmdWithProbe(codexProbe compatibility.CodexProbe) *cobra.Command {
 
 func printCaptureCompatibility(out interface{ Write([]byte) (int, error) }, report compatibility.Report) {
 	fmt.Fprintln(out, "\nAgent capture compatibility")
+	if len(report.Surfaces) == 0 {
+		fmt.Fprintln(out, "  no configured agent capture surfaces")
+		return
+	}
 	for _, surface := range report.Surfaces {
 		fmt.Fprintf(out, "\n%s\n", surface.Surface)
 		fmt.Fprintf(out, "  project hooks:       %s\n", compatibility.ConfigurationSummary(surface.Configuration))
