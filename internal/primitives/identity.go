@@ -17,6 +17,8 @@ type EventProducerID string
 type EventStreamID string
 type CheckpointID string
 type ImportID string
+type RunID string
+type AttemptID string
 
 func NewRepoID() (RepoID, error) {
 	value, err := newDurableID("repo")
@@ -127,6 +129,67 @@ func ParseImportID(value string) (ImportID, error) {
 }
 
 func (id ImportID) String() string { return string(id) }
+
+// RunID identifies one supervised execution. A run may contain multiple
+// capture sessions and multiple attempts.
+func NewRunID() (RunID, error) {
+	value, err := newDurableID("run")
+	return RunID(value), err
+}
+
+func ParseRunID(value string) (RunID, error) {
+	parsed, err := parseDurableID("run id", "run", value)
+	return RunID(parsed), err
+}
+
+func (id RunID) String() string { return string(id) }
+
+func (id RunID) MarshalText() ([]byte, error) {
+	parsed, err := ParseRunID(id.String())
+	if err != nil {
+		return nil, err
+	}
+	return []byte(parsed), nil
+}
+
+func (id *RunID) UnmarshalText(text []byte) error {
+	parsed, err := ParseRunID(string(text))
+	if err != nil {
+		return err
+	}
+	*id = parsed
+	return nil
+}
+
+// AttemptID identifies one observable task or provider-turn boundary.
+func NewAttemptID() (AttemptID, error) {
+	value, err := newDurableID("attempt")
+	return AttemptID(value), err
+}
+
+func ParseAttemptID(value string) (AttemptID, error) {
+	parsed, err := parseDurableID("attempt id", "attempt", value)
+	return AttemptID(parsed), err
+}
+
+func (id AttemptID) String() string { return string(id) }
+
+func (id AttemptID) MarshalText() ([]byte, error) {
+	parsed, err := ParseAttemptID(id.String())
+	if err != nil {
+		return nil, err
+	}
+	return []byte(parsed), nil
+}
+
+func (id *AttemptID) UnmarshalText(text []byte) error {
+	parsed, err := ParseAttemptID(string(text))
+	if err != nil {
+		return err
+	}
+	*id = parsed
+	return nil
+}
 
 func newDurableID(prefix string) (string, error) {
 	random := make([]byte, durableIDRandomBytes)
