@@ -72,6 +72,7 @@ func (probe AppServerProbe) Probe(parent context.Context, workspaceRoot, expecte
 	if command.Env == nil {
 		command.Env = os.Environ()
 	}
+	prepareProcessTree(command)
 	stdin, err := command.StdinPipe()
 	if err != nil {
 		return result, fmt.Errorf("open Codex app-server stdin: %w", err)
@@ -87,6 +88,12 @@ func (probe AppServerProbe) Probe(parent context.Context, workspaceRoot, expecte
 	if err := command.Start(); err != nil {
 		return result, fmt.Errorf("start Codex app-server: %w", err)
 	}
+	processTree, err := attachProcessTree(command)
+	if err != nil {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		return result, fmt.Errorf("supervise Codex app-server process tree: %w", err)
+	}
 
 	var stderrCapture boundedBuffer
 	stderrCapture.limit = probe.MaxOutputBytes
@@ -100,7 +107,7 @@ func (probe AppServerProbe) Probe(parent context.Context, workspaceRoot, expecte
 
 	defer func() {
 		_ = stdin.Close()
-		returnedErr = finishAppServer(command, waitDone, stderrDone, &stderrCapture, probe.ShutdownTimeout, returnedErr)
+		returnedErr = finishAppServer(command, processTree, waitDone, stderrDone, &stderrCapture, probe.ShutdownTimeout, returnedErr, stdout, stderr)
 		if returnedErr == nil {
 			if stderrText := strings.TrimSpace(stderrCapture.String()); stderrText != "" {
 				result.Warnings = append(result.Warnings, "Codex app-server stderr: "+stderrText)
@@ -300,26 +307,63 @@ func stringifyMessages(messages []json.RawMessage) []string {
 	return values
 }
 
-func finishAppServer(command *exec.Cmd, waitDone <-chan error, stderrDone <-chan struct{}, stderr *boundedBuffer, timeout time.Duration, current error) error {
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	var waitErr error
-	select {
-	case waitErr = <-waitDone:
-	case <-timer.C:
-		_ = command.Process.Kill()
-		waitErr = <-waitDone
+func finishAppServer(command *exec.Cmd, processTree *appServerProcessTree, waitDone <-chan error, stderrDone <-chan struct{}, stderr *boundedBuffer, timeout time.Duration, current error, pipes ...io.Closer) error {
+	defer releaseProcessTree(processTree)
+	waitErr, reaped, drained := awaitAppServerShutdown(waitDone, stderrDone, timeout, false, false)
+	var shutdownErr error
+	if !reaped || !drained {
+		killErr := killProcessTree(processTree, command, timeout)
+		for _, pipe := range pipes {
+			_ = pipe.Close()
+		}
+		waitErr, reaped, drained = awaitAppServerShutdown(waitDone, stderrDone, timeout, reaped, drained)
+		if killErr != nil && !reaped {
+			shutdownErr = fmt.Errorf("terminate Codex app-server process tree: %w", killErr)
+		}
 	}
-	<-stderrDone
+	if !reaped {
+		shutdownErr = errors.Join(shutdownErr, errors.New("timed out reaping Codex app-server"))
+	}
+	if !drained {
+		shutdownErr = errors.Join(shutdownErr, errors.New("timed out draining Codex app-server pipes"))
+	}
 	stderrText := strings.TrimSpace(stderr.String())
 	if current != nil {
 		if stderrText != "" {
-			return fmt.Errorf("%w; Codex app-server stderr: %s", current, stderrText)
+			current = fmt.Errorf("%w; Codex app-server stderr: %s", current, stderrText)
 		}
-		return current
+		return errors.Join(current, shutdownErr)
 	}
 	_ = waitErr // A complete hooks/list response makes forced shutdown non-fatal.
-	return nil
+	return shutdownErr
+}
+
+func awaitAppServerShutdown(waitDone <-chan error, stderrDone <-chan struct{}, timeout time.Duration, reaped, drained bool) (error, bool, bool) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	var waitErr error
+	waitChannel := waitDone
+	stderrChannel := stderrDone
+	if reaped {
+		waitChannel = nil
+	}
+	if drained {
+		stderrChannel = nil
+	}
+	for !reaped || !drained {
+		select {
+		case err := <-waitChannel:
+			waitErr = err
+			reaped = true
+			waitChannel = nil
+		case <-stderrChannel:
+			drained = true
+			stderrChannel = nil
+		case <-timer.C:
+			return waitErr, reaped, drained
+		}
+	}
+	return waitErr, reaped, drained
 }
 
 type boundedBuffer struct {
@@ -410,7 +454,7 @@ func ClassifyCodexHooks(workspaceRoot, expectedCommand string, health adapters.H
 		result.Expectation = CaptureUnavailable
 		result.Certainty = CertaintyIncompatible
 		result.Guidance = append([]string{"Codex app-server reported hook discovery errors"}, result.Guidance...)
-		return result
+		return applyStaticCodexHealth(result, health)
 	}
 
 	switch {
@@ -430,6 +474,21 @@ func ClassifyCodexHooks(workspaceRoot, expectedCommand string, health adapters.H
 		result.Certainty = CertaintyConfirmed
 		result.Guidance = append([]string{"Codex app-server will skip untrusted hooks; Turnal cannot grant hook trust"}, result.Guidance...)
 	}
+	return applyStaticCodexHealth(result, health)
+}
+
+func applyStaticCodexHealth(result SurfaceResult, health adapters.HookHealth) SurfaceResult {
+	if health.Status == adapters.HookConfigurationConfigured {
+		return result
+	}
+	result.Expectation = CaptureUnavailable
+	result.Certainty = CertaintyIncompatible
+	if health.Status == adapters.HookConfigurationDisabled {
+		result.Execution = ExecutionDisabled
+	} else {
+		result.Execution = ExecutionUnavailable
+	}
+	result.Guidance = append(append([]string{}, health.Problems...), result.Guidance...)
 	return result
 }
 
