@@ -46,6 +46,7 @@ func NewRootCmd() *cobra.Command {
 	rootCmd.AddCommand(recoveryCmd())
 	rootCmd.AddCommand(replayCmd())
 	rootCmd.AddCommand(forkCmd())
+	rootCmd.AddCommand(verifyCmd())
 	rootCmd.AddCommand(runCmd())
 	rootCmd.AddCommand(versionCmd())
 	rootCmd.AddCommand(upgradeCmd())
