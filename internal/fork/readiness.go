@@ -213,21 +213,35 @@ func verifyCheckpoint(repo *checkpoint.Repo, recorded recall.Checkpoint, label s
 			recorded.CommitSHA,
 		)
 	}
-	if recorded.CanonicalRef == "" {
-		return nil
+	if recorded.CanonicalRef != "" {
+		canonicalCommit, err := repo.CheckpointCommit(recorded.CanonicalRef)
+		if err != nil {
+			return fmt.Errorf("resolve canonical %s checkpoint ref: %w", label, err)
+		}
+		if canonicalCommit != recorded.CommitSHA {
+			return fmt.Errorf(
+				"fork readiness invariant failed: canonical %s checkpoint ref %s points to %s, event records %s",
+				label,
+				recorded.CanonicalRef,
+				canonicalCommit,
+				recorded.CommitSHA,
+			)
+		}
 	}
-	canonicalCommit, err := repo.CheckpointCommit(recorded.CanonicalRef)
-	if err != nil {
-		return fmt.Errorf("resolve canonical %s checkpoint ref: %w", label, err)
-	}
-	if canonicalCommit != recorded.CommitSHA {
-		return fmt.Errorf(
-			"fork readiness invariant failed: canonical %s checkpoint ref %s points to %s, event records %s",
-			label,
-			recorded.CanonicalRef,
-			canonicalCommit,
-			recorded.CommitSHA,
-		)
+	if recorded.GitSyncRef != "" {
+		gitSyncCommit, err := repo.RefCommit(recorded.GitSyncRef)
+		if err != nil {
+			return fmt.Errorf("resolve %s Git-sync ref: %w", label, err)
+		}
+		if recorded.GitSyncCommitSHA != "" && gitSyncCommit != recorded.GitSyncCommitSHA {
+			return fmt.Errorf(
+				"fork readiness invariant failed: %s Git-sync ref %s points to %s, event records %s",
+				label,
+				recorded.GitSyncRef,
+				gitSyncCommit,
+				recorded.GitSyncCommitSHA,
+			)
+		}
 	}
 	return nil
 }
