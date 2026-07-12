@@ -140,6 +140,10 @@ const (
 	EventTypeRollback         EventType = "rollback"
 	EventTypeError            EventType = "error"
 	EventTypeAdapterRaw       EventType = "adapter.raw"
+	EventTypeRunStart         EventType = "run.start"
+	EventTypeRunCaptureLink   EventType = "run.capture.link"
+	EventTypeRunAttemptLink   EventType = "run.attempt.link"
+	EventTypeRunFinish        EventType = "run.finish"
 )
 
 var validEventTypes = map[EventType]struct{}{
@@ -154,6 +158,10 @@ var validEventTypes = map[EventType]struct{}{
 	EventTypeRollback:         {},
 	EventTypeError:            {},
 	EventTypeAdapterRaw:       {},
+	EventTypeRunStart:         {},
+	EventTypeRunCaptureLink:   {},
+	EventTypeRunAttemptLink:   {},
+	EventTypeRunFinish:        {},
 }
 
 func ParseEventType(value string) (EventType, error) {
