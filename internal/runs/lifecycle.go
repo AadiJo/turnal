@@ -93,7 +93,10 @@ func RecoverAbandoned(repo *checkpoint.Repo) error {
 		path := filepath.Join(dir, entry.Name())
 		runID, err := primitives.ParseRunID(strings.TrimSuffix(entry.Name(), ".json"))
 		if err != nil {
-			return fmt.Errorf("run lifecycle invariant failed at %s: filename must contain a run id: %w", path, err)
+			if err := quarantineLifecycleJournal(repo, path); err != nil {
+				return err
+			}
+			continue
 		}
 		unlock, err := acquireRunMutation(repo, runID)
 		if err != nil {
@@ -291,6 +294,21 @@ func clearLifecycleJournalPath(path string) error {
 	err := os.Remove(path)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("clear run lifecycle journal: %w", err)
+	}
+	return nil
+}
+
+func quarantineLifecycleJournal(repo *checkpoint.Repo, path string) error {
+	dir := filepath.Join(lifecycleDir(repo), "quarantine")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create run lifecycle quarantine: %w", err)
+	}
+	target := filepath.Join(dir, fmt.Sprintf("%s.%d.invalid", filepath.Base(path), time.Now().UTC().UnixNano()))
+	if err := os.Rename(path, target); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("quarantine malformed run lifecycle journal %s: %w", path, err)
 	}
 	return nil
 }

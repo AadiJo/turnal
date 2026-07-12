@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -295,6 +296,44 @@ func TestRecoveryUsesFilenameWhenJournalRunIDIsCorrupt(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("scanned journal still exists: %v", err)
+	}
+}
+
+func TestRecoveryQuarantinesMalformedFilenameAndContinues(t *testing.T) {
+	repo := testRepo(t)
+	runID, _ := primitives.NewRunID()
+	release, err := Begin(repo, runID, session(t, "wrapper"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+
+	malformedPath := filepath.Join(lifecycleDir(repo), "corrupt.json")
+	malformed := []byte("preserve this malformed lifecycle journal\n")
+	if err := os.WriteFile(malformedPath, malformed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecoverAbandoned(repo); err != nil {
+		t.Fatal(err)
+	}
+
+	projection, err := Read(repo, runID)
+	if err != nil || projection.Status != StatusIncomplete {
+		t.Fatalf("valid recovery after malformed journal = %+v, %v", projection, err)
+	}
+	if _, err := os.Stat(malformedPath); !os.IsNotExist(err) {
+		t.Fatalf("malformed journal remains active: %v", err)
+	}
+	quarantined, err := os.ReadDir(filepath.Join(lifecycleDir(repo), "quarantine"))
+	if err != nil || len(quarantined) != 1 {
+		t.Fatalf("quarantine entries = %v, %v", quarantined, err)
+	}
+	data, err := os.ReadFile(filepath.Join(lifecycleDir(repo), "quarantine", quarantined[0].Name()))
+	if err != nil || string(data) != string(malformed) {
+		t.Fatalf("quarantined journal = %q, %v", data, err)
+	}
+	if err := RecoverAbandoned(repo); err != nil {
+		t.Fatalf("repeat recovery: %v", err)
 	}
 }
 

@@ -1,9 +1,12 @@
 package processidentity
 
 import (
+	"errors"
 	"fmt"
 	"os"
 )
+
+var ErrUnsupported = errors.New("kernel process creation identity is unsupported on this platform")
 
 type Identity struct {
 	PID     int
