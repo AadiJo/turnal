@@ -318,9 +318,7 @@ func finishAppServer(command *exec.Cmd, waitDone <-chan error, stderrDone <-chan
 		}
 		return current
 	}
-	if waitErr != nil && stderrText != "" {
-		return fmt.Errorf("stop Codex app-server: %v; stderr: %s", waitErr, stderrText)
-	}
+	_ = waitErr // A complete hooks/list response makes forced shutdown non-fatal.
 	return nil
 }
 
