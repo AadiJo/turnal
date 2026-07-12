@@ -750,16 +750,47 @@ func (log Log) read(sessionID primitives.SessionID) ([]Event, error) {
 			events = append(events, streamEvents...)
 		}
 	}
-	sort.SliceStable(events, func(i, j int) bool {
-		if !events[i].Time.Time.Equal(events[j].Time.Time) {
-			return events[i].Time.Time.Before(events[j].Time.Time)
+	return orderAggregateEvents(events), nil
+}
+
+func orderAggregateEvents(events []Event) []Event {
+	type orderedEvent struct {
+		event         Event
+		effectiveTime time.Time
+	}
+	byStream := map[primitives.EventStreamID][]Event{}
+	for _, event := range events {
+		byStream[event.StreamID] = append(byStream[event.StreamID], event)
+	}
+	ordered := make([]orderedEvent, 0, len(events))
+	for _, streamEvents := range byStream {
+		sort.SliceStable(streamEvents, func(i, j int) bool {
+			return streamEvents[i].Seq.Uint64() < streamEvents[j].Seq.Uint64()
+		})
+		var previous time.Time
+		for _, event := range streamEvents {
+			effective := event.Time.Time
+			if effective.Before(previous) {
+				effective = previous
+			}
+			ordered = append(ordered, orderedEvent{event: event, effectiveTime: effective})
+			previous = effective
 		}
-		if events[i].StreamID != events[j].StreamID {
-			return events[i].StreamID.String() < events[j].StreamID.String()
+	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if !ordered[i].effectiveTime.Equal(ordered[j].effectiveTime) {
+			return ordered[i].effectiveTime.Before(ordered[j].effectiveTime)
 		}
-		return events[i].Seq.Uint64() < events[j].Seq.Uint64()
+		if ordered[i].event.StreamID != ordered[j].event.StreamID {
+			return ordered[i].event.StreamID.String() < ordered[j].event.StreamID.String()
+		}
+		return ordered[i].event.Seq.Uint64() < ordered[j].event.Seq.Uint64()
 	})
-	return events, nil
+	result := make([]Event, 0, len(ordered))
+	for _, item := range ordered {
+		result = append(result, item.event)
+	}
+	return result
 }
 
 func (log Log) readPath(sessionID primitives.SessionID, path string, expectedStreamID primitives.EventStreamID) ([]Event, error) {

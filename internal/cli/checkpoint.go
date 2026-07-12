@@ -72,6 +72,14 @@ func checkpointCreateCmd() *cobra.Command {
 }
 
 func openCheckpointRepo() (*checkpoint.Repo, error) {
+	return openCheckpointRepoWith(checkpoint.Open)
+}
+
+func openCheckpointRepoReadOnly() (*checkpoint.Repo, error) {
+	return openCheckpointRepoWith(checkpoint.OpenReadOnly)
+}
+
+func openCheckpointRepoWith(open func(primitives.WorkspaceRoot) (*checkpoint.Repo, error)) (*checkpoint.Repo, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return nil, fmt.Errorf("get working directory: %w", err)
@@ -80,5 +88,5 @@ func openCheckpointRepo() (*checkpoint.Repo, error) {
 	if err != nil {
 		return nil, err
 	}
-	return checkpoint.Open(root)
+	return open(root)
 }

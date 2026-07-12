@@ -64,6 +64,13 @@ func TestRunCodexWrapperCreatesCheckpointsAndEnablesHooks(t *testing.T) {
 	if len(infos) != 2 {
 		t.Fatalf("checkpoint refs = %d, want 2: %#v", len(infos), infos)
 	}
+	journals, err := repo.ListCheckpointJournals()
+	if err != nil {
+		t.Fatalf("ListCheckpointJournals: %v", err)
+	}
+	if len(journals) != 0 {
+		t.Fatalf("wrapper left checkpoint journals: %#v", journals)
+	}
 	sessionID := infos[0].SessionID
 	turnID := infos[0].TurnID
 	if !strings.HasPrefix(sessionID.String(), "codex-run-") {
