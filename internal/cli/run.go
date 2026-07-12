@@ -17,6 +17,7 @@ import (
 	agentconfig "github.com/AadiJo/turnal/internal/config"
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/turnevents"
 	"github.com/AadiJo/turnal/internal/turns"
 	"github.com/spf13/cobra"
 )
@@ -25,18 +26,6 @@ type runSessionPayload struct {
 	ProviderSessionID string   `json:"provider_session_id"`
 	Source            string   `json:"source"`
 	Command           []string `json:"command"`
-}
-
-type runTurnPayload struct {
-	Turn uint64 `json:"turn"`
-}
-
-type runCheckpointPayload struct {
-	Turn       uint64 `json:"turn"`
-	Phase      string `json:"phase"`
-	CommitSHA  string `json:"commit_sha"`
-	Ref        string `json:"ref"`
-	GitSyncRef string `json:"git_sync_ref,omitempty"`
 }
 
 type runIncompletePayload struct {
@@ -268,6 +257,9 @@ func newRunSessionID(now time.Time) (primitives.SessionID, error) {
 
 func startRunTurn(repo *checkpoint.Repo, sessionID primitives.SessionID, command []string) (turns.StartResult, error) {
 	log := repo.EventLog()
+	if err := turnevents.RecoverCheckpointJournals(log, repo); err != nil {
+		return turns.StartResult{}, err
+	}
 	if _, err := log.Append(eventlog.AppendInput{
 		SessionID: sessionID,
 		Type:      primitives.EventTypeSessionStart,
@@ -282,34 +274,15 @@ func startRunTurn(repo *checkpoint.Repo, sessionID primitives.SessionID, command
 		return turns.StartResult{}, err
 	}
 
-	started, err := turns.NewManager(repo).Start(sessionID, 0)
+	manager := turns.NewManager(repo).WithCheckpointEvents(primitives.AdapterCodex, "")
+	started, err := manager.Start(sessionID, 0)
 	if err != nil {
 		return turns.StartResult{}, err
 	}
-	if _, err := log.Append(eventlog.AppendInput{
-		SessionID: sessionID,
-		TurnID:    &started.TurnID,
-		Type:      primitives.EventTypeTurnStart,
-		Adapter:   primitives.AdapterCodex,
-		SourceID:  fmt.Sprintf("codex-run:%s:%s:start", sessionID, started.TurnID),
-		Payload:   mustJSON(runTurnPayload{Turn: started.TurnID.Uint64()}),
-	}); err != nil {
+	if err := turnevents.AppendTurnStart(log, primitives.AdapterCodex, sessionID, started.TurnID, ""); err != nil {
 		return turns.StartResult{}, err
 	}
-	if _, err := log.Append(eventlog.AppendInput{
-		SessionID: sessionID,
-		TurnID:    &started.TurnID,
-		Type:      primitives.EventTypeCheckpoint,
-		Adapter:   primitives.AdapterCodex,
-		SourceID:  fmt.Sprintf("codex-run:%s:%s:checkpoint:pre", sessionID, started.TurnID),
-		Payload: mustJSON(runCheckpointPayload{
-			Turn:       started.TurnID.Uint64(),
-			Phase:      primitives.CheckpointPhasePre.String(),
-			CommitSHA:  started.Pre.Commit.String(),
-			Ref:        started.Pre.Ref.String(),
-			GitSyncRef: snapshotRef(started.GitSync),
-		}),
-	}); err != nil {
+	if err := turnevents.AppendCheckpointWithGitSync(log, primitives.AdapterCodex, sessionID, started.TurnID, primitives.CheckpointPhasePre, started.Pre, started.GitSync, ""); err != nil {
 		return turns.StartResult{}, err
 	}
 	return started, nil
@@ -317,44 +290,21 @@ func startRunTurn(repo *checkpoint.Repo, sessionID primitives.SessionID, command
 
 func finishRunTurn(repo *checkpoint.Repo, sessionID primitives.SessionID, turnID primitives.TurnID) error {
 	log := repo.EventLog()
-	finished, err := turns.NewManager(repo).Finish(sessionID, turnID)
+	if err := turnevents.RecoverCheckpointJournals(log, repo); err != nil {
+		return err
+	}
+	manager := turns.NewManager(repo).WithCheckpointEvents(primitives.AdapterCodex, "")
+	finished, err := manager.Finish(sessionID, turnID)
 	if err != nil {
 		return err
 	}
-	if _, err := log.Append(eventlog.AppendInput{
-		SessionID: sessionID,
-		TurnID:    &finished.TurnID,
-		Type:      primitives.EventTypeTurnFinish,
-		Adapter:   primitives.AdapterCodex,
-		SourceID:  fmt.Sprintf("codex-run:%s:%s:finish", sessionID, finished.TurnID),
-		Payload:   mustJSON(runTurnPayload{Turn: finished.TurnID.Uint64()}),
-	}); err != nil {
+	if err := turnevents.AppendTurnFinish(log, primitives.AdapterCodex, sessionID, finished.TurnID, ""); err != nil {
 		return err
 	}
-	if _, err := log.Append(eventlog.AppendInput{
-		SessionID: sessionID,
-		TurnID:    &finished.TurnID,
-		Type:      primitives.EventTypeCheckpoint,
-		Adapter:   primitives.AdapterCodex,
-		SourceID:  fmt.Sprintf("codex-run:%s:%s:checkpoint:post", sessionID, finished.TurnID),
-		Payload: mustJSON(runCheckpointPayload{
-			Turn:       finished.TurnID.Uint64(),
-			Phase:      primitives.CheckpointPhasePost.String(),
-			CommitSHA:  finished.Post.Commit.String(),
-			Ref:        finished.Post.Ref.String(),
-			GitSyncRef: snapshotRef(finished.GitSync),
-		}),
-	}); err != nil {
+	if err := turnevents.AppendCheckpointWithGitSync(log, primitives.AdapterCodex, sessionID, finished.TurnID, primitives.CheckpointPhasePost, finished.Post, finished.GitSync, ""); err != nil {
 		return err
 	}
 	return nil
-}
-
-func snapshotRef(snapshot *checkpoint.Snapshot) string {
-	if snapshot == nil {
-		return ""
-	}
-	return snapshot.Ref
 }
 
 func codexRawRecordCount(metadataDir string) (int, error) {

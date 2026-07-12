@@ -248,6 +248,84 @@ func (repo *Repo) ensureIdentity(gitIdentity *UserGitIdentity) error {
 	return nil
 }
 
+func (repo *Repo) readIdentity(gitIdentity *UserGitIdentity) error {
+	identity, err := readOrCreateStoreIdentityReadOnly(repo)
+	if err != nil {
+		return err
+	}
+	bindings, err := listWorktreeIdentities(repo.MetadataDir)
+	if err != nil {
+		return err
+	}
+	root := cleanIdentityPath(repo.WorkspaceRoot.String())
+	gitDir := ""
+	if gitIdentity != nil {
+		gitDir = cleanIdentityPath(gitIdentity.GitDir)
+	}
+	var binding *WorktreeIdentity
+	for i := range bindings {
+		if gitDir != "" && bindings[i].GitDir != "" && sameIdentityPath(bindings[i].GitDir, gitDir) {
+			binding = &bindings[i]
+			break
+		}
+		if sameIdentityPath(bindings[i].Root, root) {
+			binding = &bindings[i]
+			break
+		}
+	}
+	if binding == nil {
+		return fmt.Errorf("worktree identity invariant failed: no existing binding for %s; a read-only open cannot attach a worktree", root)
+	}
+	if err := validateReadOnlyWorktreeIdentity(*binding, root, gitIdentity); err != nil {
+		return err
+	}
+
+	repo.IdentityVersion = identity.Version
+	repo.RepoID = identity.RepoID
+	repo.StoreID = identity.StoreID
+	repo.GitObjectFormat = identity.GitObjectFormat
+	repo.WorktreeID = binding.WorktreeID
+	repo.EventProducerID = binding.ProducerID
+	repo.GitTopLevel = binding.GitTopLevel
+	repo.GitCommonDir = binding.GitCommonDir
+	repo.UserGitDir = binding.GitDir
+	repo.PrimaryWorktree = binding.Primary
+	repo.ScopedRefs = !binding.Primary && binding.GitCommonDir != ""
+	return nil
+}
+
+func validateReadOnlyWorktreeIdentity(binding WorktreeIdentity, root string, gitIdentity *UserGitIdentity) error {
+	if !sameIdentityPath(binding.Root, root) {
+		return fmt.Errorf("worktree identity invariant failed: binding root %s does not match current root %s; a read-only open cannot refresh it", binding.Root, root)
+	}
+	if gitIdentity == nil {
+		if binding.GitTopLevel != "" || binding.GitCommonDir != "" || binding.GitDir != "" {
+			return fmt.Errorf("worktree identity invariant failed: binding for %s records Git identity but the current workspace is not a Git worktree", root)
+		}
+		return nil
+	}
+
+	expectedPrimary := sameIdentityPath(root, gitIdentity.PrimaryRoot)
+	checks := []struct {
+		name    string
+		stored  string
+		current string
+	}{
+		{name: "Git top-level", stored: binding.GitTopLevel, current: gitIdentity.TopLevel},
+		{name: "Git common directory", stored: binding.GitCommonDir, current: gitIdentity.GitCommonDir},
+		{name: "Git directory", stored: binding.GitDir, current: gitIdentity.GitDir},
+	}
+	for _, check := range checks {
+		if check.stored == "" || check.current == "" || !sameIdentityPath(check.stored, check.current) {
+			return fmt.Errorf("worktree identity invariant failed: stored %s %s does not match current %s; a read-only open cannot refresh it", check.name, check.stored, check.current)
+		}
+	}
+	if binding.Primary != expectedPrimary {
+		return fmt.Errorf("worktree identity invariant failed: stored primary status %t does not match current status %t; a read-only open cannot refresh it", binding.Primary, expectedPrimary)
+	}
+	return nil
+}
+
 func readOrCreateStoreIdentity(repo *Repo) (StoreIdentity, error) {
 	path := filepath.Join(repo.MetadataDir, identityFileName)
 	data, err := os.ReadFile(path)
