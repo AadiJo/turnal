@@ -250,6 +250,28 @@ func TestSessionMetadataUsesInstructionAdapter(t *testing.T) {
 	}
 }
 
+func TestSessionMetadataRejectsDuplicateAdapterStarts(t *testing.T) {
+	events := []eventlog.Event{
+		{
+			Seq:     1,
+			Type:    primitives.EventTypeSessionStart,
+			Adapter: primitives.AdapterCodex,
+			Payload: json.RawMessage(`{"provider_session_id":"first","model":"first-model"}`),
+		},
+		{
+			Seq:     2,
+			Type:    primitives.EventTypeSessionStart,
+			Adapter: primitives.AdapterCodex,
+			Payload: json.RawMessage(`{"provider_session_id":"second","model":"second-model"}`),
+		},
+	}
+
+	_, _, _, err := sessionMetadata(events, primitives.AdapterCodex)
+	if err == nil || !strings.Contains(err.Error(), "multiple session.start events") {
+		t.Fatalf("sessionMetadata error = %v", err)
+	}
+}
+
 func readinessFixture(t *testing.T, prompt string, finish bool) (*checkpoint.Repo, primitives.SessionID, primitives.TurnID) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {

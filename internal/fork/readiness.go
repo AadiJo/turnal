@@ -266,6 +266,7 @@ func inspectInstruction(events []eventlog.Event) (Instruction, error) {
 func sessionMetadata(events []eventlog.Event, adapter primitives.AdapterName) (string, string, bool, error) {
 	var model, permissionMode string
 	found := false
+	seenAdapters := map[primitives.AdapterName]primitives.EventSeq{}
 	for _, event := range events {
 		if event.Type != primitives.EventTypeSessionStart {
 			continue
@@ -291,6 +292,10 @@ func sessionMetadata(events []eventlog.Event, adapter primitives.AdapterName) (s
 		if _, err := optionalPayloadString(payload, "transcript_path"); err != nil {
 			return "", "", false, malformedPayloadError(event, err)
 		}
+		if previous, ok := seenAdapters[event.Adapter]; ok {
+			return "", "", false, fmt.Errorf("multiple session.start events for adapter %s at events %s and %s", event.Adapter, previous, event.Seq)
+		}
+		seenAdapters[event.Adapter] = event.Seq
 		if !found && event.Adapter == adapter {
 			model = strings.TrimSpace(parsedModel)
 			permissionMode = strings.TrimSpace(parsedPermissionMode)
