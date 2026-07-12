@@ -279,6 +279,7 @@ func inspectInstruction(events []eventlog.Event) (Instruction, error) {
 			return Instruction{}, fmt.Errorf("multiple prompt.user events for one turn; duplicate at event %s", event.Seq)
 		}
 		promptSeen = true
+		instruction.Adapter = event.Adapter
 		text := strings.TrimSpace(textValue)
 		if redacted || (!hasRedacted && text == primitives.SecretsRedactionText) {
 			instruction = Instruction{Status: InstructionRedacted, Adapter: event.Adapter}
