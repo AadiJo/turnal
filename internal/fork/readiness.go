@@ -98,6 +98,14 @@ func (analyzer Analyzer) Inspect(sessionID primitives.SessionID, turnID primitiv
 	if err != nil {
 		return Report{}, err
 	}
+	instruction, err := inspectInstruction(turn.Events)
+	if err != nil {
+		return Report{}, fmt.Errorf("fork readiness integrity failed: %w", err)
+	}
+	model, permissionMode, err := sessionMetadata(turn.SessionEvents)
+	if err != nil {
+		return Report{}, fmt.Errorf("fork readiness integrity failed: %w", err)
+	}
 
 	report := Report{
 		Version:       reportVersion,
@@ -116,7 +124,7 @@ func (analyzer Analyzer) Inspect(sessionID primitives.SessionID, turnID primitiv
 			Status: "missing",
 			Phase:  primitives.CheckpointPhasePre,
 		},
-		Instruction: inspectInstruction(turn.Events),
+		Instruction: instruction,
 		Conditions: Conditions{
 			WorkspaceFiles:      Condition{Status: "unavailable", Detail: "No pre-turn checkpoint was recorded."},
 			WorkspaceVCS:        Condition{Status: "not_recorded", Detail: "Workspace Git context was not recorded with the pre-turn checkpoint."},
@@ -131,7 +139,8 @@ func (analyzer Analyzer) Inspect(sessionID primitives.SessionID, turnID primitiv
 			"Model output is nondeterministic even when the captured files are identical.",
 		},
 	}
-	report.Source.Model, report.Source.PermissionMode = sessionMetadata(turn.SessionEvents)
+	report.Source.Model = model
+	report.Source.PermissionMode = permissionMode
 
 	if turn.PreCheckpoint == nil {
 		return report, nil
@@ -180,7 +189,8 @@ func (analyzer Analyzer) Inspect(sessionID primitives.SessionID, turnID primitiv
 	return report, nil
 }
 
-func inspectInstruction(events []eventlog.Event) Instruction {
+func inspectInstruction(events []eventlog.Event) (Instruction, error) {
+	instruction := Instruction{Status: InstructionMissing}
 	for _, event := range events {
 		if event.Type != primitives.EventTypePromptUser {
 			continue
@@ -189,22 +199,30 @@ func inspectInstruction(events []eventlog.Event) Instruction {
 			Text string `json:"text"`
 		}
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
-			continue
+			return Instruction{}, malformedPayloadError(event, err)
+		}
+		if string(event.Payload) == "null" {
+			return Instruction{}, malformedPayloadError(event, fmt.Errorf("payload must be an object"))
 		}
 		text := strings.TrimSpace(payload.Text)
+		if instruction.Status != InstructionMissing {
+			continue
+		}
 		switch text {
 		case "":
 			continue
 		case primitives.SecretsRedactionText:
-			return Instruction{Status: InstructionRedacted}
+			instruction = Instruction{Status: InstructionRedacted}
 		default:
-			return Instruction{Status: InstructionAvailable, Text: text}
+			instruction = Instruction{Status: InstructionAvailable, Text: text}
 		}
 	}
-	return Instruction{Status: InstructionMissing}
+	return instruction, nil
 }
 
-func sessionMetadata(events []eventlog.Event) (string, string) {
+func sessionMetadata(events []eventlog.Event) (string, string, error) {
+	var model, permissionMode string
+	found := false
 	for _, event := range events {
 		if event.Type != primitives.EventTypeSessionStart {
 			continue
@@ -213,9 +231,21 @@ func sessionMetadata(events []eventlog.Event) (string, string) {
 			Model          string `json:"model"`
 			PermissionMode string `json:"permission_mode"`
 		}
-		if err := json.Unmarshal(event.Payload, &payload); err == nil {
-			return strings.TrimSpace(payload.Model), strings.TrimSpace(payload.PermissionMode)
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			return "", "", malformedPayloadError(event, err)
+		}
+		if string(event.Payload) == "null" {
+			return "", "", malformedPayloadError(event, fmt.Errorf("payload must be an object"))
+		}
+		if !found {
+			model = strings.TrimSpace(payload.Model)
+			permissionMode = strings.TrimSpace(payload.PermissionMode)
+			found = true
 		}
 	}
-	return "", ""
+	return model, permissionMode, nil
+}
+
+func malformedPayloadError(event eventlog.Event, err error) error {
+	return fmt.Errorf("malformed %s payload at event %s: %w", event.Type, event.Seq, err)
 }
