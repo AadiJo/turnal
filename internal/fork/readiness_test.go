@@ -1,10 +1,12 @@
 package fork
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
@@ -42,7 +44,7 @@ func TestInspectReportsReadyCapturedTurn(t *testing.T) {
 }
 
 func TestInspectReportsRedactedInstructionWithoutExposingMarker(t *testing.T) {
-	repo, sessionID, turnID := readinessFixture(t, redactedPrompt, true)
+	repo, sessionID, turnID := readinessFixture(t, primitives.SecretsRedactionText, true)
 
 	report, err := NewAnalyzer(repo).Inspect(sessionID, turnID)
 	if err != nil {
@@ -58,8 +60,29 @@ func TestInspectReportsRedactedInstructionWithoutExposingMarker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
-	if string(encoded) == "" || containsBytes(encoded, []byte(redactedPrompt)) {
+	if string(encoded) == "" || bytes.Contains(encoded, []byte(primitives.SecretsRedactionText)) {
 		t.Fatalf("encoded report exposes redaction marker: %s", encoded)
+	}
+}
+
+func TestInspectRejectsCheckpointRefCommitMismatch(t *testing.T) {
+	repo, sessionID, turnID := readinessFixture(t, "Fix the parser", true)
+	ref, err := repo.CheckpointRefFor(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("CheckpointRefFor: %v", err)
+	}
+	if _, err := repo.CreateSyntheticSnapshotRef(ref.String(), "replace pre ref", []checkpoint.SyntheticTreeEntry{
+		{Path: "other.txt", Mode: primitives.GitFileModeRegular, Content: []byte("other\n")},
+	}); err != nil {
+		t.Fatalf("replace checkpoint ref: %v", err)
+	}
+
+	_, err = NewAnalyzer(repo).Inspect(sessionID, turnID)
+	if err == nil {
+		t.Fatal("Inspect with mismatched checkpoint ref succeeded")
+	}
+	if !strings.Contains(err.Error(), "checkpoint ref") || !strings.Contains(err.Error(), "event records") {
+		t.Fatalf("Inspect error = %v", err)
 	}
 }
 
@@ -136,23 +159,4 @@ func readinessFixture(t *testing.T, prompt string, finish bool) (*checkpoint.Rep
 		}
 	}
 	return repo, sessionID, turnID
-}
-
-func containsBytes(haystack, needle []byte) bool {
-	if len(needle) == 0 || len(needle) > len(haystack) {
-		return false
-	}
-	for index := 0; index <= len(haystack)-len(needle); index++ {
-		matched := true
-		for offset := range needle {
-			if haystack[index+offset] != needle[offset] {
-				matched = false
-				break
-			}
-		}
-		if matched {
-			return true
-		}
-	}
-	return false
 }

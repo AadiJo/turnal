@@ -124,6 +124,10 @@ func (hash *EventHash) UnmarshalText(text []byte) error {
 // EventType is the normalized event kind written to the append-only event log.
 type EventType string
 
+// SecretsRedactionText is the durable marker stored when text capture is
+// disabled by Turnal's secrets policy.
+const SecretsRedactionText = "[redacted by turnal secrets policy]"
+
 const (
 	EventTypeSessionStart     EventType = "session.start"
 	EventTypeTurnStart        EventType = "turn.start"

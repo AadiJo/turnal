@@ -583,7 +583,7 @@ func redactedText(value string, store bool) string {
 	if store {
 		return value
 	}
-	return "[redacted by turnal secrets policy]"
+	return primitives.SecretsRedactionText
 }
 
 func redactedJSON(value json.RawMessage, store bool) json.RawMessage {

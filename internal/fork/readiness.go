@@ -13,8 +13,6 @@ import (
 
 const reportVersion = 1
 
-const redactedPrompt = "[redacted by turnal secrets policy]"
-
 type Readiness string
 
 const (
@@ -135,6 +133,18 @@ func (analyzer Analyzer) Inspect(sessionID primitives.SessionID, turnID primitiv
 	if turn.PreCheckpoint == nil {
 		return report, nil
 	}
+	resolvedCommit, err := analyzer.Repo.CheckpointCommit(turn.PreCheckpoint.Ref)
+	if err != nil {
+		return Report{}, fmt.Errorf("resolve pre-turn checkpoint ref: %w", err)
+	}
+	if resolvedCommit != turn.PreCheckpoint.CommitSHA {
+		return Report{}, fmt.Errorf(
+			"fork readiness invariant failed: pre-turn checkpoint ref %s points to %s, event records %s",
+			turn.PreCheckpoint.Ref,
+			resolvedCommit,
+			turn.PreCheckpoint.CommitSHA,
+		)
+	}
 	tree, err := analyzer.Repo.ListCommitTree(turn.PreCheckpoint.CommitSHA)
 	if err != nil {
 		return Report{}, fmt.Errorf("inspect pre-turn checkpoint tree: %w", err)
@@ -182,7 +192,7 @@ func inspectInstruction(events []eventlog.Event) Instruction {
 		switch text {
 		case "":
 			continue
-		case redactedPrompt:
+		case primitives.SecretsRedactionText:
 			return Instruction{Status: InstructionRedacted}
 		default:
 			return Instruction{Status: InstructionAvailable, Text: text}
