@@ -271,7 +271,8 @@ func startRunTurn(repo *checkpoint.Repo, sessionID primitives.SessionID, command
 		return turns.StartResult{}, err
 	}
 
-	started, err := turns.NewManager(repo).Start(sessionID, 0)
+	manager := turns.NewManager(repo).WithCheckpointEvents(primitives.AdapterCodex, "")
+	started, err := manager.Start(sessionID, 0)
 	if err != nil {
 		return turns.StartResult{}, err
 	}
@@ -286,7 +287,8 @@ func startRunTurn(repo *checkpoint.Repo, sessionID primitives.SessionID, command
 
 func finishRunTurn(repo *checkpoint.Repo, sessionID primitives.SessionID, turnID primitives.TurnID) error {
 	log := repo.EventLog()
-	finished, err := turns.NewManager(repo).Finish(sessionID, turnID)
+	manager := turns.NewManager(repo).WithCheckpointEvents(primitives.AdapterCodex, "")
+	finished, err := manager.Finish(sessionID, turnID)
 	if err != nil {
 		return err
 	}
