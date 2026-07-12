@@ -111,6 +111,42 @@ func TestInspectRequiresRepo(t *testing.T) {
 	}
 }
 
+func TestInspectInstructionRejectsMalformedPayloads(t *testing.T) {
+	for name, payload := range map[string]json.RawMessage{
+		"invalid json":     json.RawMessage(`{"text":`),
+		"wrong field type": json.RawMessage(`{"text":42}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := inspectInstruction([]eventlog.Event{{
+				Seq:     1,
+				Type:    primitives.EventTypePromptUser,
+				Payload: payload,
+			}})
+			if err == nil || !strings.Contains(err.Error(), "malformed prompt.user payload at event 1") {
+				t.Fatalf("inspectInstruction error = %v", err)
+			}
+		})
+	}
+}
+
+func TestSessionMetadataRejectsMalformedPayloads(t *testing.T) {
+	for name, payload := range map[string]json.RawMessage{
+		"invalid json":     json.RawMessage(`{"model":`),
+		"wrong field type": json.RawMessage(`{"model":false}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := sessionMetadata([]eventlog.Event{{
+				Seq:     2,
+				Type:    primitives.EventTypeSessionStart,
+				Payload: payload,
+			}})
+			if err == nil || !strings.Contains(err.Error(), "malformed session.start payload at event 2") {
+				t.Fatalf("sessionMetadata error = %v", err)
+			}
+		})
+	}
+}
+
 func readinessFixture(t *testing.T, prompt string, finish bool) (*checkpoint.Repo, primitives.SessionID, primitives.TurnID) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
