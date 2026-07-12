@@ -85,7 +85,7 @@ func baseStaticResult(provider Provider, surface Surface, health adapters.HookHe
 		Provider:      provider,
 		Surface:       surface,
 		Configuration: health.Status,
-		Visibility:    VisibilityConfigured,
+		Visibility:    VisibilityNotProbed,
 		Execution:     ExecutionExpected,
 		Expectation:   CaptureAvailable,
 		Certainty:     CertaintyLikely,
@@ -109,7 +109,7 @@ func probeCodexSurface(ctx context.Context, options Options, health adapters.Hoo
 		Execution:     ExecutionUnavailable,
 		Expectation:   CaptureUnavailable,
 		Certainty:     CertaintyUnavailable,
-		Expected:      len(health.Events),
+		Expected:      len(expectedCodexEventNames),
 	}
 	if options.CodexProbe == nil {
 		result.ProbeError = "Codex app-server probe is not configured"

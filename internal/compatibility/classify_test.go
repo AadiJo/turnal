@@ -129,6 +129,17 @@ func TestClassifyCodexHooksIgnoresUnrelatedHooksAndPreservesWarnings(t *testing.
 	}
 }
 
+func TestClassifyCodexHooksStillRequiresAllEventsWhenStaticConfigIsMissing(t *testing.T) {
+	root := t.TempDir()
+	result := ClassifyCodexHooks(root, "turnal codex-hook", adapters.HookHealth{
+		Target: adapters.TargetCodex,
+		Status: adapters.HookConfigurationMissing,
+	}, CodexHooksResult{})
+	if result.Expected != 4 || result.Discovered != 0 || result.Expectation != CaptureUnavailable {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
 func replaceHook(hooks []CodexHook, index int, change func(*CodexHook)) []CodexHook {
 	copyOfHooks := append([]CodexHook(nil), hooks...)
 	change(&copyOfHooks[index])

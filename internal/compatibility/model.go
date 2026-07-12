@@ -21,7 +21,6 @@ const (
 type VisibilityStatus string
 
 const (
-	VisibilityConfigured     VisibilityStatus = "configured"
 	VisibilityConfirmed      VisibilityStatus = "confirmed"
 	VisibilityHostControlled VisibilityStatus = "host-controlled"
 	VisibilityNotProbed      VisibilityStatus = "not-probed"

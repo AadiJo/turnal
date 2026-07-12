@@ -89,6 +89,18 @@ func TestAppServerProbeReportsMissingExecutable(t *testing.T) {
 	}
 }
 
+func TestAppServerProbePreservesSuccessfulStderr(t *testing.T) {
+	probe := testAppServerProbe("stderr")
+	result, err := probe.Probe(context.Background(), t.TempDir(), "turnal codex-hook")
+	if err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	joined := strings.Join(result.Warnings, "\n")
+	if !strings.Contains(joined, "diagnostic on stderr") {
+		t.Fatalf("warnings = %#v", result.Warnings)
+	}
+}
+
 func testAppServerProbe(scenario string) AppServerProbe {
 	probe := DefaultAppServerProbe()
 	probe.Timeout = 2 * time.Second
@@ -139,6 +151,9 @@ func TestCodexAppServerHelperProcess(t *testing.T) {
 	}
 	if scenario == "notification" {
 		fmt.Println(`{"method":"remoteControl/status/changed","params":{"status":"disabled"}}`)
+	}
+	if scenario == "stderr" {
+		fmt.Fprintln(os.Stderr, "diagnostic on stderr")
 	}
 	fmt.Println(`{"id":1,"result":{"userAgent":"fake"}}`)
 	if scenario == "duplicate" {
