@@ -91,29 +91,26 @@ func RecoverAbandoned(repo *checkpoint.Repo) error {
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
-		journal, err := readLifecycleJournal(path)
+		runID, err := primitives.ParseRunID(strings.TrimSuffix(entry.Name(), ".json"))
 		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return err
+			return fmt.Errorf("run lifecycle invariant failed at %s: filename must contain a run id: %w", path, err)
 		}
-		unlock, err := acquireRunMutation(repo, journal.RunID)
+		unlock, err := acquireRunMutation(repo, runID)
 		if err != nil {
 			return err
 		}
-		projection, found, projectionErr := validatedJournalProjection(repo, journal)
+		projection, found, projectionErr := durableRunProjection(repo, runID)
 		switch {
 		case projectionErr != nil:
 			err = projectionErr
 		case !found:
-			err = clearLifecycleJournal(repo, journal.RunID)
+			err = clearLifecycleJournalPath(path)
 		case projection.RepoID == repo.RepoID && projection.StoreID == repo.StoreID && projection.WorktreeID != repo.WorktreeID:
 			// Durable history, not writable journal metadata, identifies the
 			// linked worktree that owns this Run.
 			err = nil
 		default:
-			err = recoverProjectionLocked(repo, journal, projection)
+			err = recoverProjectionLocked(repo, runID, path, projection)
 		}
 		unlock()
 		if err != nil {
@@ -123,36 +120,40 @@ func RecoverAbandoned(repo *checkpoint.Repo) error {
 	return nil
 }
 
-func recoverJournalLocked(repo *checkpoint.Repo, journal lifecycleJournal) error {
-	projection, found, err := validatedJournalProjection(repo, journal)
+func recoverRunLocked(repo *checkpoint.Repo, runID primitives.RunID) error {
+	path := lifecycleJournalPath(repo, runID)
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	projection, found, err := durableRunProjection(repo, runID)
 	if err != nil {
 		return err
 	}
 	if !found {
-		return clearLifecycleJournal(repo, journal.RunID)
+		return clearLifecycleJournalPath(path)
 	}
-	return recoverProjectionLocked(repo, journal, projection)
+	return recoverProjectionLocked(repo, runID, path, projection)
 }
 
-func validatedJournalProjection(repo *checkpoint.Repo, journal lifecycleJournal) (Projection, bool, error) {
-	projection, err := Read(repo, journal.RunID)
+func durableRunProjection(repo *checkpoint.Repo, runID primitives.RunID) (Projection, bool, error) {
+	projection, err := Read(repo, runID)
 	if err != nil {
 		if strings.Contains(err.Error(), "does not exist") {
 			return Projection{}, false, nil
 		}
 		return Projection{}, false, err
 	}
-	if journal.RunID != projection.ID || journal.RepoID != projection.RepoID || journal.StoreID != projection.StoreID || journal.WorktreeID != projection.WorktreeID || journal.SessionID != projection.Start.SessionID || journal.OwnerPID != projection.OwnerPID || journal.OwnerStart != projection.OwnerStart {
-		return Projection{}, false, fmt.Errorf("run lifecycle invariant failed for %s: journal does not match durable run start", journal.RunID)
-	}
 	return projection, true, nil
 }
 
-func recoverProjectionLocked(repo *checkpoint.Repo, journal lifecycleJournal, projection Projection) error {
+func recoverProjectionLocked(repo *checkpoint.Repo, runID primitives.RunID, journalPath string, projection Projection) error {
 	if projection.RepoID != repo.RepoID || projection.StoreID != repo.StoreID || projection.WorktreeID != repo.WorktreeID {
-		return fmt.Errorf("run lifecycle invariant failed for %s: repository store or worktree identity mismatch", journal.RunID)
+		return fmt.Errorf("run lifecycle invariant failed for %s: repository store or worktree identity mismatch", runID)
 	}
-	held, err := filelock.Held(lifecycleLockPath(repo, journal.RunID))
+	held, err := filelock.Held(lifecycleLockPath(repo, runID))
 	if err != nil {
 		return err
 	}
@@ -164,22 +165,11 @@ func recoverProjectionLocked(repo *checkpoint.Repo, journal lifecycleJournal, pr
 		return nil
 	}
 	if projection.Status == StatusRunning {
-		if err := finish(repo, projection, journal.SessionID, StatusIncomplete, "recovered abandoned run after its owner process exited"); err != nil {
+		if err := finish(repo, projection, projection.Start.SessionID, StatusIncomplete, "recovered abandoned run after its owner process exited"); err != nil {
 			return err
 		}
 	}
-	return clearLifecycleJournal(repo, journal.RunID)
-}
-
-func recoverRunLocked(repo *checkpoint.Repo, runID primitives.RunID) error {
-	journal, err := readLifecycleJournal(lifecycleJournalPath(repo, runID))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	return recoverJournalLocked(repo, journal)
+	return clearLifecycleJournalPath(journalPath)
 }
 
 func requireLockedLifecycle(repo *checkpoint.Repo, projection Projection) error {
@@ -294,7 +284,11 @@ func readLifecycleJournal(path string) (lifecycleJournal, error) {
 }
 
 func clearLifecycleJournal(repo *checkpoint.Repo, runID primitives.RunID) error {
-	err := os.Remove(lifecycleJournalPath(repo, runID))
+	return clearLifecycleJournalPath(lifecycleJournalPath(repo, runID))
+}
+
+func clearLifecycleJournalPath(path string) error {
+	err := os.Remove(path)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("clear run lifecycle journal: %w", err)
 	}
