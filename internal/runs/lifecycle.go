@@ -23,6 +23,8 @@ type lifecycleJournal struct {
 	StoreID    primitives.StoreID    `json:"store_id"`
 	WorktreeID primitives.WorktreeID `json:"worktree_id"`
 	StartedAt  string                `json:"started_at"`
+	OwnerPID   int                   `json:"owner_pid"`
+	OwnerSince string                `json:"owner_since"`
 }
 
 // Begin records recoverable lifecycle intent before creating the durable Run.
@@ -31,12 +33,23 @@ func Begin(repo *checkpoint.Repo, runID primitives.RunID, sessionID primitives.S
 	if err := validateRepoAndRun(repo, runID); err != nil {
 		return nil, err
 	}
+	unlockMutation, err := acquireRunMutation(repo, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer unlockMutation()
+	if _, err := Read(repo, runID); err == nil {
+		return nil, fmt.Errorf("run %s already exists", runID)
+	} else if !strings.Contains(err.Error(), "does not exist") {
+		return nil, err
+	}
 	lock, err := filelock.Acquire(lifecycleLockPath(repo, runID), 0)
 	if err != nil {
 		return nil, fmt.Errorf("acquire run lifecycle lock: %w", err)
 	}
 	release := func() { _ = lock.Release() }
-	journal := lifecycleJournal{Version: lifecycleJournalVersion, RunID: runID, SessionID: sessionID, RepoID: repo.RepoID, StoreID: repo.StoreID, WorktreeID: repo.WorktreeID, StartedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	owner := lock.Identity()
+	journal := lifecycleJournal{Version: lifecycleJournalVersion, RunID: runID, SessionID: sessionID, RepoID: repo.RepoID, StoreID: repo.StoreID, WorktreeID: repo.WorktreeID, StartedAt: time.Now().UTC().Format(time.RFC3339Nano), OwnerPID: owner.PID, OwnerSince: owner.AcquiredAt}
 	if err := writeLifecycleJournal(repo, journal); err != nil {
 		release()
 		return nil, err
@@ -70,41 +83,62 @@ func RecoverAbandoned(repo *checkpoint.Repo) error {
 		path := filepath.Join(dir, entry.Name())
 		journal, err := readLifecycleJournal(path)
 		if err != nil {
-			return err
-		}
-		held, err := filelock.Held(lifecycleLockPath(repo, journal.RunID))
-		if err != nil {
-			return err
-		}
-		if held {
-			continue
-		}
-		if journal.RepoID != repo.RepoID || journal.StoreID != repo.StoreID || journal.WorktreeID != repo.WorktreeID {
-			return fmt.Errorf("run lifecycle invariant failed for %s: repository store or worktree identity mismatch", journal.RunID)
-		}
-		projection, err := Read(repo, journal.RunID)
-		if err != nil {
-			if strings.Contains(err.Error(), "does not exist") {
-				if err := clearLifecycleJournal(repo, journal.RunID); err != nil {
-					return err
-				}
+			if os.IsNotExist(err) {
 				continue
 			}
 			return err
 		}
-		if journal.SessionID != projection.Start.SessionID {
-			return fmt.Errorf("run lifecycle invariant failed for %s: journal session %s does not match run-start session %s", journal.RunID, journal.SessionID, projection.Start.SessionID)
+		unlock, err := acquireRunMutation(repo, journal.RunID)
+		if err != nil {
+			return err
 		}
-		if projection.Status == StatusRunning {
-			if err := finish(repo, projection, journal.SessionID, StatusIncomplete, "recovered abandoned run after its owner process exited"); err != nil {
-				return err
-			}
-		}
-		if err := clearLifecycleJournal(repo, journal.RunID); err != nil {
+		err = recoverJournalLocked(repo, journal)
+		unlock()
+		if err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func recoverJournalLocked(repo *checkpoint.Repo, journal lifecycleJournal) error {
+	if journal.RepoID != repo.RepoID || journal.StoreID != repo.StoreID || journal.WorktreeID != repo.WorktreeID {
+		return fmt.Errorf("run lifecycle invariant failed for %s: repository store or worktree identity mismatch", journal.RunID)
+	}
+	owner, held, err := filelock.Inspect(lifecycleLockPath(repo, journal.RunID))
+	if err != nil {
+		return err
+	}
+	if held && owner.PID == journal.OwnerPID && owner.AcquiredAt == journal.OwnerSince {
+		return nil
+	}
+	projection, err := Read(repo, journal.RunID)
+	if err != nil {
+		if strings.Contains(err.Error(), "does not exist") {
+			return clearLifecycleJournal(repo, journal.RunID)
+		}
+		return err
+	}
+	if journal.SessionID != projection.Start.SessionID {
+		return fmt.Errorf("run lifecycle invariant failed for %s: journal session %s does not match run-start session %s", journal.RunID, journal.SessionID, projection.Start.SessionID)
+	}
+	if projection.Status == StatusRunning {
+		if err := finish(repo, projection, journal.SessionID, StatusIncomplete, "recovered abandoned run after its owner process exited"); err != nil {
+			return err
+		}
+	}
+	return clearLifecycleJournal(repo, journal.RunID)
+}
+
+func recoverRunLocked(repo *checkpoint.Repo, runID primitives.RunID) error {
+	journal, err := readLifecycleJournal(lifecycleJournalPath(repo, runID))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	return recoverJournalLocked(repo, journal)
 }
 
 func requireLockedLifecycle(repo *checkpoint.Repo, projection Projection) error {
@@ -118,12 +152,15 @@ func requireLockedLifecycle(repo *checkpoint.Repo, projection Projection) error 
 	if journal.RunID != projection.ID || journal.SessionID != projection.Start.SessionID || journal.RepoID != projection.RepoID || journal.StoreID != projection.StoreID || journal.WorktreeID != projection.WorktreeID {
 		return fmt.Errorf("run lifecycle invariant failed for %s: journal does not match run start", projection.ID)
 	}
-	held, err := filelock.Held(lifecycleLockPath(repo, projection.ID))
+	owner, held, err := filelock.Inspect(lifecycleLockPath(repo, projection.ID))
 	if err != nil {
 		return err
 	}
 	if !held {
 		return fmt.Errorf("run %s lifecycle is not currently locked", projection.ID)
+	}
+	if owner.PID != journal.OwnerPID || owner.AcquiredAt != journal.OwnerSince {
+		return fmt.Errorf("run %s lifecycle lock is held by a different owner", projection.ID)
 	}
 	return nil
 }
@@ -134,6 +171,17 @@ func lifecycleJournalPath(repo *checkpoint.Repo, runID primitives.RunID) string 
 }
 func lifecycleLockPath(repo *checkpoint.Repo, runID primitives.RunID) string {
 	return filepath.Join(lifecycleDir(repo), runID.String()+".lock")
+}
+func mutationLockPath(repo *checkpoint.Repo, runID primitives.RunID) string {
+	return filepath.Join(lifecycleDir(repo), runID.String()+".mutation.lock")
+}
+
+func acquireRunMutation(repo *checkpoint.Repo, runID primitives.RunID) (func(), error) {
+	lock, err := filelock.Acquire(mutationLockPath(repo, runID), 30*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("acquire run %s mutation lock: %w", runID, err)
+	}
+	return func() { _ = lock.Release() }, nil
 }
 
 func writeLifecycleJournal(repo *checkpoint.Repo, journal lifecycleJournal) error {
@@ -190,6 +238,9 @@ func readLifecycleJournal(path string) (lifecycleJournal, error) {
 	}
 	if _, err := primitives.ParseSessionID(journal.SessionID.String()); err != nil {
 		return lifecycleJournal{}, err
+	}
+	if journal.OwnerPID <= 0 || journal.OwnerSince == "" {
+		return lifecycleJournal{}, fmt.Errorf("run lifecycle invariant failed at %s: missing original lock owner", path)
 	}
 	return journal, nil
 }
