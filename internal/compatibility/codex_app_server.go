@@ -302,10 +302,10 @@ func decodeHooksResult(raw json.RawMessage, workspaceRoot string) (CodexHooksRes
 	if err := json.Unmarshal(raw, &response); err != nil {
 		return CodexHooksResult{}, fmt.Errorf("decode Codex hooks/list result: %w", err)
 	}
-	cleanRoot := filepath.Clean(workspaceRoot)
+	cleanRoot := normalizeFilePath(workspaceRoot)
 	var result CodexHooksResult
 	for _, entry := range response.Data {
-		if filepath.Clean(entry.CWD) != cleanRoot {
+		if normalizeFilePath(entry.CWD) != cleanRoot {
 			continue
 		}
 		for _, hook := range entry.Hooks {
@@ -439,7 +439,7 @@ func ClassifyCodexHooks(workspaceRoot, expectedCommand string, health adapters.H
 	for _, hook := range probed.Hooks {
 		eventName := normalizeEventName(hook.EventName)
 		_, expectedSource := expectedSources[normalizeFilePath(hook.SourcePath)]
-		if filepath.Clean(hook.CWD) != filepath.Clean(workspaceRoot) ||
+		if normalizeFilePath(hook.CWD) != normalizeFilePath(workspaceRoot) ||
 			hook.Command != expectedCommand ||
 			!strings.EqualFold(hook.Source, "project") ||
 			!expectedSource {
@@ -507,75 +507,10 @@ func codexProjectSourcePaths(workspaceRoot string) map[string]struct{} {
 	paths := map[string]struct{}{
 		normalizeFilePath(filepath.Join(workspaceRoot, ".codex", "config.toml")): {},
 	}
-	if rootCheckout, ok := linkedWorktreeRootCheckout(workspaceRoot); ok {
+	if rootCheckout := adapters.EffectiveHookRoot(workspaceRoot, adapters.TargetCodex); normalizeFilePath(rootCheckout) != normalizeFilePath(workspaceRoot) {
 		paths[normalizeFilePath(filepath.Join(rootCheckout, ".codex", "config.toml"))] = struct{}{}
 	}
 	return paths
-}
-
-func codexStaticInspectionRoot(workspaceRoot string) string {
-	rootCheckout, ok := linkedWorktreeRootCheckout(workspaceRoot)
-	if !ok {
-		return workspaceRoot
-	}
-	configPath := filepath.Join(rootCheckout, ".codex", "config.toml")
-	if info, err := os.Stat(configPath); err == nil && !info.IsDir() {
-		return rootCheckout
-	}
-	return workspaceRoot
-}
-
-func linkedWorktreeRootCheckout(workspaceRoot string) (string, bool) {
-	dotGit := filepath.Join(workspaceRoot, ".git")
-	info, err := os.Stat(dotGit)
-	if err != nil || info.IsDir() {
-		return "", false
-	}
-	data, err := readSmallMetadataFile(dotGit)
-	if err != nil {
-		return "", false
-	}
-	line := strings.TrimSpace(string(data))
-	gitDirText, found := strings.CutPrefix(line, "gitdir:")
-	if !found {
-		return "", false
-	}
-	gitDir := strings.TrimSpace(gitDirText)
-	if !filepath.IsAbs(gitDir) {
-		gitDir = filepath.Join(workspaceRoot, gitDir)
-	}
-	gitDir = filepath.Clean(gitDir)
-
-	commonDir := ""
-	if data, err := readSmallMetadataFile(filepath.Join(gitDir, "commondir")); err == nil {
-		commonDir = strings.TrimSpace(string(data))
-		if !filepath.IsAbs(commonDir) {
-			commonDir = filepath.Join(gitDir, commonDir)
-		}
-		commonDir = filepath.Clean(commonDir)
-	} else if filepath.Base(filepath.Dir(gitDir)) == "worktrees" {
-		commonDir = filepath.Dir(filepath.Dir(gitDir))
-	}
-	if filepath.Base(commonDir) != ".git" {
-		return "", false
-	}
-	return filepath.Dir(commonDir), true
-}
-
-func readSmallMetadataFile(path string) ([]byte, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, 4097))
-	if err != nil {
-		return nil, err
-	}
-	if len(data) > 4096 {
-		return nil, fmt.Errorf("Git metadata file exceeds 4096-byte limit: %s", path)
-	}
-	return data, nil
 }
 
 func normalizeFilePath(path string) string {
