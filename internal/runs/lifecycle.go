@@ -11,6 +11,7 @@ import (
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	"github.com/AadiJo/turnal/internal/filelock"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/processidentity"
 )
 
 const lifecycleJournalVersion = 1
@@ -24,12 +25,16 @@ type lifecycleJournal struct {
 	WorktreeID primitives.WorktreeID `json:"worktree_id"`
 	StartedAt  string                `json:"started_at"`
 	OwnerPID   int                   `json:"owner_pid"`
-	OwnerSince string                `json:"owner_since"`
+	OwnerStart string                `json:"owner_process_start"`
 }
 
 // Begin records recoverable lifecycle intent before creating the durable Run.
 // The returned release function must remain deferred for the process lifetime.
 func Begin(repo *checkpoint.Repo, runID primitives.RunID, sessionID primitives.SessionID, command []string) (func(), error) {
+	return begin(repo, runID, sessionID, command, start)
+}
+
+func begin(repo *checkpoint.Repo, runID primitives.RunID, sessionID primitives.SessionID, command []string, startRun func(*checkpoint.Repo, primitives.RunID, primitives.SessionID, []string, processidentity.Identity) error) (func(), error) {
 	if err := validateRepoAndRun(repo, runID); err != nil {
 		return nil, err
 	}
@@ -48,14 +53,19 @@ func Begin(repo *checkpoint.Repo, runID primitives.RunID, sessionID primitives.S
 		return nil, fmt.Errorf("acquire run lifecycle lock: %w", err)
 	}
 	release := func() { _ = lock.Release() }
-	owner := lock.Identity()
-	journal := lifecycleJournal{Version: lifecycleJournalVersion, RunID: runID, SessionID: sessionID, RepoID: repo.RepoID, StoreID: repo.StoreID, WorktreeID: repo.WorktreeID, StartedAt: time.Now().UTC().Format(time.RFC3339Nano), OwnerPID: owner.PID, OwnerSince: owner.AcquiredAt}
+	owner, err := processidentity.Current()
+	if err != nil {
+		release()
+		return nil, err
+	}
+	journal := lifecycleJournal{Version: lifecycleJournalVersion, RunID: runID, SessionID: sessionID, RepoID: repo.RepoID, StoreID: repo.StoreID, WorktreeID: repo.WorktreeID, StartedAt: time.Now().UTC().Format(time.RFC3339Nano), OwnerPID: owner.PID, OwnerStart: owner.Started}
 	if err := writeLifecycleJournal(repo, journal); err != nil {
 		release()
 		return nil, err
 	}
-	if err := start(repo, runID, sessionID, command); err != nil {
-		_ = clearLifecycleJournal(repo, runID)
+	if err := startRun(repo, runID, sessionID, command, owner); err != nil {
+		// The event append may already be durable even when a later derived-state
+		// update fails. Keep the intent so recovery can inspect durable history.
 		release()
 		return nil, err
 	}
@@ -105,13 +115,6 @@ func recoverJournalLocked(repo *checkpoint.Repo, journal lifecycleJournal) error
 	if journal.RepoID != repo.RepoID || journal.StoreID != repo.StoreID || journal.WorktreeID != repo.WorktreeID {
 		return fmt.Errorf("run lifecycle invariant failed for %s: repository store or worktree identity mismatch", journal.RunID)
 	}
-	owner, held, err := filelock.Inspect(lifecycleLockPath(repo, journal.RunID))
-	if err != nil {
-		return err
-	}
-	if held && owner.PID == journal.OwnerPID && owner.AcquiredAt == journal.OwnerSince {
-		return nil
-	}
 	projection, err := Read(repo, journal.RunID)
 	if err != nil {
 		if strings.Contains(err.Error(), "does not exist") {
@@ -121,6 +124,20 @@ func recoverJournalLocked(repo *checkpoint.Repo, journal lifecycleJournal) error
 	}
 	if journal.SessionID != projection.Start.SessionID {
 		return fmt.Errorf("run lifecycle invariant failed for %s: journal session %s does not match run-start session %s", journal.RunID, journal.SessionID, projection.Start.SessionID)
+	}
+	if journal.OwnerPID != projection.OwnerPID || journal.OwnerStart != projection.OwnerStart {
+		return fmt.Errorf("run lifecycle invariant failed for %s: journal wrapper identity does not match run start", journal.RunID)
+	}
+	held, err := filelock.Held(lifecycleLockPath(repo, journal.RunID))
+	if err != nil {
+		return err
+	}
+	ownerAlive, err := processidentity.Matches(projection.OwnerPID, projection.OwnerStart)
+	if err != nil {
+		return err
+	}
+	if held && ownerAlive {
+		return nil
 	}
 	if projection.Status == StatusRunning {
 		if err := finish(repo, projection, journal.SessionID, StatusIncomplete, "recovered abandoned run after its owner process exited"); err != nil {
@@ -152,15 +169,22 @@ func requireLockedLifecycle(repo *checkpoint.Repo, projection Projection) error 
 	if journal.RunID != projection.ID || journal.SessionID != projection.Start.SessionID || journal.RepoID != projection.RepoID || journal.StoreID != projection.StoreID || journal.WorktreeID != projection.WorktreeID {
 		return fmt.Errorf("run lifecycle invariant failed for %s: journal does not match run start", projection.ID)
 	}
-	owner, held, err := filelock.Inspect(lifecycleLockPath(repo, projection.ID))
+	if journal.OwnerPID != projection.OwnerPID || journal.OwnerStart != projection.OwnerStart {
+		return fmt.Errorf("run lifecycle invariant failed for %s: journal wrapper identity does not match run start", projection.ID)
+	}
+	held, err := filelock.Held(lifecycleLockPath(repo, projection.ID))
 	if err != nil {
 		return err
 	}
 	if !held {
 		return fmt.Errorf("run %s lifecycle is not currently locked", projection.ID)
 	}
-	if owner.PID != journal.OwnerPID || owner.AcquiredAt != journal.OwnerSince {
-		return fmt.Errorf("run %s lifecycle lock is held by a different owner", projection.ID)
+	ownerAlive, err := processidentity.Matches(projection.OwnerPID, projection.OwnerStart)
+	if err != nil {
+		return err
+	}
+	if !ownerAlive {
+		return fmt.Errorf("run %s original wrapper process is no longer alive", projection.ID)
 	}
 	return nil
 }
@@ -239,7 +263,7 @@ func readLifecycleJournal(path string) (lifecycleJournal, error) {
 	if _, err := primitives.ParseSessionID(journal.SessionID.String()); err != nil {
 		return lifecycleJournal{}, err
 	}
-	if journal.OwnerPID <= 0 || journal.OwnerSince == "" {
+	if journal.OwnerPID <= 0 || journal.OwnerStart == "" {
 		return lifecycleJournal{}, fmt.Errorf("run lifecycle invariant failed at %s: missing original lock owner", path)
 	}
 	return journal, nil

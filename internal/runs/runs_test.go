@@ -2,6 +2,7 @@ package runs
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"strings"
@@ -12,28 +13,87 @@ import (
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/filelock"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/processidentity"
 )
 
 func TestLifecycleLockTakeoverDoesNotAuthorizeDescendant(t *testing.T) {
 	repo := testRepo(t)
 	runID, _ := primitives.NewRunID()
-	wrapper := session(t, "wrapper")
-	release, err := Begin(repo, runID, wrapper, nil)
+	command := exec.Command(os.Args[0], "-test.run=TestLifecycleOwnerHelper$")
+	command.Env = append(os.Environ(), "TURNAL_LIFECYCLE_HELPER_ROOT="+repo.WorkspaceRoot.String(), "TURNAL_LIFECYCLE_HELPER_RUN="+runID.String())
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("owner helper: %v\n%s", err, output)
+	}
+	journal, err := readLifecycleJournal(lifecycleJournalPath(repo, runID))
 	if err != nil {
 		t.Fatal(err)
 	}
-	release()
 	takeover, err := filelock.Acquire(lifecycleLockPath(repo, runID), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = takeover.Release() }()
+	forged, _ := json.Marshal(map[string]any{"PID": journal.OwnerPID, "AcquiredAt": "copied"})
+	if err := os.WriteFile(lifecycleLockPath(repo, runID), forged, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := AcceptsCapture(repo, runID); err == nil {
 		t.Fatal("replacement lifecycle owner authorized capture")
 	}
 	projection, err := Read(repo, runID)
 	if err != nil || projection.Status != StatusIncomplete {
 		t.Fatalf("takeover projection = %+v, %v", projection, err)
+	}
+}
+
+func TestLifecycleOwnerHelper(t *testing.T) {
+	rootText := os.Getenv("TURNAL_LIFECYCLE_HELPER_ROOT")
+	if rootText == "" {
+		return
+	}
+	root, err := primitives.ParseWorkspaceRoot(rootText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := checkpoint.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID, err := primitives.ParseRunID(os.Getenv("TURNAL_LIFECYCLE_HELPER_RUN"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Begin(repo, runID, session(t, "wrapper"), nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBeginKeepsJournalWhenStartCommitIsUncertain(t *testing.T) {
+	repo := testRepo(t)
+	runID, _ := primitives.NewRunID()
+	wrapper := session(t, "wrapper")
+	release, err := begin(repo, runID, wrapper, nil, func(repo *checkpoint.Repo, runID primitives.RunID, sessionID primitives.SessionID, command []string, owner processidentity.Identity) error {
+		if err := start(repo, runID, sessionID, command, owner); err != nil {
+			return err
+		}
+		return errors.New("simulated derived-state failure after durable append")
+	})
+	if release != nil || err == nil {
+		t.Fatalf("begin returned release=%v, error=%v", release != nil, err)
+	}
+	if _, err := os.Stat(lifecycleJournalPath(repo, runID)); err != nil {
+		t.Fatalf("lifecycle journal was removed: %v", err)
+	}
+	projection, err := Read(repo, runID)
+	if err != nil || projection.Status != StatusRunning {
+		t.Fatalf("uncertain start projection = %+v, %v", projection, err)
+	}
+	if err := RecoverAbandoned(repo); err != nil {
+		t.Fatal(err)
+	}
+	projection, err = Read(repo, runID)
+	if err != nil || projection.Status != StatusIncomplete {
+		t.Fatalf("recovered uncertain start = %+v, %v", projection, err)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/processidentity"
 )
 
 const (
@@ -28,6 +29,8 @@ type startPayload struct {
 	StoreID    primitives.StoreID    `json:"store_id"`
 	WorktreeID primitives.WorktreeID `json:"worktree_id"`
 	Command    []string              `json:"command,omitempty"`
+	OwnerPID   int                   `json:"owner_pid"`
+	OwnerStart string                `json:"owner_process_start"`
 }
 
 type capturePayload struct {
@@ -89,6 +92,8 @@ type Projection struct {
 	Attempts   []Attempt             `json:"attempts"`
 	Start      Provenance            `json:"start"`
 	Finish     *Provenance           `json:"finish,omitempty"`
+	OwnerPID   int                   `json:"owner_pid,omitempty"`
+	OwnerStart string                `json:"owner_process_start,omitempty"`
 }
 
 type Inventory struct {
@@ -162,14 +167,14 @@ func Inspect(repo *checkpoint.Repo) (Inventory, error) {
 	return inventory, nil
 }
 
-func start(repo *checkpoint.Repo, runID primitives.RunID, wrapperSession primitives.SessionID, command []string) error {
+func start(repo *checkpoint.Repo, runID primitives.RunID, wrapperSession primitives.SessionID, command []string, owner processidentity.Identity) error {
 	if err := validateRepoAndRun(repo, runID); err != nil {
 		return err
 	}
 	err := appendOnce(repo.EventLog(), eventlog.AppendInput{
 		SessionID: wrapperSession, Type: primitives.EventTypeRunStart,
 		Adapter: primitives.AdapterCodex, SourceID: "run:" + runID.String() + ":start",
-		Payload: mustJSON(startPayload{RunID: runID, RepoID: repo.RepoID, StoreID: repo.StoreID, WorktreeID: repo.WorktreeID, Command: command}),
+		Payload: mustJSON(startPayload{RunID: runID, RepoID: repo.RepoID, StoreID: repo.StoreID, WorktreeID: repo.WorktreeID, Command: command, OwnerPID: owner.PID, OwnerStart: owner.Started}),
 	})
 	return err
 }
@@ -369,6 +374,7 @@ func Read(repo *checkpoint.Repo, runID primitives.RunID) (Projection, error) {
 		}
 		result.ID, result.RepoID, result.StoreID, result.WorktreeID = payload.RunID, payload.RepoID, payload.StoreID, payload.WorktreeID
 		result.Command, result.Status, result.Start = payload.Command, StatusRunning, provenance(event)
+		result.OwnerPID, result.OwnerStart = payload.OwnerPID, payload.OwnerStart
 	}
 	if result.ID == "" {
 		return Projection{}, fmt.Errorf("run %s does not exist in this Turnal store", runID)
@@ -537,6 +543,9 @@ func validateStartEvent(event eventlog.Event, payload startPayload) error {
 	}
 	if event.Adapter != primitives.AdapterCodex {
 		return relationshipError(event, fmt.Errorf("run start adapter must be %s", primitives.AdapterCodex))
+	}
+	if payload.OwnerPID <= 0 || payload.OwnerStart == "" {
+		return relationshipError(event, fmt.Errorf("run start is missing wrapper process identity"))
 	}
 	return nil
 }
