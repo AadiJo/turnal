@@ -46,14 +46,15 @@ type Conditions struct {
 }
 
 type Source struct {
-	SessionID      primitives.SessionID     `json:"session_id"`
-	TurnID         primitives.TurnID        `json:"turn_id"`
-	WorktreeID     primitives.WorktreeID    `json:"worktree_id,omitempty"`
-	StreamID       primitives.EventStreamID `json:"stream_id,omitempty"`
-	Adapters       []primitives.AdapterName `json:"adapters,omitempty"`
-	Model          string                   `json:"model,omitempty"`
-	PermissionMode string                   `json:"permission_mode,omitempty"`
-	Complete       bool                     `json:"complete"`
+	SessionID       primitives.SessionID     `json:"session_id"`
+	TurnID          primitives.TurnID        `json:"turn_id"`
+	WorktreeID      primitives.WorktreeID    `json:"worktree_id,omitempty"`
+	StreamID        primitives.EventStreamID `json:"stream_id,omitempty"`
+	Adapters        []primitives.AdapterName `json:"adapters,omitempty"`
+	MetadataAdapter primitives.AdapterName   `json:"metadata_adapter,omitempty"`
+	Model           string                   `json:"model,omitempty"`
+	PermissionMode  string                   `json:"permission_mode,omitempty"`
+	Complete        bool                     `json:"complete"`
 }
 
 type Base struct {
@@ -65,8 +66,9 @@ type Base struct {
 }
 
 type Instruction struct {
-	Status InstructionStatus `json:"status"`
-	Text   string            `json:"text,omitempty"`
+	Status  InstructionStatus      `json:"status"`
+	Text    string                 `json:"text,omitempty"`
+	Adapter primitives.AdapterName `json:"adapter,omitempty"`
 }
 
 type Report struct {
@@ -102,7 +104,7 @@ func (analyzer Analyzer) Inspect(sessionID primitives.SessionID, turnID primitiv
 	if err != nil {
 		return Report{}, fmt.Errorf("fork readiness integrity failed: %w", err)
 	}
-	model, permissionMode, err := sessionMetadata(turn.SessionEvents)
+	model, permissionMode, hasMetadata, err := sessionMetadata(turn.SessionEvents, instruction.Adapter)
 	if err != nil {
 		return Report{}, fmt.Errorf("fork readiness integrity failed: %w", err)
 	}
@@ -141,6 +143,9 @@ func (analyzer Analyzer) Inspect(sessionID primitives.SessionID, turnID primitiv
 	}
 	report.Source.Model = model
 	report.Source.PermissionMode = permissionMode
+	if hasMetadata {
+		report.Source.MetadataAdapter = instruction.Adapter
+	}
 
 	if turn.PreCheckpoint == nil {
 		return report, nil
@@ -212,15 +217,15 @@ func inspectInstruction(events []eventlog.Event) (Instruction, error) {
 		case "":
 			continue
 		case primitives.SecretsRedactionText:
-			instruction = Instruction{Status: InstructionRedacted}
+			instruction = Instruction{Status: InstructionRedacted, Adapter: event.Adapter}
 		default:
-			instruction = Instruction{Status: InstructionAvailable, Text: text}
+			instruction = Instruction{Status: InstructionAvailable, Text: text, Adapter: event.Adapter}
 		}
 	}
 	return instruction, nil
 }
 
-func sessionMetadata(events []eventlog.Event) (string, string, error) {
+func sessionMetadata(events []eventlog.Event, adapter primitives.AdapterName) (string, string, bool, error) {
 	var model, permissionMode string
 	found := false
 	for _, event := range events {
@@ -232,18 +237,18 @@ func sessionMetadata(events []eventlog.Event) (string, string, error) {
 			PermissionMode string `json:"permission_mode"`
 		}
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
-			return "", "", malformedPayloadError(event, err)
+			return "", "", false, malformedPayloadError(event, err)
 		}
 		if string(event.Payload) == "null" {
-			return "", "", malformedPayloadError(event, fmt.Errorf("payload must be an object"))
+			return "", "", false, malformedPayloadError(event, fmt.Errorf("payload must be an object"))
 		}
-		if !found {
+		if !found && event.Adapter == adapter {
 			model = strings.TrimSpace(payload.Model)
 			permissionMode = strings.TrimSpace(payload.PermissionMode)
 			found = true
 		}
 	}
-	return model, permissionMode, nil
+	return model, permissionMode, found, nil
 }
 
 func malformedPayloadError(event eventlog.Event, err error) error {

@@ -77,6 +77,11 @@ func writeForkReadiness(writer io.Writer, report forkengine.Report) error {
 			return err
 		}
 	}
+	if report.Source.MetadataAdapter != "" {
+		if _, err := fmt.Fprintf(writer, "metadata adapter: %s\n", report.Source.MetadataAdapter); err != nil {
+			return err
+		}
+	}
 	if report.Source.Model != "" {
 		if _, err := fmt.Fprintf(writer, "model:          %s\n", report.Source.Model); err != nil {
 			return err

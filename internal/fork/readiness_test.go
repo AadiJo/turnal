@@ -29,6 +29,9 @@ func TestInspectRequiresUnrecordedConversationContext(t *testing.T) {
 	if report.Instruction.Status != InstructionAvailable || report.Instruction.Text != "Fix the parser" {
 		t.Fatalf("instruction = %#v", report.Instruction)
 	}
+	if report.Instruction.Adapter != primitives.AdapterCodex || report.Source.MetadataAdapter != primitives.AdapterCodex {
+		t.Fatalf("instruction/metadata adapters = %q / %q", report.Instruction.Adapter, report.Source.MetadataAdapter)
+	}
 	if report.Base.Status != "available" || report.Base.Ref == "" || report.Base.CommitSHA == "" {
 		t.Fatalf("base = %#v", report.Base)
 	}
@@ -135,15 +138,41 @@ func TestSessionMetadataRejectsMalformedPayloads(t *testing.T) {
 		"wrong field type": json.RawMessage(`{"model":false}`),
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, _, err := sessionMetadata([]eventlog.Event{{
+			_, _, _, err := sessionMetadata([]eventlog.Event{{
 				Seq:     2,
 				Type:    primitives.EventTypeSessionStart,
+				Adapter: primitives.AdapterCodex,
 				Payload: payload,
-			}})
+			}}, primitives.AdapterCodex)
 			if err == nil || !strings.Contains(err.Error(), "malformed session.start payload at event 2") {
 				t.Fatalf("sessionMetadata error = %v", err)
 			}
 		})
+	}
+}
+
+func TestSessionMetadataUsesInstructionAdapter(t *testing.T) {
+	events := []eventlog.Event{
+		{
+			Seq:     1,
+			Type:    primitives.EventTypeSessionStart,
+			Adapter: primitives.AdapterClaudeCode,
+			Payload: json.RawMessage(`{"model":"claude-model","permission_mode":"claude-mode"}`),
+		},
+		{
+			Seq:     2,
+			Type:    primitives.EventTypeSessionStart,
+			Adapter: primitives.AdapterCodex,
+			Payload: json.RawMessage(`{"model":"codex-model","permission_mode":"codex-mode"}`),
+		},
+	}
+
+	model, permissionMode, found, err := sessionMetadata(events, primitives.AdapterCodex)
+	if err != nil {
+		t.Fatalf("sessionMetadata: %v", err)
+	}
+	if !found || model != "codex-model" || permissionMode != "codex-mode" {
+		t.Fatalf("metadata = %q / %q / %t", model, permissionMode, found)
 	}
 }
 
