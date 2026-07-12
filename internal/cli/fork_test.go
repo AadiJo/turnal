@@ -81,6 +81,7 @@ func TestForkDryRunReportsReadinessWithoutWritingState(t *testing.T) {
 		"conversation     not_recorded",
 		"reauthorization_required",
 		"Git-ignored and secrets-denied paths",
+		"Empty directories are not represented",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("fork output missing %q:\n%s", want, output)

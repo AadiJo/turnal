@@ -149,6 +149,7 @@ func (analyzer Analyzer) Inspect(sessionID primitives.SessionID, turnID primitiv
 		},
 		Limitations: []string{
 			"Git-ignored and secrets-denied paths are outside the captured workspace surface.",
+			"Empty directories are not represented by checkpoint trees and must be recreated when required.",
 			"Model output is nondeterministic even when the captured files are identical.",
 		},
 	}
