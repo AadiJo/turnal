@@ -41,7 +41,7 @@ func Begin(repo *checkpoint.Repo, runID primitives.RunID, sessionID primitives.S
 		release()
 		return nil, err
 	}
-	if err := Start(repo, runID, sessionID, command); err != nil {
+	if err := start(repo, runID, sessionID, command); err != nil {
 		_ = clearLifecycleJournal(repo, runID)
 		release()
 		return nil, err
@@ -92,6 +92,9 @@ func RecoverAbandoned(repo *checkpoint.Repo) error {
 			}
 			return err
 		}
+		if journal.SessionID != projection.Start.SessionID {
+			return fmt.Errorf("run lifecycle invariant failed for %s: journal session %s does not match run-start session %s", journal.RunID, journal.SessionID, projection.Start.SessionID)
+		}
 		if projection.Status == StatusRunning {
 			if err := finish(repo, projection, journal.SessionID, StatusIncomplete, "recovered abandoned run after its owner process exited"); err != nil {
 				return err
@@ -100,6 +103,27 @@ func RecoverAbandoned(repo *checkpoint.Repo) error {
 		if err := clearLifecycleJournal(repo, journal.RunID); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func requireLockedLifecycle(repo *checkpoint.Repo, projection Projection) error {
+	journal, err := readLifecycleJournal(lifecycleJournalPath(repo, projection.ID))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("run %s has no active lifecycle journal", projection.ID)
+		}
+		return err
+	}
+	if journal.RunID != projection.ID || journal.SessionID != projection.Start.SessionID || journal.RepoID != projection.RepoID || journal.StoreID != projection.StoreID || journal.WorktreeID != projection.WorktreeID {
+		return fmt.Errorf("run lifecycle invariant failed for %s: journal does not match run start", projection.ID)
+	}
+	held, err := filelock.Held(lifecycleLockPath(repo, projection.ID))
+	if err != nil {
+		return err
+	}
+	if !held {
+		return fmt.Errorf("run %s lifecycle is not currently locked", projection.ID)
 	}
 	return nil
 }

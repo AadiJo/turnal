@@ -26,9 +26,11 @@ func TestCodexHookReconcilesProviderTurnsWithWrapperRun(t *testing.T) {
 	t.Chdir(root.String())
 	runID, _ := primitives.NewRunID()
 	wrapper := sessionID(t, "wrapper-capture")
-	if err := runs.Start(repo, runID, wrapper, []string{"codex"}); err != nil {
+	releaseRun, err := runs.Begin(repo, runID, wrapper, []string{"codex"})
+	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(releaseRun)
 	if err := runs.LinkCapture(repo, runID, runs.CaptureWrapper, wrapper, primitives.AdapterCodex); err != nil {
 		t.Fatal(err)
 	}

@@ -2,6 +2,7 @@ package runs
 
 import (
 	"encoding/json"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -35,6 +36,135 @@ func TestRecoverAbandonedRunWithoutTouchingLiveRun(t *testing.T) {
 	projection, err = Read(repo, runID)
 	if err != nil || projection.Status != StatusIncomplete || !strings.Contains(projection.Error, "owner process exited") {
 		t.Fatalf("abandoned projection = %+v, %v", projection, err)
+	}
+}
+
+func TestCaptureAuthorizationRequiresLockedMatchingLifecycle(t *testing.T) {
+	repo := testRepo(t)
+	runID, _ := primitives.NewRunID()
+	wrapper := session(t, "wrapper")
+	release, err := Begin(repo, runID, wrapper, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(release)
+	if err := os.Remove(lifecycleJournalPath(repo, runID)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AcceptsCapture(repo, runID); err == nil || !strings.Contains(err.Error(), "no active lifecycle journal") {
+		t.Fatalf("missing journal authorization error = %v", err)
+	}
+	projection, err := Read(repo, runID)
+	if err != nil || projection.Status != StatusRunning {
+		t.Fatalf("durable stale run = %+v, %v", projection, err)
+	}
+}
+
+func TestWritersRejectRelationshipsTheirProjectionWouldReject(t *testing.T) {
+	repo := testRepo(t)
+	runID, _ := primitives.NewRunID()
+	wrapper := session(t, "wrapper")
+	beginTestRun(t, repo, runID, wrapper, nil)
+	wrong := session(t, "wrong")
+	if err := LinkCapture(repo, runID, CaptureWrapper, wrong, primitives.AdapterCodex); err == nil {
+		t.Fatal("wrong wrapper session accepted")
+	}
+	if _, err := EnsureAttempt(repo, runID, wrong, 1, primitives.AdapterCodex); err == nil {
+		t.Fatal("attempt without provider capture accepted")
+	}
+	if err := Finish(repo, runID, wrong, StatusIncomplete, "bad"); err == nil {
+		t.Fatal("finish from wrong session accepted")
+	}
+	projection, err := Read(repo, runID)
+	if err != nil || projection.Status != StatusRunning || len(projection.Captures) != 0 || len(projection.Attempts) != 0 {
+		t.Fatalf("rejected writes corrupted projection: %+v, %v", projection, err)
+	}
+}
+
+func TestRecoveryRejectsJournalSessionDifferentFromRunStart(t *testing.T) {
+	repo := testRepo(t)
+	runID, _ := primitives.NewRunID()
+	wrapper := session(t, "wrapper")
+	release, err := Begin(repo, runID, wrapper, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal := lifecycleJournal{Version: lifecycleJournalVersion, RunID: runID, SessionID: session(t, "wrong"), RepoID: repo.RepoID, StoreID: repo.StoreID, WorktreeID: repo.WorktreeID}
+	if err := writeLifecycleJournal(repo, journal); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if err := RecoverAbandoned(repo); err == nil || !strings.Contains(err.Error(), "does not match run-start session") {
+		t.Fatalf("recovery error = %v", err)
+	}
+	projection, err := Read(repo, runID)
+	if err != nil || projection.Status != StatusRunning {
+		t.Fatalf("mismatched recovery mutated run: %+v, %v", projection, err)
+	}
+}
+
+func TestProjectionRejectsAttemptIDBoundToTwoTurns(t *testing.T) {
+	repo := testRepo(t)
+	runID, _ := primitives.NewRunID()
+	wrapper := session(t, "wrapper")
+	provider := session(t, "provider")
+	beginTestRun(t, repo, runID, wrapper, nil)
+	if err := LinkCapture(repo, runID, CaptureProvider, provider, primitives.AdapterCodex); err != nil {
+		t.Fatal(err)
+	}
+	attemptID, _ := primitives.NewAttemptID()
+	for number := uint64(1); number <= 2; number++ {
+		turn := primitives.TurnID(number)
+		appendRelationship(t, repo, eventlog.AppendInput{SessionID: provider, TurnID: &turn, Type: primitives.EventTypeRunAttemptLink, Adapter: primitives.AdapterCodex, SourceID: "attempt-" + turn.String(), Payload: relationshipJSON(attemptPayload{RunID: runID, AttemptID: attemptID, SessionID: provider, TurnID: turn})})
+	}
+	if _, err := Read(repo, runID); err == nil || !strings.Contains(err.Error(), "is already bound") {
+		t.Fatalf("duplicate attempt id error = %v", err)
+	}
+}
+
+func TestTranscriptProvenanceStaysInAttemptStream(t *testing.T) {
+	repo := testRepo(t)
+	runID, _ := primitives.NewRunID()
+	wrapper := session(t, "wrapper")
+	provider := session(t, "shared-provider")
+	beginTestRun(t, repo, runID, wrapper, nil)
+	if err := LinkCapture(repo, runID, CaptureProvider, provider, primitives.AdapterCodex); err != nil {
+		t.Fatal(err)
+	}
+	appendRelationship(t, repo, eventlog.AppendInput{SessionID: provider, Type: primitives.EventTypeSessionStart, Adapter: primitives.AdapterCodex, Payload: relationshipJSON(map[string]string{"transcript_path": "one"})})
+	if _, err := EnsureAttempt(repo, runID, provider, 1, primitives.AdapterCodex); err != nil {
+		t.Fatal(err)
+	}
+
+	other := *repo
+	other.EventProducerID, _ = primitives.NewEventProducerID()
+	otherStream, _ := other.StreamID(provider)
+	appendRelationship(t, &other, eventlog.AppendInput{SessionID: provider, Type: primitives.EventTypeRunCaptureLink, Adapter: primitives.AdapterCodex, Payload: relationshipJSON(capturePayload{RunID: runID, Kind: CaptureProvider, SessionID: provider, Adapter: primitives.AdapterCodex})})
+	appendRelationship(t, &other, eventlog.AppendInput{SessionID: provider, Type: primitives.EventTypeSessionStart, Adapter: primitives.AdapterCodex, Payload: relationshipJSON(map[string]string{"transcript_path": "two"})})
+	turn := primitives.TurnID(2)
+	attemptID, _ := primitives.NewAttemptID()
+	appendRelationship(t, &other, eventlog.AppendInput{SessionID: provider, TurnID: &turn, Type: primitives.EventTypeRunAttemptLink, Adapter: primitives.AdapterCodex, Payload: relationshipJSON(attemptPayload{RunID: runID, AttemptID: attemptID, SessionID: provider, TurnID: turn})})
+
+	projection, err := Read(repo, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projection.Attempts) != 2 {
+		t.Fatalf("attempts = %+v", projection.Attempts)
+	}
+	for _, attempt := range projection.Attempts {
+		transcripts := 0
+		for _, source := range attempt.Fields {
+			if source.Field == "transcript" {
+				transcripts++
+				if source.StreamID != attempt.Provenance.StreamID {
+					t.Fatalf("cross-stream transcript: attempt=%+v source=%+v other=%s", attempt, source, otherStream)
+				}
+			}
+		}
+		if transcripts != 1 {
+			t.Fatalf("attempt transcript provenance = %+v", attempt.Fields)
+		}
 	}
 }
 
@@ -87,9 +217,7 @@ func TestProjectionRejectsMalformedRelationshipEnvelopes(t *testing.T) {
 			repo := testRepo(t)
 			runID, _ := primitives.NewRunID()
 			wrapper := session(t, "wrapper")
-			if err := Start(repo, runID, wrapper, nil); err != nil {
-				t.Fatal(err)
-			}
+			beginTestRun(t, repo, runID, wrapper, nil)
 			test.append(t, repo, runID, wrapper)
 			if _, err := Read(repo, runID); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("Read error = %v, want %q", err, test.want)
@@ -117,9 +245,7 @@ func TestProjectionKeepsCapturesDistinctAndAttemptsAtProviderTurns(t *testing.T)
 	runID, _ := primitives.NewRunID()
 	wrapper := session(t, "wrapper-session")
 	provider := session(t, "provider-session")
-	if err := Start(repo, runID, wrapper, []string{"codex"}); err != nil {
-		t.Fatal(err)
-	}
+	beginTestRun(t, repo, runID, wrapper, []string{"codex"})
 	if err := LinkCapture(repo, runID, CaptureWrapper, wrapper, primitives.AdapterCodex); err != nil {
 		t.Fatal(err)
 	}
@@ -164,9 +290,7 @@ func TestProjectionWrapperOnlyAndFailedRun(t *testing.T) {
 	repo := testRepo(t)
 	runID, _ := primitives.NewRunID()
 	wrapper := session(t, "wrapper-only")
-	if err := Start(repo, runID, wrapper, []string{"codex"}); err != nil {
-		t.Fatal(err)
-	}
+	beginTestRun(t, repo, runID, wrapper, []string{"codex"})
 	if err := LinkCapture(repo, runID, CaptureWrapper, wrapper, primitives.AdapterCodex); err != nil {
 		t.Fatal(err)
 	}
@@ -191,9 +315,7 @@ func TestRejectsFabricatedAndForeignRun(t *testing.T) {
 	foreign := testRepo(t)
 	runID, _ := primitives.NewRunID()
 	wrapper := session(t, "wrapper")
-	if err := Start(repo, runID, wrapper, nil); err != nil {
-		t.Fatal(err)
-	}
+	beginTestRun(t, repo, runID, wrapper, nil)
 	if _, err := AcceptsCapture(foreign, runID); err == nil {
 		t.Fatal("foreign store accepted run")
 	}
@@ -246,6 +368,15 @@ func testRepo(t *testing.T) *checkpoint.Repo {
 		t.Fatal(err)
 	}
 	return repo
+}
+
+func beginTestRun(t *testing.T, repo *checkpoint.Repo, runID primitives.RunID, wrapper primitives.SessionID, command []string) {
+	t.Helper()
+	release, err := Begin(repo, runID, wrapper, command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(release)
 }
 
 func session(t *testing.T, value string) primitives.SessionID {

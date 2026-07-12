@@ -162,7 +162,7 @@ func Inspect(repo *checkpoint.Repo) (Inventory, error) {
 	return inventory, nil
 }
 
-func Start(repo *checkpoint.Repo, runID primitives.RunID, wrapperSession primitives.SessionID, command []string) error {
+func start(repo *checkpoint.Repo, runID primitives.RunID, wrapperSession primitives.SessionID, command []string) error {
 	if err := validateRepoAndRun(repo, runID); err != nil {
 		return err
 	}
@@ -182,6 +182,30 @@ func LinkCapture(repo *checkpoint.Repo, runID primitives.RunID, kind string, ses
 	if kind != CaptureWrapper && kind != CaptureProvider {
 		return fmt.Errorf("invalid run capture kind %q", kind)
 	}
+	if _, err := primitives.ParseSessionID(sessionID.String()); err != nil {
+		return err
+	}
+	if _, err := primitives.ParseAdapterName(adapter.String()); err != nil {
+		return err
+	}
+	if kind == CaptureWrapper && sessionID != projection.Start.SessionID {
+		return fmt.Errorf("wrapper capture session %s does not match run-start session %s", sessionID, projection.Start.SessionID)
+	}
+	if kind == CaptureProvider && sessionID == projection.Start.SessionID {
+		return fmt.Errorf("provider capture must remain distinct from wrapper capture")
+	}
+	streamID, err := repo.StreamID(sessionID)
+	if err != nil {
+		return err
+	}
+	for _, capture := range projection.Captures {
+		if capture.Kind == kind && capture.SessionID == sessionID && capture.Provenance.StreamID == streamID {
+			if capture.Adapter != adapter {
+				return fmt.Errorf("capture %s already uses adapter %s", sessionID, capture.Adapter)
+			}
+			return nil
+		}
+	}
 	err = appendOnce(repo.EventLog(), eventlog.AppendInput{
 		SessionID: sessionID, Type: primitives.EventTypeRunCaptureLink, Adapter: adapter,
 		SourceID: fmt.Sprintf("run:%s:capture:%s:%s", runID, kind, sessionID),
@@ -194,6 +218,28 @@ func EnsureAttempt(repo *checkpoint.Repo, runID primitives.RunID, sessionID prim
 	projection, err := AcceptsCapture(repo, runID)
 	if err != nil {
 		return "", err
+	}
+	if _, err := primitives.ParseSessionID(sessionID.String()); err != nil {
+		return "", err
+	}
+	if _, err := primitives.NewTurnID(turnID.Uint64()); err != nil {
+		return "", err
+	}
+	if _, err := primitives.ParseAdapterName(adapter.String()); err != nil {
+		return "", err
+	}
+	streamID, err := repo.StreamID(sessionID)
+	if err != nil {
+		return "", err
+	}
+	providerFound := false
+	for _, capture := range projection.Captures {
+		if capture.Kind == CaptureProvider && capture.SessionID == sessionID && capture.Adapter == adapter && capture.Provenance.StreamID == streamID {
+			providerFound = true
+		}
+	}
+	if !providerFound {
+		return "", fmt.Errorf("attempt requires a matching provider capture for session %s", sessionID)
 	}
 	for _, attempt := range projection.Attempts {
 		if attempt.SessionID == sessionID && attempt.TurnID == turnID {
@@ -219,6 +265,9 @@ func Finish(repo *checkpoint.Repo, runID primitives.RunID, wrapperSession primit
 	projection, err := AcceptsCapture(repo, runID)
 	if err != nil {
 		return err
+	}
+	if wrapperSession != projection.Start.SessionID {
+		return fmt.Errorf("run finish session %s does not match run-start session %s", wrapperSession, projection.Start.SessionID)
 	}
 	if err := finish(repo, projection, wrapperSession, status, message); err != nil {
 		return err
@@ -249,6 +298,9 @@ func AcceptsCapture(repo *checkpoint.Repo, runID primitives.RunID) (Projection, 
 	}
 	if projection.Status != StatusRunning {
 		return Projection{}, fmt.Errorf("run %s cannot accept capture in status %s", runID, projection.Status)
+	}
+	if err := requireLockedLifecycle(repo, projection); err != nil {
+		return Projection{}, err
 	}
 	return projection, nil
 }
@@ -292,6 +344,7 @@ func Read(repo *checkpoint.Repo, runID primitives.RunID) (Projection, error) {
 	}
 	seenCaptures := map[string]bool{}
 	seenAttempts := map[string]bool{}
+	seenAttemptIDs := map[primitives.AttemptID]string{}
 	providerCaptures := map[string]Capture{}
 	for _, event := range claimed {
 		if event.Type == primitives.EventTypeRunStart {
@@ -353,8 +406,12 @@ func Read(repo *checkpoint.Repo, runID primitives.RunID) (Projection, error) {
 		if seenAttempts[key] {
 			return Projection{}, relationshipError(event, fmt.Errorf("duplicate attempt relationship"))
 		}
+		if existing, ok := seenAttemptIDs[payload.AttemptID]; ok && existing != key {
+			return Projection{}, relationshipError(event, fmt.Errorf("attempt id %s is already bound to %s", payload.AttemptID, existing))
+		}
 		result.Attempts = append(result.Attempts, Attempt{ID: payload.AttemptID, SessionID: payload.SessionID, TurnID: payload.TurnID, Provenance: provenance(event)})
 		seenAttempts[key] = true
+		seenAttemptIDs[payload.AttemptID] = key
 	}
 	for index := range result.Captures {
 		capture := &result.Captures[index]
@@ -390,7 +447,7 @@ func Read(repo *checkpoint.Repo, runID primitives.RunID) (Projection, error) {
 			}
 		}
 		for _, capture := range result.Captures {
-			if capture.Kind != CaptureProvider || capture.SessionID != attempt.SessionID {
+			if capture.Kind != CaptureProvider || capture.SessionID != attempt.SessionID || capture.Provenance.StreamID != attempt.Provenance.StreamID {
 				continue
 			}
 			for _, source := range capture.Fields {
