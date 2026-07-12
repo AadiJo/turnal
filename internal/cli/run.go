@@ -58,13 +58,16 @@ func runCmd() *cobra.Command {
 		Short:        "Run Codex with turnal safety checkpoints",
 		SilenceUsage: true,
 		Args:         cobra.MinimumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) (resultErr error) {
 			if !isCodexCommand(args[0]) {
 				return fmt.Errorf("turnal run currently supports Codex only; expected command %q to be codex", args[0])
 			}
 
 			repo, err := openCheckpointRepo()
 			if err != nil {
+				return err
+			}
+			if err := runs.RecoverAbandoned(repo); err != nil {
 				return err
 			}
 
@@ -109,9 +112,22 @@ func runCmd() *cobra.Command {
 				return err
 			}
 			defer unlockSession()
-			if err := runs.Start(repo, runID, sessionID, args); err != nil {
+			releaseLifecycle, err := runs.Begin(repo, runID, sessionID, args)
+			if err != nil {
 				return err
 			}
+			defer releaseLifecycle()
+			runOpen := true
+			defer func() {
+				if !runOpen || resultErr == nil {
+					return
+				}
+				if finishErr := runs.Finish(repo, runID, sessionID, runs.StatusIncomplete, resultErr.Error()); finishErr != nil {
+					resultErr = errors.Join(resultErr, fmt.Errorf("finalize incomplete run %s: %w", runID, finishErr))
+				} else {
+					runOpen = false
+				}
+			}()
 			if err := runs.LinkCapture(repo, runID, runs.CaptureWrapper, sessionID, primitives.AdapterCodex); err != nil {
 				return err
 			}
@@ -142,20 +158,23 @@ func runCmd() *cobra.Command {
 					SourceID:  fmt.Sprintf("codex-run:%s:%s:incomplete", sessionID, started.TurnID),
 					Payload:   mustJSON(runIncompletePayload{Reason: finishErr.Error()}),
 				})
-				_ = runs.Finish(repo, runID, sessionID, runs.StatusIncomplete, finishErr.Error())
 				return finishErr
 			}
 			if countErr != nil {
-				_ = runs.Finish(repo, runID, sessionID, runs.StatusIncomplete, countErr.Error())
 				return countErr
 			}
 			if childErr != nil {
 				if err := runs.Finish(repo, runID, sessionID, runs.StatusFailed, childErr.Error()); err != nil {
 					return errors.Join(childErr, err)
 				}
+				runOpen = false
 				return childErr
 			}
-			return runs.Finish(repo, runID, sessionID, runs.StatusSucceeded, "")
+			if err := runs.Finish(repo, runID, sessionID, runs.StatusSucceeded, ""); err != nil {
+				return err
+			}
+			runOpen = false
+			return nil
 		},
 	}
 

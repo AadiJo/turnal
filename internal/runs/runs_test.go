@@ -1,13 +1,116 @@
 package runs
 
 import (
+	"encoding/json"
 	"os/exec"
+	"strings"
 	"testing"
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/primitives"
 )
+
+func TestRecoverAbandonedRunWithoutTouchingLiveRun(t *testing.T) {
+	repo := testRepo(t)
+	runID, _ := primitives.NewRunID()
+	wrapper := session(t, "abandoned-wrapper")
+	release, err := Begin(repo, runID, wrapper, []string{"codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RecoverAbandoned(repo); err != nil {
+		t.Fatal(err)
+	}
+	projection, err := Read(repo, runID)
+	if err != nil || projection.Status != StatusRunning {
+		t.Fatalf("live run was recovered: %+v, %v", projection, err)
+	}
+
+	// Releasing without Finish simulates the OS releasing the lock after a hard exit.
+	release()
+	if _, err := AcceptsCapture(repo, runID); err == nil {
+		t.Fatal("abandoned run accepted capture")
+	}
+	projection, err = Read(repo, runID)
+	if err != nil || projection.Status != StatusIncomplete || !strings.Contains(projection.Error, "owner process exited") {
+		t.Fatalf("abandoned projection = %+v, %v", projection, err)
+	}
+}
+
+func TestProjectionRejectsMalformedRelationshipEnvelopes(t *testing.T) {
+	tests := []struct {
+		name   string
+		append func(*testing.T, *checkpoint.Repo, primitives.RunID, primitives.SessionID)
+		want   string
+	}{
+		{"capture kind", func(t *testing.T, repo *checkpoint.Repo, runID primitives.RunID, wrapper primitives.SessionID) {
+			appendRelationship(t, repo, eventlog.AppendInput{SessionID: wrapper, Type: primitives.EventTypeRunCaptureLink, Adapter: primitives.AdapterCodex, Payload: relationshipJSON(map[string]any{"run_id": runID, "kind": "guessed", "session_id": wrapper, "adapter": "codex"})})
+		}, "invalid capture kind"},
+		{"capture session", func(t *testing.T, repo *checkpoint.Repo, runID primitives.RunID, wrapper primitives.SessionID) {
+			appendRelationship(t, repo, eventlog.AppendInput{SessionID: wrapper, Type: primitives.EventTypeRunCaptureLink, Adapter: primitives.AdapterCodex, Payload: relationshipJSON(map[string]any{"run_id": runID, "kind": CaptureWrapper, "session_id": "other", "adapter": "codex"})})
+		}, "capture payload does not match"},
+		{"attempt id", func(t *testing.T, repo *checkpoint.Repo, runID primitives.RunID, wrapper primitives.SessionID) {
+			provider := session(t, "provider")
+			if err := LinkCapture(repo, runID, CaptureProvider, provider, primitives.AdapterCodex); err != nil {
+				t.Fatal(err)
+			}
+			turn := primitives.TurnID(1)
+			appendRelationship(t, repo, eventlog.AppendInput{SessionID: provider, TurnID: &turn, Type: primitives.EventTypeRunAttemptLink, Adapter: primitives.AdapterCodex, Payload: relationshipJSON(map[string]any{"run_id": runID, "attempt_id": "attempt_bad", "session_id": provider, "turn_id": 1})})
+		}, "invalid attempt id"},
+		{"attempt turn", func(t *testing.T, repo *checkpoint.Repo, runID primitives.RunID, wrapper primitives.SessionID) {
+			provider := session(t, "provider")
+			if err := LinkCapture(repo, runID, CaptureProvider, provider, primitives.AdapterCodex); err != nil {
+				t.Fatal(err)
+			}
+			attemptID, _ := primitives.NewAttemptID()
+			eventTurn := primitives.TurnID(2)
+			appendRelationship(t, repo, eventlog.AppendInput{SessionID: provider, TurnID: &eventTurn, Type: primitives.EventTypeRunAttemptLink, Adapter: primitives.AdapterCodex, Payload: relationshipJSON(map[string]any{"run_id": runID, "attempt_id": attemptID, "session_id": provider, "turn_id": 1})})
+		}, "attempt payload does not match"},
+		{"finish status", func(t *testing.T, repo *checkpoint.Repo, runID primitives.RunID, wrapper primitives.SessionID) {
+			appendRelationship(t, repo, eventlog.AppendInput{SessionID: wrapper, Type: primitives.EventTypeRunFinish, Adapter: primitives.AdapterCodex, Payload: relationshipJSON(map[string]any{"run_id": runID, "status": "running"})})
+		}, "invalid terminal status"},
+		{"duplicate finish", func(t *testing.T, repo *checkpoint.Repo, runID primitives.RunID, wrapper primitives.SessionID) {
+			for _, source := range []string{"one", "two"} {
+				appendRelationship(t, repo, eventlog.AppendInput{SessionID: wrapper, Type: primitives.EventTypeRunFinish, Adapter: primitives.AdapterCodex, SourceID: source, Payload: relationshipJSON(map[string]any{"run_id": runID, "status": StatusIncomplete})})
+			}
+		}, "duplicate run finish"},
+		{"foreign envelope", func(t *testing.T, repo *checkpoint.Repo, runID primitives.RunID, wrapper primitives.SessionID) {
+			foreign := *repo
+			foreign.WorktreeID, _ = primitives.NewWorktreeID()
+			foreign.EventProducerID, _ = primitives.NewEventProducerID()
+			appendRelationship(t, &foreign, eventlog.AppendInput{SessionID: wrapper, Type: primitives.EventTypeRunCaptureLink, Adapter: primitives.AdapterCodex, Payload: relationshipJSON(map[string]any{"run_id": runID, "kind": CaptureWrapper, "session_id": wrapper, "adapter": "codex"})})
+		}, "repository or worktree identity"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repo := testRepo(t)
+			runID, _ := primitives.NewRunID()
+			wrapper := session(t, "wrapper")
+			if err := Start(repo, runID, wrapper, nil); err != nil {
+				t.Fatal(err)
+			}
+			test.append(t, repo, runID, wrapper)
+			if _, err := Read(repo, runID); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Read error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func appendRelationship(t *testing.T, repo *checkpoint.Repo, input eventlog.AppendInput) {
+	t.Helper()
+	if _, err := repo.EventLog().Append(input); err != nil {
+		t.Fatal(err)
+	}
+}
+func relationshipJSON(value any) json.RawMessage {
+	data, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return data
+}
 
 func TestProjectionKeepsCapturesDistinctAndAttemptsAtProviderTurns(t *testing.T) {
 	repo := testRepo(t)

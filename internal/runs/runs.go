@@ -216,18 +216,30 @@ func Finish(repo *checkpoint.Repo, runID primitives.RunID, wrapperSession primit
 	if status != StatusSucceeded && status != StatusFailed && status != StatusIncomplete {
 		return fmt.Errorf("invalid run status %q", status)
 	}
-	if _, err := AcceptsCapture(repo, runID); err != nil {
+	projection, err := AcceptsCapture(repo, runID)
+	if err != nil {
 		return err
 	}
-	err := appendOnce(repo.EventLog(), eventlog.AppendInput{
+	if err := finish(repo, projection, wrapperSession, status, message); err != nil {
+		return err
+	}
+	return clearLifecycleJournal(repo, runID)
+}
+
+func finish(repo *checkpoint.Repo, projection Projection, wrapperSession primitives.SessionID, status, message string) error {
+	return appendOnce(repo.EventLog(), eventlog.AppendInput{
 		SessionID: wrapperSession, Type: primitives.EventTypeRunFinish, Adapter: primitives.AdapterCodex,
-		SourceID: "run:" + runID.String() + ":finish",
-		Payload:  mustJSON(finishPayload{RunID: runID, Status: status, Error: message}),
+		SourceID: "run:" + projection.ID.String() + ":finish",
+		Payload:  mustJSON(finishPayload{RunID: projection.ID, Status: status, Error: message}),
 	})
-	return err
 }
 
 func AcceptsCapture(repo *checkpoint.Repo, runID primitives.RunID) (Projection, error) {
+	// A hook may outlive a crashed wrapper process. Recover unlocked lifecycle
+	// journals before treating a durable running status as authorization.
+	if err := RecoverAbandoned(repo); err != nil {
+		return Projection{}, err
+	}
 	projection, err := Read(repo, runID)
 	if err != nil {
 		return Projection{}, err
@@ -249,66 +261,100 @@ func Read(repo *checkpoint.Repo, runID primitives.RunID) (Projection, error) {
 	if err != nil {
 		return Projection{}, err
 	}
-	var result Projection
-	seenCaptures := map[string]bool{}
-	seenAttempts := map[string]bool{}
+	var claimed []eventlog.Event
 	for _, stream := range streams {
 		for _, event := range stream.Events {
-			switch event.Type {
-			case primitives.EventTypeRunStart:
-				var payload startPayload
-				if json.Unmarshal(event.Payload, &payload) != nil || payload.RunID != runID {
-					continue
-				}
-				if result.ID != "" {
-					return Projection{}, fmt.Errorf("run %s has duplicate start records", runID)
-				}
-				if _, err := primitives.ParseRunID(payload.RunID.String()); err != nil {
-					return Projection{}, err
-				}
-				if _, err := primitives.ParseRepoID(payload.RepoID.String()); err != nil {
-					return Projection{}, err
-				}
-				if _, err := primitives.ParseStoreID(payload.StoreID.String()); err != nil {
-					return Projection{}, err
-				}
-				if _, err := primitives.ParseWorktreeID(payload.WorktreeID.String()); err != nil {
-					return Projection{}, err
-				}
-				result.ID, result.RepoID, result.StoreID, result.WorktreeID = payload.RunID, payload.RepoID, payload.StoreID, payload.WorktreeID
-				result.Command, result.Status, result.Start = payload.Command, StatusRunning, provenance(event)
-			case primitives.EventTypeRunCaptureLink:
-				var payload capturePayload
-				if json.Unmarshal(event.Payload, &payload) != nil || payload.RunID != runID {
-					continue
-				}
-				key := payload.Kind + "\x00" + payload.SessionID.String()
-				if !seenCaptures[key] {
-					result.Captures = append(result.Captures, Capture{Kind: payload.Kind, SessionID: payload.SessionID, Adapter: payload.Adapter, Provenance: provenance(event)})
-					seenCaptures[key] = true
-				}
-			case primitives.EventTypeRunAttemptLink:
-				var payload attemptPayload
-				if json.Unmarshal(event.Payload, &payload) != nil || payload.RunID != runID {
-					continue
-				}
-				key := payload.SessionID.String() + "\x00" + payload.TurnID.String()
-				if !seenAttempts[key] {
-					result.Attempts = append(result.Attempts, Attempt{ID: payload.AttemptID, SessionID: payload.SessionID, TurnID: payload.TurnID, Provenance: provenance(event)})
-					seenAttempts[key] = true
-				}
-			case primitives.EventTypeRunFinish:
-				var payload finishPayload
-				if json.Unmarshal(event.Payload, &payload) != nil || payload.RunID != runID {
-					continue
-				}
-				p := provenance(event)
-				result.Status, result.Error, result.Finish = payload.Status, payload.Error, &p
+			if claimsRun(event, runID) {
+				claimed = append(claimed, event)
 			}
 		}
 	}
+	var result Projection
+	for _, event := range claimed {
+		if event.Type != primitives.EventTypeRunStart {
+			continue
+		}
+		if result.ID != "" {
+			return Projection{}, fmt.Errorf("run %s has duplicate start records", runID)
+		}
+		var payload startPayload
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			return Projection{}, relationshipError(event, err)
+		}
+		if err := validateStartEvent(event, payload); err != nil {
+			return Projection{}, err
+		}
+		result.ID, result.RepoID, result.StoreID, result.WorktreeID = payload.RunID, payload.RepoID, payload.StoreID, payload.WorktreeID
+		result.Command, result.Status, result.Start = payload.Command, StatusRunning, provenance(event)
+	}
 	if result.ID == "" {
 		return Projection{}, fmt.Errorf("run %s does not exist in this Turnal store", runID)
+	}
+	seenCaptures := map[string]bool{}
+	seenAttempts := map[string]bool{}
+	providerCaptures := map[string]Capture{}
+	for _, event := range claimed {
+		if event.Type == primitives.EventTypeRunStart {
+			continue
+		}
+		if err := validateRelationshipScope(event, result); err != nil {
+			return Projection{}, err
+		}
+		switch event.Type {
+		case primitives.EventTypeRunCaptureLink:
+			var payload capturePayload
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				return Projection{}, relationshipError(event, err)
+			}
+			if err := validateCaptureEvent(event, result, payload); err != nil {
+				return Projection{}, err
+			}
+			key := payload.Kind + "\x00" + payload.SessionID.String() + "\x00" + event.StreamID.String()
+			if seenCaptures[key] {
+				return Projection{}, relationshipError(event, fmt.Errorf("duplicate capture relationship"))
+			}
+			capture := Capture{Kind: payload.Kind, SessionID: payload.SessionID, Adapter: payload.Adapter, Provenance: provenance(event)}
+			result.Captures = append(result.Captures, capture)
+			seenCaptures[key] = true
+			if payload.Kind == CaptureProvider {
+				providerCaptures[payload.SessionID.String()+"\x00"+event.StreamID.String()] = capture
+			}
+		case primitives.EventTypeRunFinish:
+			var payload finishPayload
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				return Projection{}, relationshipError(event, err)
+			}
+			if err := validateFinishEvent(event, result, payload); err != nil {
+				return Projection{}, err
+			}
+			if result.Finish != nil {
+				return Projection{}, relationshipError(event, fmt.Errorf("duplicate run finish"))
+			}
+			p := provenance(event)
+			result.Status, result.Error, result.Finish = payload.Status, payload.Error, &p
+		}
+	}
+	for _, event := range claimed {
+		if event.Type != primitives.EventTypeRunAttemptLink {
+			continue
+		}
+		if err := validateRelationshipScope(event, result); err != nil {
+			return Projection{}, err
+		}
+		var payload attemptPayload
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			return Projection{}, relationshipError(event, err)
+		}
+		capture, ok := providerCaptures[payload.SessionID.String()+"\x00"+event.StreamID.String()]
+		if err := validateAttemptEvent(event, result, payload, capture, ok); err != nil {
+			return Projection{}, err
+		}
+		key := payload.SessionID.String() + "\x00" + payload.TurnID.String()
+		if seenAttempts[key] {
+			return Projection{}, relationshipError(event, fmt.Errorf("duplicate attempt relationship"))
+		}
+		result.Attempts = append(result.Attempts, Attempt{ID: payload.AttemptID, SessionID: payload.SessionID, TurnID: payload.TurnID, Provenance: provenance(event)})
+		seenAttempts[key] = true
 	}
 	for index := range result.Captures {
 		capture := &result.Captures[index]
@@ -368,6 +414,114 @@ func Read(repo *checkpoint.Repo, runID primitives.RunID) (Projection, error) {
 	})
 	result.Shape = shape(result)
 	return result, nil
+}
+
+func claimsRun(event eventlog.Event, runID primitives.RunID) bool {
+	switch event.Type {
+	case primitives.EventTypeRunStart, primitives.EventTypeRunCaptureLink, primitives.EventTypeRunAttemptLink, primitives.EventTypeRunFinish:
+	default:
+		return false
+	}
+	var identity struct {
+		RunID string `json:"run_id"`
+	}
+	return json.Unmarshal(event.Payload, &identity) == nil && identity.RunID == runID.String()
+}
+
+func validateStartEvent(event eventlog.Event, payload startPayload) error {
+	if _, err := primitives.ParseRunID(payload.RunID.String()); err != nil {
+		return relationshipError(event, err)
+	}
+	if _, err := primitives.ParseRepoID(payload.RepoID.String()); err != nil {
+		return relationshipError(event, err)
+	}
+	if _, err := primitives.ParseStoreID(payload.StoreID.String()); err != nil {
+		return relationshipError(event, err)
+	}
+	if _, err := primitives.ParseWorktreeID(payload.WorktreeID.String()); err != nil {
+		return relationshipError(event, err)
+	}
+	if event.TurnID != nil {
+		return relationshipError(event, fmt.Errorf("run start must not have a turn id"))
+	}
+	if event.RepoID != payload.RepoID || event.WorktreeID != payload.WorktreeID {
+		return relationshipError(event, fmt.Errorf("run start identity does not match its event envelope"))
+	}
+	if event.Adapter != primitives.AdapterCodex {
+		return relationshipError(event, fmt.Errorf("run start adapter must be %s", primitives.AdapterCodex))
+	}
+	return nil
+}
+
+func validateRelationshipScope(event eventlog.Event, run Projection) error {
+	if event.RepoID != run.RepoID || event.WorktreeID != run.WorktreeID {
+		return relationshipError(event, fmt.Errorf("repository or worktree identity does not match run start"))
+	}
+	return nil
+}
+
+func validateCaptureEvent(event eventlog.Event, run Projection, payload capturePayload) error {
+	if payload.RunID != run.ID {
+		return relationshipError(event, fmt.Errorf("run id does not match run start"))
+	}
+	if payload.Kind != CaptureWrapper && payload.Kind != CaptureProvider {
+		return relationshipError(event, fmt.Errorf("invalid capture kind %q", payload.Kind))
+	}
+	if _, err := primitives.ParseSessionID(payload.SessionID.String()); err != nil {
+		return relationshipError(event, err)
+	}
+	if _, err := primitives.ParseAdapterName(payload.Adapter.String()); err != nil {
+		return relationshipError(event, err)
+	}
+	if payload.SessionID != event.SessionID || payload.Adapter != event.Adapter || event.TurnID != nil {
+		return relationshipError(event, fmt.Errorf("capture payload does not match its event envelope"))
+	}
+	if payload.Kind == CaptureWrapper && event.SessionID != run.Start.SessionID {
+		return relationshipError(event, fmt.Errorf("wrapper capture is not in the run-start session"))
+	}
+	if payload.Kind == CaptureProvider && event.SessionID == run.Start.SessionID {
+		return relationshipError(event, fmt.Errorf("provider capture must remain distinct from wrapper capture"))
+	}
+	return nil
+}
+
+func validateAttemptEvent(event eventlog.Event, run Projection, payload attemptPayload, capture Capture, captureFound bool) error {
+	if payload.RunID != run.ID {
+		return relationshipError(event, fmt.Errorf("run id does not match run start"))
+	}
+	if _, err := primitives.ParseAttemptID(payload.AttemptID.String()); err != nil {
+		return relationshipError(event, err)
+	}
+	if _, err := primitives.ParseSessionID(payload.SessionID.String()); err != nil {
+		return relationshipError(event, err)
+	}
+	if _, err := primitives.NewTurnID(payload.TurnID.Uint64()); err != nil {
+		return relationshipError(event, err)
+	}
+	if event.TurnID == nil || payload.SessionID != event.SessionID || payload.TurnID != *event.TurnID {
+		return relationshipError(event, fmt.Errorf("attempt payload does not match its event envelope"))
+	}
+	if !captureFound || capture.Adapter != event.Adapter {
+		return relationshipError(event, fmt.Errorf("attempt has no matching provider capture"))
+	}
+	return nil
+}
+
+func validateFinishEvent(event eventlog.Event, run Projection, payload finishPayload) error {
+	if payload.RunID != run.ID {
+		return relationshipError(event, fmt.Errorf("run id does not match run start"))
+	}
+	if payload.Status != StatusSucceeded && payload.Status != StatusFailed && payload.Status != StatusIncomplete {
+		return relationshipError(event, fmt.Errorf("invalid terminal status %q", payload.Status))
+	}
+	if event.SessionID != run.Start.SessionID || event.TurnID != nil || event.Adapter != primitives.AdapterCodex {
+		return relationshipError(event, fmt.Errorf("run finish does not match the run-start envelope"))
+	}
+	return nil
+}
+
+func relationshipError(event eventlog.Event, cause error) error {
+	return fmt.Errorf("run relationship invariant failed for session %s event %s (%s): %w", event.SessionID, event.Seq, event.Type, cause)
 }
 
 func shape(run Projection) string {
