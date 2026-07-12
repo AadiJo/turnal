@@ -32,6 +32,20 @@ func TestOrdinaryStatusDoesNotStartAppServer(t *testing.T) {
 	}
 }
 
+func TestStatusProbeDoesNotStartAppServerOutsideTurnalWorkspace(t *testing.T) {
+	isolateAgentConfig(t)
+	t.Chdir(t.TempDir())
+
+	probe := &recordingCodexProbe{panicOnCall: true}
+	output, err := executeStatus(t, probe, "--probe-agent-capture")
+	if err == nil {
+		t.Fatalf("status outside a Turnal workspace succeeded:\n%s", output)
+	}
+	if probe.calls != 0 {
+		t.Fatalf("status outside a Turnal workspace made %d probe calls", probe.calls)
+	}
+}
+
 func TestStatusProbeReportsClaudeSDKAsHostControlledWithoutFailing(t *testing.T) {
 	root := captureStatusWorkspace(t, "claude")
 	t.Chdir(root)
@@ -89,6 +103,26 @@ func TestStatusProbeReportsInfrastructureFailureDistinctly(t *testing.T) {
 	}
 }
 
+func TestStatusProbeUsesCommandContext(t *testing.T) {
+	root := captureStatusWorkspace(t, "codex")
+	t.Chdir(root)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	probe := &recordingCodexProbe{requireCanceledContext: true}
+	cmd := statusCmdWithProbe(probe)
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"--probe-agent-capture"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("status with canceled probe context succeeded")
+	}
+	if probe.calls != 1 {
+		t.Fatalf("probe calls = %d, want 1", probe.calls)
+	}
+}
+
 func TestStatusProbeChangesNoWorkspaceOrMetadataState(t *testing.T) {
 	root := captureStatusWorkspace(t, "all")
 	t.Chdir(root)
@@ -119,19 +153,26 @@ func TestStatusProbeChangesNoWorkspaceOrMetadataState(t *testing.T) {
 }
 
 type recordingCodexProbe struct {
-	calls       int
-	panicOnCall bool
-	trustStatus string
-	err         error
+	calls                  int
+	panicOnCall            bool
+	trustStatus            string
+	err                    error
+	requireCanceledContext bool
 }
 
-func (probe *recordingCodexProbe) Probe(_ context.Context, root, command string) (compatibility.CodexHooksResult, error) {
+func (probe *recordingCodexProbe) Probe(ctx context.Context, root, command string) (compatibility.CodexHooksResult, error) {
 	probe.calls++
 	if probe.panicOnCall {
 		panic("unexpected Codex app-server probe")
 	}
 	if probe.err != nil {
 		return compatibility.CodexHooksResult{}, probe.err
+	}
+	if probe.requireCanceledContext {
+		if ctx.Err() == nil {
+			return compatibility.CodexHooksResult{}, errors.New("probe context is not canceled")
+		}
+		return compatibility.CodexHooksResult{}, ctx.Err()
 	}
 	trust := probe.trustStatus
 	if trust == "" {
