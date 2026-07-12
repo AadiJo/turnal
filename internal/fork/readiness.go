@@ -216,6 +216,9 @@ func inspectInstruction(events []eventlog.Event) (Instruction, error) {
 		if err != nil {
 			return Instruction{}, malformedPayloadError(event, err)
 		}
+		if _, err := optionalPayloadString(payload, "provider_turn_id"); err != nil {
+			return Instruction{}, malformedPayloadError(event, err)
+		}
 		if promptSeen {
 			return Instruction{}, fmt.Errorf("multiple prompt.user events for one turn; duplicate at event %s", event.Seq)
 		}
@@ -247,12 +250,18 @@ func sessionMetadata(events []eventlog.Event, adapter primitives.AdapterName) (s
 		if payload == nil {
 			return "", "", false, malformedPayloadError(event, fmt.Errorf("payload must be an object"))
 		}
+		if _, err := requiredPayloadString(payload, "provider_session_id"); err != nil {
+			return "", "", false, malformedPayloadError(event, err)
+		}
 		parsedModel, err := optionalPayloadString(payload, "model")
 		if err != nil {
 			return "", "", false, malformedPayloadError(event, err)
 		}
 		parsedPermissionMode, err := optionalPayloadString(payload, "permission_mode")
 		if err != nil {
+			return "", "", false, malformedPayloadError(event, err)
+		}
+		if _, err := optionalPayloadString(payload, "transcript_path"); err != nil {
 			return "", "", false, malformedPayloadError(event, err)
 		}
 		if !found && event.Adapter == adapter {
@@ -268,6 +277,14 @@ func optionalPayloadString(payload map[string]json.RawMessage, name string) (str
 	raw, ok := payload[name]
 	if !ok {
 		return "", nil
+	}
+	return payloadString(raw, name)
+}
+
+func requiredPayloadString(payload map[string]json.RawMessage, name string) (string, error) {
+	raw, ok := payload[name]
+	if !ok {
+		return "", fmt.Errorf("%s is required", name)
 	}
 	return payloadString(raw, name)
 }
