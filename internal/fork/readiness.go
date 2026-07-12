@@ -17,6 +17,7 @@ type Readiness string
 
 const (
 	ReadinessReady            Readiness = "ready"
+	ReadinessNeedsContext     Readiness = "needs_context"
 	ReadinessNeedsInstruction Readiness = "needs_instruction"
 	ReadinessUnavailable      Readiness = "unavailable"
 )
@@ -35,12 +36,13 @@ type Condition struct {
 }
 
 type Conditions struct {
-	WorkspaceFiles Condition `json:"workspace_files"`
-	WorkspaceVCS   Condition `json:"workspace_vcs"`
-	Toolchain      Condition `json:"toolchain"`
-	Secrets        Condition `json:"secrets"`
-	Network        Condition `json:"network"`
-	Evaluators     Condition `json:"evaluators"`
+	WorkspaceFiles      Condition `json:"workspace_files"`
+	WorkspaceVCS        Condition `json:"workspace_vcs"`
+	ConversationContext Condition `json:"conversation_context"`
+	Toolchain           Condition `json:"toolchain"`
+	Secrets             Condition `json:"secrets"`
+	Network             Condition `json:"network"`
+	Evaluators          Condition `json:"evaluators"`
 }
 
 type Source struct {
@@ -116,12 +118,13 @@ func (analyzer Analyzer) Inspect(sessionID primitives.SessionID, turnID primitiv
 		},
 		Instruction: inspectInstruction(turn.Events),
 		Conditions: Conditions{
-			WorkspaceFiles: Condition{Status: "unavailable", Detail: "No pre-turn checkpoint was recorded."},
-			WorkspaceVCS:   Condition{Status: "not_recorded", Detail: "Workspace Git context was not recorded with the pre-turn checkpoint."},
-			Toolchain:      Condition{Status: "not_recorded", Detail: "Turnal does not currently pin or reconstruct the toolchain."},
-			Secrets:        Condition{Status: "reauthorization_required", Detail: "Secret values are not replayed automatically."},
-			Network:        Condition{Status: "live", Detail: "Network responses and external services may differ."},
-			Evaluators:     Condition{Status: "not_configured", Detail: "No repository evaluator contract is attached to this turn."},
+			WorkspaceFiles:      Condition{Status: "unavailable", Detail: "No pre-turn checkpoint was recorded."},
+			WorkspaceVCS:        Condition{Status: "not_recorded", Detail: "Workspace Git context was not recorded with the pre-turn checkpoint."},
+			ConversationContext: Condition{Status: "not_recorded", Detail: "Prior messages, tool results, and system or developer instructions cannot currently be reconstructed."},
+			Toolchain:           Condition{Status: "not_recorded", Detail: "Turnal does not currently pin or reconstruct the toolchain."},
+			Secrets:             Condition{Status: "reauthorization_required", Detail: "Secret values are not replayed automatically."},
+			Network:             Condition{Status: "live", Detail: "Network responses and external services may differ."},
+			Evaluators:          Condition{Status: "not_configured", Detail: "No repository evaluator contract is attached to this turn."},
 		},
 		Limitations: []string{
 			"Git-ignored and secrets-denied paths are outside the captured workspace surface.",
@@ -170,7 +173,7 @@ func (analyzer Analyzer) Inspect(sessionID primitives.SessionID, turnID primitiv
 
 	switch report.Instruction.Status {
 	case InstructionAvailable:
-		report.Readiness = ReadinessReady
+		report.Readiness = ReadinessNeedsContext
 	case InstructionRedacted, InstructionMissing:
 		report.Readiness = ReadinessNeedsInstruction
 	}
