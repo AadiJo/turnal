@@ -323,6 +323,51 @@ func TestRecallTurnMissingTurnErrors(t *testing.T) {
 	}
 }
 
+func TestParseCheckpointPayloadRejectsMismatchedScopedIdentity(t *testing.T) {
+	sessionID, _ := primitives.ParseSessionID("scoped-mismatch")
+	turnID, _ := primitives.NewTurnID(1)
+	worktreeID, err := primitives.NewWorktreeID()
+	if err != nil {
+		t.Fatalf("NewWorktreeID: %v", err)
+	}
+	otherWorktreeID, err := primitives.NewWorktreeID()
+	if err != nil {
+		t.Fatalf("NewWorktreeID: %v", err)
+	}
+	producerID, err := primitives.NewEventProducerID()
+	if err != nil {
+		t.Fatalf("NewEventProducerID: %v", err)
+	}
+	streamID, err := primitives.DeriveEventStreamID(producerID, sessionID)
+	if err != nil {
+		t.Fatalf("DeriveEventStreamID: %v", err)
+	}
+	ref, err := primitives.NewScopedCheckpointRef(otherWorktreeID, streamID, sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("NewScopedCheckpointRef: %v", err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"turn":        1,
+		"phase":       "pre",
+		"worktree_id": worktreeID,
+		"stream_id":   streamID,
+		"commit_sha":  strings.Repeat("a", 40),
+		"ref":         ref,
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	_, err = parseCheckpointPayload(sessionID, turnID, eventlog.Event{
+		WorktreeID: worktreeID,
+		StreamID:   streamID,
+		Payload:    payload,
+	})
+	if err == nil || !strings.Contains(err.Error(), "checkpoint ref worktree") {
+		t.Fatalf("parseCheckpointPayload error = %v", err)
+	}
+}
+
 func transcriptText(transcript *Transcript) string {
 	var values []string
 	for _, message := range transcript.Messages {

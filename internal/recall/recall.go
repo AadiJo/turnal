@@ -66,6 +66,8 @@ type RawRecordError struct {
 type checkpointPayload struct {
 	Turn          uint64                `json:"turn"`
 	Phase         string                `json:"phase"`
+	WorktreeID    string                `json:"worktree_id,omitempty"`
+	StreamID      string                `json:"stream_id,omitempty"`
 	CommitSHA     string                `json:"commit_sha"`
 	Ref           string                `json:"ref"`
 	EventSeqStart uint64                `json:"event_seq_start,omitempty"`
@@ -197,7 +199,7 @@ func applyEventMetadata(turn *Turn, event eventlog.Event) error {
 		finishedAt := event.Time
 		turn.FinishedAt = &finishedAt
 	case primitives.EventTypeCheckpoint:
-		checkpoint, err := parseCheckpointPayload(turn.SessionID, turn.TurnID, event.Payload)
+		checkpoint, err := parseCheckpointPayload(turn.SessionID, turn.TurnID, event)
 		if err != nil {
 			return err
 		}
@@ -211,9 +213,9 @@ func applyEventMetadata(turn *Turn, event eventlog.Event) error {
 	return nil
 }
 
-func parseCheckpointPayload(sessionID primitives.SessionID, turnID primitives.TurnID, payload json.RawMessage) (Checkpoint, error) {
+func parseCheckpointPayload(sessionID primitives.SessionID, turnID primitives.TurnID, event eventlog.Event) (Checkpoint, error) {
 	var parsed checkpointPayload
-	if err := json.Unmarshal(payload, &parsed); err != nil {
+	if err := json.Unmarshal(event.Payload, &parsed); err != nil {
 		return Checkpoint{}, fmt.Errorf("recall invariant failed for session %s turn %s: malformed checkpoint payload: %w", sessionID, turnID, err)
 	}
 	if parsed.Turn != turnID.Uint64() {
@@ -233,6 +235,41 @@ func parseCheckpointPayload(sessionID primitives.SessionID, turnID primitives.Tu
 	}
 	if refParts.SessionID != sessionID || refParts.TurnID != turnID || refParts.Phase != phase || !refParts.HasPhase {
 		return Checkpoint{}, fmt.Errorf("recall invariant failed for session %s turn %s: checkpoint ref %s does not match payload phase %s", sessionID, turnID, ref, phase)
+	}
+	if parsed.WorktreeID != "" {
+		worktreeID, err := primitives.ParseWorktreeID(parsed.WorktreeID)
+		if err != nil {
+			return Checkpoint{}, fmt.Errorf("recall invariant failed for session %s turn %s: checkpoint payload worktree: %w", sessionID, turnID, err)
+		}
+		if event.WorktreeID != "" && worktreeID != event.WorktreeID {
+			return Checkpoint{}, fmt.Errorf("recall invariant failed for session %s turn %s: checkpoint payload worktree %s does not match event worktree %s", sessionID, turnID, worktreeID, event.WorktreeID)
+		}
+		if refParts.Scoped && worktreeID != refParts.WorktreeID {
+			return Checkpoint{}, fmt.Errorf("recall invariant failed for session %s turn %s: checkpoint ref worktree %s does not match payload worktree %s", sessionID, turnID, refParts.WorktreeID, worktreeID)
+		}
+	}
+	if parsed.StreamID != "" {
+		streamID, err := primitives.ParseEventStreamID(parsed.StreamID)
+		if err != nil {
+			return Checkpoint{}, fmt.Errorf("recall invariant failed for session %s turn %s: checkpoint payload stream: %w", sessionID, turnID, err)
+		}
+		if event.StreamID != "" && streamID != event.StreamID {
+			return Checkpoint{}, fmt.Errorf("recall invariant failed for session %s turn %s: checkpoint payload stream %s does not match event stream %s", sessionID, turnID, streamID, event.StreamID)
+		}
+		if refParts.Scoped && streamID != refParts.StreamID {
+			return Checkpoint{}, fmt.Errorf("recall invariant failed for session %s turn %s: checkpoint ref stream %s does not match payload stream %s", sessionID, turnID, refParts.StreamID, streamID)
+		}
+	}
+	if refParts.Scoped {
+		if parsed.WorktreeID == "" || parsed.StreamID == "" {
+			return Checkpoint{}, fmt.Errorf("recall invariant failed for session %s turn %s: scoped checkpoint payload requires worktree_id and stream_id", sessionID, turnID)
+		}
+		if event.WorktreeID == "" || event.StreamID == "" {
+			return Checkpoint{}, fmt.Errorf("recall invariant failed for session %s turn %s: scoped checkpoint ref requires event worktree and stream identity", sessionID, turnID)
+		}
+		if refParts.WorktreeID != event.WorktreeID || refParts.StreamID != event.StreamID {
+			return Checkpoint{}, fmt.Errorf("recall invariant failed for session %s turn %s: scoped checkpoint ref identity does not match event worktree and stream", sessionID, turnID)
+		}
 	}
 	commit, err := primitives.ParseCommitSHA(parsed.CommitSHA)
 	if err != nil {
