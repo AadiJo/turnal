@@ -145,6 +145,7 @@ func TestInspectInstructionRejectsMalformedPayloads(t *testing.T) {
 		"null field":          json.RawMessage(`{"text":null}`),
 		"wrong field type":    json.RawMessage(`{"text":42}`),
 		"wrong provider type": json.RawMessage(`{"text":"fix","provider_turn_id":42}`),
+		"wrong redacted type": json.RawMessage(`{"text":"fix","redacted":"no"}`),
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := inspectInstruction([]eventlog.Event{{
@@ -167,6 +168,37 @@ func TestInspectInstructionRejectsMultiplePrompts(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "multiple prompt.user events") {
 		t.Fatalf("inspectInstruction error = %v", err)
+	}
+}
+
+func TestInspectInstructionDistinguishesLiteralRedactionMarker(t *testing.T) {
+	turnID, _ := primitives.NewTurnID(1)
+	instruction, err := inspectInstruction([]eventlog.Event{{
+		Seq:     1,
+		TurnID:  &turnID,
+		Type:    primitives.EventTypePromptUser,
+		Adapter: primitives.AdapterCodex,
+		Payload: json.RawMessage(`{"text":"[redacted by turnal secrets policy]","redacted":false}`),
+	}})
+	if err != nil {
+		t.Fatalf("inspectInstruction: %v", err)
+	}
+	if instruction.Status != InstructionAvailable || instruction.Text != primitives.SecretsRedactionText {
+		t.Fatalf("instruction = %#v", instruction)
+	}
+
+	instruction, err = inspectInstruction([]eventlog.Event{{
+		Seq:     1,
+		TurnID:  &turnID,
+		Type:    primitives.EventTypePromptUser,
+		Adapter: primitives.AdapterCodex,
+		Payload: json.RawMessage(`{"text":"[redacted by turnal secrets policy]","redacted":true}`),
+	}})
+	if err != nil {
+		t.Fatalf("inspectInstruction(redacted): %v", err)
+	}
+	if instruction.Status != InstructionRedacted || instruction.Text != "" {
+		t.Fatalf("redacted instruction = %#v", instruction)
 	}
 }
 
