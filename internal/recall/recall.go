@@ -230,11 +230,28 @@ func validateSelectedWorktree(sessionID primitives.SessionID, turnID primitives.
 func applyEventMetadata(turn *Turn, event eventlog.Event) error {
 	switch event.Type {
 	case primitives.EventTypeTurnStart:
-		if turn.StartedAt == nil {
-			startedAt := event.Time
-			turn.StartedAt = &startedAt
+		if turn.StartedAt != nil {
+			return fmt.Errorf("recall invariant failed for session %s turn %s: duplicate turn.start event %s", turn.SessionID, turn.TurnID, event.Seq)
+		}
+		if turn.PreCheckpoint != nil || turn.PostCheckpoint != nil || turn.FinishedAt != nil {
+			return fmt.Errorf("recall invariant failed for session %s turn %s: turn.start event %s is out of order", turn.SessionID, turn.TurnID, event.Seq)
+		}
+		startedAt := event.Time
+		turn.StartedAt = &startedAt
+	case primitives.EventTypePromptUser:
+		if turn.StartedAt != nil && turn.PreCheckpoint == nil {
+			return fmt.Errorf("recall invariant failed for session %s turn %s: prompt.user event %s precedes pre checkpoint", turn.SessionID, turn.TurnID, event.Seq)
+		}
+		if turn.FinishedAt != nil || turn.PostCheckpoint != nil {
+			return fmt.Errorf("recall invariant failed for session %s turn %s: prompt.user event %s follows turn completion", turn.SessionID, turn.TurnID, event.Seq)
 		}
 	case primitives.EventTypeTurnFinish:
+		if turn.FinishedAt != nil {
+			return fmt.Errorf("recall invariant failed for session %s turn %s: duplicate turn.finish event %s", turn.SessionID, turn.TurnID, event.Seq)
+		}
+		if turn.StartedAt == nil || turn.PreCheckpoint == nil || turn.PostCheckpoint != nil {
+			return fmt.Errorf("recall invariant failed for session %s turn %s: turn.finish event %s is out of order", turn.SessionID, turn.TurnID, event.Seq)
+		}
 		finishedAt := event.Time
 		turn.FinishedAt = &finishedAt
 	case primitives.EventTypeCheckpoint:
@@ -244,8 +261,20 @@ func applyEventMetadata(turn *Turn, event eventlog.Event) error {
 		}
 		switch checkpoint.Phase {
 		case primitives.CheckpointPhasePre:
+			if turn.PreCheckpoint != nil {
+				return fmt.Errorf("recall invariant failed for session %s turn %s: duplicate pre checkpoint event %s", turn.SessionID, turn.TurnID, event.Seq)
+			}
+			if turn.StartedAt == nil || turn.FinishedAt != nil || turn.PostCheckpoint != nil {
+				return fmt.Errorf("recall invariant failed for session %s turn %s: pre checkpoint event %s is out of order", turn.SessionID, turn.TurnID, event.Seq)
+			}
 			turn.PreCheckpoint = &checkpoint
 		case primitives.CheckpointPhasePost:
+			if turn.PostCheckpoint != nil {
+				return fmt.Errorf("recall invariant failed for session %s turn %s: duplicate post checkpoint event %s", turn.SessionID, turn.TurnID, event.Seq)
+			}
+			if turn.PreCheckpoint == nil || turn.FinishedAt == nil {
+				return fmt.Errorf("recall invariant failed for session %s turn %s: post checkpoint event %s is out of order", turn.SessionID, turn.TurnID, event.Seq)
+			}
 			turn.PostCheckpoint = &checkpoint
 		}
 	}
