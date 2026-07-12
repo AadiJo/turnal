@@ -6,4 +6,6 @@ Metadata readers remain backward compatible with v1 global raw references (`adap
 
 Agent hook formats are external integration points and may change with Claude Code or Codex releases. `turnal status` is the supported way to identify an unhealthy or incompatible hook installation.
 
+Repository verifiers are launched as an executable plus an exact argument vector on every supported platform; shell command strings are not supported. Exit codes, launch failures, and timeouts are normalized in the versioned report, while platform-specific process termination follows the operating system's available process controls.
+
 Company-wide use should be piloted on representative repositories before broad rollout. Pin a Turnal version, test rollback and recovery, define retention expectations, and monitor hook-failure diagnostics during the pilot.

@@ -59,6 +59,12 @@ version = 1
 # [rollback]
 # mode = "checkpoint" # checkpoint | workspace-git
 #
+# [[verify]]
+# name = "unit-tests"
+# command = "go"
+# args = ["test", "./..."]
+# timeout = "2m"
+#
 # [retention]
 # Hidden Git objects are retained while private refs exist. Use
 # turnal session drop, turnal retention prune, then explicit
