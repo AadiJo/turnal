@@ -68,6 +68,28 @@ func TestAppendReadAndVerifyHashChain(t *testing.T) {
 	}
 }
 
+func TestReadPreservesStreamSequenceAcrossClockRegression(t *testing.T) {
+	log := Open(t.TempDir())
+	sessionID := sessionID(t, "clock-regression")
+	later, _ := primitives.NewTimestamp(time.Date(2026, 7, 12, 12, 0, 1, 0, time.UTC))
+	earlier, _ := primitives.NewTimestamp(time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC))
+	for _, input := range []AppendInput{
+		{SessionID: sessionID, Type: primitives.EventTypePromptUser, Time: later, Payload: json.RawMessage(`{"text":"first"}`)},
+		{SessionID: sessionID, Type: primitives.EventTypeAssistantMessage, Time: earlier, Payload: json.RawMessage(`{"text":"second"}`)},
+	} {
+		if _, err := log.Append(input); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+	events, err := log.Read(sessionID)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(events) != 2 || events[0].Seq.Uint64() != 1 || events[1].Seq.Uint64() != 2 {
+		t.Fatalf("event order = %#v", events)
+	}
+}
+
 func TestIndependentV2StreamsCanReuseSessionAndSequence(t *testing.T) {
 	metadataDir := t.TempDir()
 	repoID, err := primitives.NewRepoID()
