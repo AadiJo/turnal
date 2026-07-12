@@ -84,6 +84,7 @@ type sessionPayload struct {
 type promptPayload struct {
 	Text           string `json:"text"`
 	ProviderTurnID string `json:"provider_turn_id,omitempty"`
+	Redacted       bool   `json:"redacted"`
 }
 
 type assistantPayload struct {
@@ -430,6 +431,7 @@ func appendPrompt(log eventlog.Log, adapter primitives.AdapterName, sessionID pr
 		Payload: mustJSON(promptPayload{
 			Text:           redactedText(payload.Prompt, secrets.StorePrompts),
 			ProviderTurnID: payload.TurnID,
+			Redacted:       !secrets.StorePrompts,
 		}),
 	})
 }

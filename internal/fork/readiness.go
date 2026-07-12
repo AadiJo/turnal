@@ -240,16 +240,22 @@ func inspectInstruction(events []eventlog.Event) (Instruction, error) {
 		if _, err := optionalPayloadString(payload, "provider_turn_id"); err != nil {
 			return Instruction{}, malformedPayloadError(event, err)
 		}
+		redacted, hasRedacted, err := optionalPayloadBool(payload, "redacted")
+		if err != nil {
+			return Instruction{}, malformedPayloadError(event, err)
+		}
 		if promptSeen {
 			return Instruction{}, fmt.Errorf("multiple prompt.user events for one turn; duplicate at event %s", event.Seq)
 		}
 		promptSeen = true
 		text := strings.TrimSpace(textValue)
+		if redacted || (!hasRedacted && text == primitives.SecretsRedactionText) {
+			instruction = Instruction{Status: InstructionRedacted, Adapter: event.Adapter}
+			continue
+		}
 		switch text {
 		case "":
 			continue
-		case primitives.SecretsRedactionText:
-			instruction = Instruction{Status: InstructionRedacted, Adapter: event.Adapter}
 		default:
 			instruction = Instruction{Status: InstructionAvailable, Text: text, Adapter: event.Adapter}
 		}
@@ -308,6 +314,22 @@ func requiredPayloadString(payload map[string]json.RawMessage, name string) (str
 		return "", fmt.Errorf("%s is required", name)
 	}
 	return payloadString(raw, name)
+}
+
+func optionalPayloadBool(payload map[string]json.RawMessage, name string) (bool, bool, error) {
+	raw, ok := payload[name]
+	if !ok {
+		return false, false, nil
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return false, true, fmt.Errorf("%s is invalid: %w", name, err)
+	}
+	boolean, ok := value.(bool)
+	if !ok {
+		return false, true, fmt.Errorf("%s must be a boolean", name)
+	}
+	return boolean, true, nil
 }
 
 func payloadString(raw json.RawMessage, name string) (string, error) {

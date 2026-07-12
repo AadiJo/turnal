@@ -91,6 +91,7 @@ type sessionPayload struct {
 type promptPayload struct {
 	Text           string `json:"text"`
 	ProviderTurnID string `json:"provider_turn_id,omitempty"`
+	Redacted       bool   `json:"redacted,omitempty"`
 }
 
 func NewReader(metadataDir string) Reader {
