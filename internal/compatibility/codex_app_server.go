@@ -23,6 +23,8 @@ const (
 	hooksListRequestID  = 2
 )
 
+var expectedCodexEventNames = []string{"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"}
+
 type CodexHook struct {
 	CWD         string `json:"cwd"`
 	EventName   string `json:"eventName"`
@@ -99,6 +101,11 @@ func (probe AppServerProbe) Probe(parent context.Context, workspaceRoot, expecte
 	defer func() {
 		_ = stdin.Close()
 		returnedErr = finishAppServer(command, waitDone, stderrDone, &stderrCapture, probe.ShutdownTimeout, returnedErr)
+		if returnedErr == nil {
+			if stderrText := strings.TrimSpace(stderrCapture.String()); stderrText != "" {
+				result.Warnings = append(result.Warnings, "Codex app-server stderr: "+stderrText)
+			}
+		}
 	}()
 
 	if err := writeRPC(stdin, initializeRequestID, "initialize", map[string]any{
@@ -158,7 +165,7 @@ func (probe AppServerProbe) Probe(parent context.Context, workspaceRoot, expecte
 			if errors.Is(readErr, errMessageTooLarge) {
 				return result, fmt.Errorf("Codex app-server message exceeds %d-byte limit", probe.MaxMessageBytes)
 			}
-			if errors.Is(readErr, io.EOF) {
+			if errors.Is(readErr, io.EOF) || errors.Is(readErr, os.ErrClosed) {
 				return result, errors.New("Codex app-server exited before hooks/list response")
 			}
 			return result, fmt.Errorf("read Codex app-server response: %w", readErr)
@@ -352,9 +359,9 @@ func (buffer *boundedBuffer) String() string {
 }
 
 func ClassifyCodexHooks(workspaceRoot, expectedCommand string, health adapters.HookHealth, probed CodexHooksResult) SurfaceResult {
-	expectedEvents := make(map[string]struct{}, len(health.Events))
-	for _, event := range health.Events {
-		expectedEvents[normalizeEventName(event.Name)] = struct{}{}
+	expectedEvents := make(map[string]struct{}, len(expectedCodexEventNames))
+	for _, eventName := range expectedCodexEventNames {
+		expectedEvents[normalizeEventName(eventName)] = struct{}{}
 	}
 	type eventState struct {
 		enabled bool
