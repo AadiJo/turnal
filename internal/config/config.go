@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/AadiJo/turnal/internal/hookcmd"
 	"github.com/AadiJo/turnal/internal/primitives"
@@ -518,6 +520,25 @@ func normalizeGlobs(values []string) ([]string, error) {
 	return globs, nil
 }
 
+func ValidateVerifierName(name string) error {
+	switch {
+	case name == "":
+		return fmt.Errorf("name must not be empty")
+	case !utf8.ValidString(name):
+		return fmt.Errorf("name must be valid UTF-8")
+	case strings.ContainsRune(name, 0):
+		return fmt.Errorf("name must not contain NUL")
+	case len(name) > MaxVerifierNameBytes:
+		return fmt.Errorf("name must be at most %d bytes", MaxVerifierNameBytes)
+	}
+	for _, character := range name {
+		if !unicode.IsPrint(character) {
+			return fmt.Errorf("name must contain only printable characters; found %U", character)
+		}
+	}
+	return nil
+}
+
 func normalizeVerifiers(values []VerifierFile) ([]Verifier, error) {
 	if len(values) > MaxVerifierCount {
 		return nil, fmt.Errorf("verify must contain at most %d entries", MaxVerifierCount)
@@ -531,14 +552,8 @@ func normalizeVerifiers(values []VerifierFile) ([]Verifier, error) {
 		if name != "" {
 			label += fmt.Sprintf(" %q", name)
 		}
-		if name == "" {
-			return nil, fmt.Errorf("%s: name must not be empty", label)
-		}
-		if strings.ContainsRune(name, 0) {
-			return nil, fmt.Errorf("%s: name must not contain NUL", label)
-		}
-		if len(name) > MaxVerifierNameBytes {
-			return nil, fmt.Errorf("%s: name must be at most %d bytes", label, MaxVerifierNameBytes)
+		if err := ValidateVerifierName(name); err != nil {
+			return nil, fmt.Errorf("%s: %w", label, err)
 		}
 		if previous, ok := seen[name]; ok {
 			return nil, fmt.Errorf("%s: name duplicates verify[%d]", label, previous)

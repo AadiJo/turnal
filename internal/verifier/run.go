@@ -103,13 +103,10 @@ func validateDefinitions(definitions []config.Verifier) error {
 		if name != "" {
 			label += fmt.Sprintf(" %q", name)
 		}
+		if err := config.ValidateVerifierName(name); err != nil {
+			return fmt.Errorf("%s: %w", label, err)
+		}
 		switch {
-		case name == "":
-			return fmt.Errorf("%s: name must not be empty", label)
-		case strings.ContainsRune(name, 0):
-			return fmt.Errorf("%s: name must not contain NUL", label)
-		case len(name) > config.MaxVerifierNameBytes:
-			return fmt.Errorf("%s: name must be at most %d bytes", label, config.MaxVerifierNameBytes)
 		case strings.TrimSpace(definition.Command) == "":
 			return fmt.Errorf("%s: command must not be empty", label)
 		case strings.ContainsRune(definition.Command, 0):

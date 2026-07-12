@@ -78,6 +78,10 @@ func TestResolveRejectsInvalidVerifiers(t *testing.T) {
 		{name: "zero timeout", body: verifierTOML("zero-timeout", "helper", `timeout = "0s"`), wantErr: `verify[1] "zero-timeout": timeout must be positive`},
 		{name: "negative timeout", body: verifierTOML("negative-timeout", "helper", `timeout = "-1s"`), wantErr: `verify[1] "negative-timeout": timeout must be positive`},
 		{name: "nul name", body: "\n[[verify]]\nname = \"bad\\u0000name\"\ncommand = \"helper\"\ntimeout = \"1s\"\n", wantErr: `verify[1] "bad\x00name": name must not contain NUL`},
+		{name: "newline name", body: "\n[[verify]]\nname = \"bad\\nname\"\ncommand = \"helper\"\ntimeout = \"1s\"\n", wantErr: `name must contain only printable characters; found U+000A`},
+		{name: "carriage return name", body: "\n[[verify]]\nname = \"bad\\rname\"\ncommand = \"helper\"\ntimeout = \"1s\"\n", wantErr: `name must contain only printable characters; found U+000D`},
+		{name: "ANSI escape name", body: "\n[[verify]]\nname = \"bad\\u001b[2Jname\"\ncommand = \"helper\"\ntimeout = \"1s\"\n", wantErr: `name must contain only printable characters; found U+001B`},
+		{name: "Unicode formatting name", body: "\n[[verify]]\nname = \"bad\\u202ename\"\ncommand = \"helper\"\ntimeout = \"1s\"\n", wantErr: `name must contain only printable characters; found U+202E`},
 		{name: "nul command", body: "\n[[verify]]\nname = \"nul-command\"\ncommand = \"bad\\u0000command\"\ntimeout = \"1s\"\n", wantErr: `verify[1] "nul-command": command must not contain NUL`},
 		{name: "nul argument", body: verifierTOML("nul-argument", "helper", "args = [\"bad\\u0000arg\"]\ntimeout = \"1s\""), wantErr: `verify[1] "nul-argument": args[1] must not contain NUL`},
 	}
