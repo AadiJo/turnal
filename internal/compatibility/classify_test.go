@@ -140,6 +140,26 @@ func TestClassifyCodexHooksStillRequiresAllEventsWhenStaticConfigIsMissing(t *te
 	}
 }
 
+func TestClassifyCodexHooksKeepsStaticDisabledStateAuthoritative(t *testing.T) {
+	root := t.TempDir()
+	health := configuredCodexHealth()
+	health.Status = adapters.HookConfigurationDisabled
+	health.Problems = []string{"codex hooks feature flag is not enabled"}
+	hooks := []CodexHook{
+		projectCodexHook(root, "SessionStart", "turnal codex-hook"),
+		projectCodexHook(root, "UserPromptSubmit", "turnal codex-hook"),
+		projectCodexHook(root, "PostToolUse", "turnal codex-hook"),
+		projectCodexHook(root, "Stop", "turnal codex-hook"),
+	}
+	result := ClassifyCodexHooks(root, "turnal codex-hook", health, CodexHooksResult{Hooks: hooks})
+	if result.Discovered != 4 || result.Enabled != 4 || result.Trusted != 4 {
+		t.Fatalf("live discovery details were lost: %#v", result)
+	}
+	if result.Execution != ExecutionDisabled || result.Expectation != CaptureUnavailable || result.Certainty != CertaintyIncompatible {
+		t.Fatalf("static disabled state was not authoritative: %#v", result)
+	}
+}
+
 func replaceHook(hooks []CodexHook, index int, change func(*CodexHook)) []CodexHook {
 	copyOfHooks := append([]CodexHook(nil), hooks...)
 	change(&copyOfHooks[index])

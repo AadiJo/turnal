@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -101,6 +102,22 @@ func TestAppServerProbePreservesSuccessfulStderr(t *testing.T) {
 	}
 }
 
+func TestAppServerProbeBoundsDescendantHoldingStderr(t *testing.T) {
+	probe := testAppServerProbe("descendant-stderr")
+	probe.ShutdownTimeout = 100 * time.Millisecond
+	started := time.Now()
+	result, err := probe.Probe(context.Background(), t.TempDir(), "turnal codex-hook")
+	if err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	if len(result.Hooks) != 4 {
+		t.Fatalf("hooks = %#v", result.Hooks)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("probe shutdown took %s", elapsed)
+	}
+}
+
 func testAppServerProbe(scenario string) AppServerProbe {
 	probe := DefaultAppServerProbe()
 	probe.Timeout = 2 * time.Second
@@ -119,6 +136,10 @@ func helperCommand(ctx context.Context, scenario string) *exec.Cmd {
 
 func TestCodexAppServerHelperProcess(t *testing.T) {
 	if os.Getenv("TURNAL_APP_SERVER_HELPER") != "1" {
+		return
+	}
+	if os.Getenv("TURNAL_APP_SERVER_DESCENDANT") == "1" {
+		time.Sleep(time.Hour)
 		return
 	}
 	scenario := os.Args[len(os.Args)-1]
@@ -201,5 +222,17 @@ func TestCodexAppServerHelperProcess(t *testing.T) {
 		}}},
 	}
 	encoded, _ := json.Marshal(response)
+	if scenario == "descendant-stderr" {
+		descendant := exec.Command(os.Args[0], "-test.run=TestCodexAppServerHelperProcess")
+		descendant.Env = append(os.Environ(), "TURNAL_APP_SERVER_HELPER=1", "TURNAL_APP_SERVER_DESCENDANT=1")
+		descendant.Stdout = io.Discard
+		descendant.Stderr = os.Stderr
+		if err := descendant.Start(); err != nil {
+			os.Exit(10)
+		}
+	}
 	fmt.Println(string(encoded))
+	if scenario == "descendant-stderr" {
+		time.Sleep(time.Hour)
+	}
 }

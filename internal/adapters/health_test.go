@@ -64,6 +64,18 @@ func TestInspectClaudeHooksReportsMalformedSettings(t *testing.T) {
 	}
 }
 
+func TestInspectClaudeHooksTreatsEmptyEventAsMissing(t *testing.T) {
+	root := t.TempDir()
+	writeHealthFile(t, filepath.Join(root, ".claude", "settings.json"), `{"hooks":{"UserPromptSubmit":[],"PostToolUse":[{"hooks":[{"command":"turnal claude-hook tool-use"}]}],"Stop":[{"hooks":[{"command":"turnal claude-hook assistant"}]}]}}`)
+	health := inspectClaudeHooks(root, "turnal")
+	if health.Status != HookConfigurationIncomplete || len(health.Events) != 3 || health.Events[0].Status != HookEventMissing {
+		t.Fatalf("health = %#v, want missing UserPromptSubmit", health)
+	}
+	if strings.Contains(strings.Join(health.Problems, "\n"), "uses a different command") {
+		t.Fatalf("empty event was mislabeled as a different command: %v", health.Problems)
+	}
+}
+
 func TestInspectCodexHookStates(t *testing.T) {
 	configured := func(sessionStart string, hooksFeature bool) string {
 		return `

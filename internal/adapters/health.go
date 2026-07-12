@@ -156,7 +156,7 @@ func inspectHookEvent(health *HookHealth, provider string, hooks map[string]any,
 	commands := collectHookCommands(value)
 	event := HookEventHealth{Name: eventName, Commands: commands}
 	switch {
-	case !exists:
+	case !exists || len(commands) == 0:
 		event.Status = HookEventMissing
 		health.Problems = append(health.Problems, fmt.Sprintf("%s hook %s has no hook definition", provider, eventName))
 	case !containsHookCommand(commands, expected):
