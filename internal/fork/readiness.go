@@ -176,19 +176,7 @@ func (analyzer Analyzer) Inspect(sessionID primitives.SessionID, turnID primitiv
 		Status: "exact",
 		Detail: fmt.Sprintf("%d captured files can be materialized byte-exactly from the pre-turn checkpoint.", len(tree)),
 	}
-	if turn.PreCheckpoint.UserGit != nil {
-		if turn.PreCheckpoint.UserGit.Exists {
-			report.Conditions.WorkspaceVCS = Condition{
-				Status: "recorded",
-				Detail: "Workspace Git branch, HEAD, index, and dirty context were recorded where available; restoration remains policy-bound.",
-			}
-		} else {
-			report.Conditions.WorkspaceVCS = Condition{
-				Status: "not_applicable",
-				Detail: "The workspace was recorded as not being inside a Git worktree.",
-			}
-		}
-	}
+	report.Conditions.WorkspaceVCS = workspaceVCSCondition(*turn.PreCheckpoint)
 
 	switch report.Instruction.Status {
 	case InstructionAvailable:
@@ -197,6 +185,25 @@ func (analyzer Analyzer) Inspect(sessionID primitives.SessionID, turnID primitiv
 		report.Readiness = ReadinessNeedsInstruction
 	}
 	return report, nil
+}
+
+func workspaceVCSCondition(recorded recall.Checkpoint) Condition {
+	if recorded.UserGit == nil {
+		return Condition{Status: "not_recorded", Detail: "Workspace Git context was not recorded with the pre-turn checkpoint."}
+	}
+	if !recorded.UserGit.Exists {
+		return Condition{Status: "not_applicable", Detail: "The workspace was recorded as not being inside a Git worktree."}
+	}
+	if recorded.GitSyncRef == "" {
+		return Condition{
+			Status: "metadata_only",
+			Detail: "Git branch, HEAD, upstream, and dirty status were recorded, but no Git-sync restoration snapshot was captured.",
+		}
+	}
+	return Condition{
+		Status: "recorded",
+		Detail: "Workspace Git context and a verified Git-sync restoration snapshot were recorded; restoration remains policy-bound.",
+	}
 }
 
 func verifyCheckpoint(repo *checkpoint.Repo, recorded recall.Checkpoint, label string) error {

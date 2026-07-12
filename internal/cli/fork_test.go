@@ -77,7 +77,7 @@ func TestForkDryRunReportsReadinessWithoutWritingState(t *testing.T) {
 		"instruction:    available",
 		"Fix the parser",
 		"workspace files",
-		"workspace VCS    recorded",
+		"workspace VCS    metadata_only",
 		"conversation     not_recorded",
 		"reauthorization_required",
 		"Git-ignored and secrets-denied paths",

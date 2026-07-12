@@ -15,6 +15,7 @@ import (
 	"github.com/AadiJo/turnal/internal/recall"
 	"github.com/AadiJo/turnal/internal/turnevents"
 	"github.com/AadiJo/turnal/internal/turns"
+	"github.com/AadiJo/turnal/internal/workspacegit"
 )
 
 func TestInspectRequiresUnrecordedConversationContext(t *testing.T) {
@@ -185,6 +186,20 @@ func TestInspectRequiresRepo(t *testing.T) {
 	_, err := (Analyzer{}).Inspect("demo", 1)
 	if err == nil {
 		t.Fatal("Inspect without repo succeeded")
+	}
+}
+
+func TestWorkspaceVCSConditionDistinguishesMetadataFromSnapshot(t *testing.T) {
+	metadataOnly := workspaceVCSCondition(recall.Checkpoint{UserGit: &workspacegit.Context{Exists: true}})
+	if metadataOnly.Status != "metadata_only" || !strings.Contains(metadataOnly.Detail, "no Git-sync") {
+		t.Fatalf("metadata-only condition = %#v", metadataOnly)
+	}
+	withSnapshot := workspaceVCSCondition(recall.Checkpoint{
+		UserGit:    &workspacegit.Context{Exists: true},
+		GitSyncRef: "refs/agent-vcs/git-sync/demo/turn/000001/pre",
+	})
+	if withSnapshot.Status != "recorded" || !strings.Contains(withSnapshot.Detail, "verified Git-sync") {
+		t.Fatalf("snapshot condition = %#v", withSnapshot)
 	}
 }
 
