@@ -2,7 +2,9 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -154,6 +156,57 @@ func TestVerifyRejectsTargetBeforeLaunchingCommands(t *testing.T) {
 	if _, statErr := os.Stat(sentinel); !os.IsNotExist(statErr) {
 		t.Fatalf("verifier launched before target resolution: %v", statErr)
 	}
+}
+
+func TestVerifyCancellationCleansCheckpointEvaluation(t *testing.T) {
+	repo, sessionID, turnID := cliRecordedVerifyRepo(t)
+	startedMarker := filepath.Join(t.TempDir(), "started")
+	writeVerifyConfig(t, repo, []verifyConfigEntry{{Name: "wait", Mode: "wait", Args: []string{startedMarker}}})
+
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if err := os.Chdir(repo.WorkspaceRoot.String()); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(previous) }()
+	t.Setenv("TURNAL_CONFIG", filepath.Join(t.TempDir(), "missing-global.toml"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	command := NewRootCmd()
+	command.SetContext(ctx)
+	command.SetOut(&bytes.Buffer{})
+	command.SetErr(&bytes.Buffer{})
+	command.SetArgs([]string{"verify", fmt.Sprintf("%s:%s:post", sessionID, turnID)})
+	cancelled := make(chan struct{})
+	go func() {
+		defer close(cancelled)
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(startedMarker); err == nil {
+				cancel()
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		cancel()
+	}()
+
+	started := time.Now()
+	err = command.Execute()
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("verify error = %v, want context cancellation", err)
+	}
+	if elapsed := time.Since(started); elapsed > 3*time.Second {
+		t.Fatalf("cancelled verify took %s", elapsed)
+	}
+	<-cancelled
+	if _, err := os.Stat(startedMarker); err != nil {
+		t.Fatalf("verifier did not start before cancellation: %v", err)
+	}
+	assertVerifyTempEmpty(t, repo)
 }
 
 func TestVerifyRequiresConfiguredVerifiers(t *testing.T) {
@@ -382,6 +435,11 @@ func TestVerifyCLIHelperProcess(t *testing.T) {
 		if len(args) != 1 || os.WriteFile(args[0], []byte(time.Now().String()), 0o600) != nil {
 			os.Exit(22)
 		}
+	case "wait":
+		if len(args) != 1 || os.WriteFile(args[0], []byte("started"), 0o600) != nil {
+			os.Exit(24)
+		}
+		time.Sleep(30 * time.Second)
 	default:
 		os.Exit(23)
 	}

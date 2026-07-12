@@ -1,10 +1,12 @@
 package cli
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/AadiJo/turnal/internal/config"
 	"github.com/AadiJo/turnal/internal/verifier"
@@ -20,7 +22,7 @@ func verifyCmd() *cobra.Command {
 		Short:        "Run repository-defined checks against a workspace state",
 		SilenceUsage: true,
 		Args:         cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) (returnErr error) {
 			repo, err := openCheckpointRepoReadOnly()
 			if err != nil {
 				return err
@@ -32,6 +34,8 @@ func verifyCmd() *cobra.Command {
 			if origins["verify"] != config.OriginWorkspace || len(effective.Verify) == 0 {
 				return fmt.Errorf("no repository verifiers are configured in %s", config.WorkspacePath(repo.WorkspaceRoot.String()))
 			}
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
 
 			var prepared verifier.PreparedTarget
 			if len(args) == 0 {
@@ -46,27 +50,32 @@ func verifyCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			defer func() {
+				if cleanupErr := prepared.Cleanup(); cleanupErr != nil {
+					if _, hasExitCode := commandExitCode(returnErr); hasExitCode {
+						returnErr = cleanupErr
+					} else {
+						returnErr = errors.Join(returnErr, cleanupErr)
+					}
+				}
+			}()
 
-			report, runErr := verifier.Run(context.Background(), verifier.Request{
+			report, runErr := verifier.Run(ctx, verifier.Request{
 				Root:      prepared.Root,
 				Target:    prepared.Target,
 				Verifiers: effective.Verify,
 			})
-			cleanupErr := prepared.Cleanup()
 			if runErr != nil {
-				return errors.Join(runErr, cleanupErr)
+				return runErr
 			}
 			if jsonOutput {
 				encoder := json.NewEncoder(cmd.OutOrStdout())
 				encoder.SetIndent("", "  ")
 				if err := encoder.Encode(report); err != nil {
-					return errors.Join(err, cleanupErr)
+					return err
 				}
 			} else if err := verifier.WriteHuman(cmd.OutOrStdout(), report); err != nil {
-				return errors.Join(err, cleanupErr)
-			}
-			if cleanupErr != nil {
-				return cleanupErr
+				return err
 			}
 			if !report.Successful() {
 				return commandExitError{code: verifyFailureExitCode}

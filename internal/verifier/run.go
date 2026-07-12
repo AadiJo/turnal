@@ -13,6 +13,8 @@ import (
 	"github.com/AadiJo/turnal/internal/config"
 )
 
+const processWaitDelay = time.Second
+
 type Request struct {
 	Root        string
 	Target      Target
@@ -69,6 +71,11 @@ func Run(ctx context.Context, request Request) (Report, error) {
 		case StatusLaunchError:
 			report.Summary.LaunchError++
 			report.Summary.Outcome = "failed"
+		}
+		if err := ctx.Err(); err != nil {
+			report.FinishedAt = request.Now().UTC()
+			report.DurationMS = elapsedMilliseconds(report.StartedAt, report.FinishedAt)
+			return report, fmt.Errorf("verification interrupted: %w", err)
 		}
 	}
 	report.FinishedAt = request.Now().UTC()
@@ -140,43 +147,73 @@ func runOne(parent context.Context, request Request, definition config.Verifier)
 	cmd := exec.CommandContext(ctx, definition.Command, definition.Args...)
 	cmd.Dir = request.Root
 	cmd.Env = append([]string(nil), request.Environment...)
-	configureProcess(cmd)
+	cmd.WaitDelay = processWaitDelay
+	controller, err := newProcessController(cmd)
+	if err != nil {
+		result.LaunchError = fmt.Sprintf("prepare process containment: %v", err)
+		finishCheck(&result, request.Now().UTC(), newBoundedBuffer(request.OutputLimit), newBoundedBuffer(request.OutputLimit))
+		return result
+	}
+	cmd.Cancel = controller.Cancel
 	stdout := newBoundedBuffer(request.OutputLimit)
 	stderr := newBoundedBuffer(request.OutputLimit)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
 	if err := cmd.Start(); err != nil {
+		closeErr := controller.Close()
 		result.LaunchError = err.Error()
+		if closeErr != nil {
+			result.LaunchError = errors.Join(err, fmt.Errorf("release process containment: %w", closeErr)).Error()
+		}
 		finishCheck(&result, request.Now().UTC(), stdout, stderr)
 		return result
 	}
-	err := cmd.Wait()
-	finishCheck(&result, request.Now().UTC(), stdout, stderr)
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		result.Status = StatusTimedOut
-		result.TimedOut = true
-		if cmd.ProcessState != nil {
-			code := cmd.ProcessState.ExitCode()
-			result.ExitCode = &code
-		}
+	if err := controller.AfterStart(); err != nil {
+		_ = controller.Cancel()
+		_ = cmd.Wait()
+		closeErr := controller.Close()
+		result.LaunchError = errors.Join(fmt.Errorf("activate process containment: %w", err), closeErr).Error()
+		finishCheck(&result, request.Now().UTC(), stdout, stderr)
 		return result
 	}
-	if err == nil {
+	waitErr := cmd.Wait()
+	closeErr := controller.Close()
+	finishCheck(&result, request.Now().UTC(), stdout, stderr)
+	classifyWaitResult(&result, waitErr, ctx.Err(), cmd.ProcessState)
+	if closeErr != nil && result.Status == StatusPassed {
+		result.Status = StatusLaunchError
+		result.ExitCode = nil
+		result.LaunchError = fmt.Sprintf("release process containment: %v", closeErr)
+	}
+	return result
+}
+
+func classifyWaitResult(result *Check, waitErr error, contextErr error, processState *os.ProcessState) {
+	if waitErr == nil {
 		result.Status = StatusPassed
 		code := 0
 		result.ExitCode = &code
-		return result
+		return
+	}
+	if errors.Is(contextErr, context.DeadlineExceeded) {
+		result.Status = StatusTimedOut
+		result.TimedOut = true
+		if processState != nil {
+			code := processState.ExitCode()
+			result.ExitCode = &code
+		}
+		return
 	}
 	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
+	if errors.As(waitErr, &exitErr) {
 		result.Status = StatusFailed
 		code := exitErr.ExitCode()
 		result.ExitCode = &code
-		return result
+		return
 	}
-	result.LaunchError = err.Error()
-	return result
+	result.Status = StatusLaunchError
+	result.LaunchError = waitErr.Error()
 }
 
 func finishCheck(result *Check, finished time.Time, stdout, stderr *boundedBuffer) {

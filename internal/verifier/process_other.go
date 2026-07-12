@@ -1,14 +1,24 @@
-//go:build !unix
+//go:build !unix && !windows
 
 package verifier
 
 import "os/exec"
 
-func configureProcess(cmd *exec.Cmd) {
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return nil
-		}
-		return cmd.Process.Kill()
-	}
+type directProcessController struct {
+	cmd *exec.Cmd
 }
+
+func newProcessController(cmd *exec.Cmd) (processController, error) {
+	return &directProcessController{cmd: cmd}, nil
+}
+
+func (controller *directProcessController) AfterStart() error { return nil }
+
+func (controller *directProcessController) Cancel() error {
+	if controller.cmd.Process == nil {
+		return nil
+	}
+	return controller.cmd.Process.Kill()
+}
+
+func (controller *directProcessController) Close() error { return nil }

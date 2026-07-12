@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -52,6 +53,29 @@ func TestRunTimeoutTerminatesChild(t *testing.T) {
 	check := report.Checks[0]
 	if check.Status != StatusTimedOut || !check.TimedOut || report.Summary.TimedOut != 1 {
 		t.Fatalf("timeout check = %#v summary=%#v", check, report.Summary)
+	}
+}
+
+func TestRunCancellationStopsVerification(t *testing.T) {
+	definition := helperVerifier("cancelled", "sleep")
+	later := filepath.Join(t.TempDir(), "later")
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(50*time.Millisecond, cancel)
+	started := time.Now()
+	_, err := Run(ctx, Request{
+		Root:        t.TempDir(),
+		Target:      Target{Kind: TargetLiveWorkspace},
+		Verifiers:   []config.Verifier{definition, helperVerifier("must-not-run", "touch", later)},
+		OutputLimit: DefaultOutputLimit,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run error = %v, want context cancellation", err)
+	}
+	if elapsed := time.Since(started); elapsed > 3*time.Second {
+		t.Fatalf("cancelled verification took %s", elapsed)
+	}
+	if _, statErr := os.Stat(later); !os.IsNotExist(statErr) {
+		t.Fatalf("later verifier ran after cancellation: %v", statErr)
 	}
 }
 
@@ -158,6 +182,14 @@ func TestReportJSONVersionAndHumanFailureSummary(t *testing.T) {
 		if !strings.Contains(output.String(), want) {
 			t.Fatalf("human output missing %q:\n%s", want, output.String())
 		}
+	}
+}
+
+func TestSuccessfulWaitWinsDeadlineBoundary(t *testing.T) {
+	result := Check{Status: StatusLaunchError}
+	classifyWaitResult(&result, nil, context.DeadlineExceeded, nil)
+	if result.Status != StatusPassed || result.ExitCode == nil || *result.ExitCode != 0 || result.TimedOut {
+		t.Fatalf("classification = %#v, want passed", result)
 	}
 }
 
