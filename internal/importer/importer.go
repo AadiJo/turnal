@@ -15,6 +15,7 @@ import (
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/fsidentity"
 	queryindex "github.com/AadiJo/turnal/internal/index"
+	"github.com/AadiJo/turnal/internal/manualcheckpoints"
 	"github.com/AadiJo/turnal/internal/primitives"
 )
 
@@ -317,6 +318,21 @@ func inspectCheckpoints(streams []eventlog.DurableStream, refs map[string]checkp
 	var aliases []checkpointAlias
 	for _, stream := range streams {
 		for _, event := range stream.Events {
+			if stream.Workspace && event.Type == primitives.EventTypeRollback {
+				rollback, err := manualcheckpoints.ParseRollbackEvent(event)
+				if err != nil {
+					return nil, err
+				}
+				checkpointRef, ok := refs[rollback.Ref.String()]
+				if !ok || checkpointRef.Commit != rollback.Target {
+					return nil, fmt.Errorf("workspace rollback event %s:%s checkpoint ref does not match target commit", stream.StreamID, event.Seq)
+				}
+				safetyRef, ok := refs[rollback.Payload.SafetyRef]
+				if !ok || safetyRef.Commit != rollback.SafetyCommit {
+					return nil, fmt.Errorf("workspace rollback event %s:%s safety ref does not match safety commit", stream.StreamID, event.Seq)
+				}
+				continue
+			}
 			if event.Type != primitives.EventTypeCheckpoint {
 				continue
 			}

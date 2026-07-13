@@ -13,6 +13,7 @@ import (
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/manualcheckpoints"
+	"github.com/AadiJo/turnal/internal/primitives"
 	rollbackengine "github.com/AadiJo/turnal/internal/rollback"
 )
 
@@ -266,5 +267,39 @@ func TestSaveRefusesPendingRollbackRecovery(t *testing.T) {
 	}
 	if len(infos) != 0 {
 		t.Fatalf("save created checkpoint during rollback recovery: %#v", infos)
+	}
+}
+
+func TestLogWarnsAndContinuesPastMalformedWorkspaceRollback(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+	created, err := repo.CreateManualCheckpoint()
+	if err != nil {
+		t.Fatalf("CreateManualCheckpoint: %v", err)
+	}
+	if _, err := manualcheckpoints.Append(repo, created, "visible save"); err != nil {
+		t.Fatalf("append save: %v", err)
+	}
+	if _, err := manualcheckpoints.AppendEvent(repo, primitives.EventTypeRollback, "malformed-rollback", "", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("append malformed rollback: %v", err)
+	}
+
+	cmd := NewRootCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"log", "--no-pager"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("log: %v\n%s", err, out.String())
+	}
+	for _, want := range []string{"visible save", created.Commit.String()[:12], "workspace rollback event unavailable", "<invalid>"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("log output missing %q:\n%s", want, out.String())
+		}
 	}
 }

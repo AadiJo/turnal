@@ -12,6 +12,7 @@ import (
 	"github.com/AadiJo/turnal/internal/adapters"
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/manualcheckpoints"
 	"github.com/AadiJo/turnal/internal/primitives"
 	rollbackengine "github.com/AadiJo/turnal/internal/rollback"
 )
@@ -41,6 +42,29 @@ func TestInspectReportsCheckpointEventCommitMismatch(t *testing.T) {
 	report := Inspect(repo)
 	if !containsProblem(report.Problems, "checkpoint event commit mismatch") {
 		t.Fatalf("problems = %#v, want checkpoint event commit mismatch", report.Problems)
+	}
+}
+
+func TestInspectReportsMalformedWorkspaceRollback(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if _, err := manualcheckpoints.AppendEvent(repo, primitives.EventTypeRollback, "malformed", "", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+	report := Inspect(repo)
+	found := false
+	for _, problem := range report.Problems {
+		if strings.Contains(problem, "workspace rollback event") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("integrity problems do not report malformed workspace rollback: %#v", report.Problems)
 	}
 }
 

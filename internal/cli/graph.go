@@ -492,9 +492,22 @@ func loadWorkspaceGraphEvents(repo *checkpoint.Repo, scope graphScope) ([]graphS
 		if event.Type != primitives.EventTypeRollback || !scope.matches(event.WorktreeID, event.StreamID) {
 			continue
 		}
+		if _, err := manualcheckpoints.ValidateRollbackEvent(repo, event); err != nil {
+			rollbacks = append(rollbacks, graphRollback{
+				Time: event.Time.Time, Seq: event.Seq, Manual: true, TargetText: event.RawRef,
+				WorktreeID: event.WorktreeID, SourceID: event.SourceID,
+				Warnings: []string{fmt.Sprintf("workspace rollback event unavailable: %v", err)},
+			})
+			continue
+		}
 		rollback, err := graphRollbackFromEvent(event)
 		if err != nil {
-			return nil, nil, fmt.Errorf("workspace rollback event %s unavailable: %w", event.Seq, err)
+			rollbacks = append(rollbacks, graphRollback{
+				Time: event.Time.Time, Seq: event.Seq, Manual: true, TargetText: event.RawRef,
+				WorktreeID: event.WorktreeID, SourceID: event.SourceID,
+				Warnings: []string{fmt.Sprintf("workspace rollback event unavailable: %v", err)},
+			})
+			continue
 		}
 		rollbacks = append(rollbacks, rollback)
 	}
@@ -511,6 +524,18 @@ type graphRollbackPayload struct {
 }
 
 func graphRollbackFromEvent(event eventlog.Event) (graphRollback, error) {
+	if event.TurnID == nil {
+		parsed, err := manualcheckpoints.ParseRollbackEvent(event)
+		if err != nil {
+			return graphRollback{}, err
+		}
+		return graphRollback{
+			Time: event.Time.Time, Seq: event.Seq, Manual: true,
+			TargetText: parsed.Target.String(), CheckpointRef: parsed.Ref.String(), CommitSHA: parsed.Target,
+			SafetyRef: parsed.Payload.SafetyRef, SafetyCommitSHA: parsed.SafetyCommit.String(),
+			Mode: parsed.Mode.String(), SourceID: event.SourceID, WorktreeID: parsed.WorktreeID,
+		}, nil
+	}
 	var payload graphRollbackPayload
 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
 		return graphRollback{}, fmt.Errorf("payload invariant failed: %w", err)
@@ -1336,11 +1361,15 @@ func renderRollbackLanePrefix(sessionCount int, options graphRenderOptions) stri
 
 func renderRollbackRow(w io.Writer, rollback graphRollback, sessions []graphSession, labels []string, options graphRenderOptions) {
 	if rollback.Manual {
+		id := formatObjectID(rollback.CommitSHA, false)
+		if id == "" {
+			id = "<invalid>"
+		}
 		fmt.Fprintf(w, "%s%s %s %s\n",
 			renderRollbackLanePrefix(len(sessions), options),
 			styleRollback("------------", options),
 			styleRollback("reverted to saved", options),
-			styleHash(formatObjectID(rollback.CommitSHA, false), options),
+			styleHash(id, options),
 		)
 		return
 	}
@@ -1371,6 +1400,9 @@ func renderVerboseRollbackDetails(w io.Writer, prefix string, rollback graphRoll
 	target := rollback.Target.String()
 	if rollback.Manual {
 		target = rollback.TargetText
+		if target == "" {
+			target = "<invalid>"
+		}
 	}
 	fmt.Fprintf(w, "%starget: %s\n", prefix, target)
 	if rollback.Mode != "" {

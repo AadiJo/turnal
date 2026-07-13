@@ -158,6 +158,28 @@ func TestRunImportsManualCheckpointStreamAndMessage(t *testing.T) {
 	}
 }
 
+func TestRunRejectsMalformedWorkspaceRollbackBeforeMutation(t *testing.T) {
+	requireGit(t)
+	source := initRepo(t)
+	destination := initRepo(t)
+	if _, err := manualcheckpoints.AppendEvent(source, primitives.EventTypeRollback, "malformed", "", []byte(`{}`)); err != nil {
+		t.Fatalf("append malformed workspace rollback: %v", err)
+	}
+	if _, err := Run(destination, source.MetadataDir, Options{AdoptSourceAsCurrentRepo: true}); err == nil || !strings.Contains(err.Error(), "workspace rollback event") {
+		t.Fatalf("merge error = %v", err)
+	}
+	refs, err := destination.ListPrivateRefs("refs/agent-vcs/imports")
+	if err != nil {
+		t.Fatalf("list imported refs: %v", err)
+	}
+	if len(refs) != 0 {
+		t.Fatalf("failed import mutated refs: %#v", refs)
+	}
+	if pending, err := Pending(destination); err != nil || len(pending) != 0 {
+		t.Fatalf("failed import left journal: %#v err=%v", pending, err)
+	}
+}
+
 func initRepo(t *testing.T) *checkpoint.Repo {
 	t.Helper()
 	root, err := primitives.ParseWorkspaceRoot(t.TempDir())

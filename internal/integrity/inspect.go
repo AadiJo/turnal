@@ -38,6 +38,7 @@ func Inspect(repo *checkpoint.Repo) Report {
 	if _, err := manualcheckpoints.Read(repo, true); err != nil {
 		report.Problems = append(report.Problems, fmt.Sprintf("manual checkpoint event inspection failed: %v", err))
 	}
+	report.Problems = append(report.Problems, inspectWorkspaceRollbackEvents(repo)...)
 	if _, err := caseengine.Rebuild(repo); err != nil {
 		report.Problems = append(report.Problems, fmt.Sprintf("task/case projection failed: %v", err))
 	}
@@ -48,6 +49,23 @@ func Inspect(repo *checkpoint.Repo) Report {
 	report.Problems = append(report.Problems, inspectCaptureFiles(repo)...)
 	report.Problems = append(report.Problems, inspectIndex(repo)...)
 	return report
+}
+
+func inspectWorkspaceRollbackEvents(repo *checkpoint.Repo) []string {
+	events, err := manualcheckpoints.ReadEvents(repo, true)
+	if err != nil {
+		return []string{fmt.Sprintf("workspace event inspection failed: %v", err)}
+	}
+	var problems []string
+	for _, event := range events {
+		if event.Type != primitives.EventTypeRollback {
+			continue
+		}
+		if _, err := manualcheckpoints.ValidateRollbackEvent(repo, event); err != nil {
+			problems = append(problems, err.Error())
+		}
+	}
+	return problems
 }
 
 func inspectCaptureFiles(repo *checkpoint.Repo) []string {
