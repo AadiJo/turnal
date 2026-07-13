@@ -134,3 +134,51 @@ func TestValidateRollbackEventRejectsCheckpointRefMismatch(t *testing.T) {
 		t.Fatalf("ValidateRollbackEvent error = %v", err)
 	}
 }
+
+func TestValidateRollbackEventRejectsMissingOrMismatchedSafetyRef(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git executable not found")
+	}
+	root, _ := primitives.ParseWorkspaceRoot(t.TempDir())
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root.String(), "app.txt"), []byte("target\n"), 0o644); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	target, err := repo.CreateManualCheckpoint()
+	if err != nil {
+		t.Fatalf("CreateManualCheckpoint: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root.String(), "app.txt"), []byte("safety\n"), 0o644); err != nil {
+		t.Fatalf("write safety: %v", err)
+	}
+	safety, err := repo.CreateSnapshotRef("refs/agent-vcs/rollback-safety/manual/validator", "validator safety")
+	if err != nil {
+		t.Fatalf("CreateSnapshotRef: %v", err)
+	}
+	for _, test := range []struct {
+		name         string
+		safetyRef    string
+		safetyCommit primitives.CommitSHA
+	}{
+		{name: "missing", safetyRef: "refs/agent-vcs/rollback-safety/manual/missing", safetyCommit: safety.Commit},
+		{name: "mismatched", safetyRef: safety.Ref, safetyCommit: target.Commit},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			payload, _ := json.Marshal(RollbackPayload{
+				Mode: primitives.RollbackModeCheckpoint.String(), Target: target.Commit.String(),
+				Ref: target.Ref.String(), CommitSHA: target.Commit.String(),
+				SafetyRef: test.safetyRef, SafetyCommitSHA: test.safetyCommit.String(),
+			})
+			event := eventlog.Event{
+				Type: primitives.EventTypeRollback, Adapter: primitives.AdapterManual, WorktreeID: repo.WorktreeID,
+				RawRef: target.Commit.String(), SourceID: fmt.Sprintf("turnal:rollback:checkpoint:%s:%s", target.Commit, test.safetyCommit), Payload: payload,
+			}
+			if _, err := ValidateRollbackEvent(repo, event); err == nil || !strings.Contains(err.Error(), "safety ref invariant failed") {
+				t.Fatalf("ValidateRollbackEvent error = %v", err)
+			}
+		})
+	}
+}

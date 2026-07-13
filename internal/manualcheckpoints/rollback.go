@@ -28,6 +28,8 @@ type Rollback struct {
 	Mode         primitives.RollbackMode
 }
 
+type RefCommitResolver func(string) (primitives.CommitSHA, error)
+
 func ParseRollbackEvent(event eventlog.Event) (Rollback, error) {
 	if event.Type != primitives.EventTypeRollback || event.TurnID != nil || event.Adapter != primitives.AdapterManual {
 		return Rollback{}, fmt.Errorf("workspace rollback event %s provenance invariant failed", event.Seq)
@@ -88,16 +90,60 @@ func ValidateRollbackEvent(repo *checkpoint.Repo, event eventlog.Event) (Rollbac
 	if repo == nil {
 		return Rollback{}, fmt.Errorf("workspace rollback event validation requires repo")
 	}
+	return ValidateRollbackEventWithResolver(event, func(ref string) (primitives.CommitSHA, error) {
+		if commit, err := repo.RefCommit(ref); err == nil {
+			return commit, nil
+		}
+		suffix, ok := strings.CutPrefix(ref, "refs/agent-vcs/")
+		if !ok || suffix == "" {
+			return "", fmt.Errorf("private ref required: %s", ref)
+		}
+		refs, err := repo.ListPrivateRefs("refs/agent-vcs/imports")
+		if err != nil {
+			return "", err
+		}
+		var resolved primitives.CommitSHA
+		for _, candidate := range refs {
+			if !strings.HasSuffix(candidate, "/"+suffix) {
+				continue
+			}
+			commit, err := repo.RefCommit(candidate)
+			if err != nil {
+				return "", err
+			}
+			if resolved != "" && resolved != commit {
+				return "", fmt.Errorf("imported ref %s is ambiguous", ref)
+			}
+			resolved = commit
+		}
+		if resolved == "" {
+			return "", fmt.Errorf("ref %s not found", ref)
+		}
+		return resolved, nil
+	})
+}
+
+func ValidateRollbackEventWithResolver(event eventlog.Event, resolve RefCommitResolver) (Rollback, error) {
+	if resolve == nil {
+		return Rollback{}, fmt.Errorf("workspace rollback event validation requires ref resolver")
+	}
 	rollback, err := ParseRollbackEvent(event)
 	if err != nil {
 		return Rollback{}, err
 	}
-	commit, err := repo.CheckpointCommit(rollback.Ref)
+	commit, err := resolve(rollback.Ref.String())
 	if err != nil {
 		return Rollback{}, fmt.Errorf("workspace rollback event %s checkpoint ref invariant failed: %w", event.Seq, err)
 	}
 	if commit != rollback.Target {
 		return Rollback{}, fmt.Errorf("workspace rollback event %s checkpoint ref invariant failed: ref points to %s, target is %s", event.Seq, commit, rollback.Target)
+	}
+	safetyCommit, err := resolve(rollback.Payload.SafetyRef)
+	if err != nil {
+		return Rollback{}, fmt.Errorf("workspace rollback event %s safety ref invariant failed: %w", event.Seq, err)
+	}
+	if safetyCommit != rollback.SafetyCommit {
+		return Rollback{}, fmt.Errorf("workspace rollback event %s safety ref invariant failed: ref points to %s, safety commit is %s", event.Seq, safetyCommit, rollback.SafetyCommit)
 	}
 	return rollback, nil
 }

@@ -319,17 +319,15 @@ func inspectCheckpoints(streams []eventlog.DurableStream, refs map[string]checkp
 	for _, stream := range streams {
 		for _, event := range stream.Events {
 			if stream.Workspace && event.Type == primitives.EventTypeRollback {
-				rollback, err := manualcheckpoints.ParseRollbackEvent(event)
+				_, err := manualcheckpoints.ValidateRollbackEventWithResolver(event, func(ref string) (primitives.CommitSHA, error) {
+					imported, ok := refs[ref]
+					if !ok {
+						return "", fmt.Errorf("source ref %s is missing", ref)
+					}
+					return imported.Commit, nil
+				})
 				if err != nil {
 					return nil, err
-				}
-				checkpointRef, ok := refs[rollback.Ref.String()]
-				if !ok || checkpointRef.Commit != rollback.Target {
-					return nil, fmt.Errorf("workspace rollback event %s:%s checkpoint ref does not match target commit", stream.StreamID, event.Seq)
-				}
-				safetyRef, ok := refs[rollback.Payload.SafetyRef]
-				if !ok || safetyRef.Commit != rollback.SafetyCommit {
-					return nil, fmt.Errorf("workspace rollback event %s:%s safety ref does not match safety commit", stream.StreamID, event.Seq)
 				}
 				continue
 			}
