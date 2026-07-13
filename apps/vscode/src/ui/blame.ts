@@ -115,7 +115,7 @@ export class BlameController implements vscode.HoverProvider, vscode.Disposable 
       return;
     }
     const title = turnTitle(entry.origin.prompt, entry.origin.turn_id ?? 0, 52);
-    const annotation = `Turnal · ${displayAgent(entry.origin.adapter)} · ${title} · ${relativeTime(entry.origin.time)}`;
+    const annotation = `${displayAgent(entry.origin.adapter)} · ${title} · ${relativeTime(entry.origin.time)}`;
     editor.setDecorations(this.decoration, [
       {
         range: editor.document.lineAt(line).range,

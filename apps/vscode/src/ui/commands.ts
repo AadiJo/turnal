@@ -183,7 +183,7 @@ function normalizedUri(uri: vscode.Uri): string {
 
 function confirmationDetail(target: TurnTarget, preview: RollbackPreview): string {
   const limit = 8;
-  const files = preview.changes.slice(0, limit).map((change) => `${change.action.padEnd(12)} ${change.path}`);
+  const files = preview.changes.slice(0, limit).map((change) => `${change.action} — ${change.path}`);
   if (preview.changes.length > limit) {
     files.push(`…and ${preview.changes.length - limit} more`);
   }

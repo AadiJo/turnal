@@ -162,7 +162,7 @@ class SessionNode extends vscode.TreeItem {
     readonly folder: vscode.WorkspaceFolder,
     readonly session: SessionSummary,
   ) {
-    super(`${displayAgent(session.adapter)} · ${compactSessionId(session.session_id)}`, vscode.TreeItemCollapsibleState.Expanded);
+    super(session.model ? `${displayAgent(session.adapter)} · ${session.model}` : displayAgent(session.adapter), vscode.TreeItemCollapsibleState.Expanded);
     this.id = `session:${folder.uri.toString()}:${session.session_id}`;
     this.description = `${session.turn_count} ${session.turn_count === 1 ? "turn" : "turns"} · ${relativeTime(session.last_activity)}`;
     this.iconPath = session.status === "active" ? new vscode.ThemeIcon("radio-tower") : new vscode.ThemeIcon("history");
@@ -192,7 +192,7 @@ export class TurnNode extends vscode.TreeItem {
     this.tooltip = turnTooltip(session, turn);
     this.command = {
       command: turn.status === "complete" ? "turnal.openTurnDiff" : "turnal.showTurnDetails",
-      title: turn.status === "complete" ? "Open Turn Diff" : "Show Turn Details",
+      title: turn.status === "complete" ? "View Turn Changes" : "Show Turn Details",
       arguments: [this.target],
     };
   }
@@ -238,7 +238,7 @@ function turnTarget(folder: vscode.WorkspaceFolder, session: SessionSummary, tur
 function turnIcon(status: string): vscode.ThemeIcon {
   switch (status) {
     case "complete":
-      return new vscode.ThemeIcon("circle-filled");
+      return new vscode.ThemeIcon("git-commit");
     case "active":
       return new vscode.ThemeIcon("sync~spin");
     case "events-only":
@@ -284,13 +284,6 @@ function fileTooltip(file: DiffDocument): vscode.MarkdownString {
     markdown.appendMarkdown(`$(add) ${file.additions} additions · $(remove) ${file.deletions} deletions`);
   }
   return markdown;
-}
-
-function compactSessionId(value: string): string {
-  if (value.length <= 24) {
-    return value;
-  }
-  return `${value.slice(0, 12)}…${value.slice(-8)}`;
 }
 
 function sessionTooltip(session: SessionSummary): vscode.MarkdownString {

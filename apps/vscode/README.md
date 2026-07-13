@@ -38,7 +38,7 @@ npm run package
 ## Commands and settings
 
 - **Turnal: Refresh Sessions** clears cached session and blame data.
-- **Turnal: Open Turn Diff** opens a completed turn’s unified diff.
+- **Turnal: View Turn Changes** opens a completed turn in VS Code’s native diff or multi-file Changes editor.
 - **Turnal: Show Turn Details** opens the CLI’s turn view.
 - **Turnal: Roll Back to Before Turn…** previews and performs a checkpoint rollback.
 - **Turnal: Toggle Inline Blame** updates `turnal.inlineBlame.enabled` for the workspace.
