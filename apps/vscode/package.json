@@ -78,7 +78,8 @@
     "viewsWelcome": [
       {
         "view": "turnal.sessions",
-        "contents": "No Turnal sessions yet.\nTurnal records automatically after it is initialized and an AI agent edits this workspace.\n[Refresh](command:turnal.refresh)"
+        "contents": "No Turnal sessions yet.\nTurnal records automatically after it is initialized and an AI agent edits this workspace.\n[Refresh](command:turnal.refresh)",
+        "when": "!turnal.cliMissing"
       },
       {
         "view": "turnal.sessions",
@@ -102,12 +103,12 @@
       "view/item/context": [
         {
           "command": "turnal.openTurnDiff",
-          "when": "view == turnal.sessions && viewItem == turnalTurn",
+          "when": "view == turnal.sessions && viewItem == turnalTurnComplete",
           "group": "inline@1"
         },
         {
           "command": "turnal.showTurnDetails",
-          "when": "view == turnal.sessions && viewItem == turnalTurn",
+          "when": "view == turnal.sessions && viewItem =~ /turnalTurn/",
           "group": "1_turnal@1"
         },
         {
