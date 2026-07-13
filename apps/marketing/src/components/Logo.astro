@@ -1,6 +1,6 @@
 ---
-import logoUrl from '../../../../assets/logo.svg?url';
-import lockupDarkUrl from '../../../../assets/logo-lockup-dark.svg?url';
+import logoMark from '../../../../assets/logo-mark.svg?raw';
+import logoTileUrl from '../../../../assets/logo.svg?url';
 
 interface Props {
   size?: number;
@@ -8,18 +8,17 @@ interface Props {
 }
 
 const { size = 28, wordmark = true } = Astro.props;
-const src = wordmark ? lockupDarkUrl : logoUrl;
-const width = wordmark ? Math.round(size * (620 / 220)) : size;
 ---
 
-<span class="logo">
-  <img
-    src={src}
-    width={width}
-    height={size}
-    alt={wordmark ? 'Turnal' : ''}
-    decoding="async"
-  />
+<span class:list={['logo', { 'logo-mark': !wordmark }]} style={`--logo-size: ${size}px`}>
+  {wordmark ? (
+    <>
+      <img src={logoTileUrl} width={size} height={size} alt="" decoding="async" />
+      <span class="logo-wordmark" aria-hidden="true">turnal</span>
+    </>
+  ) : (
+    <span class="logo-mark-art" set:html={logoMark}></span>
+  )}
 </span>
 
 <style>
@@ -28,8 +27,32 @@ const width = wordmark ? Math.round(size * (620 / 220)) : size;
     flex: none;
     align-items: center;
   }
+  .logo:not(.logo-mark) { gap: 4px; }
   img {
     display: block;
     max-width: none;
+  }
+  .logo-wordmark {
+    color: #ece3d4;
+    font-family: Inter, var(--sans), ui-sans-serif, sans-serif;
+    font-size: calc(var(--logo-size) * 0.78);
+    font-weight: 700;
+    letter-spacing: -0.065em;
+    line-height: 1;
+  }
+  .logo-mark {
+    width: var(--logo-size);
+    height: var(--logo-size);
+    color: #ece3d4;
+  }
+  .logo-mark-art {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+  .logo-mark-art :global(svg) {
+    display: block;
+    width: 100%;
+    height: 100%;
   }
 </style>

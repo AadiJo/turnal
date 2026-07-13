@@ -4,7 +4,7 @@
 export const product = {
   name: 'Turnal',
   tagline: 'A flight recorder for your AI coding agent.',
-  sub: 'Turnal records every turn your agent takes — the prompt, the tool calls, the files it touched — as hidden Git checkpoints beside your repo. Understand what happened, search it months later, and roll back any turn safely. Local-first. Zero config.',
+  sub: 'Turnal records every run your agent takes — the prompt, the tool calls, the files it touched — as hidden Git checkpoints beside your repo. Understand what happened, search it months later, and roll back any run safely. Local-first. Zero config.',
   install: 'npm install -g @aadijo/turnal',
   init: 'turnal init',
   agents: ['Claude Code', 'Codex'],
@@ -22,7 +22,7 @@ export const features: Feature[] = [
   {
     k: 'record',
     title: 'Automatic checkpoints',
-    body: 'A pre- and post-checkpoint on every agent turn, committed to a hidden Git repo. Your real history and working tree stay untouched.',
+    body: 'A pre- and post-checkpoint on every agent run, committed to a hidden Git repo. Your real history and working tree stay untouched.',
     demo: 'log',
   },
   {
@@ -72,11 +72,11 @@ export const steps: Step[] = [
   {
     n: '02',
     title: 'Code as usual',
-    body: 'Your agent works normally. Turnal captures each turn in the background — prompt, tools, and file changes.',
+    body: 'Your agent works normally. Turnal captures each run in the background — prompt, tools, and file changes.',
   },
   {
     n: '03',
     title: 'Recall & recover',
-    body: 'Later, log, blame, search, or diff any turn — and roll back safely if a change went sideways.',
+    body: 'Later, log, blame, search, or diff any run — and roll back safely if a change went sideways.',
   },
 ];
