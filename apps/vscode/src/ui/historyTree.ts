@@ -1,13 +1,13 @@
 import * as vscode from "vscode";
-import { TurnFileTarget, TurnTarget } from "../model";
+import { RollbackTarget, TurnFileTarget, TurnTarget } from "../model";
 import { TurnalCommandError } from "../turnal/cli";
-import { DiffDocument, SessionSummary, SessionsResult, SessionTurn, turnsForSession } from "../turnal/types";
+import { DiffDocument, SessionRollback, SessionSummary, SessionsResult, SessionTurn, turnsForSession } from "../turnal/types";
 import { displayAgent, formatTimestamp, relativeTime, truncate, turnTitle } from "../utils/format";
-import { recentTurns } from "../utils/recentTurns";
+import { activitiesForSession, HistoryActivity, recentActivities } from "../utils/historyActivity";
 import { RefreshingCache } from "../utils/refreshingCache";
 import { cliForFolder } from "../workspaces";
 
-export type HistoryNode = WorkspaceNode | SessionNode | TurnNode | TurnFileNode;
+export type HistoryNode = WorkspaceNode | SessionNode | TurnNode | RollbackNode | TurnFileNode;
 export type HistoryLayout = "sessions" | "activity";
 
 interface HistoryTreeOptions {
@@ -36,14 +36,14 @@ export class HistoryTreeProvider implements vscode.TreeDataProvider<HistoryNode>
       return this.folderNodes(element.folder);
     }
     if (element instanceof SessionNode) {
-      return turnsForSession(element.session).map(
-        (turn) => new TurnNode(element.folder, element.session, turn),
+      return activitiesForSession(element.session).map(
+        (activity) => this.activityNode(element.folder, activity, false),
       );
     }
     if (element instanceof TurnNode) {
       return element.target.status === "complete" ? this.turnFileNodes(element) : [];
     }
-    if (element instanceof TurnFileNode) {
+    if (element instanceof RollbackNode || element instanceof TurnFileNode) {
       return [];
     }
 
@@ -109,19 +109,27 @@ export class HistoryTreeProvider implements vscode.TreeDataProvider<HistoryNode>
     }
   }
 
-  private folderNodes(folder: vscode.WorkspaceFolder): Promise<SessionNode[] | TurnNode[]> {
+  private folderNodes(folder: vscode.WorkspaceFolder): Promise<SessionNode[] | Array<TurnNode | RollbackNode>> {
     return this.options.getLayout() === "activity" ? this.activityNodes(folder) : this.sessionNodes(folder);
   }
 
-  private async activityNodes(folder: vscode.WorkspaceFolder): Promise<TurnNode[]> {
+  private async activityNodes(folder: vscode.WorkspaceFolder): Promise<Array<TurnNode | RollbackNode>> {
     try {
       const result = await this.load(folder);
-      return recentTurns(result.sessions).map(
-        ({ session, turn }) => new TurnNode(folder, session, turn, this.options.extensionUri, true),
-      );
+      return recentActivities(result.sessions).map((activity) => this.activityNode(folder, activity, true));
     } catch {
       return [];
     }
+  }
+
+  private activityNode(
+    folder: vscode.WorkspaceFolder,
+    activity: HistoryActivity,
+    activityLayout: boolean,
+  ): TurnNode | RollbackNode {
+    return activity.kind === "rollback"
+      ? new RollbackNode(folder, activity.session, activity.rollback, activityLayout)
+      : new TurnNode(folder, activity.session, activity.turn, this.options.extensionUri, activityLayout);
   }
 
   private load(folder: vscode.WorkspaceFolder): Promise<SessionsResult> {
@@ -187,7 +195,10 @@ class SessionNode extends vscode.TreeItem {
   ) {
     super(session.model ? `${displayAgent(session.adapter)} · ${session.model}` : displayAgent(session.adapter), vscode.TreeItemCollapsibleState.Expanded);
     this.id = `session:${folder.uri.toString()}:${session.session_id}`;
-    this.description = `${session.turn_count} ${session.turn_count === 1 ? "turn" : "turns"} · ${relativeTime(session.last_activity)}`;
+    const rollbackCount = session.rollback_count > 0
+      ? ` · ${session.rollback_count} ${session.rollback_count === 1 ? "rollback" : "rollbacks"}`
+      : "";
+    this.description = `${session.turn_count} ${session.turn_count === 1 ? "turn" : "turns"}${rollbackCount} · ${relativeTime(session.last_activity)}`;
     this.iconPath = providerIcon(session.adapter, extensionUri);
     this.contextValue = "turnalSession";
     this.tooltip = sessionTooltip(session);
@@ -246,6 +257,40 @@ export class TurnNode extends vscode.TreeItem {
     this.command = {
       command: turn.status === "complete" ? "turnal.openTurnDiff" : "turnal.showTurnDetails",
       title: turn.status === "complete" ? "View Turn Changes" : "Show Turn Details",
+      arguments: [this.target],
+    };
+  }
+}
+
+export class RollbackNode extends vscode.TreeItem {
+  readonly target: RollbackTarget;
+
+  constructor(
+    folder: vscode.WorkspaceFolder,
+    session: SessionSummary,
+    readonly rollback: SessionRollback,
+    activityLayout: boolean,
+  ) {
+    super(rollbackTitle(rollback), vscode.TreeItemCollapsibleState.None);
+    this.target = {
+      folderUri: folder.uri.toString(),
+      folderName: folder.name,
+      sessionId: session.session_id,
+      adapter: session.adapter,
+      rollback,
+    };
+    const stream = rollback.stream_id ?? "legacy";
+    this.id = `rollback:${folder.uri.toString()}:${session.session_id}:${stream}:${rollback.sequence}`;
+    const changes = rollbackChangeLabel(rollback);
+    this.description = activityLayout
+      ? `${displayAgent(session.adapter)} · ${changes} · ${relativeTime(rollback.time)}`
+      : `${changes} · ${relativeTime(rollback.time)}`;
+    this.iconPath = new vscode.ThemeIcon("discard");
+    this.contextValue = "turnalRollback";
+    this.tooltip = rollbackTooltip(session, rollback);
+    this.command = {
+      command: "turnal.showRollbackDetails",
+      title: "Show Rollback Details",
       arguments: [this.target],
     };
   }
@@ -350,8 +395,47 @@ function sessionTooltip(session: SessionSummary): vscode.MarkdownString {
     markdown.appendText(session.model);
     markdown.appendMarkdown("\n\n");
   }
-  markdown.appendMarkdown(`${session.turn_count} turns · ${session.event_count} events\n\n`);
+  markdown.appendMarkdown(`${session.turn_count} turns · ${session.rollback_count} rollbacks · ${session.event_count} events\n\n`);
   markdown.appendText(formatTimestamp(session.last_activity));
+  return markdown;
+}
+
+function rollbackTitle(rollback: SessionRollback): string {
+  if (rollback.turn_id !== undefined) {
+    const point = rollback.phase === "pre"
+      ? "before"
+      : rollback.phase === "post"
+        ? "after"
+        : "at";
+    return `Rolled back to ${point} turn ${rollback.turn_id}`;
+  }
+  return `Rolled back to ${truncate(rollback.target, 48)}`;
+}
+
+function rollbackChangeLabel(rollback: SessionRollback): string {
+  const count = rollback.change_summary.total;
+  return `${count} ${count === 1 ? "file" : "files"}`;
+}
+
+function rollbackTooltip(session: SessionSummary, rollback: SessionRollback): vscode.MarkdownString {
+  const markdown = new vscode.MarkdownString();
+  markdown.appendMarkdown(`**Rollback · ${rollbackChangeLabel(rollback)} restored**\n\n`);
+  markdown.appendMarkdown(`${displayAgent(session.adapter)} · ${formatTimestamp(rollback.time)}\n\n`);
+  markdown.appendMarkdown("Target: ");
+  markdown.appendText(rollback.target);
+  markdown.appendMarkdown("\n\nMode: ");
+  markdown.appendText(rollback.mode);
+  const summary = rollback.change_summary;
+  const details = [
+    summary.added > 0 ? `${summary.added} added` : undefined,
+    summary.modified > 0 ? `${summary.modified} modified` : undefined,
+    summary.deleted > 0 ? `${summary.deleted} deleted` : undefined,
+    summary.mode_changed > 0 ? `${summary.mode_changed} mode changed` : undefined,
+  ].filter((detail): detail is string => detail !== undefined);
+  if (details.length > 0) {
+    markdown.appendMarkdown("\n\nFiles: ");
+    markdown.appendText(details.join(", "));
+  }
   return markdown;
 }
 

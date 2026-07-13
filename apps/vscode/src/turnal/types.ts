@@ -13,11 +13,13 @@ export interface SessionSummary {
   complete_turn_count: number;
   active_turn_count: number;
   event_count: number;
+  rollback_count: number;
   first_activity?: string;
   last_activity?: string;
   head?: SessionHead;
   latest_turn?: SessionTurn;
   turns?: SessionTurn[];
+  rollbacks: SessionRollback[];
   warnings?: string[];
 }
 
@@ -37,6 +39,25 @@ export interface SessionTurn {
   tool_names?: string[];
   first_activity?: string;
   last_activity?: string;
+}
+
+export interface SessionRollback {
+  sequence: number;
+  stream_id?: string;
+  turn_id?: number;
+  target: string;
+  phase?: string;
+  mode: string;
+  time: string;
+  change_summary: RollbackChangeSummary;
+}
+
+export interface RollbackChangeSummary {
+  total: number;
+  added: number;
+  modified: number;
+  deleted: number;
+  mode_changed: number;
 }
 
 export interface BlameResult {
@@ -173,6 +194,11 @@ export function turnsForSession(session: SessionSummary): SessionTurn[] {
 
 function parseSession(value: unknown, index: number): SessionSummary {
   const item = record(value, `sessions[${index}]`);
+  const rollbacks = item.rollbacks === undefined
+    ? []
+    : array(item.rollbacks, `sessions[${index}].rollbacks`).map((rollback, rollbackIndex) =>
+        parseSessionRollback(rollback, `sessions[${index}].rollbacks[${rollbackIndex}]`),
+      );
   return {
     session_id: string(item.session_id, `sessions[${index}].session_id`),
     status: string(item.status, `sessions[${index}].status`),
@@ -183,6 +209,7 @@ function parseSession(value: unknown, index: number): SessionSummary {
     complete_turn_count: number(item.complete_turn_count, `sessions[${index}].complete_turn_count`),
     active_turn_count: number(item.active_turn_count, `sessions[${index}].active_turn_count`),
     event_count: number(item.event_count, `sessions[${index}].event_count`),
+    rollback_count: optionalNumber(item.rollback_count, `sessions[${index}].rollback_count`) ?? rollbacks.length,
     first_activity: optionalString(item.first_activity, `sessions[${index}].first_activity`),
     last_activity: optionalString(item.last_activity, `sessions[${index}].last_activity`),
     head: item.head === undefined ? undefined : parseHead(item.head, index),
@@ -192,6 +219,7 @@ function parseSession(value: unknown, index: number): SessionSummary {
       : array(item.turns, `sessions[${index}].turns`).map((turn, turnIndex) =>
           parseTurn(turn, `sessions[${index}].turns[${turnIndex}]`),
         ),
+    rollbacks,
     warnings: optionalStrings(item.warnings, `sessions[${index}].warnings`),
   };
 }
@@ -217,6 +245,27 @@ function parseTurn(value: unknown, name: string): SessionTurn {
     tool_names: optionalStrings(item.tool_names, `${name}.tool_names`),
     first_activity: optionalString(item.first_activity, `${name}.first_activity`),
     last_activity: optionalString(item.last_activity, `${name}.last_activity`),
+  };
+}
+
+function parseSessionRollback(value: unknown, name: string): SessionRollback {
+  const item = record(value, name);
+  const summary = record(item.change_summary, `${name}.change_summary`);
+  return {
+    sequence: number(item.sequence, `${name}.sequence`),
+    stream_id: optionalString(item.stream_id, `${name}.stream_id`),
+    turn_id: optionalNumber(item.turn_id, `${name}.turn_id`),
+    target: string(item.target, `${name}.target`),
+    phase: optionalString(item.phase, `${name}.phase`),
+    mode: string(item.mode, `${name}.mode`),
+    time: string(item.time, `${name}.time`),
+    change_summary: {
+      total: number(summary.total, `${name}.change_summary.total`),
+      added: number(summary.added, `${name}.change_summary.added`),
+      modified: number(summary.modified, `${name}.change_summary.modified`),
+      deleted: number(summary.deleted, `${name}.change_summary.deleted`),
+      mode_changed: number(summary.mode_changed, `${name}.change_summary.mode_changed`),
+    },
   };
 }
 

@@ -61,8 +61,22 @@
         "icon": "$(discard)"
       },
       {
+        "command": "turnal.showRollbackDetails",
+        "title": "Turnal: Show Rollback Details",
+        "icon": "$(info)"
+      },
+      {
         "command": "turnal.toggleInlineBlame",
-        "title": "Turnal: Toggle Inline Blame",
+        "title": "Turnal: Toggle Inline Blame"
+      },
+      {
+        "command": "turnal.enableInlineBlame",
+        "title": "Turnal: Show Inline Blame",
+        "icon": "$(eye-closed)"
+      },
+      {
+        "command": "turnal.disableInlineBlame",
+        "title": "Turnal: Hide Inline Blame",
         "icon": "$(eye)"
       }
     ],
@@ -115,8 +129,13 @@
           "group": "navigation@2"
         },
         {
-          "command": "turnal.toggleInlineBlame",
-          "when": "view == turnal.sessions",
+          "command": "turnal.disableInlineBlame",
+          "when": "view == turnal.sessions && turnal.inlineBlameEnabled != false",
+          "group": "navigation@3"
+        },
+        {
+          "command": "turnal.enableInlineBlame",
+          "when": "view == turnal.sessions && turnal.inlineBlameEnabled == false",
           "group": "navigation@3"
         }
       ],
@@ -140,6 +159,25 @@
           "command": "turnal.rollbackBeforeTurn",
           "when": "view == turnal.sessions && viewItem == turnalTurnComplete",
           "group": "2_destructive@1"
+        },
+        {
+          "command": "turnal.showRollbackDetails",
+          "when": "view == turnal.sessions && viewItem == turnalRollback",
+          "group": "1_turnal@1"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "turnal.enableInlineBlame",
+          "when": "turnal.inlineBlameEnabled == false"
+        },
+        {
+          "command": "turnal.disableInlineBlame",
+          "when": "turnal.inlineBlameEnabled != false"
+        },
+        {
+          "command": "turnal.showRollbackDetails",
+          "when": "false"
         }
       ]
     },

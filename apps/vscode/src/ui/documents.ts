@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { TurnTarget } from "../model";
+import { RollbackTarget, TurnTarget } from "../model";
 import { DiffDocument } from "../turnal/types";
 
 interface NativeChangeResource {
@@ -31,6 +31,28 @@ export class VirtualDocumentStore implements vscode.TextDocumentContentProvider,
   async openTurnDetails(target: TurnTarget, content: string): Promise<void> {
     this.beginDocumentSet();
     const uri = this.virtualUri(target, `${target.title} — turn ${target.turnId}.txt`, "details", content);
+    const document = await vscode.workspace.openTextDocument(uri);
+    await vscode.window.showTextDocument(document, { preview: true, preserveFocus: false });
+  }
+
+  async openRollbackDetails(target: RollbackTarget, content: string): Promise<void> {
+    this.beginDocumentSet();
+    const documentTarget: TurnTarget = {
+      folderUri: target.folderUri,
+      folderName: target.folderName,
+      sessionId: target.sessionId,
+      turnId: target.rollback.turn_id ?? 0,
+      title: "Rollback",
+      status: "complete",
+      adapter: target.adapter,
+      time: target.rollback.time,
+    };
+    const uri = this.virtualUri(
+      documentTarget,
+      `Rollback ${target.rollback.sequence}.txt`,
+      `rollback-event-${target.rollback.sequence}`,
+      content,
+    );
     const document = await vscode.workspace.openTextDocument(uri);
     await vscode.window.showTextDocument(document, { preview: true, preserveFocus: false });
   }

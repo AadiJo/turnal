@@ -1,3 +1,5 @@
+import { SessionRollback } from "./turnal/types";
+
 export interface TurnTarget {
   folderUri: string;
   folderName: string;
@@ -7,6 +9,14 @@ export interface TurnTarget {
   status: string;
   adapter?: string;
   time?: string;
+}
+
+export interface RollbackTarget {
+  folderUri: string;
+  folderName: string;
+  sessionId: string;
+  adapter?: string;
+  rollback: SessionRollback;
 }
 
 export interface TurnFileTarget {
@@ -36,4 +46,20 @@ export function isTurnFileTarget(value: unknown): value is TurnFileTarget {
   }
   const candidate = value as Partial<TurnFileTarget>;
   return isTurnTarget(candidate.target) && typeof candidate.path === "string";
+}
+
+export function isRollbackTarget(value: unknown): value is RollbackTarget {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const candidate = value as Partial<RollbackTarget>;
+  return (
+    typeof candidate.folderUri === "string" &&
+    typeof candidate.folderName === "string" &&
+    typeof candidate.sessionId === "string" &&
+    typeof candidate.rollback === "object" &&
+    candidate.rollback !== null &&
+    typeof candidate.rollback.sequence === "number" &&
+    typeof candidate.rollback.target === "string"
+  );
 }

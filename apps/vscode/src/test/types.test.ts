@@ -24,6 +24,39 @@ test("parses session turns and accepts the older latest_turn fallback", () => {
     ],
   });
   assert.deepEqual(turnsForSession(result.sessions[0]).map((turn) => turn.turn_id), [1]);
+  assert.deepEqual(result.sessions[0].rollbacks, []);
+  assert.equal(result.sessions[0].rollback_count, 0);
+});
+
+test("parses first-class rollback activity from sessions", () => {
+  const result = parseSessionsResult({
+    total_sessions: 1,
+    sessions: [
+      {
+        session_id: "demo",
+        status: "complete",
+        turn_count: 1,
+        complete_turn_count: 1,
+        active_turn_count: 0,
+        event_count: 4,
+        rollback_count: 1,
+        rollbacks: [
+          {
+            sequence: 4,
+            turn_id: 1,
+            target: "demo:turn:1:pre",
+            phase: "pre",
+            mode: "checkpoint",
+            time: "2026-07-13T12:00:00Z",
+            change_summary: { total: 2, added: 0, modified: 1, deleted: 1, mode_changed: 0 },
+          },
+        ],
+      },
+    ],
+  });
+
+  assert.equal(result.sessions[0].rollbacks[0].target, "demo:turn:1:pre");
+  assert.equal(result.sessions[0].rollbacks[0].change_summary.total, 2);
 });
 
 test("rejects malformed blame json at the boundary", () => {

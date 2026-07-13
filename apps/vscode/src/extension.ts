@@ -15,6 +15,13 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.getConfiguration("turnal").get<string>("history.layout", "sessions") === "activity"
       ? "activity"
       : "sessions";
+  const getInlineBlameEnabled = (): boolean => {
+    const resource = vscode.window.activeTextEditor?.document.uri;
+    return vscode.workspace.getConfiguration("turnal", resource).get<boolean>("inlineBlame.enabled", true);
+  };
+  const syncInlineBlameContext = (): void => {
+    void vscode.commands.executeCommand("setContext", "turnal.inlineBlameEnabled", getInlineBlameEnabled());
+  };
 
   const setCliAvailability = (missing: boolean): void => {
     cliMissing = missing;
@@ -89,6 +96,31 @@ export function activate(context: vscode.ExtensionContext): void {
   };
   syncHistoryLayout(false);
 
+  const setInlineBlameEnabled = async (enabled: boolean): Promise<void> => {
+    const resource = vscode.window.activeTextEditor?.document.uri;
+    const configuration = vscode.workspace.getConfiguration("turnal", resource);
+    const inspection = configuration.inspect<boolean>("inlineBlame.enabled");
+    const folder = resource ? vscode.workspace.getWorkspaceFolder(resource) : undefined;
+    const target = folder && inspection?.workspaceFolderValue !== undefined
+      ? vscode.ConfigurationTarget.WorkspaceFolder
+      : vscode.workspace.workspaceFolders?.length
+        ? vscode.ConfigurationTarget.Workspace
+        : vscode.ConfigurationTarget.Global;
+    try {
+      await configuration.update("inlineBlame.enabled", enabled, target);
+      if (getInlineBlameEnabled() !== enabled) {
+        throw new Error("A more specific workspace setting is overriding this value.");
+      }
+      syncInlineBlameContext();
+      void vscode.window.showInformationMessage(`Turnal inline blame ${enabled ? "enabled" : "disabled"}.`);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      output.error(`Couldn’t save inline blame setting: ${detail}`);
+      void vscode.window.showErrorMessage(`Couldn’t save the Turnal inline blame setting: ${detail}`);
+    }
+  };
+  syncInlineBlameContext();
+
   const documents = new VirtualDocumentStore();
   const blame = new BlameController({ onBackgroundError: reportBackgroundError });
   const refresh = (): void => {
@@ -110,17 +142,11 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("turnal.groupBySession", () => setHistoryLayout("sessions")),
     vscode.commands.registerCommand("turnal.openTurnDiff", (target?: unknown) => commands.openDiff(target)),
     vscode.commands.registerCommand("turnal.showTurnDetails", (target?: unknown) => commands.showDetails(target)),
+    vscode.commands.registerCommand("turnal.showRollbackDetails", (target?: unknown) => commands.showRollbackDetails(target)),
     vscode.commands.registerCommand("turnal.rollbackBeforeTurn", (target?: unknown) => commands.rollbackBefore(target)),
-    vscode.commands.registerCommand("turnal.toggleInlineBlame", async () => {
-      const resource = vscode.window.activeTextEditor?.document.uri;
-      const configuration = vscode.workspace.getConfiguration("turnal", resource);
-      const enabled = configuration.get<boolean>("inlineBlame.enabled", true);
-      const target = vscode.workspace.workspaceFolders?.length
-        ? vscode.ConfigurationTarget.Workspace
-        : vscode.ConfigurationTarget.Global;
-      await configuration.update("inlineBlame.enabled", !enabled, target);
-      void vscode.window.showInformationMessage(`Turnal inline blame ${enabled ? "disabled" : "enabled"}.`);
-    }),
+    vscode.commands.registerCommand("turnal.enableInlineBlame", () => setInlineBlameEnabled(true)),
+    vscode.commands.registerCommand("turnal.disableInlineBlame", () => setInlineBlameEnabled(false)),
+    vscode.commands.registerCommand("turnal.toggleInlineBlame", () => setInlineBlameEnabled(!getInlineBlameEnabled())),
   );
 
   const watchers: vscode.FileSystemWatcher[] = [];
@@ -153,7 +179,11 @@ export function activate(context: vscode.ExtensionContext): void {
       if (event.affectsConfiguration("turnal.history.layout")) {
         syncHistoryLayout();
       }
+      if (event.affectsConfiguration("turnal.inlineBlame.enabled")) {
+        syncInlineBlameContext();
+      }
     }),
+    vscode.window.onDidChangeActiveTextEditor(syncInlineBlameContext),
     vscode.window.onDidChangeWindowState((state) => {
       if (state.focused) {
         refresh();

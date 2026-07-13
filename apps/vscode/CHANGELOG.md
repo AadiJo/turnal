@@ -6,3 +6,5 @@
 - Added the native sessions and turns Activity Bar view.
 - Added read-only turn diff and detail documents.
 - Added previewed, confirmed rollback to a turn’s pre-checkpoint.
+- Added first-class rollback events to grouped sessions and Recent Activity.
+- Made the inline-blame title icon reflect whether annotations are visible.

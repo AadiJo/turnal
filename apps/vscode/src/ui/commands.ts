@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { isTurnFileTarget, isTurnTarget, TurnTarget } from "../model";
+import { isRollbackTarget, isTurnFileTarget, isTurnTarget, RollbackTarget, TurnTarget } from "../model";
 import { RollbackPreview } from "../turnal/types";
 import { folderForTarget, cliForFolder } from "../workspaces";
 import { VirtualDocumentStore } from "./documents";
@@ -39,6 +39,14 @@ export class TurnCommands {
       const content = await cliForFolder(folder).show(target.sessionId, target.turnId);
       await this.options.documents.openTurnDetails(target, content);
     });
+  }
+
+  async showRollbackDetails(value?: unknown): Promise<void> {
+    const target = commandArgument(value);
+    if (!isRollbackTarget(target)) {
+      return;
+    }
+    await this.options.documents.openRollbackDetails(target, formatRollbackDetails(target));
   }
 
   async rollbackBefore(value?: unknown): Promise<void> {
@@ -217,8 +225,29 @@ function firstLine(value: string): string {
   return value.trim().split(/\r?\n/, 1)[0] || "Command failed";
 }
 
+function formatRollbackDetails(target: RollbackTarget): string {
+  const rollback = target.rollback;
+  const summary = rollback.change_summary;
+  return [
+    "Rollback",
+    "========",
+    "",
+    `Session: ${target.sessionId}`,
+    `Target:  ${rollback.target}`,
+    `Mode:    ${rollback.mode}`,
+    `Time:    ${rollback.time}`,
+    "",
+    `Files restored: ${summary.total}`,
+    `  added:       ${summary.added}`,
+    `  modified:    ${summary.modified}`,
+    `  deleted:     ${summary.deleted}`,
+    `  mode changed:${summary.mode_changed}`,
+    "",
+  ].join("\n");
+}
+
 function commandArgument(value: unknown): unknown {
-  if (isTurnTarget(value) || isTurnFileTarget(value)) {
+  if (isTurnTarget(value) || isTurnFileTarget(value) || isRollbackTarget(value)) {
     return value;
   }
   if (typeof value !== "object" || value === null || !("target" in value)) {
