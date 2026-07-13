@@ -26,17 +26,20 @@ export class VirtualDocumentStore implements vscode.TextDocumentContentProvider,
   }
 
   async openTurnDetails(target: TurnTarget, content: string): Promise<void> {
+    this.contents.clear();
     const uri = this.virtualUri(target, `${target.title} — turn ${target.turnId}.txt`, "details", content);
     const document = await vscode.workspace.openTextDocument(uri);
     await vscode.window.showTextDocument(document, { preview: true, preserveFocus: false });
   }
 
   async openTurnChanges(target: TurnTarget, folder: vscode.WorkspaceFolder, files: DiffDocument[], selectedPath?: string): Promise<void> {
+    this.contents.clear();
     const resources = files.map((file) => this.turnResource(target, folder, file));
     await this.openNativeChanges(`${target.title} · ${target.sessionId}`, resources, selectedPath);
   }
 
   async openRollbackChanges(target: TurnTarget, folder: vscode.WorkspaceFolder, files: DiffDocument[]): Promise<void> {
+    this.contents.clear();
     const resources = files.map((file) => this.rollbackResource(target, folder, file));
     await this.openNativeChanges(`Rollback preview · before ${target.title}`, resources);
   }

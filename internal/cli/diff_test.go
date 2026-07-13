@@ -47,6 +47,9 @@ func TestRollbackPreviewJSONComparesWorkspaceToPreTurn(t *testing.T) {
 	if result.Kind != "rollback" {
 		t.Fatalf("kind = %q, want rollback", result.Kind)
 	}
+	if result.WorkspaceTree == "" {
+		t.Fatal("rollback preview workspace_tree is empty")
+	}
 	files := make(map[string]diffDocumentJSON, len(result.Files))
 	for _, file := range result.Files {
 		files[file.Path] = file

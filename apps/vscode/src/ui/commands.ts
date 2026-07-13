@@ -49,10 +49,11 @@ export class TurnCommands {
     try {
       const folder = requiredFolder(target);
       const cli = cliForFolder(folder);
-      const preview = await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: "Turnal: Computing rollback preview…" },
-        () => cli.previewRollback(target.sessionId, target.turnId),
+      const rollbackDocuments = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: "Turnal: Preparing native change review…" },
+        () => cli.rollbackDocuments(target.sessionId, target.turnId),
       );
+      const preview = previewFromDocuments(rollbackDocuments.files);
 
       if (preview.no_changes) {
         void vscode.window.showInformationMessage(`Turnal: ${folder.name} already matches the state before turn #${target.turnId}.`);
@@ -77,10 +78,6 @@ export class TurnCommands {
         return;
       }
 
-      const rollbackDocuments = await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: "Turnal: Preparing native change review…" },
-        () => cli.rollbackDocuments(target.sessionId, target.turnId),
-      );
       await this.options.documents.openRollbackChanges(target, folder, rollbackDocuments.files);
 
       const choice = await vscode.window.showWarningMessage(
@@ -95,22 +92,19 @@ export class TurnCommands {
         return;
       }
 
-      const verified = await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: "Turnal: Verifying rollback preview…" },
-        () => cli.previewRollback(target.sessionId, target.turnId),
-      );
-      if (previewFingerprint(preview) !== previewFingerprint(verified)) {
-        const updatedDocuments = await cli.rollbackDocuments(target.sessionId, target.turnId);
-        await this.options.documents.openRollbackChanges(target, folder, updatedDocuments.files);
-        void vscode.window.showWarningMessage(
-          "Turnal: The workspace changed after the preview. Review the updated plan and try again.",
-        );
+      const newlyDirty = affectedDirtyDocuments(folder, preview);
+      if (newlyDirty.length > 0) {
+        void vscode.window.showWarningMessage("Turnal: An affected editor changed after the preview. Save it and try again.");
         return;
+      }
+
+      if (!rollbackDocuments.workspace_tree) {
+        throw new Error("The Turnal CLI did not return a rollback workspace fingerprint. Update the CLI and try again.");
       }
 
       const output = await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: "Turnal: Rolling back…" },
-        () => cli.rollback(target.sessionId, target.turnId),
+        () => cli.rollback(target.sessionId, target.turnId, rollbackDocuments.workspace_tree),
       );
       this.options.output.appendLine(output.trim());
       this.options.afterMutation();
@@ -205,11 +199,18 @@ function confirmationDetail(target: TurnTarget, preview: RollbackPreview): strin
   ].join("\n");
 }
 
-function previewFingerprint(preview: RollbackPreview): string {
-  return preview.changes
-    .map((change) => `${change.action}:${change.path}`)
-    .sort()
-    .join("\n");
+function previewFromDocuments(files: import("../turnal/types").DiffDocument[]): RollbackPreview {
+  const actionForStatus: Record<string, RollbackPreview["changes"][number]["action"]> = {
+    A: "added",
+    M: "modified",
+    D: "deleted",
+    T: "mode-changed",
+  };
+  const changes = files.map((file) => ({
+    action: actionForStatus[file.status] ?? "modified",
+    path: file.path,
+  }));
+  return { raw: "", changes, no_changes: changes.length === 0 };
 }
 
 function firstLine(value: string): string {

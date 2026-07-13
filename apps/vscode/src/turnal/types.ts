@@ -82,6 +82,7 @@ export interface DiffDocumentsResult {
   kind: "turn" | "rollback";
   session_id: string;
   turn_id: number;
+  workspace_tree?: string;
   files: DiffDocument[];
 }
 
@@ -158,6 +159,7 @@ export function parseDiffDocumentsResult(value: unknown): DiffDocumentsResult {
     kind,
     session_id: string(result.session_id, "session_id"),
     turn_id: number(result.turn_id, "turn_id"),
+    workspace_tree: optionalString(result.workspace_tree, "workspace_tree"),
     files: array(result.files, "files").map((item, index) => parseDiffDocument(item, index)),
   };
 }

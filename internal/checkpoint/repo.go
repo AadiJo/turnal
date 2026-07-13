@@ -175,8 +175,9 @@ type RestoreChange struct {
 }
 
 type RestorePlan struct {
-	TargetCommit primitives.CommitSHA `json:"target_commit"`
-	Changes      []RestoreChange      `json:"changes"`
+	TargetCommit  primitives.CommitSHA `json:"target_commit"`
+	WorkspaceTree string               `json:"workspace_tree,omitempty"`
+	Changes       []RestoreChange      `json:"changes"`
 }
 
 type MaterializeOptions struct {
@@ -1357,7 +1358,7 @@ func (repo *Repo) PlanRestoreCommit(commit primitives.CommitSHA) (RestorePlan, e
 		return RestorePlan{}, err
 	}
 	changes = filterSecretDeniedChanges(changes, denyGlobs)
-	return RestorePlan{TargetCommit: parsedCommit, Changes: changes}, nil
+	return RestorePlan{TargetCommit: parsedCommit, WorkspaceTree: currentTree, Changes: changes}, nil
 }
 
 func (repo *Repo) RestoreCommit(commit primitives.CommitSHA) error {

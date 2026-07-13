@@ -32,10 +32,10 @@ test("forces the extension rollback onto checkpoint-only mode", async () => {
   };
   const cli = new TurnalCli("/workspace", "turnal", execute);
   await cli.previewRollback("demo", 2);
-  await cli.rollback("demo", 2);
+  await cli.rollback("demo", 2, "abc123");
   assert.deepEqual(calls, [
     ["rollback", "--to", "demo:turn:2:pre", "--workspace-git=false", "--dry-run"],
-    ["rollback", "--to", "demo:turn:2:pre", "--workspace-git=false"],
+    ["rollback", "--to", "demo:turn:2:pre", "--workspace-git=false", "--expect-workspace-tree", "abc123"],
   ]);
 });
 
@@ -48,6 +48,7 @@ test("requests CLI-backed documents for native turn and rollback diffs", async (
         kind: args.includes("--rollback-preview") ? "rollback" : "turn",
         session_id: "demo",
         turn_id: 3,
+        workspace_tree: args.includes("--rollback-preview") ? "preview-tree" : undefined,
         files: [],
       }),
       stderr: "",
@@ -55,7 +56,9 @@ test("requests CLI-backed documents for native turn and rollback diffs", async (
   };
   const cli = new TurnalCli("/workspace", "turnal", execute);
   assert.equal((await cli.diffDocuments("demo", 3)).kind, "turn");
-  assert.equal((await cli.rollbackDocuments("demo", 3)).kind, "rollback");
+  const rollback = await cli.rollbackDocuments("demo", 3);
+  assert.equal(rollback.kind, "rollback");
+  assert.equal(rollback.workspace_tree, "preview-tree");
   assert.deepEqual(calls, [
     ["diff", "demo:3", "--json"],
     ["diff", "demo:3", "--json", "--rollback-preview"],

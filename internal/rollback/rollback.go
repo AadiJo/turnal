@@ -31,10 +31,11 @@ type Engine struct {
 }
 
 type Request struct {
-	Target       primitives.TargetRef
-	Resolved     *ResolvedTarget
-	DryRun       bool
-	WorkspaceGit bool
+	Target                primitives.TargetRef
+	Resolved              *ResolvedTarget
+	DryRun                bool
+	WorkspaceGit          bool
+	ExpectedWorkspaceTree string
 }
 
 type ResolvedTarget struct {
@@ -429,6 +430,9 @@ func (engine Engine) runCheckpointUnlocked(request Request) (Result, error) {
 	plan, err := engine.Repo.PlanRestoreCommit(target.Commit)
 	if err != nil {
 		return Result{}, err
+	}
+	if request.ExpectedWorkspaceTree != "" && plan.WorkspaceTree != request.ExpectedWorkspaceTree {
+		return Result{}, fmt.Errorf("workspace changed since rollback preview; review the updated plan and try again")
 	}
 
 	result := Result{Target: target, Mode: primitives.RollbackModeCheckpoint, Plan: plan, DryRun: request.DryRun}

@@ -16,10 +16,11 @@ import (
 const maxDiffDocumentBytes = 4 << 20
 
 type diffDocumentsOutput struct {
-	Kind      string             `json:"kind"`
-	SessionID string             `json:"session_id"`
-	TurnID    uint64             `json:"turn_id"`
-	Files     []diffDocumentJSON `json:"files"`
+	Kind          string             `json:"kind"`
+	SessionID     string             `json:"session_id"`
+	TurnID        uint64             `json:"turn_id"`
+	WorkspaceTree string             `json:"workspace_tree,omitempty"`
+	Files         []diffDocumentJSON `json:"files"`
 }
 
 type diffDocumentJSON struct {
@@ -247,10 +248,11 @@ func writeRollbackDiffJSON(
 		return err
 	}
 	output := diffDocumentsOutput{
-		Kind:      "rollback",
-		SessionID: sessionID.String(),
-		TurnID:    turnID.Uint64(),
-		Files:     make([]diffDocumentJSON, 0, len(plan.Changes)),
+		Kind:          "rollback",
+		SessionID:     sessionID.String(),
+		TurnID:        turnID.Uint64(),
+		WorkspaceTree: plan.WorkspaceTree,
+		Files:         make([]diffDocumentJSON, 0, len(plan.Changes)),
 	}
 	for _, change := range plan.Changes {
 		after, afterExists, err := repo.CommitFileBytesIfExists(targetCommit, change.Path)

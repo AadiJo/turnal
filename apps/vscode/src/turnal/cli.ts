@@ -86,9 +86,13 @@ export class TurnalCli {
     return parseRollbackPreview(output.stdout);
   }
 
-  async rollback(sessionId: string, turnId: number): Promise<string> {
+  async rollback(sessionId: string, turnId: number, expectedWorkspaceTree?: string): Promise<string> {
+    const args = ["rollback", "--to", rollbackTarget(sessionId, turnId), "--workspace-git=false"];
+    if (expectedWorkspaceTree) {
+      args.push("--expect-workspace-tree", expectedWorkspaceTree);
+    }
     return (
-      await this.run(["rollback", "--to", rollbackTarget(sessionId, turnId), "--workspace-git=false"])
+      await this.run(args)
     ).stdout;
   }
 
