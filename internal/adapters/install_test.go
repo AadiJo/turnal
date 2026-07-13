@@ -3,9 +3,14 @@ package adapters
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
 	"testing"
 
+	"github.com/AadiJo/turnal/internal/fsidentity"
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -118,6 +123,114 @@ command = "echo keep"
 	postToolUseCommands := hookCommands(t, hooks["PostToolUse"])
 	if countCommand(postToolUseCommands, "echo keep") != 1 {
 		t.Fatalf("existing PostToolUse hook not preserved: %#v", postToolUseCommands)
+	}
+}
+
+func TestCodexHookLifecycleUsesRootCheckoutFromLinkedWorktree(t *testing.T) {
+	rootCheckout, linkedWorktree := createAdapterLinkedWorktree(t)
+	installed, err := InstallCodexHookWithOptions(linkedWorktree, InstallOptions{HookCommand: "turnal"})
+	if err != nil {
+		t.Fatalf("install linked-worktree Codex hooks: %v", err)
+	}
+	rootConfig := filepath.Join(rootCheckout, ".codex", "config.toml")
+	if !fsidentity.Same(installed.ConfigPath, rootConfig) {
+		t.Fatalf("installed config = %q, want %q", installed.ConfigPath, rootConfig)
+	}
+	if _, err := os.Stat(filepath.Join(linkedWorktree, ".codex", "config.toml")); !os.IsNotExist(err) {
+		t.Fatalf("linked worktree config exists or could not be checked: %v", err)
+	}
+	if health := inspectCodexHooks(linkedWorktree, "turnal"); !health.OK() || !fsidentity.Same(health.ConfigPath, rootConfig) {
+		t.Fatalf("linked-worktree health = %#v", health)
+	}
+
+	removed, err := UninstallCodexHookWithOptions(linkedWorktree, UninstallOptions{})
+	if err != nil {
+		t.Fatalf("uninstall linked-worktree Codex hooks: %v", err)
+	}
+	if !fsidentity.Same(removed.ConfigPath, rootConfig) || removed.RemovedCommands != 4 {
+		t.Fatalf("uninstall result = %#v", removed)
+	}
+	data, err := os.ReadFile(rootConfig)
+	if err != nil {
+		t.Fatalf("read root-checkout config: %v", err)
+	}
+	if strings.Contains(string(data), "turnal codex-hook") {
+		t.Fatalf("root-checkout Turnal hooks remain:\n%s", data)
+	}
+}
+
+func TestCodexHookInstallRejectsFabricatedLinkedWorktreeMetadata(t *testing.T) {
+	workspace := t.TempDir()
+	outside := t.TempDir()
+	fakeGitDir := filepath.Join(outside, ".git", "worktrees", "crafted")
+	if err := os.MkdirAll(fakeGitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, ".git"), []byte("gitdir: "+fakeGitDir+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fakeGitDir, "commondir"), []byte("../..\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fakeGitDir, "gitdir"), []byte(filepath.Join(workspace, ".git")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	installed, err := InstallCodexHookWithOptions(workspace, InstallOptions{HookCommand: "turnal"})
+	if err != nil {
+		t.Fatalf("install with fabricated metadata: %v", err)
+	}
+	wantConfig := filepath.Join(workspace, ".codex", "config.toml")
+	if installed.ConfigPath != wantConfig {
+		t.Fatalf("installed config = %q, want local %q", installed.ConfigPath, wantConfig)
+	}
+	if _, err := os.Stat(filepath.Join(outside, ".codex", "config.toml")); !os.IsNotExist(err) {
+		t.Fatalf("outside config exists or could not be checked: %v", err)
+	}
+}
+
+func TestEffectiveHookRootRejectsMismatchedWorktreeBacklink(t *testing.T) {
+	_, linkedWorktree := createAdapterLinkedWorktree(t)
+	gitDir, err := readGitPathFile(filepath.Join(linkedWorktree, ".git"), linkedWorktree, "gitdir:")
+	if err != nil {
+		t.Fatalf("read linked gitdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "gitdir"), []byte(filepath.Join(t.TempDir(), ".git")+"\n"), 0o644); err != nil {
+		t.Fatalf("replace worktree backlink: %v", err)
+	}
+	if got := EffectiveHookRoot(linkedWorktree, TargetCodex); got != linkedWorktree {
+		t.Fatalf("effective root = %q, want local fallback %q", got, linkedWorktree)
+	}
+}
+
+func createAdapterLinkedWorktree(t *testing.T) (string, string) {
+	t.Helper()
+	requireGit(t)
+	parent := t.TempDir()
+	rootCheckout := filepath.Join(parent, "main")
+	linkedWorktree := filepath.Join(parent, "linked")
+	if err := os.MkdirAll(rootCheckout, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runAdapterTestGit(t, rootCheckout, "init")
+	runAdapterTestGit(t, rootCheckout, "config", "user.email", "turnal@example.test")
+	runAdapterTestGit(t, rootCheckout, "config", "user.name", "Turnal Test")
+	if err := os.WriteFile(filepath.Join(rootCheckout, "tracked.txt"), []byte("tracked\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runAdapterTestGit(t, rootCheckout, "add", "tracked.txt")
+	runAdapterTestGit(t, rootCheckout, "commit", "-m", "initial")
+	runAdapterTestGit(t, rootCheckout, "worktree", "add", "-b", "adapter-linked-test", linkedWorktree)
+	return rootCheckout, linkedWorktree
+}
+
+func runAdapterTestGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	command := exec.Command("git", args...)
+	command.Dir = dir
+	command.Env = cleanHookGitEnvironment(os.Environ())
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
 	}
 }
 
@@ -269,7 +382,7 @@ func TestUninstallHooksDryRunDoesNotWriteConfig(t *testing.T) {
 	}
 }
 
-func TestInstallHooksBackUpInvalidConfig(t *testing.T) {
+func TestInstallHooksRejectInvalidConfigWithoutReplacingIt(t *testing.T) {
 	t.Setenv("TURNAL_HOOK_COMMAND", "turnal")
 
 	root := t.TempDir()
@@ -282,12 +395,11 @@ func TestInstallHooksBackUpInvalidConfig(t *testing.T) {
 	if err := os.WriteFile(claudeSettings, []byte("{broken\n"), 0o644); err != nil {
 		t.Fatalf("write settings: %v", err)
 	}
-	claudeResult, err := InstallClaudeHook(root)
-	if err != nil {
-		t.Fatalf("InstallClaudeHook: %v", err)
+	if _, err := InstallClaudeHook(root); err == nil {
+		t.Fatal("InstallClaudeHook accepted invalid settings")
 	}
-	if claudeResult.BackupPath != claudeSettings+".backup" {
-		t.Fatalf("Claude backup = %q, want %q", claudeResult.BackupPath, claudeSettings+".backup")
+	if data, err := os.ReadFile(claudeSettings); err != nil || string(data) != "{broken\n" {
+		t.Fatalf("Claude settings changed: data=%q err=%v", data, err)
 	}
 
 	codexDir := filepath.Join(root, ".codex")
@@ -298,12 +410,30 @@ func TestInstallHooksBackUpInvalidConfig(t *testing.T) {
 	if err := os.WriteFile(codexConfig, []byte("[broken\n"), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-	codexResult, err := InstallCodexHook(root)
-	if err != nil {
-		t.Fatalf("InstallCodexHook: %v", err)
+	if _, err := InstallCodexHook(root); err == nil {
+		t.Fatal("InstallCodexHook accepted invalid config")
 	}
-	if codexResult.BackupPath != codexConfig+".backup" {
-		t.Fatalf("Codex backup = %q, want %q", codexResult.BackupPath, codexConfig+".backup")
+	if data, err := os.ReadFile(codexConfig); err != nil || string(data) != "[broken\n" {
+		t.Fatalf("Codex config changed: data=%q err=%v", data, err)
+	}
+}
+
+func TestInstallHooksRejectUnexpectedSectionShapes(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".codex"), 0o755); err != nil {
+		t.Fatalf("mkdir .codex: %v", err)
+	}
+	path := filepath.Join(root, ".codex", "config.toml")
+	original := []byte("hooks = \"unexpected\"\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if _, err := InstallCodexHook(root); err == nil || !strings.Contains(err.Error(), "must be an object/table") {
+		t.Fatalf("InstallCodexHook error = %v, want schema error", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || string(after) != string(original) {
+		t.Fatalf("unexpected-shape config changed: data=%q err=%v", after, err)
 	}
 }
 
@@ -322,6 +452,92 @@ func TestInstallHooksCanUseConfiguredCommandPrefix(t *testing.T) {
 	commands := hookCommands(t, config["hooks"].(map[string]any)["Stop"])
 	if countCommand(commands, "/tmp/turnal-live codex-hook") != 1 {
 		t.Fatalf("configured command not used: %#v", commands)
+	}
+}
+
+func TestInstallCodexHookDoesNotRewriteSemanticallyCurrentConfig(t *testing.T) {
+	root := t.TempDir()
+	if _, err := InstallCodexHook(root); err != nil {
+		t.Fatalf("initial InstallCodexHook: %v", err)
+	}
+	path := filepath.Join(root, ".codex", "config.toml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	withComment := append([]byte("# operator comment must survive\n"), data...)
+	if err := os.WriteFile(path, withComment, 0o600); err != nil {
+		t.Fatalf("write commented config: %v", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatalf("chmod commented config: %v", err)
+	}
+
+	if _, err := InstallCodexHook(root); err != nil {
+		t.Fatalf("second InstallCodexHook: %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config after reinstall: %v", err)
+	}
+	if string(after) != string(withComment) {
+		t.Fatalf("idempotent install rewrote config:\nbefore=%s\nafter=%s", withComment, after)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat config: %v", err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("config mode = %o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestUninstallCodexHookDisablesFeatureWhenNoHooksRemain(t *testing.T) {
+	root := t.TempDir()
+	if _, err := InstallCodexHook(root); err != nil {
+		t.Fatalf("InstallCodexHook: %v", err)
+	}
+	if _, err := UninstallCodexHook(root); err != nil {
+		t.Fatalf("UninstallCodexHook: %v", err)
+	}
+	var config map[string]any
+	readTOMLFile(t, filepath.Join(root, ".codex", "config.toml"), &config)
+	if _, ok := config["hooks"]; ok {
+		t.Fatalf("hooks section remains after uninstall: %#v", config["hooks"])
+	}
+	if features, ok := config["features"].(map[string]any); ok && features["hooks"] == true {
+		t.Fatalf("hooks feature remains enabled after uninstall: %#v", features)
+	}
+}
+
+func TestConcurrentCodexHookInstallsRemainValidAndDeduplicated(t *testing.T) {
+	root := t.TempDir()
+	const workers = 8
+	var wait sync.WaitGroup
+	errorsByWorker := make(chan error, workers)
+	for index := 0; index < workers; index++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			_, err := InstallCodexHook(root)
+			errorsByWorker <- err
+		}()
+	}
+	wait.Wait()
+	close(errorsByWorker)
+	for err := range errorsByWorker {
+		if err != nil {
+			t.Fatalf("concurrent InstallCodexHook: %v", err)
+		}
+	}
+	var config map[string]any
+	readTOMLFile(t, filepath.Join(root, ".codex", "config.toml"), &config)
+	hooks := config["hooks"].(map[string]any)
+	for _, eventName := range []string{"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"} {
+		commands := hookCommands(t, hooks[eventName])
+		if countCommand(commands, codexHookCommand("turnal")) != 1 {
+			t.Fatalf("%s commands after concurrent install = %#v", eventName, commands)
+		}
 	}
 }
 

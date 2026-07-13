@@ -2,17 +2,20 @@ package events
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/AadiJo/turnal/internal/filelock"
 	"github.com/AadiJo/turnal/internal/primitives"
 )
 
@@ -170,8 +173,11 @@ func (log Log) Append(input AppendInput) (Event, error) {
 		}
 	}
 
-	if err := os.MkdirAll(log.Dir, 0o755); err != nil {
+	if err := os.MkdirAll(log.Dir, 0o700); err != nil {
 		return Event{}, fmt.Errorf("create event log dir: %w", err)
+	}
+	if err := os.Chmod(log.Dir, 0o700); err != nil {
+		return Event{}, fmt.Errorf("secure event log dir: %w", err)
 	}
 
 	version := 1
@@ -197,31 +203,47 @@ func (log Log) Append(input AppendInput) (Event, error) {
 			return Event{}, err
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return Event{}, fmt.Errorf("create event stream dir: %w", err)
 	}
-	lockDir := path + ".lock"
-	if err := acquireDirLock(lockDir); err != nil {
+	lock, err := filelock.Acquire(path+".lock", 30*time.Second)
+	if err != nil {
 		return Event{}, err
 	}
-	defer func() { _ = os.Remove(lockDir) }()
+	defer func() { _ = lock.Release() }()
 
 	if _, err := recoverTrailingPartialPath(path); err != nil {
 		return Event{}, err
 	}
 
-	events, err := log.readPath(sessionID, path, streamID)
-	if err != nil {
-		return Event{}, err
+	var events []Event
+	var last Event
+	var hasLast bool
+	if input.BuildPayload != nil {
+		events, err = log.readPath(sessionID, path, streamID)
+		if err != nil {
+			return Event{}, err
+		}
+		if len(events) > 0 {
+			last, hasLast = events[len(events)-1], true
+		}
+	} else {
+		last, hasLast, err = log.readLastForAppend(sessionID, path, streamID)
+		if err != nil {
+			return Event{}, err
+		}
 	}
-
-	nextSeq, err := primitives.NewEventSeq(uint64(len(events)) + 1)
+	nextNumber := uint64(1)
+	if hasLast {
+		nextNumber = last.Seq.Uint64() + 1
+	}
+	nextSeq, err := primitives.NewEventSeq(nextNumber)
 	if err != nil {
 		return Event{}, err
 	}
 	prevHash := GenesisHash
-	if len(events) > 0 {
-		prevHash = events[len(events)-1].Hash
+	if hasLast {
+		prevHash = last.Hash
 	}
 
 	if input.BuildPayload != nil {
@@ -265,17 +287,28 @@ func (log Log) Append(input AppendInput) (Event, error) {
 	}
 	line = append(line, '\n')
 
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return Event{}, fmt.Errorf("open event log: %w", err)
 	}
 	defer func() { _ = file.Close() }()
+	if err := file.Chmod(0o600); err != nil {
+		return Event{}, fmt.Errorf("secure event log: %w", err)
+	}
 
 	if _, err := file.Write(line); err != nil {
 		return Event{}, fmt.Errorf("append event log: %w", err)
 	}
 	if err := file.Sync(); err != nil {
 		return Event{}, fmt.Errorf("sync event log: %w", err)
+	}
+	if err := log.writeTailState(path, event); err != nil {
+		return Event{}, err
+	}
+	if event.SourceID != "" {
+		if err := log.writeSourceMarker(event); err != nil {
+			return Event{}, err
+		}
 	}
 
 	return event, nil
@@ -314,16 +347,124 @@ func (log Log) FindSourceID(sessionID primitives.SessionID, sourceID string) (Ev
 	if sourceID == "" {
 		return Event{}, false, nil
 	}
-	events, err := log.Read(sessionID)
+	parsedSessionID, err := primitives.ParseSessionID(sessionID.String())
 	if err != nil {
 		return Event{}, false, err
 	}
-	for _, event := range events {
+	markerPath := log.sourceMarkerPath(parsedSessionID, sourceID)
+	if data, err := os.ReadFile(markerPath); err == nil {
+		var marker sourceMarker
+		if err := json.Unmarshal(data, &marker); err != nil || marker.Version != 2 || marker.Generation == "" {
+			_ = os.Remove(markerPath)
+		} else if marker.Event.SessionID != parsedSessionID || marker.Event.SourceID != sourceID {
+			_ = os.Remove(markerPath)
+		} else if state, current, stateErr := log.currentTailState(marker.Event); stateErr != nil {
+			return Event{}, false, stateErr
+		} else if current && marker.Generation == state.Generation && marker.Event.Seq.Uint64() <= state.Sequence && marker.Event.Hash.String() != "" {
+			return marker.Event, true, nil
+		} else {
+			// A marker is derived state. Never trust it after its source log has
+			// been truncated, replaced, or otherwise diverged from tail state.
+			_ = os.Remove(markerPath)
+		}
+	} else if !os.IsNotExist(err) {
+		return Event{}, false, fmt.Errorf("read source marker: %w", err)
+	}
+	events, err := log.Read(parsedSessionID)
+	if err != nil {
+		return Event{}, false, err
+	}
+	for index := len(events) - 1; index >= 0; index-- {
+		event := events[index]
 		if event.SourceID == sourceID {
+			if err := log.refreshTailState(event); err != nil {
+				return Event{}, false, err
+			}
+			if err := log.writeSourceMarker(event); err != nil {
+				return Event{}, false, err
+			}
 			return event, true, nil
 		}
 	}
 	return Event{}, false, nil
+}
+
+type sourceMarker struct {
+	Version    int    `json:"version"`
+	Generation string `json:"log_generation"`
+	Event      Event  `json:"event"`
+}
+
+func (log Log) currentTailState(event Event) (tailState, bool, error) {
+	eventPath := log.eventPath(event)
+	info, err := os.Stat(eventPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return tailState{}, false, nil
+		}
+		return tailState{}, false, fmt.Errorf("stat event log for source marker: %w", err)
+	}
+	data, err := os.ReadFile(log.tailStatePath(event.SessionID, event.StreamID))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return tailState{}, false, nil
+		}
+		return tailState{}, false, fmt.Errorf("read event tail state for source marker: %w", err)
+	}
+	var state tailState
+	if err := json.Unmarshal(data, &state); err != nil || state.Version != 2 || state.Generation == "" {
+		return tailState{}, false, nil
+	}
+	if state.Size != info.Size() || state.ModTime != info.ModTime().UnixNano() {
+		return tailState{}, false, nil
+	}
+	return state, true, nil
+}
+
+func (log Log) sourceMarkerPath(sessionID primitives.SessionID, sourceID string) string {
+	hash := sha256.Sum256([]byte(sourceID))
+	metadataLogDir := filepath.Dir(log.Dir)
+	return filepath.Join(metadataLogDir, "source", sessionID.String(), hex.EncodeToString(hash[:])+".json")
+}
+
+func (log Log) writeSourceMarker(event Event) error {
+	path := log.sourceMarkerPath(event.SessionID, event.SourceID)
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create event source marker dir: %w", err)
+	}
+	state, current, err := log.currentTailState(event)
+	if err != nil {
+		return err
+	}
+	if !current {
+		return fmt.Errorf("write event source marker: event tail state is unavailable or stale")
+	}
+	data, err := json.Marshal(sourceMarker{Version: 2, Generation: state.Generation, Event: event})
+	if err != nil {
+		return fmt.Errorf("marshal event source marker: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, ".source-marker-*")
+	if err != nil {
+		return fmt.Errorf("create event source marker: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("secure event source marker: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write event source marker: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close event source marker: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("install event source marker: %w", err)
+	}
+	return nil
 }
 
 func (log Log) RecoverTrailingPartial(sessionID primitives.SessionID) (bool, error) {
@@ -344,25 +485,239 @@ func (log Log) RecoverTrailingPartial(sessionID primitives.SessionID) (bool, err
 }
 
 func recoverTrailingPartialPath(path string) (bool, error) {
-	data, err := os.ReadFile(path)
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("read event log: %w", err)
+		return false, fmt.Errorf("open event log for recovery: %w", err)
 	}
-	if len(data) == 0 || data[len(data)-1] == '\n' {
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		return false, fmt.Errorf("stat event log for recovery: %w", err)
+	}
+	if info.Size() == 0 {
 		return false, nil
 	}
-
-	truncateAt := int64(0)
-	if lastNewline := bytes.LastIndexByte(data, '\n'); lastNewline >= 0 {
-		truncateAt = int64(lastNewline + 1)
+	last := []byte{0}
+	if _, err := file.ReadAt(last, info.Size()-1); err != nil {
+		return false, fmt.Errorf("read event log tail for recovery: %w", err)
 	}
-	if err := os.Truncate(path, truncateAt); err != nil {
+	if last[0] == '\n' {
+		return false, nil
+	}
+	truncateAt := int64(0)
+	const chunkSize = int64(64 * 1024)
+	for end := info.Size(); end > 0; {
+		start := end - chunkSize
+		if start < 0 {
+			start = 0
+		}
+		chunk := make([]byte, end-start)
+		if _, err := file.ReadAt(chunk, start); err != nil && err != io.EOF {
+			return false, fmt.Errorf("scan event log tail for recovery: %w", err)
+		}
+		if index := bytes.LastIndexByte(chunk, '\n'); index >= 0 {
+			truncateAt = start + int64(index) + 1
+			break
+		}
+		end = start
+	}
+	if err := file.Truncate(truncateAt); err != nil {
 		return false, fmt.Errorf("recover event log trailing partial line: %w", err)
 	}
+	if err := file.Sync(); err != nil {
+		return false, fmt.Errorf("sync recovered event log: %w", err)
+	}
 	return true, nil
+}
+
+func (log Log) readLast(sessionID primitives.SessionID, path string, expectedStreamID primitives.EventStreamID) (Event, bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return Event{}, false, nil
+		}
+		return Event{}, false, fmt.Errorf("open event log tail: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		return Event{}, false, fmt.Errorf("stat event log tail: %w", err)
+	}
+	if info.Size() == 0 {
+		return Event{}, false, nil
+	}
+	const maxEventRecordBytes = int64(64 << 20)
+	readSize := info.Size()
+	if readSize > maxEventRecordBytes+2 {
+		readSize = maxEventRecordBytes + 2
+	}
+	data := make([]byte, readSize)
+	if _, err := file.ReadAt(data, info.Size()-readSize); err != nil && err != io.EOF {
+		return Event{}, false, fmt.Errorf("read event log tail: %w", err)
+	}
+	if data[len(data)-1] != '\n' {
+		return Event{}, false, fmt.Errorf("event log invariant failed for session %s: trailing partial line", sessionID)
+	}
+	data = bytes.TrimSuffix(data, []byte{'\n'})
+	if index := bytes.LastIndexByte(data, '\n'); index >= 0 {
+		data = data[index+1:]
+	} else if info.Size() > readSize {
+		return Event{}, false, fmt.Errorf("event log record exceeds %d-byte limit", maxEventRecordBytes)
+	}
+	event, err := parseEventLine(data)
+	if err != nil {
+		return Event{}, false, fmt.Errorf("event log tail invariant failed for session %s: %w", sessionID, err)
+	}
+	if event.SessionID != sessionID {
+		return Event{}, false, fmt.Errorf("event log tail session %s does not match file session %s", event.SessionID, sessionID)
+	}
+	if event.StreamID != expectedStreamID {
+		return Event{}, false, fmt.Errorf("event log tail stream %s does not match file stream %s", event.StreamID, expectedStreamID)
+	}
+	recomputed, err := eventHash(event)
+	if err != nil {
+		return Event{}, false, err
+	}
+	if event.Hash != recomputed {
+		return Event{}, false, fmt.Errorf("event log tail hash %s does not match recomputed %s", event.Hash, recomputed)
+	}
+	return event, true, nil
+}
+
+type tailState struct {
+	Version    int    `json:"version"`
+	Generation string `json:"generation"`
+	Sequence   uint64 `json:"sequence"`
+	Hash       string `json:"hash"`
+	Size       int64  `json:"size"`
+	ModTime    int64  `json:"mod_time_unix_nano"`
+}
+
+func (log Log) eventPath(event Event) string {
+	if event.StreamID != "" {
+		return log.streamPath(event.SessionID, event.StreamID)
+	}
+	return log.sessionPath(event.SessionID)
+}
+
+func (log Log) refreshTailState(event Event) error {
+	path := log.eventPath(event)
+	events, err := log.readPath(event.SessionID, path, event.StreamID)
+	if err != nil {
+		return err
+	}
+	if len(events) == 0 {
+		return fmt.Errorf("refresh event tail state: source stream is empty")
+	}
+	return log.writeTailState(path, events[len(events)-1])
+}
+
+func (log Log) tailStatePath(sessionID primitives.SessionID, streamID primitives.EventStreamID) string {
+	if streamID == "" {
+		return filepath.Join(filepath.Dir(log.Dir), "tail", sessionID.String()+".json")
+	}
+	return filepath.Join(filepath.Dir(log.Dir), "tail", sessionID.String(), streamID.String()+".json")
+}
+
+func (log Log) readLastForAppend(sessionID primitives.SessionID, eventPath string, streamID primitives.EventStreamID) (Event, bool, error) {
+	info, err := os.Stat(eventPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return Event{}, false, nil
+		}
+		return Event{}, false, fmt.Errorf("stat event log append state: %w", err)
+	}
+	data, stateErr := os.ReadFile(log.tailStatePath(sessionID, streamID))
+	if stateErr == nil {
+		var state tailState
+		if json.Unmarshal(data, &state) == nil && state.Version == 2 && state.Generation != "" && state.Size == info.Size() && state.ModTime == info.ModTime().UnixNano() {
+			last, ok, err := log.readLast(sessionID, eventPath, streamID)
+			if err != nil {
+				return Event{}, false, err
+			}
+			if !ok && state.Sequence == 0 {
+				return Event{}, false, nil
+			}
+			if ok && last.Seq.Uint64() == state.Sequence && last.Hash.String() == state.Hash {
+				return last, true, nil
+			}
+		}
+	} else if !os.IsNotExist(stateErr) {
+		return Event{}, false, fmt.Errorf("read event log append state: %w", stateErr)
+	}
+
+	events, err := log.readPath(sessionID, eventPath, streamID)
+	if err != nil {
+		return Event{}, false, err
+	}
+	if len(events) == 0 {
+		return Event{}, false, nil
+	}
+	last := events[len(events)-1]
+	if err := log.writeTailState(eventPath, last); err != nil {
+		return Event{}, false, err
+	}
+	return last, true, nil
+}
+
+func (log Log) writeTailState(eventPath string, event Event) error {
+	info, err := os.Stat(eventPath)
+	if err != nil {
+		return fmt.Errorf("stat event log for append state: %w", err)
+	}
+	generation := ""
+	if previousData, readErr := os.ReadFile(log.tailStatePath(event.SessionID, event.StreamID)); readErr == nil {
+		var previous tailState
+		if json.Unmarshal(previousData, &previous) == nil && previous.Version == 2 && previous.Generation != "" &&
+			((previous.Sequence == event.Seq.Uint64() && previous.Hash == event.Hash.String()) ||
+				(previous.Sequence+1 == event.Seq.Uint64() && previous.Hash == event.PrevHash.String())) {
+			generation = previous.Generation
+		}
+	}
+	if generation == "" {
+		value := make([]byte, 16)
+		if _, err := rand.Read(value); err != nil {
+			return fmt.Errorf("generate event log generation: %w", err)
+		}
+		generation = hex.EncodeToString(value)
+	}
+	state := tailState{
+		Version: 2, Generation: generation, Sequence: event.Seq.Uint64(), Hash: event.Hash.String(),
+		Size: info.Size(), ModTime: info.ModTime().UnixNano(),
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		return fmt.Errorf("marshal event log append state: %w", err)
+	}
+	path := log.tailStatePath(event.SessionID, event.StreamID)
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create event log append state dir: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, ".tail-state-*")
+	if err != nil {
+		return fmt.Errorf("create event log append state: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("secure event log append state: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write event log append state: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close event log append state: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("install event log append state: %w", err)
+	}
+	return nil
 }
 
 func (log Log) read(sessionID primitives.SessionID) ([]Event, error) {
@@ -395,16 +750,47 @@ func (log Log) read(sessionID primitives.SessionID) ([]Event, error) {
 			events = append(events, streamEvents...)
 		}
 	}
-	sort.SliceStable(events, func(i, j int) bool {
-		if !events[i].Time.Time.Equal(events[j].Time.Time) {
-			return events[i].Time.Time.Before(events[j].Time.Time)
+	return orderAggregateEvents(events), nil
+}
+
+func orderAggregateEvents(events []Event) []Event {
+	type orderedEvent struct {
+		event         Event
+		effectiveTime time.Time
+	}
+	byStream := map[primitives.EventStreamID][]Event{}
+	for _, event := range events {
+		byStream[event.StreamID] = append(byStream[event.StreamID], event)
+	}
+	ordered := make([]orderedEvent, 0, len(events))
+	for _, streamEvents := range byStream {
+		sort.SliceStable(streamEvents, func(i, j int) bool {
+			return streamEvents[i].Seq.Uint64() < streamEvents[j].Seq.Uint64()
+		})
+		var previous time.Time
+		for _, event := range streamEvents {
+			effective := event.Time.Time
+			if effective.Before(previous) {
+				effective = previous
+			}
+			ordered = append(ordered, orderedEvent{event: event, effectiveTime: effective})
+			previous = effective
 		}
-		if events[i].StreamID != events[j].StreamID {
-			return events[i].StreamID.String() < events[j].StreamID.String()
+	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if !ordered[i].effectiveTime.Equal(ordered[j].effectiveTime) {
+			return ordered[i].effectiveTime.Before(ordered[j].effectiveTime)
 		}
-		return events[i].Seq.Uint64() < events[j].Seq.Uint64()
+		if ordered[i].event.StreamID != ordered[j].event.StreamID {
+			return ordered[i].event.StreamID.String() < ordered[j].event.StreamID.String()
+		}
+		return ordered[i].event.Seq.Uint64() < ordered[j].event.Seq.Uint64()
 	})
-	return events, nil
+	result := make([]Event, 0, len(ordered))
+	for _, item := range ordered {
+		result = append(result, item.event)
+	}
+	return result
 }
 
 func (log Log) readPath(sessionID primitives.SessionID, path string, expectedStreamID primitives.EventStreamID) ([]Event, error) {
@@ -630,6 +1016,14 @@ func (log Log) ensureStreamMetadata(sessionID primitives.SessionID, streamID pri
 }
 
 func WriteStreamMetadata(metadataDir string, metadata StreamMetadata) error {
+	return writeStreamMetadata(filepath.Join(metadataDir, "log", "streams"), metadata)
+}
+
+func WriteWorkspaceStreamMetadata(metadataDir string, metadata StreamMetadata) error {
+	return writeStreamMetadata(filepath.Join(metadataDir, "log", "manual-checkpoints", metadata.WorktreeID.String(), "streams"), metadata)
+}
+
+func writeStreamMetadata(dir string, metadata StreamMetadata) error {
 	if metadata.Version != 1 {
 		return fmt.Errorf("event stream metadata invariant failed: unsupported version %d", metadata.Version)
 	}
@@ -655,7 +1049,6 @@ func WriteStreamMetadata(metadataDir string, metadata StreamMetadata) error {
 	if metadata.CreatedAt == "" {
 		metadata.CreatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	}
-	dir := filepath.Join(metadataDir, "log", "streams")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create event stream metadata dir: %w", err)
 	}
@@ -798,17 +1191,4 @@ func mustEventHashFromBytes(data []byte) primitives.EventHash {
 		panic(err)
 	}
 	return hash
-}
-
-func acquireDirLock(lockDir string) error {
-	const attempts = 100
-	for i := 0; i < attempts; i++ {
-		if err := os.Mkdir(lockDir, 0o700); err == nil {
-			return nil
-		} else if !os.IsExist(err) {
-			return fmt.Errorf("create event log lock: %w", err)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	return fmt.Errorf("event log lock busy: %s", strings.TrimSuffix(lockDir, ".lock"))
 }

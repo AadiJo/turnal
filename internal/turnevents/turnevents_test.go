@@ -153,10 +153,68 @@ func TestRecoverPostCheckpointJournalClearsStaleActiveTurn(t *testing.T) {
 	}
 }
 
+func TestRecoverLegacyRunJournalFinalizesRecordedCheckpoint(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	sessionID := sessionID(t, "codex-run-legacy")
+	manager := turns.NewManager(repo)
+	started, err := manager.Start(sessionID, 0)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	log := eventlog.Open(repo.MetadataDir)
+	if err := AppendTurnStart(log, primitives.AdapterCodex, sessionID, started.TurnID, ""); err != nil {
+		t.Fatalf("AppendTurnStart: %v", err)
+	}
+	event, err := log.Append(eventlog.AppendInput{
+		SessionID: sessionID,
+		TurnID:    &started.TurnID,
+		Type:      primitives.EventTypeCheckpoint,
+		Adapter:   primitives.AdapterCodex,
+		Payload: mustJSON(checkpointPayload{
+			Turn:      started.TurnID.Uint64(),
+			Phase:     primitives.CheckpointPhasePre.String(),
+			CommitSHA: started.Pre.Commit.String(),
+			Ref:       started.Pre.Ref.String(),
+		}),
+	})
+	if err != nil {
+		t.Fatalf("Append checkpoint: %v", err)
+	}
+	if event.Seq == 0 {
+		t.Fatal("checkpoint event has no sequence")
+	}
+
+	if err := RecoverCheckpointJournals(log, repo); err != nil {
+		t.Fatalf("RecoverCheckpointJournals: %v", err)
+	}
+	if _, ok, err := repo.ReadCheckpointJournal(sessionID, started.TurnID, primitives.CheckpointPhasePre); err != nil || ok {
+		t.Fatalf("legacy journal ok=%t err=%v, want cleared", ok, err)
+	}
+	events, err := log.Read(sessionID)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	var checkpoints int
+	for _, recorded := range events {
+		if recorded.Type == primitives.EventTypeCheckpoint {
+			checkpoints++
+		}
+	}
+	if checkpoints != 1 {
+		t.Fatalf("checkpoint events = %d, want 1", checkpoints)
+	}
+}
+
 func TestAppendCheckpointRecordsUserGitContext(t *testing.T) {
 	requireGit(t)
 
 	root := workspaceRoot(t)
+	runGit(t, root.String(), "init", "-q")
 	bootstrapped, err := checkpoint.Bootstrap(root)
 	if err != nil {
 		t.Fatalf("Bootstrap: %v", err)

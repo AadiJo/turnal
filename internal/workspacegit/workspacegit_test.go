@@ -1,6 +1,7 @@
 package workspacegit
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -108,6 +109,127 @@ func TestContextReportsMissingWorkspaceGit(t *testing.T) {
 	}
 	if context.Exists {
 		t.Fatalf("context Exists = true outside Git repo: %#v", context)
+	}
+}
+
+func TestCaptureExcludesSnapshotDeniedFiles(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t, t.TempDir())
+	runGit(t, root.String(), "init", "-q")
+	runGit(t, root.String(), "config", "user.email", "turnal@example.test")
+	runGit(t, root.String(), "config", "user.name", "turnal")
+	writeFile(t, root.String(), "README.md", "base\n")
+	runGit(t, root.String(), "add", "README.md")
+	runGit(t, root.String(), "commit", "-q", "-m", "base")
+
+	writeFile(t, root.String(), ".env", "TOP_SECRET=untracked\n")
+	runGit(t, root.String(), "add", ".env")
+	writeFile(t, root.String(), "nested/credentials.json", "{\"token\":\"secret\"}\n")
+	writeFile(t, root.String(), "app.txt", "safe\n")
+
+	capture, err := Open(root).Capture()
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	if len(capture.State.Untracked) != 1 || capture.State.Untracked[0].Path.String() != "app.txt" {
+		t.Fatalf("captured untracked = %#v, want only app.txt", capture.State.Untracked)
+	}
+	if len(capture.State.Staged.Paths) != 0 || len(capture.StagedPatch) != 0 {
+		t.Fatalf("denied staged file entered capture: paths=%#v patch=%s", capture.State.Staged.Paths, capture.StagedPatch)
+	}
+	for _, content := range capture.UntrackedContent {
+		if bytes.Contains(content, []byte("TOP_SECRET")) || bytes.Contains(content, []byte("token")) {
+			t.Fatal("capture contains denied secret content")
+		}
+	}
+}
+
+func TestEnsureNoOperationInProgressResolvesRelativeGitPathAtWorkspace(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t, t.TempDir())
+	runGit(t, root.String(), "init", "-q")
+	writeFile(t, root.String(), ".git/MERGE_HEAD", strings.Repeat("0", 40)+"\n")
+
+	err := Open(root).ensureNoOperationInProgress()
+	if err == nil || !strings.Contains(err.Error(), "MERGE_HEAD") {
+		t.Fatalf("ensureNoOperationInProgress error = %v, want MERGE_HEAD", err)
+	}
+}
+
+func TestRestorePreservesCurrentDeniedUntrackedFile(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t, t.TempDir())
+	runGit(t, root.String(), "init", "-q")
+	runGit(t, root.String(), "config", "user.email", "turnal@example.test")
+	runGit(t, root.String(), "config", "user.name", "turnal")
+	writeFile(t, root.String(), "README.md", "base\n")
+	runGit(t, root.String(), "add", "README.md")
+	runGit(t, root.String(), "commit", "-q", "-m", "base")
+	target, err := Open(root).Capture()
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	writeFile(t, root.String(), ".env", "TOP_SECRET=preserve-me\n")
+	writeFile(t, root.String(), "remove.txt", "remove me\n")
+
+	if err := Open(root).Restore(target); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	secret, err := os.ReadFile(filepath.Join(root.String(), ".env"))
+	if err != nil {
+		t.Fatalf("read preserved .env: %v", err)
+	}
+	if string(secret) != "TOP_SECRET=preserve-me\n" {
+		t.Fatalf("preserved .env = %q", secret)
+	}
+	if _, err := os.Stat(filepath.Join(root.String(), "remove.txt")); !os.IsNotExist(err) {
+		t.Fatalf("ordinary untracked file remains after restore: %v", err)
+	}
+}
+
+func TestRestorePreservesTrackedDeniedStagedAndWorkingContent(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t, t.TempDir())
+	runGit(t, root.String(), "init", "-q")
+	runGit(t, root.String(), "config", "user.email", "turnal@example.test")
+	runGit(t, root.String(), "config", "user.name", "turnal")
+	runGit(t, root.String(), "config", "core.autocrlf", "false")
+	writeFile(t, root.String(), "README.md", "base\n")
+	writeFile(t, root.String(), ".env", "BASE=committed\n")
+	runGit(t, root.String(), "add", "README.md", ".env")
+	runGit(t, root.String(), "commit", "-q", "-m", "base")
+	target, err := Open(root).Capture()
+	if err != nil {
+		t.Fatalf("Capture target: %v", err)
+	}
+
+	writeFile(t, root.String(), ".env", "SECRET=staged\n")
+	runGit(t, root.String(), "add", ".env")
+	writeFile(t, root.String(), ".env", "SECRET=working\n")
+	writeFile(t, root.String(), "README.md", "ordinary change\n")
+
+	if err := Open(root).Restore(target); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	working, err := os.ReadFile(filepath.Join(root.String(), ".env"))
+	if err != nil {
+		t.Fatalf("read working .env: %v", err)
+	}
+	if string(working) != "SECRET=working\n" {
+		t.Fatalf("working .env = %q, want preserved content", working)
+	}
+	staged := runGit(t, root.String(), "show", ":.env")
+	if staged != "SECRET=staged\n" {
+		t.Fatalf("staged .env = %q, want preserved staged content", staged)
+	}
+	readme, err := os.ReadFile(filepath.Join(root.String(), "README.md"))
+	if err != nil {
+		t.Fatalf("read README: %v", err)
+	}
+	if string(readme) != "base\n" {
+		t.Fatalf("ordinary tracked change survived restore: %q", readme)
 	}
 }
 

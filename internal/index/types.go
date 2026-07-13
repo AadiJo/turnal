@@ -27,13 +27,14 @@ func PathsForMetadata(metadataDir string) Paths {
 }
 
 type RebuildStats struct {
-	DBPath          string
-	Sessions        int
-	Turns           int
-	Events          int
-	Checkpoints     int
-	FileTouches     int
-	SearchDocuments int
+	DBPath            string
+	Sessions          int
+	Turns             int
+	Events            int
+	Checkpoints       int
+	FileTouches       int
+	SearchDocuments   int
+	SourceFingerprint string
 }
 
 type GraphQuery struct {

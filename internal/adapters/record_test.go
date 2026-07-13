@@ -2,6 +2,7 @@ package adapters
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -26,16 +27,16 @@ func TestRecordHookPayloadAppendsRawAdapterLog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RecordHookPayload: %v", err)
 	}
-	if rawRef != "claude-code:1" {
-		t.Fatalf("raw ref = %q, want claude-code:1", rawRef)
+	if rawRef != "v2:claude-session:claude-code:1" {
+		t.Fatalf("raw ref = %q, want v2 session ref", rawRef)
 	}
 
-	records := readRecords(t, filepath.Join(root.String(), ".turnal", "log", "adapter", "claude-code.jsonl"))
+	records := readRecords(t, filepath.Join(root.String(), ".turnal", "log", "raw", "claude-session", "claude-code.jsonl"))
 	if len(records) != 1 {
 		t.Fatalf("records len = %d, want 1", len(records))
 	}
 	record := records[0]
-	if record.Version != 1 || record.Adapter != primitives.AdapterClaudeCode || record.Hook != "UserPromptSubmit" {
+	if record.Version != 2 || record.Sequence != 1 || record.SessionID != "claude-session" || record.Adapter != primitives.AdapterClaudeCode || record.Hook != "UserPromptSubmit" {
 		t.Fatalf("unexpected record: %#v", record)
 	}
 	if !json.Valid(record.Payload) {
@@ -59,11 +60,11 @@ func TestRecordHookPayloadPreservesMalformedPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RecordHookPayload malformed: %v", err)
 	}
-	if rawRef != "codex:1" {
-		t.Fatalf("raw ref = %q, want codex:1", rawRef)
+	if rawRef != "v2:unassigned:codex:1" {
+		t.Fatalf("raw ref = %q, want unassigned v2 ref", rawRef)
 	}
 
-	records := readRecords(t, filepath.Join(root.String(), ".turnal", "log", "adapter", "codex.jsonl"))
+	records := readRecords(t, filepath.Join(root.String(), ".turnal", "log", "raw", "unassigned", "codex.jsonl"))
 	if len(records) != 1 {
 		t.Fatalf("records len = %d, want 1", len(records))
 	}
@@ -73,6 +74,85 @@ func TestRecordHookPayloadPreservesMalformedPayload(t *testing.T) {
 	}
 	if !strings.Contains(record.Error, "malformed JSON") {
 		t.Fatalf("error = %q, want malformed JSON", record.Error)
+	}
+}
+
+func TestRecordHookPayloadRecoversTrailingPartialRecord(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+	path := filepath.Join(repo.MetadataDir, "log", "raw", "recovered", "codex.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir adapter log: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("{\"partial\":"), 0o600); err != nil {
+		t.Fatalf("write partial adapter log: %v", err)
+	}
+	payload := []byte("{\"cwd\":" + quote(root.String()) + ",\"session_id\":\"recovered\"}")
+	ref, err := RecordHookPayload(primitives.AdapterCodex, "CodexHook", payload)
+	if err != nil {
+		t.Fatalf("RecordHookPayload: %v", err)
+	}
+	if ref != "v2:recovered:codex:1" {
+		t.Fatalf("ref = %q, want v2 recovered ref", ref)
+	}
+	record, err := ReadRawHookRecord(repo.MetadataDir, ref)
+	if err != nil {
+		t.Fatalf("ReadRawHookRecord: %v", err)
+	}
+	if record.Hook != "CodexHook" {
+		t.Fatalf("record = %#v", record)
+	}
+}
+
+func TestRedactRawHookSessionPreservesReferencesAndRemovesPayload(t *testing.T) {
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	demo, _ := primitives.ParseSessionID("demo")
+	records := []RawHookRecord{
+		{Version: 1, Adapter: primitives.AdapterCodex, Hook: "turn", ReceivedAt: "2026-01-01T00:00:00Z", Payload: json.RawMessage(`{"session_id":"demo","secret":"remove-me"}`)},
+		{Version: 1, Adapter: primitives.AdapterCodex, Hook: "turn", ReceivedAt: "2026-01-01T00:00:01Z", Payload: json.RawMessage(`{"session_id":"keep","value":"retain-me"}`)},
+	}
+	for _, record := range records {
+		if _, err := appendRawHookRecord(repo.MetadataDir, record); err != nil {
+			t.Fatalf("appendRawHookRecord: %v", err)
+		}
+	}
+
+	changed, err := RedactRawHookSession(repo.MetadataDir, demo, false)
+	if err != nil {
+		t.Fatalf("RedactRawHookSession: %v", err)
+	}
+	if len(changed) != 1 {
+		t.Fatalf("changed files = %#v, want one", changed)
+	}
+	deleted, err := ReadRawHookRecord(repo.MetadataDir, "codex:1")
+	if err != nil {
+		t.Fatalf("read tombstone: %v", err)
+	}
+	if deleted.Hook != "deleted-session-record" || len(deleted.Payload) != 0 {
+		t.Fatalf("deleted record = %#v, want payload-free tombstone", deleted)
+	}
+	kept, err := ReadRawHookRecord(repo.MetadataDir, "codex:2")
+	if err != nil {
+		t.Fatalf("read retained record: %v", err)
+	}
+	if !bytes.Contains(kept.Payload, []byte("retain-me")) {
+		t.Fatalf("retained payload = %s", kept.Payload)
+	}
+	data, err := os.ReadFile(changed[0])
+	if err != nil {
+		t.Fatalf("read rewritten log: %v", err)
+	}
+	if bytes.Contains(data, []byte("remove-me")) {
+		t.Fatal("deleted session payload remains in raw adapter log")
 	}
 }
 
@@ -109,15 +189,15 @@ func TestRecordHookPayloadUsesAbsolutePayloadCWDBeforeProcessWorkspace(t *testin
 	if err != nil {
 		t.Fatalf("RecordHookPayload: %v", err)
 	}
-	if rawRef != "codex:1" {
-		t.Fatalf("raw ref = %q, want codex:1", rawRef)
+	if rawRef != "v2:other:codex:1" {
+		t.Fatalf("raw ref = %q, want v2 other ref", rawRef)
 	}
 
-	rootRecords := filepath.Join(root.String(), ".turnal", "log", "adapter", "codex.jsonl")
+	rootRecords := filepath.Join(root.String(), ".turnal", "log", "raw", "other", "codex.jsonl")
 	if _, err := os.Stat(rootRecords); !os.IsNotExist(err) {
 		t.Fatalf("process workspace should not receive payload for another workspace, stat err=%v", err)
 	}
-	otherRecords := filepath.Join(other.String(), ".turnal", "log", "adapter", "codex.jsonl")
+	otherRecords := filepath.Join(other.String(), ".turnal", "log", "raw", "other", "codex.jsonl")
 	if _, err := os.Stat(otherRecords); err != nil {
 		t.Fatalf("expected payload cwd workspace record: %v", err)
 	}

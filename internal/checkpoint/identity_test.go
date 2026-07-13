@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/fsidentity"
 	"github.com/AadiJo/turnal/internal/primitives"
 )
 
@@ -53,7 +54,7 @@ func TestLinkedWorktreeDiscoversSharedStoreAndKeepsIndependentHistory(t *testing
 		t.Fatalf("Open linked through registry: %v", err)
 	}
 
-	if linkedRepo.MetadataDir != mainRepo.MetadataDir || linkedRepo.StoreID != mainRepo.StoreID || linkedRepo.RepoID != mainRepo.RepoID {
+	if !fsidentity.Same(linkedRepo.MetadataDir, mainRepo.MetadataDir) || linkedRepo.StoreID != mainRepo.StoreID || linkedRepo.RepoID != mainRepo.RepoID {
 		t.Fatalf("linked repo did not reuse store: main=%#v linked=%#v", mainRepo, linkedRepo)
 	}
 	if linkedRepo.WorktreeID == mainRepo.WorktreeID || linkedRepo.EventProducerID == mainRepo.EventProducerID {
@@ -156,6 +157,35 @@ func TestRekeyStorePreservesEventsAndCommits(t *testing.T) {
 	}
 	if commit, err := repo.RefCommit(created.CanonicalRef.String()); err != nil || commit != created.Commit {
 		t.Fatalf("canonical checkpoint changed after rekey: commit=%s err=%v", commit, err)
+	}
+}
+
+func TestValidateReadOnlyWorktreeIdentityRejectsStaleGitBinding(t *testing.T) {
+	root := t.TempDir()
+	storedGit := filepath.Join(t.TempDir(), "stored.git")
+	currentGit := filepath.Join(t.TempDir(), "current.git")
+	for _, path := range []string{storedGit, currentGit} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", path, err)
+		}
+	}
+	binding := WorktreeIdentity{
+		Root:         root,
+		GitTopLevel:  root,
+		GitCommonDir: storedGit,
+		GitDir:       storedGit,
+		Primary:      true,
+	}
+	identity := &UserGitIdentity{
+		TopLevel:     root,
+		GitCommonDir: currentGit,
+		GitDir:       currentGit,
+		PrimaryRoot:  root,
+	}
+
+	err := validateReadOnlyWorktreeIdentity(binding, root, identity)
+	if err == nil || !strings.Contains(err.Error(), "Git common directory") {
+		t.Fatalf("validateReadOnlyWorktreeIdentity error = %v", err)
 	}
 }
 

@@ -14,11 +14,14 @@ import (
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	agentconfig "github.com/AadiJo/turnal/internal/config"
+	"github.com/AadiJo/turnal/internal/filelock"
 	"github.com/AadiJo/turnal/internal/primitives"
 )
 
 type RawHookRecord struct {
 	Version    int                    `json:"v"`
+	Sequence   uint64                 `json:"seq,omitempty"`
+	SessionID  string                 `json:"session_id,omitempty"`
 	Adapter    primitives.AdapterName `json:"adapter"`
 	Hook       string                 `json:"hook"`
 	ReceivedAt string                 `json:"received_at"`
@@ -28,16 +31,36 @@ type RawHookRecord struct {
 	Error      string                 `json:"error,omitempty"`
 }
 
+const MaxHookPayloadBytes = 8 << 20
+
+const maxRawRecordBytes = MaxHookPayloadBytes*6 + 64*1024
+
 type RawHookRef struct {
+	Version    int
+	SessionID  primitives.SessionID
 	Adapter    primitives.AdapterName
 	LineNumber uint64
 }
 
 func ParseRawHookRef(value string) (RawHookRef, error) {
 	value = strings.TrimSpace(value)
-	adapterText, lineText, ok := strings.Cut(value, ":")
-	if !ok || strings.Contains(lineText, ":") {
-		return RawHookRef{}, fmt.Errorf("invalid raw adapter ref %q: must be <adapter>:<line>", value)
+	parts := strings.Split(value, ":")
+	var ref RawHookRef
+	var adapterText, lineText string
+	switch {
+	case len(parts) == 2:
+		ref.Version = 1
+		adapterText, lineText = parts[0], parts[1]
+	case len(parts) == 4 && parts[0] == "v2":
+		ref.Version = 2
+		sessionID, err := primitives.ParseSessionID(parts[1])
+		if err != nil {
+			return RawHookRef{}, fmt.Errorf("invalid raw adapter ref %q: %w", value, err)
+		}
+		ref.SessionID = sessionID
+		adapterText, lineText = parts[2], parts[3]
+	default:
+		return RawHookRef{}, fmt.Errorf("invalid raw adapter ref %q: must be <adapter>:<line> or v2:<session>:<adapter>:<line>", value)
 	}
 
 	adapter, err := primitives.ParseAdapterName(adapterText)
@@ -50,14 +73,22 @@ func ParseRawHookRef(value string) (RawHookRef, error) {
 		return RawHookRef{}, fmt.Errorf("invalid raw adapter ref %q: line must be a positive integer", value)
 	}
 
-	return RawHookRef{Adapter: adapter, LineNumber: lineNumber}, nil
+	ref.Adapter = adapter
+	ref.LineNumber = lineNumber
+	return ref, nil
 }
 
 func (ref RawHookRef) String() string {
+	if ref.Version == 2 {
+		return fmt.Sprintf("v2:%s:%s:%d", ref.SessionID, ref.Adapter, ref.LineNumber)
+	}
 	return fmt.Sprintf("%s:%d", ref.Adapter, ref.LineNumber)
 }
 
 func RecordHookPayload(adapter primitives.AdapterName, hookName string, raw []byte) (string, error) {
+	if len(raw) > MaxHookPayloadBytes {
+		return "", fmt.Errorf("hook payload is %d bytes; maximum is %d bytes", len(raw), MaxHookPayloadBytes)
+	}
 	parsedAdapter, err := primitives.ParseAdapterName(adapter.String())
 	if err != nil {
 		return "", err
@@ -84,9 +115,14 @@ func RecordHookPayload(adapter primitives.AdapterName, hookName string, raw []by
 		return "", err
 	}
 	storedRaw := redactRawHookPayload(raw, effective.Secrets)
+	sessionID := sessionIDFromRawPayload(storedRaw)
+	if sessionID == "" {
+		sessionID, _ = primitives.ParseSessionID("unassigned")
+	}
 
 	record := RawHookRecord{
 		Version:    1,
+		SessionID:  sessionID.String(),
 		Adapter:    parsedAdapter,
 		Hook:       hookName,
 		ReceivedAt: time.Now().UTC().Format(time.RFC3339Nano),
@@ -103,34 +139,58 @@ func RecordHookPayload(adapter primitives.AdapterName, hookName string, raw []by
 }
 
 func appendRawHookRecord(metadataDir string, record RawHookRecord) (string, error) {
+	ref := RawHookRef{Version: 1, Adapter: record.Adapter}
 	dir := filepath.Join(metadataDir, "log", "adapter")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if record.SessionID != "" {
+		sessionID, err := primitives.ParseSessionID(record.SessionID)
+		if err != nil {
+			return "", fmt.Errorf("raw hook record session: %w", err)
+		}
+		ref.Version = 2
+		ref.SessionID = sessionID
+		dir = filepath.Join(metadataDir, "log", "raw", sessionID.String())
+		record.Version = 2
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("create adapter log dir: %w", err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return "", fmt.Errorf("secure adapter log dir: %w", err)
 	}
 
 	path := filepath.Join(dir, record.Adapter.String()+".jsonl")
+	lock, err := filelock.Acquire(path+".lock", 30*time.Second)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = lock.Release() }()
+
+	if _, err := recoverTrailingPartialJSONL(path); err != nil {
+		return "", err
+	}
+
+	lineNumber, err := nextJSONLLineNumber(path, ref.Version)
+	if err != nil {
+		return "", err
+	}
+	ref.LineNumber = uint64(lineNumber)
+	if ref.Version == 2 {
+		record.Sequence = uint64(lineNumber)
+	}
 	line, err := json.Marshal(record)
 	if err != nil {
 		return "", fmt.Errorf("marshal adapter hook record: %w", err)
 	}
 	line = append(line, '\n')
 
-	lockDir := path + ".lock"
-	if err := acquireDirLock(lockDir); err != nil {
-		return "", err
-	}
-	defer func() { _ = os.Remove(lockDir) }()
-
-	lineNumber, err := nextJSONLLineNumber(path)
-	if err != nil {
-		return "", err
-	}
-
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return "", fmt.Errorf("open adapter log: %w", err)
 	}
 	defer func() { _ = file.Close() }()
+	if err := file.Chmod(0o600); err != nil {
+		return "", fmt.Errorf("secure adapter log: %w", err)
+	}
 
 	if _, err := file.Write(line); err != nil {
 		return "", fmt.Errorf("append adapter log: %w", err)
@@ -138,7 +198,7 @@ func appendRawHookRecord(metadataDir string, record RawHookRecord) (string, erro
 	if err := file.Sync(); err != nil {
 		return "", fmt.Errorf("sync adapter log: %w", err)
 	}
-	return fmt.Sprintf("%s:%d", record.Adapter, lineNumber), nil
+	return ref.String(), nil
 }
 
 func ReadRawHookRecord(metadataDir string, rawRef string) (RawHookRecord, error) {
@@ -148,6 +208,9 @@ func ReadRawHookRecord(metadataDir string, rawRef string) (RawHookRecord, error)
 	}
 
 	path := filepath.Join(metadataDir, "log", "adapter", ref.Adapter.String()+".jsonl")
+	if ref.Version == 2 {
+		path = filepath.Join(metadataDir, "log", "raw", ref.SessionID.String(), ref.Adapter.String()+".jsonl")
+	}
 	file, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -173,11 +236,14 @@ func ReadRawHookRecord(metadataDir string, rawRef string) (RawHookRecord, error)
 			if err := json.Unmarshal(line, &record); err != nil {
 				return RawHookRecord{}, fmt.Errorf("raw adapter record invariant failed for %s: malformed JSON: %w", ref, err)
 			}
-			if record.Version != 1 {
+			if record.Version != ref.Version {
 				return RawHookRecord{}, fmt.Errorf("raw adapter record invariant failed for %s: unsupported version %d", ref, record.Version)
 			}
 			if record.Adapter != ref.Adapter {
 				return RawHookRecord{}, fmt.Errorf("raw adapter record invariant failed for %s: record adapter %s does not match ref adapter %s", ref, record.Adapter, ref.Adapter)
+			}
+			if ref.Version == 2 && (record.SessionID != ref.SessionID.String() || record.Sequence != ref.LineNumber) {
+				return RawHookRecord{}, fmt.Errorf("raw adapter record invariant failed for %s: session or sequence does not match ref", ref)
 			}
 			if record.Hook == "" {
 				return RawHookRecord{}, fmt.Errorf("raw adapter record invariant failed for %s: hook is empty", ref)
@@ -189,6 +255,137 @@ func ReadRawHookRecord(metadataDir string, rawRef string) (RawHookRecord, error)
 			return RawHookRecord{}, fmt.Errorf("raw adapter record invariant failed for %s: line not found", ref)
 		}
 	}
+}
+
+// RedactRawHookSession removes retained hook payloads for a session while
+// preserving JSONL line numbers referenced by other sessions.
+func RedactRawHookSession(metadataDir string, sessionID primitives.SessionID, dryRun bool) ([]string, error) {
+	parsedSession, err := primitives.ParseSessionID(sessionID.String())
+	if err != nil {
+		return nil, err
+	}
+	dir := filepath.Join(metadataDir, "log", "adapter")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read adapter log dir: %w", err)
+	}
+	var changed []string
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".jsonl" {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		modified, err := redactRawHookSessionFile(path, parsedSession, dryRun)
+		if err != nil {
+			return nil, err
+		}
+		if modified {
+			changed = append(changed, path)
+		}
+	}
+	return changed, nil
+}
+
+func redactRawHookSessionFile(path string, sessionID primitives.SessionID, dryRun bool) (bool, error) {
+	lock, err := filelock.Acquire(path+".lock", 30*time.Second)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = lock.Release() }()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, fmt.Errorf("read adapter log for session deletion: %w", err)
+	}
+	lines := bytes.Split(data, []byte{'\n'})
+	modified := false
+	for index, line := range lines {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var record RawHookRecord
+		if err := json.Unmarshal(line, &record); err != nil {
+			continue
+		}
+		if rawRecordSessionID(record) != sessionID.String() {
+			continue
+		}
+		modified = true
+		tombstone := RawHookRecord{
+			Version:    1,
+			Adapter:    record.Adapter,
+			Hook:       "deleted-session-record",
+			ReceivedAt: record.ReceivedAt,
+			Error:      "payload deleted by session retention policy",
+		}
+		encoded, err := json.Marshal(tombstone)
+		if err != nil {
+			return false, fmt.Errorf("marshal adapter log tombstone: %w", err)
+		}
+		lines[index] = encoded
+	}
+	if !modified || dryRun {
+		return modified, nil
+	}
+	return true, replacePrivateFile(path, bytes.Join(lines, []byte{'\n'}))
+}
+
+func rawRecordSessionID(record RawHookRecord) string {
+	if record.SessionID != "" {
+		return record.SessionID
+	}
+	var payload struct {
+		SessionID string `json:"session_id"`
+	}
+	if len(record.Payload) == 0 || json.Unmarshal(record.Payload, &payload) != nil {
+		return ""
+	}
+	return payload.SessionID
+}
+
+func sessionIDFromRawPayload(raw []byte) primitives.SessionID {
+	var payload struct {
+		SessionID string `json:"session_id"`
+	}
+	if json.Unmarshal(raw, &payload) != nil {
+		return ""
+	}
+	sessionID, err := primitives.ParseSessionID(payload.SessionID)
+	if err != nil {
+		return ""
+	}
+	return sessionID
+}
+
+func replacePrivateFile(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".turnal-rewrite-*")
+	if err != nil {
+		return fmt.Errorf("create adapter log rewrite: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("secure adapter log rewrite: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write adapter log rewrite: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync adapter log rewrite: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close adapter log rewrite: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("install adapter log rewrite: %w", err)
+	}
+	return nil
 }
 
 func hookWorkspaceCWD(raw []byte) (string, error) {
@@ -213,26 +410,117 @@ func cwdFromPayload(raw []byte) string {
 	return payload.CWD
 }
 
-func acquireDirLock(lockDir string) error {
-	const attempts = 100
-	for i := 0; i < attempts; i++ {
-		if err := os.Mkdir(lockDir, 0o700); err == nil {
-			return nil
-		} else if !os.IsExist(err) {
-			return fmt.Errorf("create adapter log lock: %w", err)
-		}
-		time.Sleep(10 * time.Millisecond)
+func nextJSONLLineNumber(path string, version int) (int, error) {
+	if version == 2 {
+		return nextV2JSONLLineNumber(path)
 	}
-	return fmt.Errorf("adapter log lock busy: %s", strings.TrimSuffix(lockDir, ".lock"))
-}
-
-func nextJSONLLineNumber(path string) (int, error) {
-	data, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return 1, nil
 		}
-		return 0, fmt.Errorf("read adapter log for line number: %w", err)
+		return 0, fmt.Errorf("open adapter log for line number: %w", err)
 	}
-	return strings.Count(string(data), "\n") + 1, nil
+	defer func() { _ = file.Close() }()
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), maxRawRecordBytes)
+	lines := 0
+	for scanner.Scan() {
+		lines++
+	}
+	if err := scanner.Err(); err != nil {
+		return 0, fmt.Errorf("scan legacy adapter log for line number: %w", err)
+	}
+	return lines + 1, nil
+}
+
+func nextV2JSONLLineNumber(path string) (int, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 1, nil
+		}
+		return 0, fmt.Errorf("open adapter log tail: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		return 0, fmt.Errorf("stat adapter log tail: %w", err)
+	}
+	if info.Size() == 0 {
+		return 1, nil
+	}
+	readSize := info.Size()
+	if readSize > int64(maxRawRecordBytes+2) {
+		readSize = int64(maxRawRecordBytes + 2)
+	}
+	data := make([]byte, readSize)
+	if _, err := file.ReadAt(data, info.Size()-readSize); err != nil && err != io.EOF {
+		return 0, fmt.Errorf("read adapter log tail: %w", err)
+	}
+	data = bytes.TrimSuffix(data, []byte{'\n'})
+	if index := bytes.LastIndexByte(data, '\n'); index >= 0 {
+		data = data[index+1:]
+	} else if info.Size() > readSize {
+		return 0, fmt.Errorf("adapter log tail record exceeds %d-byte limit", maxRawRecordBytes)
+	}
+	var tail struct {
+		Sequence uint64 `json:"seq"`
+	}
+	if err := json.Unmarshal(data, &tail); err != nil {
+		return 0, fmt.Errorf("parse adapter log tail: %w", err)
+	}
+	if tail.Sequence == 0 || tail.Sequence >= uint64(^uint(0)>>1) {
+		return 0, fmt.Errorf("adapter log tail has invalid sequence %d", tail.Sequence)
+	}
+	return int(tail.Sequence + 1), nil
+}
+
+func recoverTrailingPartialJSONL(path string) (bool, error) {
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("open JSONL log for recovery: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		return false, fmt.Errorf("stat JSONL log for recovery: %w", err)
+	}
+	if info.Size() == 0 {
+		return false, nil
+	}
+	last := []byte{0}
+	if _, err := file.ReadAt(last, info.Size()-1); err != nil {
+		return false, fmt.Errorf("read JSONL log tail for recovery: %w", err)
+	}
+	if last[0] == '\n' {
+		return false, nil
+	}
+	truncateAt := int64(0)
+	const chunkSize = int64(64 * 1024)
+	for end := info.Size(); end > 0; {
+		start := end - chunkSize
+		if start < 0 {
+			start = 0
+		}
+		chunk := make([]byte, end-start)
+		if _, err := file.ReadAt(chunk, start); err != nil && err != io.EOF {
+			return false, fmt.Errorf("scan JSONL log tail for recovery: %w", err)
+		}
+		if index := bytes.LastIndexByte(chunk, '\n'); index >= 0 {
+			truncateAt = start + int64(index) + 1
+			break
+		}
+		end = start
+	}
+	if err := file.Truncate(truncateAt); err != nil {
+		return false, fmt.Errorf("recover JSONL log trailing partial line: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		return false, fmt.Errorf("sync recovered JSONL log: %w", err)
+	}
+	return true, nil
 }

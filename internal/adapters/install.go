@@ -1,13 +1,16 @@
 package adapters
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/AadiJo/turnal/internal/filelock"
 	"github.com/AadiJo/turnal/internal/hookcmd"
 	"github.com/pelletier/go-toml/v2"
 )
@@ -61,7 +64,7 @@ func ResolveTargets(projectRoot string, target Target) ([]Target, error) {
 		if pathExists(filepath.Join(projectRoot, ".claude")) || commandExists("claude") {
 			targets = append(targets, TargetClaude)
 		}
-		if pathExists(filepath.Join(projectRoot, ".codex")) || commandExists("codex") {
+		if pathExists(filepath.Join(EffectiveHookRoot(projectRoot, TargetCodex), ".codex")) || commandExists("codex") {
 			targets = append(targets, TargetCodex)
 		}
 		if len(targets) == 0 {
@@ -140,21 +143,28 @@ func InstallClaudeHookWithOptions(projectRoot string, opts InstallOptions) (Inst
 	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
 		return result, fmt.Errorf("create .claude directory: %w", err)
 	}
+	lock, err := acquireConfigLock(projectRoot, TargetClaude)
+	if err != nil {
+		return result, err
+	}
+	defer func() { _ = lock.Release() }()
 
 	settings := map[string]any{}
 	if data, err := os.ReadFile(settingsPath); err == nil && len(strings.TrimSpace(string(data))) > 0 {
 		if err := json.Unmarshal(data, &settings); err != nil {
-			backupPath, err := backupFile(settingsPath)
-			if err != nil {
-				return result, fmt.Errorf("backup invalid Claude settings: %w", err)
-			}
-			result.BackupPath = backupPath
-			settings = map[string]any{}
+			return result, fmt.Errorf("parse Claude settings %s; refusing to replace invalid or unexpected config: %w", settingsPath, err)
 		}
 	}
+	before, err := json.Marshal(settings)
+	if err != nil {
+		return result, fmt.Errorf("marshal existing Claude settings: %w", err)
+	}
 
-	hooks, _ := settings["hooks"].(map[string]any)
-	if hooks == nil {
+	hooks, exists, err := configMapSection(settings, "hooks")
+	if err != nil {
+		return result, fmt.Errorf("Claude settings: %w", err)
+	}
+	if !exists {
 		hooks = map[string]any{}
 		settings["hooks"] = hooks
 	}
@@ -169,7 +179,16 @@ func InstallClaudeHookWithOptions(projectRoot string, opts InstallOptions) (Inst
 		return result, fmt.Errorf("marshal Claude settings: %w", err)
 	}
 	output = append(output, '\n')
-	if err := os.WriteFile(settingsPath, output, 0o644); err != nil {
+	after, err := json.Marshal(settings)
+	if err != nil {
+		return result, fmt.Errorf("marshal updated Claude settings: %w", err)
+	}
+	if bytes.Equal(before, after) {
+		result.Installed = true
+		return result, nil
+	}
+	mode := existingFileMode(settingsPath, 0o644)
+	if err := writeConfigAtomic(settingsPath, output, mode); err != nil {
 		return result, fmt.Errorf("write Claude settings: %w", err)
 	}
 
@@ -185,6 +204,11 @@ func UninstallClaudeHookWithOptions(projectRoot string, opts UninstallOptions) (
 	result := UninstallResult{Target: TargetClaude, DryRun: opts.DryRun}
 	settingsPath := filepath.Join(projectRoot, ".claude", "settings.json")
 	result.ConfigPath = settingsPath
+	lock, err := acquireConfigLock(projectRoot, TargetClaude)
+	if err != nil {
+		return result, err
+	}
+	defer func() { _ = lock.Release() }()
 
 	info, err := os.Stat(settingsPath)
 	if err != nil {
@@ -211,8 +235,11 @@ func UninstallClaudeHookWithOptions(projectRoot string, opts UninstallOptions) (
 		return result, fmt.Errorf("parse Claude settings %s: %w", settingsPath, err)
 	}
 
-	hooks, _ := settings["hooks"].(map[string]any)
-	if hooks == nil {
+	hooks, exists, err := configMapSection(settings, "hooks")
+	if err != nil {
+		return result, fmt.Errorf("Claude settings: %w", err)
+	}
+	if !exists {
 		return result, nil
 	}
 	result.RemovedCommands, result.Changed = removeTurnalHookCommands(hooks)
@@ -231,7 +258,7 @@ func UninstallClaudeHookWithOptions(projectRoot string, opts UninstallOptions) (
 		return result, fmt.Errorf("marshal Claude settings: %w", err)
 	}
 	output = append(output, '\n')
-	if err := os.WriteFile(settingsPath, output, info.Mode().Perm()); err != nil {
+	if err := writeConfigAtomic(settingsPath, output, info.Mode().Perm()); err != nil {
 		return result, fmt.Errorf("write Claude settings: %w", err)
 	}
 	return result, nil
@@ -242,6 +269,7 @@ func InstallCodexHook(projectRoot string) (InstallResult, error) {
 }
 
 func InstallCodexHookWithOptions(projectRoot string, opts InstallOptions) (InstallResult, error) {
+	projectRoot = EffectiveHookRoot(projectRoot, TargetCodex)
 	result := InstallResult{Target: TargetCodex}
 	codexDir := filepath.Join(projectRoot, ".codex")
 	configPath := filepath.Join(codexDir, "config.toml")
@@ -250,21 +278,28 @@ func InstallCodexHookWithOptions(projectRoot string, opts InstallOptions) (Insta
 	if err := os.MkdirAll(codexDir, 0o755); err != nil {
 		return result, fmt.Errorf("create .codex directory: %w", err)
 	}
+	lock, err := acquireConfigLock(projectRoot, TargetCodex)
+	if err != nil {
+		return result, err
+	}
+	defer func() { _ = lock.Release() }()
 
 	config := map[string]any{}
 	if data, err := os.ReadFile(configPath); err == nil && len(strings.TrimSpace(string(data))) > 0 {
 		if err := toml.Unmarshal(data, &config); err != nil {
-			backupPath, err := backupFile(configPath)
-			if err != nil {
-				return result, fmt.Errorf("backup invalid Codex config: %w", err)
-			}
-			result.BackupPath = backupPath
-			config = map[string]any{}
+			return result, fmt.Errorf("parse Codex config %s; refusing to replace invalid or unexpected config: %w", configPath, err)
 		}
 	}
+	before, err := toml.Marshal(config)
+	if err != nil {
+		return result, fmt.Errorf("marshal existing Codex config: %w", err)
+	}
 
-	hooks, _ := config["hooks"].(map[string]any)
-	if hooks == nil {
+	hooks, exists, err := configMapSection(config, "hooks")
+	if err != nil {
+		return result, fmt.Errorf("Codex config: %w", err)
+	}
+	if !exists {
 		hooks = map[string]any{}
 		config["hooks"] = hooks
 	}
@@ -273,13 +308,20 @@ func InstallCodexHookWithOptions(projectRoot string, opts InstallOptions) (Insta
 	for _, eventName := range []string{"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"} {
 		mergeHookCommand(hooks, eventName, codexHookCommand(command))
 	}
-	enableCodexHooksFeature(config)
+	if err := enableCodexHooksFeature(config); err != nil {
+		return result, err
+	}
 
 	output, err := toml.Marshal(config)
 	if err != nil {
 		return result, fmt.Errorf("marshal Codex config: %w", err)
 	}
-	if err := os.WriteFile(configPath, output, 0o644); err != nil {
+	if bytes.Equal(before, output) {
+		result.Installed = true
+		return result, nil
+	}
+	mode := existingFileMode(configPath, 0o644)
+	if err := writeConfigAtomic(configPath, output, mode); err != nil {
 		return result, fmt.Errorf("write Codex config: %w", err)
 	}
 
@@ -292,9 +334,15 @@ func UninstallCodexHook(projectRoot string) (UninstallResult, error) {
 }
 
 func UninstallCodexHookWithOptions(projectRoot string, opts UninstallOptions) (UninstallResult, error) {
+	projectRoot = EffectiveHookRoot(projectRoot, TargetCodex)
 	result := UninstallResult{Target: TargetCodex, DryRun: opts.DryRun}
 	configPath := filepath.Join(projectRoot, ".codex", "config.toml")
 	result.ConfigPath = configPath
+	lock, err := acquireConfigLock(projectRoot, TargetCodex)
+	if err != nil {
+		return result, err
+	}
+	defer func() { _ = lock.Release() }()
 
 	info, err := os.Stat(configPath)
 	if err != nil {
@@ -321,8 +369,11 @@ func UninstallCodexHookWithOptions(projectRoot string, opts UninstallOptions) (U
 		return result, fmt.Errorf("parse Codex config %s: %w", configPath, err)
 	}
 
-	hooks, _ := config["hooks"].(map[string]any)
-	if hooks == nil {
+	hooks, exists, err := configMapSection(config, "hooks")
+	if err != nil {
+		return result, fmt.Errorf("Codex config: %w", err)
+	}
+	if !exists {
 		return result, nil
 	}
 	result.RemovedCommands, result.Changed = removeTurnalHookCommands(hooks)
@@ -331,6 +382,7 @@ func UninstallCodexHookWithOptions(projectRoot string, opts UninstallOptions) (U
 	}
 	if len(hooks) == 0 {
 		delete(config, "hooks")
+		disableCodexHooksFeature(config)
 	}
 	if opts.DryRun {
 		return result, nil
@@ -340,7 +392,7 @@ func UninstallCodexHookWithOptions(projectRoot string, opts UninstallOptions) (U
 	if err != nil {
 		return result, fmt.Errorf("marshal Codex config: %w", err)
 	}
-	if err := os.WriteFile(configPath, output, info.Mode().Perm()); err != nil {
+	if err := writeConfigAtomic(configPath, output, info.Mode().Perm()); err != nil {
 		return result, fmt.Errorf("write Codex config: %w", err)
 	}
 	return result, nil
@@ -353,13 +405,40 @@ func (opts InstallOptions) hookCommand() string {
 	return hookcmd.Default()
 }
 
-func enableCodexHooksFeature(config map[string]any) {
-	features, _ := config["features"].(map[string]any)
-	if features == nil {
+func enableCodexHooksFeature(config map[string]any) error {
+	features, exists, err := configMapSection(config, "features")
+	if err != nil {
+		return fmt.Errorf("Codex config: %w", err)
+	}
+	if !exists {
 		features = map[string]any{}
 		config["features"] = features
 	}
 	features["hooks"] = true
+	return nil
+}
+
+func disableCodexHooksFeature(config map[string]any) {
+	features, _ := config["features"].(map[string]any)
+	if features == nil {
+		return
+	}
+	delete(features, "hooks")
+	if len(features) == 0 {
+		delete(config, "features")
+	}
+}
+
+func configMapSection(config map[string]any, key string) (map[string]any, bool, error) {
+	value, exists := config[key]
+	if !exists || value == nil {
+		return nil, false, nil
+	}
+	section, ok := value.(map[string]any)
+	if !ok {
+		return nil, false, fmt.Errorf("section %q must be an object/table, got %T", key, value)
+	}
+	return section, true, nil
 }
 
 func mergeHookCommand(hooks map[string]any, eventName, command string) {
@@ -506,9 +585,47 @@ func codexHookCommand(commandPrefix string) string {
 	return commandPrefix + " codex-hook"
 }
 
-func backupFile(path string) (string, error) {
-	backupPath := path + ".backup"
-	return backupPath, os.Rename(path, backupPath)
+func acquireConfigLock(projectRoot string, target Target) (*filelock.Lock, error) {
+	path := filepath.Join(projectRoot, ".turnal", "tmp", "config-"+string(target)+".lock")
+	lock, err := filelock.Acquire(path, 30*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("lock %s agent config: %w", target, err)
+	}
+	return lock, nil
+}
+
+func existingFileMode(path string, fallback os.FileMode) os.FileMode {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return fallback
+	}
+	return info.Mode().Perm()
+}
+
+func writeConfigAtomic(path string, data []byte, mode os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".turnal-config-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if err := tmp.Chmod(mode.Perm()); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 func pathExists(path string) bool {

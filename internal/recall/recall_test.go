@@ -95,8 +95,8 @@ func TestRecallTurnIncludesProviderEventsAndRawRecords(t *testing.T) {
 				t.Fatalf("raw records len = %d, want 3: %#v", len(turn.RawRecords), turn.RawRecords)
 			}
 			for _, rawRecord := range turn.RawRecords {
-				if !strings.HasPrefix(rawRecord.RawRef, test.rawAdapter+":") {
-					t.Fatalf("raw ref = %q, want %s:<line>", rawRecord.RawRef, test.rawAdapter)
+				if !strings.Contains(rawRecord.RawRef, ":"+test.rawAdapter+":") {
+					t.Fatalf("raw ref = %q, want v2 session ref for %s", rawRecord.RawRef, test.rawAdapter)
 				}
 				if rawRecord.Record.Adapter != test.adapter {
 					t.Fatalf("raw record adapter = %s, want %s", rawRecord.Record.Adapter, test.adapter)
@@ -320,6 +320,186 @@ func TestRecallTurnMissingTurnErrors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no events found") {
 		t.Fatalf("RecallTurn error = %v, want no events found", err)
+	}
+}
+
+func TestParseCheckpointPayloadRejectsMismatchedScopedIdentity(t *testing.T) {
+	sessionID, _ := primitives.ParseSessionID("scoped-mismatch")
+	turnID, _ := primitives.NewTurnID(1)
+	worktreeID, err := primitives.NewWorktreeID()
+	if err != nil {
+		t.Fatalf("NewWorktreeID: %v", err)
+	}
+	otherWorktreeID, err := primitives.NewWorktreeID()
+	if err != nil {
+		t.Fatalf("NewWorktreeID: %v", err)
+	}
+	producerID, err := primitives.NewEventProducerID()
+	if err != nil {
+		t.Fatalf("NewEventProducerID: %v", err)
+	}
+	streamID, err := primitives.DeriveEventStreamID(producerID, sessionID)
+	if err != nil {
+		t.Fatalf("DeriveEventStreamID: %v", err)
+	}
+	ref, err := primitives.NewScopedCheckpointRef(otherWorktreeID, streamID, sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("NewScopedCheckpointRef: %v", err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"turn":        1,
+		"phase":       "pre",
+		"worktree_id": worktreeID,
+		"stream_id":   streamID,
+		"commit_sha":  strings.Repeat("a", 40),
+		"ref":         ref,
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	_, err = parseCheckpointPayload(sessionID, turnID, eventlog.Event{
+		WorktreeID: worktreeID,
+		StreamID:   streamID,
+		Payload:    payload,
+	})
+	if err == nil || !strings.Contains(err.Error(), "checkpoint ref worktree") {
+		t.Fatalf("parseCheckpointPayload error = %v", err)
+	}
+}
+
+func TestValidateSelectedWorktreeRejectsForeignEvent(t *testing.T) {
+	sessionID, _ := primitives.ParseSessionID("foreign-event")
+	turnID, _ := primitives.NewTurnID(1)
+	selected, err := primitives.NewWorktreeID()
+	if err != nil {
+		t.Fatalf("NewWorktreeID: %v", err)
+	}
+	foreign, err := primitives.NewWorktreeID()
+	if err != nil {
+		t.Fatalf("NewWorktreeID: %v", err)
+	}
+
+	err = validateSelectedWorktree(sessionID, turnID, selected, eventlog.Event{Seq: 3, WorktreeID: foreign})
+	if err == nil || !strings.Contains(err.Error(), "does not match selected worktree") {
+		t.Fatalf("validateSelectedWorktree error = %v", err)
+	}
+}
+
+func TestValidateSelectedWorktreeRejectsMissingV2Identity(t *testing.T) {
+	sessionID, _ := primitives.ParseSessionID("missing-v2-worktree")
+	turnID, _ := primitives.NewTurnID(1)
+	selected, err := primitives.NewWorktreeID()
+	if err != nil {
+		t.Fatalf("NewWorktreeID: %v", err)
+	}
+
+	err = validateSelectedWorktree(sessionID, turnID, selected, eventlog.Event{Version: 2, Seq: 4})
+	if err == nil || !strings.Contains(err.Error(), "does not match selected worktree") {
+		t.Fatalf("validateSelectedWorktree error = %v", err)
+	}
+}
+
+func TestApplyEventMetadataRejectsDuplicatePreCheckpoint(t *testing.T) {
+	sessionID, _ := primitives.ParseSessionID("duplicate-pre")
+	turnID, _ := primitives.NewTurnID(1)
+	ref, err := primitives.NewCheckpointRef(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("NewCheckpointRef: %v", err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"turn":       1,
+		"phase":      "pre",
+		"commit_sha": strings.Repeat("a", 40),
+		"ref":        ref,
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	turn := Turn{SessionID: sessionID, TurnID: turnID}
+	if err := applyEventMetadata(&turn, eventlog.Event{Seq: 1, Type: primitives.EventTypeTurnStart}); err != nil {
+		t.Fatalf("apply turn start: %v", err)
+	}
+	checkpointEvent := eventlog.Event{Seq: 2, Type: primitives.EventTypeCheckpoint, Payload: payload}
+	if err := applyEventMetadata(&turn, checkpointEvent); err != nil {
+		t.Fatalf("apply pre checkpoint: %v", err)
+	}
+	checkpointEvent.Seq = 3
+	if err := applyEventMetadata(&turn, checkpointEvent); err == nil || !strings.Contains(err.Error(), "duplicate pre checkpoint") {
+		t.Fatalf("duplicate pre checkpoint error = %v", err)
+	}
+}
+
+func TestParseCheckpointPayloadRejectsMalformedExtendedFields(t *testing.T) {
+	sessionID, _ := primitives.ParseSessionID("malformed-checkpoint-fields")
+	turnID, _ := primitives.NewTurnID(1)
+	ref, err := primitives.NewCheckpointRef(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("NewCheckpointRef: %v", err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"turn":          1,
+		"phase":         "pre",
+		"checkpoint_id": 42,
+		"commit_sha":    strings.Repeat("a", 40),
+		"ref":           ref,
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	_, err = parseCheckpointPayload(sessionID, turnID, eventlog.Event{Seq: 2, Payload: payload})
+	if err == nil || !strings.Contains(err.Error(), "malformed checkpoint payload") {
+		t.Fatalf("parseCheckpointPayload error = %v", err)
+	}
+}
+
+func TestParseCheckpointPayloadRejectsMismatchedEventSequence(t *testing.T) {
+	sessionID, _ := primitives.ParseSessionID("mismatched-checkpoint-sequence")
+	turnID, _ := primitives.NewTurnID(1)
+	ref, err := primitives.NewCheckpointRef(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("NewCheckpointRef: %v", err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"turn":            1,
+		"phase":           "pre",
+		"commit_sha":      strings.Repeat("a", 40),
+		"ref":             ref,
+		"event_seq_start": 1,
+		"event_seq_end":   3,
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	_, err = parseCheckpointPayload(sessionID, turnID, eventlog.Event{Seq: 4, Payload: payload})
+	if err == nil || !strings.Contains(err.Error(), "does not match event sequence") {
+		t.Fatalf("parseCheckpointPayload error = %v", err)
+	}
+}
+
+func TestParseCheckpointPayloadRejectsGitSyncCommitWithoutRef(t *testing.T) {
+	sessionID, _ := primitives.ParseSessionID("git-sync-commit-without-ref")
+	turnID, _ := primitives.NewTurnID(1)
+	ref, err := primitives.NewCheckpointRef(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("NewCheckpointRef: %v", err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"turn":                1,
+		"phase":               "pre",
+		"commit_sha":          strings.Repeat("a", 40),
+		"ref":                 ref,
+		"git_sync_commit_sha": strings.Repeat("b", 40),
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	_, err = parseCheckpointPayload(sessionID, turnID, eventlog.Event{Seq: 2, Payload: payload})
+	if err == nil || !strings.Contains(err.Error(), "git_sync_commit_sha requires git_sync_ref") {
+		t.Fatalf("parseCheckpointPayload error = %v", err)
 	}
 }
 

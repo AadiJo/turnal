@@ -98,11 +98,20 @@ jobs:
           TURNAL_COMMIT: ${{ github.sha }}
         run: npm run pack:dry-run
 
+      - name: Generate SBOM
+
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: turnal.spdx.json
+          upload-artifact: false
+
       - name: Publish npm package
         env:
           TURNAL_RELEASE_CHANNEL: ${{ steps.release_meta.outputs.channel }}
           TURNAL_COMMIT: ${{ github.sha }}
-        run: npm publish --access public --tag "${{ steps.release_meta.outputs.npm_tag }}"
+        run: npm publish --provenance --access public --tag "${{ steps.release_meta.outputs.npm_tag }}"
 
       - name: Publish GitHub release
         env:
@@ -110,6 +119,7 @@ jobs:
         run: |
           args=(
             "${{ steps.release_meta.outputs.tag }}"
+            turnal.spdx.json
             --target "${{ github.sha }}"
             --title "${{ steps.release_meta.outputs.name }}"
             --generate-notes

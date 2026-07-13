@@ -567,6 +567,13 @@ func TestRenderedLineCountIgnoresANSIAndAccountsForWrapping(t *testing.T) {
 	}
 }
 
+func TestStripANSIBytesRemovesColorSequences(t *testing.T) {
+	got := string(stripANSIBytes([]byte("plain \x1b[38;5;111mblue\x1b[0m text")))
+	if got != "plain blue text" {
+		t.Fatalf("stripANSIBytes = %q", got)
+	}
+}
+
 func checkpointInfo(sessionID primitives.SessionID, turnID primitives.TurnID, at time.Time, digit string) *checkpoint.CheckpointRefInfo {
 	commit := primitives.CommitSHA(strings.Repeat(digit, 40))
 	return &checkpoint.CheckpointRefInfo{

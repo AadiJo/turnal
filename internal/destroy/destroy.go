@@ -63,18 +63,31 @@ func Run(start string, opts Options) (Result, error) {
 			}
 			result.HookResults = hookResults
 		}
-		if err := os.RemoveAll(metadataDir); err != nil {
-			return fmt.Errorf("remove metadata dir %s: %w", metadataDir, err)
-		}
 		return nil
 	}); err != nil {
 		return Result{}, err
+	}
+	// Windows does not permit deleting the lock file while its handle is open.
+	// Release the workspace lock before removing the metadata tree.
+	if err := os.RemoveAll(metadataDir); err != nil {
+		return Result{}, fmt.Errorf("remove metadata dir %s: %w", metadataDir, err)
 	}
 
 	return result, nil
 }
 
 func FindRoot(start string) (primitives.WorkspaceRoot, string, error) {
+	var discoveryErr error
+	if root, err := checkpoint.FindRoot(start); err == nil {
+		if repo, err := checkpoint.OpenReadOnly(root); err == nil {
+			return root, repo.MetadataDir, nil
+		} else {
+			discoveryErr = err
+		}
+	} else {
+		discoveryErr = err
+	}
+
 	abs, err := filepath.Abs(start)
 	if err != nil {
 		return "", "", fmt.Errorf("resolve start path: %w", err)
@@ -104,7 +117,7 @@ func FindRoot(start string) (primitives.WorkspaceRoot, string, error) {
 		abs = parent
 	}
 
-	return "", "", fmt.Errorf("not a turnal workspace: no .turnal directory found")
+	return "", "", discoveryErr
 }
 
 func uninstallHooks(projectRoot string, opts Options) ([]adapters.UninstallResult, error) {

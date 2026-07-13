@@ -2,13 +2,15 @@ package checkpoint
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -17,6 +19,7 @@ import (
 
 	agentconfig "github.com/AadiJo/turnal/internal/config"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/snapshotpolicy"
 )
 
 const (
@@ -48,7 +51,6 @@ version = 1
 # command = "turnal"
 #
 # [bootstrap]
-# init_workspace_git = true
 # update_gitignore = true
 #
 # [git_sync]
@@ -56,6 +58,12 @@ version = 1
 #
 # [rollback]
 # mode = "checkpoint" # checkpoint | workspace-git
+#
+# [[verify]]
+# name = "unit-tests"
+# command = "go"
+# args = ["test", "./..."]
+# timeout = "2m"
 #
 # [retention]
 # Hidden Git objects are retained while private refs exist. Use
@@ -75,6 +83,7 @@ type Repo struct {
 	MetadataDir   string
 	GitDir        string
 	TmpDir        string
+	LockTimeout   time.Duration
 
 	IdentityVersion int
 	RepoID          primitives.RepoID
@@ -121,6 +130,7 @@ type CheckpointRefInfo struct {
 	StreamID     primitives.EventStreamID
 	Commit       primitives.CommitSHA
 	Time         time.Time
+	Manual       bool
 }
 
 type DiffFileStat struct {
@@ -170,7 +180,8 @@ type RestorePlan struct {
 }
 
 type MaterializeOptions struct {
-	PreservePaths []string
+	PreservePaths               []string
+	ApplyCurrentSecretDenyGlobs bool
 }
 
 func Init(root primitives.WorkspaceRoot) (*Repo, error) {
@@ -185,8 +196,11 @@ func InitAt(root primitives.WorkspaceRoot, metadataDir string) (*Repo, error) {
 	repo := pathsAt(root, metadataDir)
 
 	for _, dir := range []string{repo.MetadataDir, repo.TmpDir, filepath.Join(repo.MetadataDir, logDirName), filepath.Join(repo.MetadataDir, indexDirName)} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("create %s: %w", dir, err)
+		}
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return nil, fmt.Errorf("secure %s: %w", dir, err)
 		}
 	}
 
@@ -205,6 +219,9 @@ func InitAt(root primitives.WorkspaceRoot, metadataDir string) (*Repo, error) {
 	if err := writeFileIfMissing(filepath.Join(repo.MetadataDir, configFileName), []byte(workspaceConfigTemplate)); err != nil {
 		return nil, err
 	}
+	if err := configureHiddenGit(repo); err != nil {
+		return nil, err
+	}
 
 	bare, err := repo.HiddenGitBare()
 	if err != nil {
@@ -220,6 +237,9 @@ func InitAt(root primitives.WorkspaceRoot, metadataDir string) (*Repo, error) {
 		return nil, fmt.Errorf("discover workspace git identity: %w", discoverErr)
 	}
 	if err := repo.ensureIdentity(gitIdentity); err != nil {
+		return nil, err
+	}
+	if err := ensureSecureMetadataPermissions(repo); err != nil {
 		return nil, err
 	}
 
@@ -248,7 +268,63 @@ func Open(root primitives.WorkspaceRoot) (*Repo, error) {
 	return OpenAt(root, store.StorePath)
 }
 
+// OpenReadOnly opens an existing checkpoint store without refreshing identity,
+// registry, permissions, hidden Git configuration, or other durable metadata.
+func OpenReadOnly(root primitives.WorkspaceRoot) (*Repo, error) {
+	local := paths(root)
+	if info, err := os.Stat(local.GitDir); err == nil && info.IsDir() {
+		return OpenAtReadOnly(root, local.MetadataDir)
+	} else if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("stat hidden git repo: %w", err)
+	}
+
+	gitIdentity, err := discoverUserGit(root.String())
+	if err != nil {
+		return nil, fmt.Errorf("hidden git repo not initialized at %s and attached store discovery failed: %w", local.GitDir, err)
+	}
+	store, ok, err := resolveRegisteredStore(gitIdentity)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("hidden git repo not initialized at %s and no attached Turnal store is registered for %s", local.GitDir, gitIdentity.GitCommonDir)
+	}
+	return OpenAtReadOnly(root, store.StorePath)
+}
+
 func OpenAt(root primitives.WorkspaceRoot, metadataDir string) (*Repo, error) {
+	metadataDir, err := filepath.Abs(metadataDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve metadata dir: %w", err)
+	}
+	repo := pathsAt(root, metadataDir)
+	if _, err := os.Stat(repo.GitDir); err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("hidden git repo not initialized at %s", repo.GitDir)
+		}
+		return nil, fmt.Errorf("stat hidden git repo: %w", err)
+	}
+	if err := configureHiddenGit(repo); err != nil {
+		return nil, err
+	}
+	var gitIdentity *UserGitIdentity
+	if discovered, discoverErr := discoverUserGit(root.String()); discoverErr == nil {
+		gitIdentity = &discovered
+	} else if !isNoGitRepository(discoverErr) {
+		return nil, fmt.Errorf("discover workspace git identity: %w", discoverErr)
+	}
+	if err := repo.ensureIdentity(gitIdentity); err != nil {
+		return nil, err
+	}
+	if err := ensureSecureMetadataPermissions(repo); err != nil {
+		return nil, err
+	}
+	return repo, nil
+}
+
+// OpenAtReadOnly loads an existing store and worktree binding without writing
+// migrations or last-seen bookkeeping.
+func OpenAtReadOnly(root primitives.WorkspaceRoot, metadataDir string) (*Repo, error) {
 	metadataDir, err := filepath.Abs(metadataDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolve metadata dir: %w", err)
@@ -266,7 +342,7 @@ func OpenAt(root primitives.WorkspaceRoot, metadataDir string) (*Repo, error) {
 	} else if !isNoGitRepository(discoverErr) {
 		return nil, fmt.Errorf("discover workspace git identity: %w", discoverErr)
 	}
-	if err := repo.ensureIdentity(gitIdentity); err != nil {
+	if err := repo.readIdentity(gitIdentity); err != nil {
 		return nil, err
 	}
 	return repo, nil
@@ -313,6 +389,57 @@ func (repo *Repo) CreateCheckpoint(sessionID primitives.SessionID, turnID primit
 		return err
 	})
 	return checkpoint, err
+}
+
+// CreateManualCheckpoint captures the current workspace without assigning the
+// checkpoint to an agent session or turn.
+func (repo *Repo) CreateManualCheckpoint() (Checkpoint, error) {
+	var created Checkpoint
+	err := repo.WithWorkspaceLock("create manual checkpoint", func() error {
+		checkpointID, err := primitives.NewCheckpointID()
+		if err != nil {
+			return err
+		}
+		ref, err := primitives.NewManualCheckpointRef(repo.WorktreeID, checkpointID)
+		if err != nil {
+			return err
+		}
+		canonicalRef, err := primitives.NewCheckpointIDRef(checkpointID)
+		if err != nil {
+			return err
+		}
+		commit, err := repo.createSnapshotCommit(fmt.Sprintf("turnal manual checkpoint %s", checkpointID))
+		if err != nil {
+			return err
+		}
+		if err := repo.installCheckpointRefsAtomic(canonicalRef, ref, commit); err != nil {
+			return err
+		}
+		created = Checkpoint{
+			ID:           checkpointID,
+			Ref:          ref,
+			CanonicalRef: canonicalRef,
+			Commit:       commit,
+			WorktreeID:   repo.WorktreeID,
+		}
+		return nil
+	})
+	return created, err
+}
+
+func (repo *Repo) installCheckpointRefsAtomic(canonicalRef, friendlyRef primitives.CheckpointRef, commit primitives.CommitSHA) error {
+	input := strings.Join([]string{
+		"start",
+		fmt.Sprintf("create %s %s", canonicalRef, commit),
+		fmt.Sprintf("create %s %s", friendlyRef, commit),
+		"prepare",
+		"commit",
+		"",
+	}, "\n")
+	if _, err := runHiddenGitWithInput(repo, "", strings.NewReader(input), "update-ref", "--stdin"); err != nil {
+		return fmt.Errorf("install checkpoint refs atomically: %w", err)
+	}
+	return nil
 }
 
 func (repo *Repo) createCheckpoint(sessionID primitives.SessionID, turnID primitives.TurnID, phase primitives.CheckpointPhase) (Checkpoint, error) {
@@ -488,7 +615,8 @@ func (repo *Repo) createSnapshotCommit(message string) (primitives.CommitSHA, er
 		return "", err
 	}
 
-	if err := repo.snapshotWorktree(indexPath); err != nil {
+	modes, err := repo.snapshotWorktree(indexPath)
+	if err != nil {
 		return "", err
 	}
 
@@ -497,6 +625,12 @@ func (repo *Repo) createSnapshotCommit(message string) (primitives.CommitSHA, er
 		return "", err
 	}
 
+	manifestData, err := json.Marshal(modeManifest{Version: 1, Modes: fileModesToUint32(modes)})
+	if err != nil {
+		return "", fmt.Errorf("marshal checkpoint mode manifest: %w", err)
+	}
+	manifestHash := sha256.Sum256(manifestData)
+	message += "\n\nturnal-mode-manifest: " + hex.EncodeToString(manifestHash[:])
 	commitOutput, err := runHiddenGit(repo, indexPath, "commit-tree", strings.TrimSpace(tree), "-m", message)
 	if err != nil {
 		return "", err
@@ -505,6 +639,9 @@ func (repo *Repo) createSnapshotCommit(message string) (primitives.CommitSHA, er
 	commit, err := primitives.ParseCommitSHA(strings.TrimSpace(commitOutput))
 	if err != nil {
 		return "", fmt.Errorf("parse checkpoint commit: %w", err)
+	}
+	if err := repo.writeModeManifest(commit, manifestData); err != nil {
+		return "", err
 	}
 
 	return commit, nil
@@ -813,10 +950,11 @@ func (repo *Repo) listCheckpointRefInfos(refPrefix string) ([]CheckpointRefInfo,
 				worktreeID = repo.WorktreeID
 			}
 		}
-		if streamID == "" && repo.StoreID != "" {
+		if streamID == "" && repo.StoreID != "" && !refParts.Manual {
 			streamID, _ = primitives.DeriveLegacyEventStreamID(repo.StoreID, refParts.SessionID)
 		}
 		infos = append(infos, CheckpointRefInfo{
+			ID:         refParts.CheckpointID,
 			Ref:        ref,
 			SessionID:  refParts.SessionID,
 			TurnID:     refParts.TurnID,
@@ -826,13 +964,17 @@ func (repo *Repo) listCheckpointRefInfos(refPrefix string) ([]CheckpointRefInfo,
 			StreamID:   streamID,
 			Commit:     commit,
 			Time:       createdAt,
+			Manual:     refParts.Manual,
 		})
 	}
 	for index := range infos {
 		if canonical, ok := canonicalByCommit[infos[index].Commit.String()]; ok {
+			if infos[index].Manual && infos[index].ID != canonical.id {
+				return nil, fmt.Errorf("manual checkpoint identity invariant failed: ref %s names %s but canonical ref names %s", infos[index].Ref, infos[index].ID, canonical.id)
+			}
 			infos[index].ID = canonical.id
 			infos[index].CanonicalRef = canonical.ref
-			if parts, err := infos[index].Ref.Parts(); err == nil && !parts.Scoped {
+			if parts, err := infos[index].Ref.Parts(); err == nil && !parts.Scoped && !parts.Manual {
 				producerID := repo.EventProducerID
 				if primary, ok := repo.primaryWorktreeBinding(); ok {
 					producerID = primary.ProducerID
@@ -841,6 +983,9 @@ func (repo *Repo) listCheckpointRefInfos(refPrefix string) ([]CheckpointRefInfo,
 					infos[index].StreamID = streamID
 				}
 			}
+		}
+		if infos[index].Manual && infos[index].CanonicalRef == "" {
+			return nil, fmt.Errorf("manual checkpoint identity invariant failed: ref %s has no matching canonical ref", infos[index].Ref)
 		}
 	}
 
@@ -1035,13 +1180,69 @@ func (repo *Repo) DeletePrivateRef(ref string) error {
 }
 
 func (repo *Repo) RunHiddenGitGC() error {
-	if _, err := runHiddenGit(repo, "", "reflog", "expire", "--expire=all", "--all"); err != nil {
+	return repo.WithWorkspaceLock("garbage collect hidden repository", func() error {
+		if _, err := repo.pruneModeManifests(); err != nil {
+			return err
+		}
+		if _, err := runHiddenGit(repo, "", "reflog", "expire", "--expire=all", "--all"); err != nil {
+			return err
+		}
+		if _, err := runHiddenGit(repo, "", "gc", "--prune=now"); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
+// PruneModeManifests removes permission sidecars for commits no longer
+// reachable from any hidden-repository ref.
+func (repo *Repo) PruneModeManifests() ([]string, error) {
+	var removed []string
+	err := repo.WithWorkspaceLock("prune checkpoint mode manifests", func() error {
+		var err error
+		removed, err = repo.pruneModeManifests()
 		return err
+	})
+	return removed, err
+}
+
+func (repo *Repo) pruneModeManifests() ([]string, error) {
+	reachableOutput, err := runHiddenGit(repo, "", "rev-list", "--all")
+	if err != nil {
+		return nil, fmt.Errorf("list commits for mode-manifest pruning: %w", err)
 	}
-	if _, err := runHiddenGit(repo, "", "gc", "--prune=now"); err != nil {
-		return err
+	reachable := make(map[string]struct{})
+	for _, value := range strings.Fields(reachableOutput) {
+		reachable[value] = struct{}{}
 	}
-	return nil
+	dir := filepath.Join(repo.MetadataDir, "manifests", "modes")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read checkpoint mode manifests: %w", err)
+	}
+	var removed []string
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		commitText := strings.TrimSuffix(entry.Name(), ".json")
+		if _, err := primitives.ParseCommitSHA(commitText); err != nil {
+			continue
+		}
+		if _, ok := reachable[commitText]; ok {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		if err := os.Remove(path); err != nil {
+			return removed, fmt.Errorf("remove unreferenced mode manifest %s: %w", path, err)
+		}
+		removed = append(removed, path)
+	}
+	sort.Strings(removed)
+	return removed, nil
 }
 
 func (repo *Repo) CheckpointCommit(ref primitives.CheckpointRef) (primitives.CommitSHA, error) {
@@ -1057,7 +1258,7 @@ func (repo *Repo) RefCommit(ref string) (primitives.CommitSHA, error) {
 	if err != nil {
 		return "", err
 	}
-	output, err := runHiddenGit(repo, "", "rev-parse", parsedRef+"^{commit}")
+	output, err := runHiddenGitReadOnly(repo, "rev-parse", parsedRef+"^{commit}")
 	if err != nil {
 		return "", err
 	}
@@ -1165,6 +1366,43 @@ func (repo *Repo) RestoreCommit(commit primitives.CommitSHA) error {
 	})
 }
 
+// PreflightRestoreCommit verifies every target object and the optional mode
+// manifest before a caller records a destructive restore transition.
+func (repo *Repo) PreflightRestoreCommit(commit primitives.CommitSHA) error {
+	parsedCommit, err := primitives.ParseCommitSHA(commit.String())
+	if err != nil {
+		return err
+	}
+	if _, err := runHiddenGit(repo, "", "rev-parse", parsedCommit.String()+"^{commit}"); err != nil {
+		return fmt.Errorf("preflight restore commit: %w", err)
+	}
+	if _, err := repo.readModeManifest(parsedCommit); err != nil {
+		return fmt.Errorf("preflight restore permissions: %w", err)
+	}
+	entries, err := repo.ListCommitTree(parsedCommit)
+	if err != nil {
+		return fmt.Errorf("preflight restore tree: %w", err)
+	}
+	denyGlobs, err := repo.secretDenyGlobs()
+	if err != nil {
+		return fmt.Errorf("preflight restore policy: %w", err)
+	}
+	for _, entry := range entries {
+		if secretDeniedPath(entry.Path, denyGlobs) {
+			continue
+		}
+		if _, err := runHiddenGit(repo, "", "cat-file", "-e", entry.ObjectID+"^{blob}"); err != nil {
+			return fmt.Errorf("preflight restore blob %s: %w", entry.Path, err)
+		}
+		if entry.Mode == "120000" {
+			if _, err := repo.blobBytesLimited(entry.ObjectID, 1<<20); err != nil {
+				return fmt.Errorf("preflight restore symlink %s: %w", entry.Path, err)
+			}
+		}
+	}
+	return nil
+}
+
 func (repo *Repo) MaterializeCommit(commit primitives.CommitSHA, root string, options MaterializeOptions) error {
 	parsedCommit, err := primitives.ParseCommitSHA(commit.String())
 	if err != nil {
@@ -1188,12 +1426,36 @@ func (repo *Repo) MaterializeCommit(commit primitives.CommitSHA, root string, op
 	if err != nil {
 		return err
 	}
+	var denyGlobs []string
+	if options.ApplyCurrentSecretDenyGlobs {
+		denyGlobs, err = repo.secretDenyGlobs()
+		if err != nil {
+			return fmt.Errorf("resolve current materialization secret policy: %w", err)
+		}
+		entries = filterSecretDeniedTreeEntries(entries, denyGlobs)
+	}
+	modes, err := repo.readModeManifest(parsedCommit)
+	if err != nil {
+		return err
+	}
 	preservePaths, err := materializePreserveSet(options.PreservePaths)
 	if err != nil {
 		return err
 	}
+	for preservedPath := range preservePaths {
+		if secretDeniedPath(preservedPath, denyGlobs) {
+			delete(preservePaths, preservedPath)
+		}
+	}
 	for _, entry := range entries {
-		if err := repo.restoreTreeEntryAtRoot(materializeRoot, entry); err != nil {
+		mode, hasMode := modes[entry.Path]
+		var err error
+		if hasMode {
+			err = repo.restoreTreeEntryAtRoot(materializeRoot, entry, mode)
+		} else {
+			err = repo.restoreTreeEntryAtRoot(materializeRoot, entry)
+		}
+		if err != nil {
 			return err
 		}
 	}
@@ -1201,6 +1463,19 @@ func (repo *Repo) MaterializeCommit(commit primitives.CommitSHA, root string, op
 		return err
 	}
 	return materializeRemoveEmptyDirs(materializeRoot)
+}
+
+func filterSecretDeniedTreeEntries(entries []TreeEntry, denyGlobs []string) []TreeEntry {
+	if len(entries) == 0 || len(denyGlobs) == 0 {
+		return entries
+	}
+	filtered := make([]TreeEntry, 0, len(entries))
+	for _, entry := range entries {
+		if !secretDeniedPath(entry.Path, denyGlobs) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
 }
 
 func (repo *Repo) restoreCommit(commit primitives.CommitSHA) error {
@@ -1221,6 +1496,10 @@ func (repo *Repo) restoreCommit(commit primitives.CommitSHA) error {
 	if err != nil {
 		return err
 	}
+	modes, err := repo.readModeManifest(parsedCommit)
+	if err != nil {
+		return err
+	}
 	denyGlobs, err := repo.secretDenyGlobs()
 	if err != nil {
 		return err
@@ -1229,7 +1508,14 @@ func (repo *Repo) restoreCommit(commit primitives.CommitSHA) error {
 		if secretDeniedPath(entry.Path, denyGlobs) {
 			continue
 		}
-		if err := repo.restoreTreeEntry(entry); err != nil {
+		mode, hasMode := modes[entry.Path]
+		var err error
+		if hasMode {
+			err = repo.restoreTreeEntryWithMode(entry, mode)
+		} else {
+			err = repo.restoreTreeEntry(entry)
+		}
+		if err != nil {
 			return err
 		}
 	}
@@ -1244,7 +1530,7 @@ func (repo *Repo) ListCommitTree(commit primitives.CommitSHA) ([]TreeEntry, erro
 	if err != nil {
 		return nil, err
 	}
-	output, err := runHiddenGit(repo, "", "ls-tree", "-r", "-z", "--full-tree", parsedCommit.String())
+	output, err := runHiddenGitReadOnly(repo, "ls-tree", "-r", "-z", "--full-tree", parsedCommit.String())
 	if err != nil {
 		return nil, err
 	}
@@ -1289,7 +1575,7 @@ func (repo *Repo) snapshotWorktreeTree() (string, func(), error) {
 		cleanup()
 		return "", nil, err
 	}
-	if err := repo.snapshotWorktree(indexPath); err != nil {
+	if _, err := repo.snapshotWorktree(indexPath); err != nil {
 		cleanup()
 		return "", nil, err
 	}
@@ -1434,7 +1720,11 @@ func (repo *Repo) restoreTreeEntry(entry TreeEntry) error {
 	return repo.restoreTreeEntryAtRoot(repo.WorkspaceRoot.String(), entry)
 }
 
-func (repo *Repo) restoreTreeEntryAtRoot(root string, entry TreeEntry) error {
+func (repo *Repo) restoreTreeEntryWithMode(entry TreeEntry, mode fs.FileMode) error {
+	return repo.restoreTreeEntryAtRoot(repo.WorkspaceRoot.String(), entry, mode)
+}
+
+func (repo *Repo) restoreTreeEntryAtRoot(root string, entry TreeEntry, storedMode ...fs.FileMode) error {
 	repoPath, err := primitives.ParseRepoPath(entry.Path)
 	if err != nil {
 		return err
@@ -1450,7 +1740,7 @@ func (repo *Repo) restoreTreeEntryAtRoot(root string, entry TreeEntry) error {
 
 	switch entry.Mode {
 	case "100644", "100755":
-		return repo.restoreRegularFile(absPath, entry)
+		return repo.restoreRegularFile(absPath, entry, storedMode...)
 	case "120000":
 		return repo.restoreSymlink(absPath, entry)
 	default:
@@ -1631,12 +1921,7 @@ func ensureNoExcludedDescendants(absPath string, repoPath string) error {
 	})
 }
 
-func (repo *Repo) restoreRegularFile(absPath string, entry TreeEntry) error {
-	content, err := repo.blobBytes(entry.ObjectID)
-	if err != nil {
-		return fmt.Errorf("read blob for %s: %w", entry.Path, err)
-	}
-
+func (repo *Repo) restoreRegularFile(absPath string, entry TreeEntry, storedMode ...fs.FileMode) error {
 	dir := filepath.Dir(absPath)
 	tmpFile, err := os.CreateTemp(dir, ".turnal-restore-*")
 	if err != nil {
@@ -1650,13 +1935,16 @@ func (repo *Repo) restoreRegularFile(absPath string, entry TreeEntry) error {
 		}
 	}()
 
-	if _, err := tmpFile.Write(content); err != nil {
+	if err := repo.writeBlobTo(entry.ObjectID, tmpFile); err != nil {
 		_ = tmpFile.Close()
-		return fmt.Errorf("write temp file for %s: %w", entry.Path, err)
+		return fmt.Errorf("stream blob for %s: %w", entry.Path, err)
 	}
 	mode := fs.FileMode(0o644)
 	if entry.Mode == "100755" {
 		mode = 0o755
+	}
+	if len(storedMode) > 0 && storedMode[0].IsRegular() {
+		mode = storedMode[0].Perm()
 	}
 	if err := tmpFile.Chmod(mode); err != nil {
 		_ = tmpFile.Close()
@@ -1673,7 +1961,7 @@ func (repo *Repo) restoreRegularFile(absPath string, entry TreeEntry) error {
 }
 
 func (repo *Repo) restoreSymlink(absPath string, entry TreeEntry) error {
-	target, err := repo.blobBytes(entry.ObjectID)
+	target, err := repo.blobBytesLimited(entry.ObjectID, 1<<20)
 	if err != nil {
 		return fmt.Errorf("read symlink blob for %s: %w", entry.Path, err)
 	}
@@ -1692,6 +1980,37 @@ func (repo *Repo) blobBytes(objectID string) ([]byte, error) {
 		return nil, err
 	}
 	return []byte(output), nil
+}
+
+func (repo *Repo) blobBytesLimited(objectID string, limit int64) ([]byte, error) {
+	sizeText, err := runHiddenGit(repo, "", "cat-file", "-s", objectID)
+	if err != nil {
+		return nil, err
+	}
+	size, err := strconv.ParseInt(strings.TrimSpace(sizeText), 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("parse blob size: %w", err)
+	}
+	if size > limit {
+		return nil, fmt.Errorf("blob is %d bytes; limit is %d", size, limit)
+	}
+	return repo.blobBytes(objectID)
+}
+
+func (repo *Repo) writeBlobTo(objectID string, destination io.Writer) error {
+	cmd := exec.Command("git", "cat-file", "blob", objectID)
+	cmd.Dir = repo.WorkspaceRoot.String()
+	cmd.Env = append(cleanGitEnv(os.Environ()),
+		"GIT_DIR="+repo.GitDir,
+		"GIT_WORK_TREE="+repo.WorkspaceRoot.String(),
+	)
+	cmd.Stdout = destination
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git cat-file blob %s: %w: %s", objectID, err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
 }
 
 func (repo *Repo) removeEmptyDirs(indexPath string) error {
@@ -1756,19 +2075,20 @@ func (repo *Repo) validatePrivateRef(ref string) (string, error) {
 	if strings.ContainsRune(ref, 0) {
 		return "", fmt.Errorf("private ref %q must not contain NUL", ref)
 	}
-	if _, err := runHiddenGit(repo, "", "check-ref-format", ref); err != nil {
+	if _, err := runHiddenGitReadOnly(repo, "check-ref-format", ref); err != nil {
 		return "", err
 	}
 	return ref, nil
 }
 
-func (repo *Repo) snapshotWorktree(indexPath string) error {
+func (repo *Repo) snapshotWorktree(indexPath string) (map[string]fs.FileMode, error) {
 	root := repo.WorkspaceRoot.String()
 	denyGlobs, err := repo.secretDenyGlobs()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return filepath.WalkDir(root, func(absPath string, entry fs.DirEntry, walkErr error) error {
+	modes := make(map[string]fs.FileMode)
+	err = filepath.WalkDir(root, func(absPath string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -1817,6 +2137,7 @@ func (repo *Repo) snapshotWorktree(indexPath string) error {
 		var blob string
 		switch {
 		case info.Mode().IsRegular():
+			modes[repoPath] = info.Mode()
 			mode = gitRegularFileMode(info.Mode())
 			output, err := runHiddenGit(repo, indexPath, "hash-object", "-w", "--no-filters", "--", repoPath)
 			if err != nil {
@@ -1843,6 +2164,107 @@ func (repo *Repo) snapshotWorktree(indexPath string) error {
 		}
 		return nil
 	})
+	return modes, err
+}
+
+type modeManifest struct {
+	Version int               `json:"version"`
+	Modes   map[string]uint32 `json:"modes"`
+}
+
+func fileModesToUint32(modes map[string]fs.FileMode) map[string]uint32 {
+	encoded := make(map[string]uint32, len(modes))
+	for repoPath, mode := range modes {
+		encoded[repoPath] = uint32(mode.Perm())
+	}
+	return encoded
+}
+
+func (repo *Repo) modeManifestPath(commit primitives.CommitSHA) string {
+	return filepath.Join(repo.MetadataDir, "manifests", "modes", commit.String()+".json")
+}
+
+func (repo *Repo) writeModeManifest(commit primitives.CommitSHA, data []byte) error {
+	dir := filepath.Dir(repo.modeManifestPath(commit))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create checkpoint mode manifest dir: %w", err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return fmt.Errorf("secure checkpoint mode manifest dir: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, ".mode-manifest-*")
+	if err != nil {
+		return fmt.Errorf("create checkpoint mode manifest: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("secure checkpoint mode manifest: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write checkpoint mode manifest: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync checkpoint mode manifest: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close checkpoint mode manifest: %w", err)
+	}
+	if err := os.Rename(tmpPath, repo.modeManifestPath(commit)); err != nil {
+		return fmt.Errorf("install checkpoint mode manifest: %w", err)
+	}
+	if err := syncDirectory(dir); err != nil {
+		return fmt.Errorf("sync checkpoint mode manifest dir: %w", err)
+	}
+	return nil
+}
+
+func (repo *Repo) readModeManifest(commit primitives.CommitSHA) (map[string]fs.FileMode, error) {
+	data, err := os.ReadFile(repo.modeManifestPath(commit))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read checkpoint mode manifest: %w", err)
+	}
+	manifestHash := sha256.Sum256(data)
+	wantHash := hex.EncodeToString(manifestHash[:])
+	message, err := runHiddenGit(repo, "", "show", "-s", "--format=%B", commit.String())
+	if err != nil {
+		return nil, fmt.Errorf("read checkpoint mode manifest trailer: %w", err)
+	}
+	const trailerPrefix = "turnal-mode-manifest:"
+	foundHash := ""
+	for _, line := range strings.Split(message, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), trailerPrefix) {
+			foundHash = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), trailerPrefix))
+		}
+	}
+	if foundHash == "" || foundHash != wantHash {
+		return nil, fmt.Errorf("checkpoint mode manifest hash does not match commit trailer")
+	}
+	var manifest modeManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return nil, fmt.Errorf("parse checkpoint mode manifest: %w", err)
+	}
+	if manifest.Version != 1 {
+		return nil, fmt.Errorf("checkpoint mode manifest has unsupported version %d", manifest.Version)
+	}
+	modes := make(map[string]fs.FileMode, len(manifest.Modes))
+	for value, rawMode := range manifest.Modes {
+		repoPath, err := primitives.ParseRepoPath(value)
+		if err != nil {
+			return nil, fmt.Errorf("checkpoint mode manifest path %q: %w", value, err)
+		}
+		if rawMode > 0o777 {
+			return nil, fmt.Errorf("checkpoint mode manifest path %s has invalid mode %o", repoPath, rawMode)
+		}
+		modes[repoPath.String()] = fs.FileMode(rawMode)
+	}
+	return modes, nil
 }
 
 func (repo *Repo) secretDenyGlobs() ([]string, error) {
@@ -1884,35 +2306,7 @@ func excludedPath(repoPath string) bool {
 }
 
 func secretDeniedPath(repoPath string, patterns []string) bool {
-	for _, pattern := range patterns {
-		if globMatchesRepoPath(filepath.ToSlash(pattern), repoPath) {
-			return true
-		}
-	}
-	return false
-}
-
-func globMatchesRepoPath(pattern string, repoPath string) bool {
-	if matched, _ := path.Match(pattern, repoPath); matched {
-		return true
-	}
-	if !strings.Contains(pattern, "/") {
-		if matched, _ := path.Match(pattern, path.Base(repoPath)); matched {
-			return true
-		}
-	}
-	if suffix, ok := strings.CutPrefix(pattern, "**/"); ok {
-		if matched, _ := path.Match(suffix, repoPath); matched {
-			return true
-		}
-		parts := strings.Split(repoPath, "/")
-		for i := 1; i < len(parts); i++ {
-			if matched, _ := path.Match(suffix, strings.Join(parts[i:], "/")); matched {
-				return true
-			}
-		}
-	}
-	return false
+	return snapshotpolicy.Denied(repoPath, patterns)
 }
 
 func gitRegularFileMode(mode fs.FileMode) string {
@@ -1948,7 +2342,7 @@ func pathsAt(root primitives.WorkspaceRoot, metadataDir string) *Repo {
 }
 
 func (repo *Repo) tempIndex() (string, func(), error) {
-	if err := os.MkdirAll(repo.TmpDir, 0o755); err != nil {
+	if err := os.MkdirAll(repo.TmpDir, 0o700); err != nil {
 		return "", nil, fmt.Errorf("create temp dir: %w", err)
 	}
 
@@ -1977,7 +2371,7 @@ func writeFileIfMissing(path string, content []byte) error {
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("stat %s: %w", path, err)
 	}
-	if err := os.WriteFile(path, content, 0o644); err != nil {
+	if err := os.WriteFile(path, content, 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil
@@ -1994,12 +2388,34 @@ func runGitNoRepo(workDir string, args ...string) (string, error) {
 	return string(output), nil
 }
 
+func configureHiddenGit(repo *Repo) error {
+	if _, err := runGitNoRepo(repo.WorkspaceRoot.String(), "--git-dir="+repo.GitDir, "config", "core.longpaths", "true"); err != nil {
+		return fmt.Errorf("configure hidden git long-path support: %w", err)
+	}
+	return nil
+}
+
 func runHiddenGit(repo *Repo, indexPath string, args ...string) (string, error) {
 	return runHiddenGitCommand(repo, indexPath, nil, args...)
 }
 
 func runHiddenGitWithInput(repo *Repo, indexPath string, stdin io.Reader, args ...string) (string, error) {
 	return runHiddenGitCommand(repo, indexPath, stdin, args...)
+}
+
+func runHiddenGitReadOnly(repo *Repo, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = repo.WorkspaceRoot.String()
+	cmd.Env = append(cleanGitEnv(os.Environ()),
+		"GIT_DIR="+repo.GitDir,
+		"GIT_WORK_TREE="+repo.WorkspaceRoot.String(),
+		"GIT_OPTIONAL_LOCKS=0",
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+	}
+	return string(output), nil
 }
 
 func runHiddenGitCommand(repo *Repo, indexPath string, stdin io.Reader, args ...string) (string, error) {

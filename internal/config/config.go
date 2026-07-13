@@ -6,6 +6,9 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/AadiJo/turnal/internal/hookcmd"
 	"github.com/AadiJo/turnal/internal/primitives"
@@ -15,6 +18,13 @@ import (
 const (
 	ConfigEnvVar      = "TURNAL_CONFIG"
 	HookCommandEnvVar = "TURNAL_HOOK_COMMAND"
+
+	MaxVerifierCount        = 64
+	MaxVerifierNameBytes    = 256
+	MaxVerifierCommandBytes = 4096
+	MaxVerifierArgCount     = 128
+	MaxVerifierArgBytes     = 4096
+	MaxVerifierTimeout      = 24 * time.Hour
 )
 
 type Origin string
@@ -36,6 +46,7 @@ type File struct {
 	GitSync   *GitSyncFile   `toml:"git_sync,omitempty"`
 	Rollback  *RollbackFile  `toml:"rollback,omitempty"`
 	Secrets   *SecretsFile   `toml:"secrets,omitempty"`
+	Verify    []VerifierFile `toml:"verify,omitempty"`
 }
 
 type InitFile struct {
@@ -54,8 +65,7 @@ type HooksFile struct {
 }
 
 type BootstrapFile struct {
-	InitWorkspaceGit *bool `toml:"init_workspace_git,omitempty"`
-	UpdateGitignore  *bool `toml:"update_gitignore,omitempty"`
+	UpdateGitignore *bool `toml:"update_gitignore,omitempty"`
 }
 
 type GitSyncFile struct {
@@ -72,6 +82,13 @@ type SecretsFile struct {
 	SnapshotDenyGlobs []string `toml:"snapshot_deny_globs,omitempty"`
 }
 
+type VerifierFile struct {
+	Name    string   `toml:"name"`
+	Command string   `toml:"command"`
+	Args    []string `toml:"args,omitempty"`
+	Timeout string   `toml:"timeout"`
+}
+
 type Effective struct {
 	Init      Init
 	Run       Run
@@ -80,6 +97,7 @@ type Effective struct {
 	GitSync   GitSync
 	Rollback  Rollback
 	Secrets   Secrets
+	Verify    []Verifier
 }
 
 type Init struct {
@@ -98,8 +116,7 @@ type Hooks struct {
 }
 
 type Bootstrap struct {
-	InitWorkspaceGit bool
-	UpdateGitignore  bool
+	UpdateGitignore bool
 }
 
 type GitSync struct {
@@ -116,19 +133,25 @@ type Secrets struct {
 	SnapshotDenyGlobs []string
 }
 
+type Verifier struct {
+	Name    string
+	Command string
+	Args    []string
+	Timeout time.Duration
+}
+
 type Overrides struct {
-	InitAgent                 *string
-	InitInstallHooks          *bool
-	RunInstallHooks           *bool
-	RunQuiet                  *bool
-	RunBypassHookTrust        *bool
-	BootstrapInitWorkspaceGit *bool
-	BootstrapUpdateGitignore  *bool
-	GitSyncEnabled            *bool
-	RollbackMode              *primitives.RollbackMode
-	SecretsStorePrompts       *bool
-	SecretsStoreToolIO        *bool
-	SecretsSnapshotDenyGlobs  []string
+	InitAgent                *string
+	InitInstallHooks         *bool
+	RunInstallHooks          *bool
+	RunQuiet                 *bool
+	RunBypassHookTrust       *bool
+	BootstrapUpdateGitignore *bool
+	GitSyncEnabled           *bool
+	RollbackMode             *primitives.RollbackMode
+	SecretsStorePrompts      *bool
+	SecretsStoreToolIO       *bool
+	SecretsSnapshotDenyGlobs []string
 }
 
 type Loader struct {
@@ -160,8 +183,7 @@ func Defaults() Effective {
 			Command: hookcmd.Default(),
 		},
 		Bootstrap: Bootstrap{
-			InitWorkspaceGit: true,
-			UpdateGitignore:  true,
+			UpdateGitignore: true,
 		},
 		GitSync: GitSync{
 			Enabled: false,
@@ -174,6 +196,7 @@ func Defaults() Effective {
 			StoreToolIO:       true,
 			SnapshotDenyGlobs: []string{".env", ".env.*", "**/.env", "**/.env.*", "**/credentials.*"},
 		},
+		Verify: make([]Verifier, 0),
 	}
 }
 
@@ -303,19 +326,19 @@ func (l Loader) lookupEnv() func(string) (string, bool) {
 
 func defaultOrigins() map[string]Origin {
 	return map[string]Origin{
-		"init.agent":                   OriginDefault,
-		"init.install_hooks":           OriginDefault,
-		"run.install_hooks":            OriginDefault,
-		"run.quiet":                    OriginDefault,
-		"run.bypass_hook_trust":        OriginDefault,
-		"hooks.command":                OriginDefault,
-		"bootstrap.init_workspace_git": OriginDefault,
-		"bootstrap.update_gitignore":   OriginDefault,
-		"git_sync.enabled":             OriginDefault,
-		"rollback.mode":                OriginDefault,
-		"secrets.store_prompts":        OriginDefault,
-		"secrets.store_tool_io":        OriginDefault,
-		"secrets.snapshot_deny_globs":  OriginDefault,
+		"init.agent":                  OriginDefault,
+		"init.install_hooks":          OriginDefault,
+		"run.install_hooks":           OriginDefault,
+		"run.quiet":                   OriginDefault,
+		"run.bypass_hook_trust":       OriginDefault,
+		"hooks.command":               OriginDefault,
+		"bootstrap.update_gitignore":  OriginDefault,
+		"git_sync.enabled":            OriginDefault,
+		"rollback.mode":               OriginDefault,
+		"secrets.store_prompts":       OriginDefault,
+		"secrets.store_tool_io":       OriginDefault,
+		"secrets.snapshot_deny_globs": OriginDefault,
+		"verify":                      OriginDefault,
 	}
 }
 
@@ -362,10 +385,6 @@ func applyFile(effective *Effective, origins map[string]Origin, file File, origi
 		}
 	}
 	if file.Bootstrap != nil {
-		if file.Bootstrap.InitWorkspaceGit != nil {
-			effective.Bootstrap.InitWorkspaceGit = *file.Bootstrap.InitWorkspaceGit
-			origins["bootstrap.init_workspace_git"] = origin
-		}
 		if file.Bootstrap.UpdateGitignore != nil {
 			effective.Bootstrap.UpdateGitignore = *file.Bootstrap.UpdateGitignore
 			origins["bootstrap.update_gitignore"] = origin
@@ -405,6 +424,14 @@ func applyFile(effective *Effective, origins map[string]Origin, file File, origi
 			origins["secrets.snapshot_deny_globs"] = origin
 		}
 	}
+	if file.Verify != nil {
+		verifiers, err := normalizeVerifiers(file.Verify)
+		if err != nil {
+			return err
+		}
+		effective.Verify = verifiers
+		origins["verify"] = origin
+	}
 	return nil
 }
 
@@ -432,10 +459,6 @@ func applyOverrides(effective *Effective, origins map[string]Origin, overrides O
 	if overrides.RunBypassHookTrust != nil {
 		effective.Run.BypassHookTrust = *overrides.RunBypassHookTrust
 		origins["run.bypass_hook_trust"] = OriginFlag
-	}
-	if overrides.BootstrapInitWorkspaceGit != nil {
-		effective.Bootstrap.InitWorkspaceGit = *overrides.BootstrapInitWorkspaceGit
-		origins["bootstrap.init_workspace_git"] = OriginFlag
 	}
 	if overrides.BootstrapUpdateGitignore != nil {
 		effective.Bootstrap.UpdateGitignore = *overrides.BootstrapUpdateGitignore
@@ -495,4 +518,85 @@ func normalizeGlobs(values []string) ([]string, error) {
 		globs = append(globs, value)
 	}
 	return globs, nil
+}
+
+func ValidateVerifierName(name string) error {
+	switch {
+	case name == "":
+		return fmt.Errorf("name must not be empty")
+	case !utf8.ValidString(name):
+		return fmt.Errorf("name must be valid UTF-8")
+	case strings.ContainsRune(name, 0):
+		return fmt.Errorf("name must not contain NUL")
+	case len(name) > MaxVerifierNameBytes:
+		return fmt.Errorf("name must be at most %d bytes", MaxVerifierNameBytes)
+	}
+	for _, character := range name {
+		if !unicode.IsPrint(character) {
+			return fmt.Errorf("name must contain only printable characters; found %U", character)
+		}
+	}
+	return nil
+}
+
+func normalizeVerifiers(values []VerifierFile) ([]Verifier, error) {
+	if len(values) > MaxVerifierCount {
+		return nil, fmt.Errorf("verify must contain at most %d entries", MaxVerifierCount)
+	}
+	verifiers := make([]Verifier, 0, len(values))
+	seen := make(map[string]int, len(values))
+	for index, value := range values {
+		position := index + 1
+		name := strings.TrimSpace(value.Name)
+		label := fmt.Sprintf("verify[%d]", position)
+		if name != "" {
+			label += fmt.Sprintf(" %q", name)
+		}
+		if err := ValidateVerifierName(name); err != nil {
+			return nil, fmt.Errorf("%s: %w", label, err)
+		}
+		if previous, ok := seen[name]; ok {
+			return nil, fmt.Errorf("%s: name duplicates verify[%d]", label, previous)
+		}
+		seen[name] = position
+
+		if strings.TrimSpace(value.Command) == "" {
+			return nil, fmt.Errorf("%s: command must not be empty", label)
+		}
+		if strings.ContainsRune(value.Command, 0) {
+			return nil, fmt.Errorf("%s: command must not contain NUL", label)
+		}
+		if len(value.Command) > MaxVerifierCommandBytes {
+			return nil, fmt.Errorf("%s: command must be at most %d bytes", label, MaxVerifierCommandBytes)
+		}
+		if len(value.Args) > MaxVerifierArgCount {
+			return nil, fmt.Errorf("%s: args must contain at most %d arguments", label, MaxVerifierArgCount)
+		}
+		args := append([]string(nil), value.Args...)
+		for argIndex, arg := range args {
+			if strings.ContainsRune(arg, 0) {
+				return nil, fmt.Errorf("%s: args[%d] must not contain NUL", label, argIndex+1)
+			}
+			if len(arg) > MaxVerifierArgBytes {
+				return nil, fmt.Errorf("%s: args[%d] must be at most %d bytes", label, argIndex+1, MaxVerifierArgBytes)
+			}
+		}
+
+		timeoutText := strings.TrimSpace(value.Timeout)
+		if timeoutText == "" {
+			return nil, fmt.Errorf("%s: timeout must not be empty", label)
+		}
+		timeout, err := time.ParseDuration(timeoutText)
+		if err != nil {
+			return nil, fmt.Errorf("%s: timeout %q is invalid: %w", label, value.Timeout, err)
+		}
+		if timeout <= 0 {
+			return nil, fmt.Errorf("%s: timeout must be positive", label)
+		}
+		if timeout > MaxVerifierTimeout {
+			return nil, fmt.Errorf("%s: timeout must not exceed %s", label, MaxVerifierTimeout)
+		}
+		verifiers = append(verifiers, Verifier{Name: name, Command: value.Command, Args: args, Timeout: timeout})
+	}
+	return verifiers, nil
 }

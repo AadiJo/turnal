@@ -24,16 +24,17 @@ type DurableStream struct {
 	ByteSHA256 string
 	ByteCount  int64
 	Events     []Event
+	Workspace  bool
 }
 
 func ListDurableStreams(metadataDir string) ([]DurableStream, error) {
 	log := Open(metadataDir)
 	entries, err := os.ReadDir(log.Dir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("read event log dir: %w", err)
 		}
-		return nil, fmt.Errorf("read event log dir: %w", err)
+		entries = nil
 	}
 	var streams []DurableStream
 	for _, entry := range entries {
@@ -91,13 +92,71 @@ func ListDurableStreams(metadataDir string) ([]DurableStream, error) {
 			streams = append(streams, stream)
 		}
 	}
+	manualRoot := filepath.Join(metadataDir, "log", "manual-checkpoints")
+	worktreeEntries, err := os.ReadDir(manualRoot)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("read workspace event log dir: %w", err)
+	}
+	workspaceSession, _ := primitives.ParseSessionID("workspace")
+	for _, worktreeEntry := range worktreeEntries {
+		worktreePath := filepath.Join(manualRoot, worktreeEntry.Name())
+		if worktreeEntry.Type()&fs.ModeSymlink != 0 {
+			return nil, fmt.Errorf("workspace event path invariant failed: symlink is not allowed: %s", worktreePath)
+		}
+		if !worktreeEntry.IsDir() {
+			continue
+		}
+		worktreeID, err := primitives.ParseWorktreeID(worktreeEntry.Name())
+		if err != nil {
+			return nil, fmt.Errorf("workspace event worktree directory invariant failed for %s: %w", worktreeEntry.Name(), err)
+		}
+		streamDir := filepath.Join(worktreePath, "events", workspaceSession.String())
+		streamEntries, err := os.ReadDir(streamDir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("read workspace event stream dir: %w", err)
+		}
+		manualLog := Open(metadataDir)
+		manualLog.Dir = filepath.Join(worktreePath, "events")
+		for _, streamEntry := range streamEntries {
+			path := filepath.Join(streamDir, streamEntry.Name())
+			if streamEntry.Type()&fs.ModeSymlink != 0 {
+				return nil, fmt.Errorf("workspace event stream path invariant failed: symlink is not allowed: %s", path)
+			}
+			if streamEntry.IsDir() || filepath.Ext(streamEntry.Name()) != ".jsonl" {
+				continue
+			}
+			streamID, err := primitives.ParseEventStreamID(strings.TrimSuffix(streamEntry.Name(), ".jsonl"))
+			if err != nil {
+				return nil, err
+			}
+			stream, err := inspectDurableStream(manualLog, workspaceSession, streamID, path, false)
+			if err != nil {
+				return nil, err
+			}
+			if stream.WorktreeID != worktreeID {
+				return nil, fmt.Errorf("workspace event stream %s worktree mismatch: directory=%s events=%s", streamID, worktreeID, stream.WorktreeID)
+			}
+			stream.Workspace = true
+			streams = append(streams, stream)
+		}
+	}
 	sort.Slice(streams, func(i, j int) bool {
+		if streams[i].Workspace != streams[j].Workspace {
+			return !streams[i].Workspace
+		}
 		if streams[i].SessionID != streams[j].SessionID {
 			return streams[i].SessionID.String() < streams[j].SessionID.String()
 		}
 		return streams[i].StreamID.String() < streams[j].StreamID.String()
 	})
 	return streams, nil
+}
+
+func WorkspaceStreamPath(metadataDir string, worktreeID primitives.WorktreeID, streamID primitives.EventStreamID) string {
+	return filepath.Join(metadataDir, "log", "manual-checkpoints", worktreeID.String(), "events", "workspace", streamID.String()+".jsonl")
 }
 
 func inspectDurableStream(log Log, sessionID primitives.SessionID, streamID primitives.EventStreamID, path string, legacy bool) (DurableStream, error) {

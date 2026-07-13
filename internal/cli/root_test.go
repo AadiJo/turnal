@@ -12,10 +12,7 @@ func TestCommandExitCodeOnlyHonorsChildExitError(t *testing.T) {
 		t.Fatalf("child exit code = %d %v, want 37 true", code, ok)
 	}
 
-	err := exec.Command("sh", "-c", "exit 42").Run()
-	if err == nil {
-		t.Fatal("exit command succeeded, want error")
-	}
+	err := &exec.ExitError{}
 	code, ok = commandExitCode(fmt.Errorf("wrapped git failure: %w", err))
 	if ok {
 		t.Fatalf("wrapped exec.ExitError was treated as command exit code %d", code)

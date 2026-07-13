@@ -99,6 +99,69 @@ func TestDestroyCommandDryRunKeepsMetadataAndHookConfig(t *testing.T) {
 	}
 }
 
+func TestDestroyCommandRemovesRootHooksFromAttachedLinkedWorktree(t *testing.T) {
+	requireGit(t)
+	isolateAgentConfig(t)
+	parent := t.TempDir()
+	mainPath := filepath.Join(parent, "main")
+	linkedPath := filepath.Join(parent, "linked")
+	if err := os.MkdirAll(mainPath, 0o755); err != nil {
+		t.Fatalf("mkdir main worktree: %v", err)
+	}
+	runForkUserGit(t, mainPath, "init")
+	runForkUserGit(t, mainPath, "config", "user.email", "turnal@example.test")
+	runForkUserGit(t, mainPath, "config", "user.name", "Turnal Test")
+	if err := os.WriteFile(filepath.Join(mainPath, "tracked.txt"), []byte("tracked\n"), 0o644); err != nil {
+		t.Fatalf("write tracked file: %v", err)
+	}
+	runForkUserGit(t, mainPath, "add", "tracked.txt")
+	runForkUserGit(t, mainPath, "commit", "-m", "initial")
+	runForkUserGit(t, mainPath, "worktree", "add", "-b", "destroy-linked-test", linkedPath)
+	t.Chdir(linkedPath)
+
+	initOutput := runRootStdout(t, "init", "--agent", "codex")
+	if !strings.Contains(initOutput, "configured codex hooks:") {
+		t.Fatalf("init output missing Codex hooks:\n%s", initOutput)
+	}
+	metadataDir := filepath.Join(mainPath, ".turnal")
+	configPath := filepath.Join(mainPath, ".codex", "config.toml")
+	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read root-checkout Codex config: %v", err)
+	}
+
+	dryRunOutput := runRootStdout(t, "destroy", "--dry-run", "--remove-hooks", "--agent", "codex")
+	for _, want := range []string{"would remove codex hooks:", "would remove metadata:"} {
+		if !strings.Contains(dryRunOutput, want) {
+			t.Fatalf("dry-run output missing %q:\n%s", want, dryRunOutput)
+		}
+	}
+	afterDryRun, err := os.ReadFile(configPath)
+	if err != nil || string(afterDryRun) != string(before) {
+		t.Fatalf("dry-run changed root-checkout config: err=%v\nbefore=%s\nafter=%s", err, before, afterDryRun)
+	}
+	if _, err := os.Stat(metadataDir); err != nil {
+		t.Fatalf("dry-run removed shared metadata: %v", err)
+	}
+
+	removeOutput := runRootStdout(t, "destroy", "--remove-hooks", "--agent", "codex")
+	for _, want := range []string{"removed codex hooks:", "removed metadata:"} {
+		if !strings.Contains(removeOutput, want) {
+			t.Fatalf("removal output missing %q:\n%s", want, removeOutput)
+		}
+	}
+	afterRemoval, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read root-checkout config after removal: %v", err)
+	}
+	if strings.Contains(string(afterRemoval), "turnal codex-hook") {
+		t.Fatalf("root-checkout hooks remain after removal:\n%s", afterRemoval)
+	}
+	if _, err := os.Stat(metadataDir); !os.IsNotExist(err) {
+		t.Fatalf("shared metadata exists or could not be checked after removal: %v", err)
+	}
+}
+
 func TestDestroyCommandCanRemoveHooks(t *testing.T) {
 	requireGit(t)
 

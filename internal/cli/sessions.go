@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -39,7 +40,16 @@ func sessionsCmd() *cobra.Command {
 				encoder.SetIndent("", "  ")
 				return encoder.Encode(sessionsJSONFromViews(sessions))
 			}
-			return writeSessionsView(out, sessions)
+			var buffer bytes.Buffer
+			if err := writeSessionsView(&buffer, sessions); err != nil {
+				return err
+			}
+			output := buffer.Bytes()
+			if !colorOutputEnabled(out) {
+				output = stripANSIBytes(output)
+			}
+			_, err = out.Write(output)
+			return err
 		},
 	}
 
@@ -151,6 +161,9 @@ func loadSessionViews(repo *checkpoint.Repo) ([]sessionView, error) {
 		return nil, err
 	}
 	for _, info := range infos {
+		if info.Manual {
+			continue
+		}
 		session := ensure(info.SessionID)
 		turn := ensureTurn(session, info.TurnID)
 		infoCopy := info

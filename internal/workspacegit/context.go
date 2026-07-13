@@ -2,6 +2,8 @@ package workspacegit
 
 import (
 	"strings"
+
+	"github.com/AadiJo/turnal/internal/fsidentity"
 )
 
 type Context struct {
@@ -24,6 +26,9 @@ func (git Git) Context() (Context, error) {
 	context := Context{Exists: true}
 	if root, err := git.runOutput("rev-parse", "--show-toplevel"); err == nil {
 		context.WorktreeRoot = strings.TrimSpace(root)
+		if fsidentity.Same(context.WorktreeRoot, git.Root.String()) {
+			context.WorktreeRoot = git.Root.String()
+		}
 	}
 	if head, err := git.runOutput("rev-parse", "--verify", "HEAD^{commit}"); err == nil {
 		context.Head = strings.TrimSpace(head)

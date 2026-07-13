@@ -5,14 +5,16 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	agentconfig "github.com/AadiJo/turnal/internal/config"
 	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/filelock"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/runs"
 	"github.com/AadiJo/turnal/internal/turnevents"
 	"github.com/AadiJo/turnal/internal/turns"
 )
@@ -83,6 +85,7 @@ type sessionPayload struct {
 type promptPayload struct {
 	Text           string `json:"text"`
 	ProviderTurnID string `json:"provider_turn_id,omitempty"`
+	Redacted       bool   `json:"redacted"`
 }
 
 type assistantPayload struct {
@@ -110,6 +113,29 @@ type errorPayload struct {
 }
 
 func HandleHookPayload(adapter primitives.AdapterName, hookName string, raw []byte) error {
+	return HandleHookPayloadWithRunID(adapter, hookName, raw, "")
+}
+
+func HandleHookPayloadWithRunID(adapter primitives.AdapterName, hookName string, raw []byte, runIDText string) error {
+	if repo, sessionID, ok := hookSessionContext(raw); ok {
+		unlock, err := AcquireSessionLock(repo, sessionID)
+		if err != nil {
+			return err
+		}
+		defer unlock()
+		rawRef, recordErr := RecordHookPayload(adapter, hookName, raw)
+		if recordErr != nil {
+			return recordErr
+		}
+		if rawRef == "" {
+			return nil
+		}
+		if err := processHookPayload(adapter, hookName, rawRef, raw, true); err != nil {
+			return err
+		}
+		reconcileHookRun(repo, adapter, hookName, rawRef, raw, sessionID, runIDText)
+		return nil
+	}
 	rawRef, recordErr := RecordHookPayload(adapter, hookName, raw)
 	if recordErr != nil {
 		return recordErr
@@ -117,10 +143,49 @@ func HandleHookPayload(adapter primitives.AdapterName, hookName string, raw []by
 	if rawRef == "" {
 		return nil
 	}
-	return ProcessHookPayload(adapter, hookName, rawRef, raw)
+	if err := processHookPayload(adapter, hookName, rawRef, raw, false); err != nil {
+		return err
+	}
+	if repo, sessionID, ok := hookSessionContext(raw); ok {
+		reconcileHookRun(repo, adapter, hookName, rawRef, raw, sessionID, runIDText)
+	}
+	return nil
+}
+
+func reconcileHookRun(repo *checkpoint.Repo, adapter primitives.AdapterName, hookName, rawRef string, raw []byte, sessionID primitives.SessionID, runIDText string) {
+	if strings.TrimSpace(runIDText) == "" {
+		return
+	}
+	runID, err := primitives.ParseRunID(runIDText)
+	if err == nil {
+		err = runs.LinkCapture(repo, runID, runs.CaptureProvider, sessionID, adapter)
+	}
+	if err == nil && normalizeHookName(hookName) == "userpromptsubmit" {
+		_, decodeErr := decodeHookPayload(adapter, raw)
+		if decodeErr != nil {
+			err = decodeErr
+		} else {
+			manager := turns.NewManager(repo)
+			active, ok, activeErr := manager.Active(sessionID)
+			if activeErr != nil {
+				err = activeErr
+			} else if !ok {
+				err = fmt.Errorf("provider prompt has no active Turnal turn")
+			} else {
+				_, err = runs.EnsureAttempt(repo, runID, sessionID, active.TurnID, adapter)
+			}
+		}
+	}
+	if err != nil {
+		_ = appendErrorEvent(repo.EventLog(), adapter, sessionID, rawRef, "run-correlation", err)
+	}
 }
 
 func ProcessHookPayload(adapter primitives.AdapterName, hookName, rawRef string, raw []byte) error {
+	return processHookPayload(adapter, hookName, rawRef, raw, false)
+}
+
+func processHookPayload(adapter primitives.AdapterName, hookName, rawRef string, raw []byte, sessionLockHeld bool) error {
 	parsedAdapter, err := primitives.ParseAdapterName(adapter.String())
 	if err != nil {
 		return err
@@ -158,11 +223,13 @@ func ProcessHookPayload(adapter primitives.AdapterName, hookName, rawRef string,
 
 	log := repo.EventLog()
 	manager := turns.NewManager(repo)
-	unlock, err := acquireHookProcessLock(repo, sessionID)
-	if err != nil {
-		return err
+	if !sessionLockHeld {
+		unlock, err := AcquireSessionLock(repo, sessionID)
+		if err != nil {
+			return err
+		}
+		defer unlock()
 	}
-	defer unlock()
 	if err := turnevents.RecoverCheckpointJournals(log, repo); err != nil {
 		return err
 	}
@@ -173,19 +240,33 @@ func ProcessHookPayload(adapter primitives.AdapterName, hookName, rawRef string,
 	return nil
 }
 
-func acquireHookProcessLock(repo *checkpoint.Repo, sessionID primitives.SessionID) (func(), error) {
-	name := sessionID.String() + ".lock"
-	if streamID, err := repo.StreamID(sessionID); err == nil {
-		name = repo.WorktreeID.String() + "-" + streamID.String() + "-" + name
-	}
-	lockDir := filepath.Join(repo.TmpDir, "hooks", name)
-	if err := os.MkdirAll(filepath.Dir(lockDir), 0o755); err != nil {
-		return nil, fmt.Errorf("create hook lock dir: %w", err)
-	}
-	if err := acquireDirLock(lockDir); err != nil {
+func AcquireSessionLock(repo *checkpoint.Repo, sessionID primitives.SessionID) (func(), error) {
+	lockDir := filepath.Join(repo.TmpDir, "hooks", sessionID.String()+".lock")
+	lock, err := filelock.Acquire(lockDir, 30*time.Second)
+	if err != nil {
 		return nil, err
 	}
-	return func() { _ = os.Remove(lockDir) }, nil
+	return func() { _ = lock.Release() }, nil
+}
+
+func hookSessionContext(raw []byte) (*checkpoint.Repo, primitives.SessionID, bool) {
+	sessionID := sessionIDFromRawPayload(raw)
+	if sessionID == "" {
+		return nil, "", false
+	}
+	cwd, err := hookWorkspaceCWD(raw)
+	if err != nil {
+		return nil, "", false
+	}
+	root, err := checkpoint.FindRoot(cwd)
+	if err != nil {
+		return nil, "", false
+	}
+	repo, err := checkpoint.Open(root)
+	if err != nil {
+		return nil, "", false
+	}
+	return repo, sessionID, true
 }
 
 func decodeHookPayload(adapter primitives.AdapterName, raw []byte) (hookPayload, error) {
@@ -394,6 +475,7 @@ func appendPrompt(log eventlog.Log, adapter primitives.AdapterName, sessionID pr
 		Payload: mustJSON(promptPayload{
 			Text:           redactedText(payload.Prompt, secrets.StorePrompts),
 			ProviderTurnID: payload.TurnID,
+			Redacted:       !secrets.StorePrompts,
 		}),
 	})
 }
@@ -547,7 +629,7 @@ func redactedText(value string, store bool) string {
 	if store {
 		return value
 	}
-	return "[redacted by turnal secrets policy]"
+	return primitives.SecretsRedactionText
 }
 
 func redactedJSON(value json.RawMessage, store bool) json.RawMessage {

@@ -107,8 +107,14 @@ func (repo *Repo) ClearCheckpointJournal(sessionID primitives.SessionID, turnID 
 	if err != nil {
 		return err
 	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
 		return fmt.Errorf("clear checkpoint journal: %w", err)
+	}
+	if err := syncDirectory(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("sync cleared checkpoint journal: %w", err)
 	}
 	return nil
 }
@@ -199,7 +205,8 @@ func (repo *Repo) writeCheckpointJournal(journal CheckpointJournal) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create checkpoint journal dir: %w", err)
 	}
 	journal.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
@@ -209,12 +216,32 @@ func (repo *Repo) writeCheckpointJournal(journal CheckpointJournal) error {
 	}
 	data = append(data, '\n')
 
-	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
+	tmp, err := os.CreateTemp(dir, ".checkpoint-journal-*")
+	if err != nil {
+		return fmt.Errorf("create checkpoint journal: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("secure checkpoint journal: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
 		return fmt.Errorf("write checkpoint journal: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync checkpoint journal: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close checkpoint journal: %w", err)
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
 		return fmt.Errorf("commit checkpoint journal: %w", err)
+	}
+	if err := syncDirectory(dir); err != nil {
+		return fmt.Errorf("sync checkpoint journal dir: %w", err)
 	}
 	return nil
 }

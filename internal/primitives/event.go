@@ -124,6 +124,10 @@ func (hash *EventHash) UnmarshalText(text []byte) error {
 // EventType is the normalized event kind written to the append-only event log.
 type EventType string
 
+// SecretsRedactionText is the durable marker stored when text capture is
+// disabled by Turnal's secrets policy.
+const SecretsRedactionText = "[redacted by turnal secrets policy]"
+
 const (
 	EventTypeSessionStart     EventType = "session.start"
 	EventTypeTurnStart        EventType = "turn.start"
@@ -136,6 +140,14 @@ const (
 	EventTypeRollback         EventType = "rollback"
 	EventTypeError            EventType = "error"
 	EventTypeAdapterRaw       EventType = "adapter.raw"
+	EventTypeRunStart         EventType = "run.start"
+	EventTypeRunCaptureLink   EventType = "run.capture.link"
+	EventTypeRunAttemptLink   EventType = "run.attempt.link"
+	EventTypeRunFinish        EventType = "run.finish"
+	EventTypeTaskCreate       EventType = "task.create"
+	EventTypeTaskRevision     EventType = "task.revision.create"
+	EventTypeCaseCreate       EventType = "case.create"
+	EventTypeCaseAttemptLink  EventType = "case.attempt.link"
 )
 
 var validEventTypes = map[EventType]struct{}{
@@ -150,6 +162,14 @@ var validEventTypes = map[EventType]struct{}{
 	EventTypeRollback:         {},
 	EventTypeError:            {},
 	EventTypeAdapterRaw:       {},
+	EventTypeRunStart:         {},
+	EventTypeRunCaptureLink:   {},
+	EventTypeRunAttemptLink:   {},
+	EventTypeRunFinish:        {},
+	EventTypeTaskCreate:       {},
+	EventTypeTaskRevision:     {},
+	EventTypeCaseCreate:       {},
+	EventTypeCaseAttemptLink:  {},
 }
 
 func ParseEventType(value string) (EventType, error) {

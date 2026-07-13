@@ -2,14 +2,17 @@ package integrity
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/AadiJo/turnal/internal/adapters"
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/manualcheckpoints"
 	"github.com/AadiJo/turnal/internal/primitives"
 	rollbackengine "github.com/AadiJo/turnal/internal/rollback"
 )
@@ -42,6 +45,29 @@ func TestInspectReportsCheckpointEventCommitMismatch(t *testing.T) {
 	}
 }
 
+func TestInspectReportsMalformedWorkspaceRollback(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if _, err := manualcheckpoints.AppendEvent(repo, primitives.EventTypeRollback, "malformed", "", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+	report := Inspect(repo)
+	found := false
+	for _, problem := range report.Problems {
+		if strings.Contains(problem, "workspace rollback event") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("integrity problems do not report malformed workspace rollback: %#v", report.Problems)
+	}
+}
+
 func TestInspectReportsMalformedRollbackJournal(t *testing.T) {
 	requireGit(t)
 
@@ -57,6 +83,66 @@ func TestInspectReportsMalformedRollbackJournal(t *testing.T) {
 	report := Inspect(repo)
 	if !containsProblem(report.Problems, "unreadable rollback journal") {
 		t.Fatalf("problems = %#v, want unreadable rollback journal", report.Problems)
+	}
+}
+
+func TestInspectReportsPersistedHookFailures(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+	if err := adapters.RecordHookFailure(primitives.AdapterCodex, "after_agent", []byte(`{"session_id":"demo"}`), errors.New("adapter log unavailable")); err != nil {
+		t.Fatalf("RecordHookFailure: %v", err)
+	}
+	report := Inspect(repo)
+	if !containsProblem(report.Problems, "hook capture failure") || !containsProblem(report.Problems, "clear-hook-failures") {
+		t.Fatalf("problems = %#v, want actionable hook failure", report.Problems)
+	}
+}
+
+func TestInspectReportsPartialRawAdapterTail(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	path := filepath.Join(repo.MetadataDir, "log", "raw", "demo", "codex.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir raw log: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(`{"partial":`), 0o600); err != nil {
+		t.Fatalf("write partial raw log: %v", err)
+	}
+	report := Inspect(repo)
+	if !containsProblem(report.Problems, "trailing partial record") {
+		t.Fatalf("problems = %#v, want partial raw record", report.Problems)
+	}
+}
+
+func TestInspectReportsInvalidTaskCaseProjection(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	sessionID := sessionID(t, "demo")
+	turnID, _ := primitives.NewTurnID(1)
+	if _, err := repo.EventLog().Append(eventlog.AppendInput{
+		SessionID: sessionID,
+		TurnID:    &turnID,
+		Type:      primitives.EventTypeTaskCreate,
+		Payload:   json.RawMessage(`{"task_id":"task_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`),
+	}); err != nil {
+		t.Fatalf("append invalid task: %v", err)
+	}
+	report := Inspect(repo)
+	if !containsProblem(report.Problems, "task/case projection failed") {
+		t.Fatalf("problems = %#v, want task/case projection failure", report.Problems)
 	}
 }
 

@@ -224,8 +224,8 @@ func TestRebuildFailureLeavesPreviousIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Healthy: %v", err)
 	}
-	if !healthy {
-		t.Fatal("previous index is not healthy after failed rebuild")
+	if healthy {
+		t.Fatal("previous index reported healthy after durable event log changed")
 	}
 	sessions, err := store.LoadGraph(GraphQuery{})
 	if err != nil {
@@ -233,6 +233,40 @@ func TestRebuildFailureLeavesPreviousIndex(t *testing.T) {
 	}
 	if len(sessions) != 1 || len(sessions[0].Turns) != 1 {
 		t.Fatalf("previous graph = %#v, want one preserved turn", sessions)
+	}
+}
+
+func TestPackedRefsDoesNotMakeIndexStale(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	sessionID := sessionID(t, "demo")
+	turnID, _ := primitives.NewTurnID(1)
+	writeFile(t, root, "app.txt", "content\n")
+	if _, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre); err != nil {
+		t.Fatalf("CreateCheckpoint: %v", err)
+	}
+	if _, err := Rebuild(repo); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+	cmd := exec.Command("git", "--git-dir="+repo.GitDir, "pack-refs", "--all")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("pack-refs: %v: %s", err, output)
+	}
+	store, err := Open(repo.MetadataDir)
+	if err != nil {
+		t.Fatalf("Open index: %v", err)
+	}
+	defer store.Close()
+	healthy, err := store.Healthy()
+	if err != nil {
+		t.Fatalf("Healthy: %v", err)
+	}
+	if !healthy {
+		t.Fatal("index became stale after representation-only pack-refs")
 	}
 }
 

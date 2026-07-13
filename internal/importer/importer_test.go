@@ -10,6 +10,7 @@ import (
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/manualcheckpoints"
 	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/AadiJo/turnal/internal/turnevents"
 	"github.com/AadiJo/turnal/internal/turns"
@@ -118,6 +119,64 @@ func TestListDurableStreamsRejectsMalformedImportedStreamBeforeMutation(t *testi
 	}
 	if pending, err := Pending(destination); err != nil || len(pending) != 0 {
 		t.Fatalf("failed preflight left pending import: %#v, err=%v", pending, err)
+	}
+}
+
+func TestRunImportsManualCheckpointStreamAndMessage(t *testing.T) {
+	requireGit(t)
+	source := initRepo(t)
+	destination := initRepo(t)
+	writeBytes(t, filepath.Join(source.WorkspaceRoot.String(), "app.txt"), []byte("known good\n"))
+	created, err := source.CreateManualCheckpoint()
+	if err != nil {
+		t.Fatalf("CreateManualCheckpoint: %v", err)
+	}
+	if _, err := manualcheckpoints.Append(source, created, "before refactor"); err != nil {
+		t.Fatalf("append manual checkpoint: %v", err)
+	}
+	streams, err := eventlog.ListDurableStreams(source.MetadataDir)
+	if err != nil || len(streams) != 1 || !streams[0].Workspace {
+		t.Fatalf("workspace streams = %#v, err=%v", streams, err)
+	}
+
+	result, err := Run(destination, source.MetadataDir, Options{AdoptSourceAsCurrentRepo: true})
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if result.Plan.Checkpoints != 1 || len(result.Plan.Streams) != 1 || !result.Plan.Streams[0].Workspace {
+		t.Fatalf("merge plan = %#v", result.Plan)
+	}
+	saves, err := manualcheckpoints.Read(destination, true)
+	if err != nil {
+		t.Fatalf("read imported manual checkpoints: %v", err)
+	}
+	if len(saves) != 1 || saves[0].Message != "before refactor" || saves[0].Checkpoint.Commit != created.Commit {
+		t.Fatalf("imported saves = %#v", saves)
+	}
+	if _, err := destination.CheckpointCommit(saves[0].Checkpoint.Ref); err != nil {
+		t.Fatalf("imported manual checkpoint ref is unreadable: %v", err)
+	}
+}
+
+func TestRunRejectsMalformedWorkspaceRollbackBeforeMutation(t *testing.T) {
+	requireGit(t)
+	source := initRepo(t)
+	destination := initRepo(t)
+	if _, err := manualcheckpoints.AppendEvent(source, primitives.EventTypeRollback, "malformed", "", []byte(`{}`)); err != nil {
+		t.Fatalf("append malformed workspace rollback: %v", err)
+	}
+	if _, err := Run(destination, source.MetadataDir, Options{AdoptSourceAsCurrentRepo: true}); err == nil || !strings.Contains(err.Error(), "workspace rollback event") {
+		t.Fatalf("merge error = %v", err)
+	}
+	refs, err := destination.ListPrivateRefs("refs/agent-vcs/imports")
+	if err != nil {
+		t.Fatalf("list imported refs: %v", err)
+	}
+	if len(refs) != 0 {
+		t.Fatalf("failed import mutated refs: %#v", refs)
+	}
+	if pending, err := Pending(destination); err != nil || len(pending) != 0 {
+		t.Fatalf("failed import left journal: %#v err=%v", pending, err)
 	}
 }
 
