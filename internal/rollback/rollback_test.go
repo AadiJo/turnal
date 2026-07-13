@@ -301,6 +301,53 @@ func TestManualRollbackRecoveryRejectsMalformedJournal(t *testing.T) {
 	}
 }
 
+func TestManualRollbackRecoveryRejectsRefCommitMismatchBeforeMutation(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	writeFile(t, root, "app.txt", "checkpoint a\n")
+	checkpointA, err := repo.CreateManualCheckpoint()
+	if err != nil {
+		t.Fatalf("CreateManualCheckpoint A: %v", err)
+	}
+	writeFile(t, root, "app.txt", "checkpoint b\n")
+	checkpointB, err := repo.CreateManualCheckpoint()
+	if err != nil {
+		t.Fatalf("CreateManualCheckpoint B: %v", err)
+	}
+	writeFile(t, root, "app.txt", "current workspace\n")
+	safety, err := repo.CreateSnapshotRef("refs/agent-vcs/rollback-safety/manual/ref-mismatch", "manual safety")
+	if err != nil {
+		t.Fatalf("CreateSnapshotRef: %v", err)
+	}
+	journal := Journal{
+		Version: 1, State: "restoring", RestorePhase: "restoring", Manual: true,
+		Target: checkpointB.Commit.String(), CheckpointRef: checkpointA.Ref.String(), TargetCommitSHA: checkpointB.Commit.String(),
+		Mode: primitives.RollbackModeCheckpoint.String(), SafetyRef: safety.Ref, SafetyCommitSHA: safety.Commit.String(),
+	}
+	if err := writeJournal(JournalPath(repo), journal); err != nil {
+		t.Fatalf("writeJournal: %v", err)
+	}
+
+	if err := New(repo).ResumeRecovery(); err == nil || !strings.Contains(err.Error(), "checkpoint ref invariant failed") {
+		t.Fatalf("ResumeRecovery error = %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(root.String(), "app.txt"))
+	if err != nil || string(content) != "current workspace\n" {
+		t.Fatalf("workspace mutated before journal validation: content=%q err=%v", content, err)
+	}
+	remaining, ok, err := readJournal(JournalPath(repo))
+	if err != nil || !ok || remaining.phase() != "restoring" {
+		t.Fatalf("journal after rejection = %#v, ok=%v err=%v", remaining, ok, err)
+	}
+	if events, err := manualcheckpoints.ReadEvents(repo, false); err != nil || len(events) != 0 {
+		t.Fatalf("rejected recovery wrote events: %#v err=%v", events, err)
+	}
+}
+
 func TestRunFinalizesRestoredJournal(t *testing.T) {
 	requireGit(t)
 
