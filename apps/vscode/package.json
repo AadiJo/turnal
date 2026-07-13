@@ -124,6 +124,7 @@
         "turnal.inlineBlame.enabled": {
           "type": "boolean",
           "default": true,
+          "scope": "resource",
           "description": "Show the originating AI turn at the end of the current line."
         },
         "turnal.cliPath": {

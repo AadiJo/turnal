@@ -120,7 +120,6 @@ export class BlameController implements vscode.HoverProvider, vscode.Disposable 
       {
         range: editor.document.lineAt(line).range,
         renderOptions: { after: { contentText: annotation } },
-        hoverMessage: blameHover(entry, context.folder),
       },
     ]);
   }
