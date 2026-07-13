@@ -412,11 +412,7 @@ func (repo *Repo) CreateManualCheckpoint() (Checkpoint, error) {
 		if err != nil {
 			return err
 		}
-		if _, err := runHiddenGit(repo, "", "update-ref", canonicalRef.String(), commit.String(), ""); err != nil {
-			return err
-		}
-		if _, err := runHiddenGit(repo, "", "update-ref", ref.String(), commit.String(), ""); err != nil {
-			_, _ = runHiddenGit(repo, "", "update-ref", "-d", canonicalRef.String())
+		if err := repo.installCheckpointRefsAtomic(canonicalRef, ref, commit); err != nil {
 			return err
 		}
 		created = Checkpoint{
@@ -429,6 +425,21 @@ func (repo *Repo) CreateManualCheckpoint() (Checkpoint, error) {
 		return nil
 	})
 	return created, err
+}
+
+func (repo *Repo) installCheckpointRefsAtomic(canonicalRef, friendlyRef primitives.CheckpointRef, commit primitives.CommitSHA) error {
+	input := strings.Join([]string{
+		"start",
+		fmt.Sprintf("create %s %s", canonicalRef, commit),
+		fmt.Sprintf("create %s %s", friendlyRef, commit),
+		"prepare",
+		"commit",
+		"",
+	}, "\n")
+	if _, err := runHiddenGitWithInput(repo, "", strings.NewReader(input), "update-ref", "--stdin"); err != nil {
+		return fmt.Errorf("install checkpoint refs atomically: %w", err)
+	}
+	return nil
 }
 
 func (repo *Repo) createCheckpoint(sessionID primitives.SessionID, turnID primitives.TurnID, phase primitives.CheckpointPhase) (Checkpoint, error) {

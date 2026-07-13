@@ -120,6 +120,48 @@ func TestWorkspaceLockBlocksCheckpointMutation(t *testing.T) {
 	}
 }
 
+func TestInstallCheckpointRefsAtomic(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	writeFile(t, root, "app.txt", "content\n")
+	commit, err := repo.createSnapshotCommit("atomic ref test")
+	if err != nil {
+		t.Fatalf("createSnapshotCommit: %v", err)
+	}
+	checkpointID, _ := primitives.NewCheckpointID()
+	canonicalRef, _ := primitives.NewCheckpointIDRef(checkpointID)
+	friendlyRef, _ := primitives.NewManualCheckpointRef(repo.WorktreeID, checkpointID)
+	if _, err := runHiddenGit(repo, "", "update-ref", canonicalRef.String(), commit.String()); err != nil {
+		t.Fatalf("seed canonical ref: %v", err)
+	}
+
+	if err := repo.installCheckpointRefsAtomic(canonicalRef, friendlyRef, commit); err == nil {
+		t.Fatal("atomic install succeeded despite canonical ref collision")
+	}
+	if _, err := repo.RefCommit(friendlyRef.String()); err == nil {
+		t.Fatal("failed transaction installed the friendly ref")
+	}
+	if got, err := repo.RefCommit(canonicalRef.String()); err != nil || got != commit {
+		t.Fatalf("failed transaction changed canonical ref: got=%s err=%v", got, err)
+	}
+
+	if _, err := runHiddenGit(repo, "", "update-ref", "-d", canonicalRef.String()); err != nil {
+		t.Fatalf("remove seeded canonical ref: %v", err)
+	}
+	if err := repo.installCheckpointRefsAtomic(canonicalRef, friendlyRef, commit); err != nil {
+		t.Fatalf("atomic install: %v", err)
+	}
+	for _, ref := range []primitives.CheckpointRef{canonicalRef, friendlyRef} {
+		if got, err := repo.RefCommit(ref.String()); err != nil || got != commit {
+			t.Fatalf("ref %s = %s, err=%v; want %s", ref, got, err, commit)
+		}
+	}
+}
+
 func TestWorkspaceLockIsReentrantInProcess(t *testing.T) {
 	requireGit(t)
 
