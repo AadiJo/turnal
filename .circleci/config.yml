@@ -117,7 +117,7 @@ jobs:
           name: Publish npm package
           command: |
             npm config set //registry.npmjs.org/:_authToken '${NPM_TOKEN}'
-            npm publish --access public --tag "$RELEASE_npm_tag"
+            npm publish --ignore-scripts --access public --tag "$RELEASE_npm_tag"
           environment:
             TURNAL_RELEASE_CHANNEL: nightly
             TURNAL_COMMIT: << pipeline.git.revision >>
@@ -229,7 +229,7 @@ jobs:
           name: Publish npm package
           command: |
             npm config set //registry.npmjs.org/:_authToken '${NPM_TOKEN}'
-            npm publish --access public --tag "$RELEASE_npm_tag"
+            npm publish --ignore-scripts --access public --tag "$RELEASE_npm_tag"
           environment:
             TURNAL_RELEASE_CHANNEL: stable
             TURNAL_COMMIT: << pipeline.git.revision >>
