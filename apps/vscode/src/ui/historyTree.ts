@@ -8,6 +8,7 @@ import { cliForFolder } from "../workspaces";
 export type HistoryNode = WorkspaceNode | SessionNode | TurnNode | TurnFileNode;
 
 interface HistoryTreeOptions {
+  extensionUri: vscode.Uri;
   onBackgroundError(error: unknown, folder: vscode.WorkspaceFolder): void;
   onCliAvailability(missing: boolean): void;
 }
@@ -96,7 +97,7 @@ export class HistoryTreeProvider implements vscode.TreeDataProvider<HistoryNode>
   private async sessionNodes(folder: vscode.WorkspaceFolder): Promise<SessionNode[]> {
     try {
       const result = await this.load(folder);
-      return result.sessions.map((session) => new SessionNode(folder, session));
+      return result.sessions.map((session) => new SessionNode(folder, session, this.options.extensionUri));
     } catch (error) {
       this.options.onBackgroundError(error, folder);
       return [];
@@ -171,14 +172,29 @@ class SessionNode extends vscode.TreeItem {
   constructor(
     readonly folder: vscode.WorkspaceFolder,
     readonly session: SessionSummary,
+    extensionUri: vscode.Uri,
   ) {
     super(session.model ? `${displayAgent(session.adapter)} · ${session.model}` : displayAgent(session.adapter), vscode.TreeItemCollapsibleState.Expanded);
     this.id = `session:${folder.uri.toString()}:${session.session_id}`;
     this.description = `${session.turn_count} ${session.turn_count === 1 ? "turn" : "turns"} · ${relativeTime(session.last_activity)}`;
-    this.iconPath = session.status === "active" ? new vscode.ThemeIcon("radio-tower") : new vscode.ThemeIcon("history");
+    this.iconPath = providerIcon(session.adapter, extensionUri);
     this.contextValue = "turnalSession";
     this.tooltip = sessionTooltip(session);
   }
+}
+
+function providerIcon(adapter: string | undefined, extensionUri: vscode.Uri): vscode.TreeItem["iconPath"] {
+  const normalized = adapter?.trim().toLowerCase() ?? "";
+  if (normalized.includes("claude")) {
+    return vscode.Uri.joinPath(extensionUri, "media", "providers", "claude.svg");
+  }
+  if (normalized.includes("codex") || normalized.includes("openai")) {
+    return {
+      light: vscode.Uri.joinPath(extensionUri, "media", "providers", "codex-light.svg"),
+      dark: vscode.Uri.joinPath(extensionUri, "media", "providers", "codex-dark.svg"),
+    };
+  }
+  return new vscode.ThemeIcon("robot");
 }
 
 export class TurnNode extends vscode.TreeItem {

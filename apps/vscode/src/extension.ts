@@ -37,6 +37,7 @@ export function activate(context: vscode.ExtensionContext): void {
   };
 
   const history = new HistoryTreeProvider({
+    extensionUri: context.extensionUri,
     onBackgroundError: reportBackgroundError,
     onCliAvailability: (missing) => {
       if (missing || cliMissing) {
