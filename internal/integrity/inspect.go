@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/AadiJo/turnal/internal/adapters"
+	caseengine "github.com/AadiJo/turnal/internal/cases"
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/filelock"
@@ -33,6 +34,9 @@ func Inspect(repo *checkpoint.Repo) Report {
 		report.Problems = append(report.Problems, fmt.Sprintf("workspace lock held: %s", repo.WorkspaceLockPath()))
 	}
 	report.Problems = append(report.Problems, inspectEventLogs(repo)...)
+	if _, err := caseengine.Rebuild(repo); err != nil {
+		report.Problems = append(report.Problems, fmt.Sprintf("task/case projection failed: %v", err))
+	}
 	report.Problems = append(report.Problems, inspectCheckpointRefs(repo)...)
 	report.Problems = append(report.Problems, inspectCheckpointJournals(repo)...)
 	report.Problems = append(report.Problems, rollbackengine.InspectJournal(repo)...)

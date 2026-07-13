@@ -135,6 +135,44 @@ func TestCreateRejectsCheckpointRefMismatchBeforeWritingTask(t *testing.T) {
 	}
 }
 
+func TestCreateRejectsMissingCheckpointRef(t *testing.T) {
+	repo, root := caseRepo(t)
+	sessionID, turnID := recordCaseTurn(t, repo, root, "source", "Fix it", false)
+	ref, err := repo.CheckpointRefFor(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("CheckpointRefFor: %v", err)
+	}
+	if err := repo.DeleteCheckpointRef(ref); err != nil {
+		t.Fatalf("DeleteCheckpointRef: %v", err)
+	}
+	if _, err := Create(repo, CreateRequest{SessionID: sessionID, TurnID: turnID}); err == nil || !strings.Contains(err.Error(), "resolve pre-turn checkpoint ref") {
+		t.Fatalf("Create error = %v", err)
+	}
+}
+
+func TestCreateRejectsCorruptCheckpointObject(t *testing.T) {
+	repo, root := caseRepo(t)
+	sessionID, turnID := recordCaseTurn(t, repo, root, "source", "Fix it", false)
+	ref, err := repo.CheckpointRefFor(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("CheckpointRefFor: %v", err)
+	}
+	commit, err := repo.CheckpointCommit(ref)
+	if err != nil {
+		t.Fatalf("CheckpointCommit: %v", err)
+	}
+	objectPath := filepath.Join(repo.GitDir, "objects", commit.String()[:2], commit.String()[2:])
+	if err := os.Chmod(objectPath, 0o600); err != nil {
+		t.Fatalf("make checkpoint object writable: %v", err)
+	}
+	if err := os.WriteFile(objectPath, []byte("corrupt checkpoint object\n"), 0o444); err != nil {
+		t.Fatalf("corrupt checkpoint object: %v", err)
+	}
+	if _, err := Create(repo, CreateRequest{SessionID: sessionID, TurnID: turnID}); err == nil || !strings.Contains(err.Error(), "checkpoint ref") {
+		t.Fatalf("Create error = %v", err)
+	}
+}
+
 func TestCreateInLinkedWorktreeUsesSharedStoreWithoutTouchingUserGit(t *testing.T) {
 	t.Setenv("TURNAL_STATE_DIR", t.TempDir())
 	parent := t.TempDir()
