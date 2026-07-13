@@ -121,7 +121,7 @@ type sessionJSONSummary struct {
 	Head              *sessionJSONHead      `json:"head,omitempty"`
 	LatestTurn        *sessionJSONTurn      `json:"latest_turn,omitempty"`
 	Turns             []sessionJSONTurn     `json:"turns,omitempty"`
-	Rollbacks         []sessionJSONRollback `json:"rollbacks,omitempty"`
+	Rollbacks         []sessionJSONRollback `json:"rollbacks"`
 	Warnings          []string              `json:"warnings,omitempty"`
 }
 

@@ -92,6 +92,9 @@ func TestSessionsCommandShowsDurableSessionInventory(t *testing.T) {
 	}
 
 	jsonOutput := runRootStdout(t, "sessions", "--json")
+	if !strings.Contains(jsonOutput, `"rollbacks": []`) {
+		t.Fatalf("sessions JSON omitted an empty rollback collection:\n%s", jsonOutput)
+	}
 	var got sessionsJSONOutput
 	if err := json.Unmarshal([]byte(jsonOutput), &got); err != nil {
 		t.Fatalf("unmarshal sessions JSON: %v\n%s", err, jsonOutput)
