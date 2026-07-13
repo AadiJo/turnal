@@ -1,0 +1,229 @@
+---
+import type { DocsNavGroup } from '../data/docs';
+
+interface Props {
+  groups: DocsNavGroup[];
+  compact?: boolean;
+}
+
+const { groups, compact = false } = Astro.props;
+---
+
+<nav class:list={['docs-nav', { compact }]} aria-label={compact ? 'On this page' : 'Documentation'}>
+  {groups.map((group) => (
+    <div class="nav-group">
+      <h2>{group.label}</h2>
+      <ul>
+        {group.items.map((item) => (
+          <li>
+            <a href={`#${item.id}`} aria-current={item.id === 'overview' ? 'location' : undefined}>
+              {item.label}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </div>
+  ))}
+</nav>
+
+<style>
+  .docs-nav {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+    padding-left: 15px;
+  }
+
+  .docs-nav::before {
+    position: absolute;
+    top: 2px;
+    bottom: 2px;
+    left: 0;
+    width: 1px;
+    background: var(--hair-strong);
+    content: '';
+  }
+
+  .nav-group h2 {
+    margin: 0 0 7px;
+    color: var(--fg);
+    font-size: 12px;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+  }
+
+  ul {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  a {
+    position: relative;
+    display: block;
+    margin-left: -15px;
+    padding: 5px 8px 5px 15px;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.35;
+    transition: color 130ms ease;
+  }
+
+  a::before {
+    position: absolute;
+    top: 4px;
+    bottom: 4px;
+    left: 0;
+    width: 2px;
+    border-radius: 2px;
+    background: var(--accent);
+    box-shadow: 0 0 10px rgba(255, 79, 0, 0.5);
+    content: '';
+    opacity: 0;
+    transform: scaleY(0.35);
+    transition: opacity 110ms ease, transform 150ms ease;
+  }
+
+  a:hover {
+    color: var(--fg);
+  }
+
+  a[aria-current='location'] {
+    color: var(--fg);
+  }
+
+  a[aria-current='location']::before {
+    opacity: 1;
+    transform: scaleY(1);
+  }
+
+  .compact {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 22px 18px;
+    padding: 8px 2px 4px 15px;
+  }
+
+  .compact a {
+    padding-right: 0;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    a,
+    a::before { transition: none; }
+  }
+</style>
+
+<script>
+  const navLinks = Array.from(document.querySelectorAll<HTMLAnchorElement>('.docs-nav a[href^="#"]'));
+  const sectionLinks = Array.from(document.querySelectorAll<HTMLAnchorElement>('a[href^="#"]'))
+    .filter((link) => !link.classList.contains('skip-link'));
+  const sectionIds = Array.from(new Set(navLinks.map((link) => link.hash.slice(1))));
+  const sections = sectionIds
+    .map((id) => document.getElementById(id))
+    .filter((section): section is HTMLElement => Boolean(section));
+
+  const markCurrent = (id: string) => {
+    for (const link of navLinks) {
+      if (link.hash === `#${id}`) link.setAttribute('aria-current', 'location');
+      else link.removeAttribute('aria-current');
+    }
+  };
+
+  let sectionPositions: Array<{ id: string; top: number }> = [];
+  let scheduled = false;
+  let scrollFrame: number | null = null;
+
+  const measureSections = () => {
+    sectionPositions = sections.map((section) => ({ id: section.id, top: section.offsetTop }));
+  };
+
+  const updateFromScroll = () => {
+    scheduled = false;
+    const marker = window.scrollY + 150;
+    let current = sectionPositions[0]?.id ?? 'overview';
+    for (const section of sectionPositions) {
+      if (section.top <= marker) current = section.id;
+      else break;
+    }
+    markCurrent(current);
+  };
+
+  const scheduleUpdate = () => {
+    if (scheduled) return;
+    scheduled = true;
+    window.requestAnimationFrame(updateFromScroll);
+  };
+
+  const cancelScrollAnimation = () => {
+    if (scrollFrame === null) return;
+    window.cancelAnimationFrame(scrollFrame);
+    scrollFrame = null;
+  };
+
+  const animateTo = (target: HTMLElement) => {
+    cancelScrollAnimation();
+
+    const startY = window.scrollY;
+    const targetY = Math.max(0, target.getBoundingClientRect().top + startY - 82);
+    const distance = targetY - startY;
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    if (reducedMotion || Math.abs(distance) < 4) {
+      window.scrollTo(0, targetY);
+      scheduleUpdate();
+      return;
+    }
+
+    const startedAt = performance.now();
+    const duration = 300;
+    const tick = (now: number) => {
+      const progress = Math.min(1, (now - startedAt) / duration);
+      const eased = progress < 0.5
+        ? 4 * Math.pow(progress, 3)
+        : 1 - Math.pow(-2 * progress + 2, 3) / 2;
+      window.scrollTo(0, startY + distance * eased);
+
+      if (progress < 1) scrollFrame = window.requestAnimationFrame(tick);
+      else {
+        scrollFrame = null;
+        scheduleUpdate();
+      }
+    };
+
+    scrollFrame = window.requestAnimationFrame(tick);
+  };
+
+  for (const link of sectionLinks) {
+    link.addEventListener('click', (event) => {
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const target = document.getElementById(link.hash.slice(1));
+      if (!target) return;
+
+      event.preventDefault();
+      window.history.pushState(null, '', link.hash);
+      markCurrent(target.closest<HTMLElement>('.doc-section')?.id ?? target.id);
+      const mobileToc = link.closest<HTMLDetailsElement>('.mobile-toc');
+      if (mobileToc) mobileToc.open = false;
+      animateTo(target);
+    });
+  }
+  window.addEventListener('scroll', scheduleUpdate, { passive: true });
+  window.addEventListener('wheel', cancelScrollAnimation, { passive: true });
+  window.addEventListener('touchstart', cancelScrollAnimation, { passive: true });
+  window.addEventListener('resize', () => {
+    measureSections();
+    scheduleUpdate();
+  });
+  window.addEventListener('hashchange', scheduleUpdate);
+  document.fonts?.ready.then(() => {
+    measureSections();
+    scheduleUpdate();
+  });
+  measureSections();
+  updateFromScroll();
+</script>

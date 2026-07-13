@@ -1,0 +1,498 @@
+---
+import Base from '../layouts/Base.astro';
+import DocsNav from '../components/DocsNav.astro';
+import Logo from '../components/Logo.astro';
+import { product } from '../data/content';
+import { docsNav } from '../data/docs';
+import { Content, frontmatter } from '../content/docs/index.md';
+import '../styles/typeset.css';
+
+const githubUrl = `https://${product.repo}`;
+---
+
+<Base theme="docs" title={frontmatter.title} description={frontmatter.description}>
+  <a class="skip-link" href="#main-content">Skip to documentation</a>
+
+  <div class="docs-page">
+    <header class="docs-header">
+      <div class="header-inner">
+        <div class="header-product">
+          <a href="/" class="brand" aria-label="Turnal home"><Logo size={25} /></a>
+          <a href="/docs" class="docs-label" aria-current="page">docs</a>
+        </div>
+
+        <nav class="header-links" aria-label="Site">
+          <a href="/">Home</a>
+          <a href={githubUrl}>GitHub</a>
+          <a class="install-link" href="#installation">Install</a>
+        </nav>
+      </div>
+    </header>
+
+    <div class="docs-layout">
+      <aside class="sidebar">
+        <DocsNav groups={docsNav} />
+      </aside>
+
+      <main id="main-content" class="doc-content">
+        <details class="mobile-toc">
+          <summary>On this page <span aria-hidden="true">⌄</span></summary>
+          <DocsNav groups={docsNav} compact />
+        </details>
+
+        <article class="typeset typeset-docs">
+          <Content />
+        </article>
+
+        <footer class="docs-footer not-typeset" data-not-typeset>
+          <a href="/"><Logo size={22} /></a>
+          <p>{product.tagline}</p>
+          <div><a href="/">Home</a><a href={githubUrl}>GitHub</a></div>
+        </footer>
+      </main>
+    </div>
+  </div>
+</Base>
+
+<style is:global>
+  html:has(body.docs) { scroll-behavior: auto; }
+
+  .docs {
+    --accent: #ff4f00;
+    --bg: #100f0d;
+    --surface: #151310;
+    --surface-raised: #1a1713;
+    --fg: #ece3d4;
+    --muted: rgba(236, 227, 212, 0.62);
+    --quiet: rgba(236, 227, 212, 0.42);
+    --hair: rgba(236, 227, 212, 0.1);
+    --hair-strong: rgba(236, 227, 212, 0.16);
+    min-height: 100vh;
+    background: var(--bg);
+    color: var(--fg);
+  }
+
+  .docs a:focus-visible,
+  .docs summary:focus-visible,
+  .docs button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+  }
+
+  .skip-link {
+    position: fixed;
+    top: 10px;
+    left: 12px;
+    z-index: 100;
+    padding: 9px 12px;
+    border-radius: 7px;
+    background: var(--fg);
+    color: var(--bg);
+    font-size: 13px;
+    font-weight: 650;
+    transform: translateY(-160%);
+    transition: transform 120ms ease;
+  }
+
+  .skip-link:focus { transform: translateY(0); }
+  .docs-page { min-height: 100vh; }
+
+  .docs-header {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    border-bottom: 1px solid var(--hair);
+    background: rgba(16, 15, 13, 0.9);
+    backdrop-filter: blur(14px);
+  }
+
+  .header-inner {
+    display: flex;
+    width: 100%;
+    max-width: 1400px;
+    height: 64px;
+    margin-inline: auto;
+    padding-inline: 28px;
+    align-items: center;
+  }
+
+  .header-product {
+    display: flex;
+    height: 28px;
+    align-items: center;
+    gap: 0;
+  }
+  /* The lockup SVG carries a little empty space to the right of the wordmark;
+     pull "docs" back over it so it reads tight against the logo. */
+  .header-product .docs-label { margin-left: 0.5px; }
+
+  .brand,
+  .docs-label {
+    display: inline-flex;
+    height: 28px;
+    align-items: center;
+    line-height: 1;
+  }
+
+  .brand { color: var(--fg); }
+  /* The lockup is vertically centered inside its own artboard, which leaves
+     the icon and wordmark baseline ~1.8px above the adjacent "docs" text.
+     Nudge the whole mark down so both land on the docs baseline. */
+  .header-product .brand img { transform: translateY(1.8px); }
+  .docs-header .brand .wordmark {
+    font-size: 15px;
+    font-weight: 650;
+    line-height: 1;
+  }
+  .docs-label {
+    color: var(--muted);
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+  }
+
+  .header-links {
+    display: flex;
+    margin-left: auto;
+    align-items: center;
+    gap: 24px;
+    color: var(--muted);
+    font-size: 13px;
+  }
+  .header-links a { transition: color 120ms ease; }
+  .header-links a:hover { color: var(--fg); }
+  .header-links .install-link {
+    padding: 7px 13px;
+    border: 1px solid var(--hair-strong);
+    border-radius: 999px;
+    color: var(--fg);
+  }
+  .header-links .install-link:hover { background: rgba(236, 227, 212, 0.06); }
+
+  .docs-layout {
+    display: grid;
+    grid-template-columns: 210px minmax(0, 760px);
+    width: 100%;
+    max-width: 1120px;
+    margin-inline: auto;
+    padding: 0 28px 120px;
+    column-gap: 68px;
+    align-items: start;
+  }
+
+  .sidebar {
+    position: sticky;
+    top: 94px;
+    max-height: calc(100vh - 118px);
+    padding: 6px 4px 24px;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--hair-strong) transparent;
+  }
+
+  .doc-content {
+    min-width: 0;
+    padding-top: clamp(68px, 8vw, 96px);
+  }
+  .mobile-toc { display: none; }
+
+  .typeset-docs {
+    --typeset-font-body: var(--sans);
+    --typeset-font-heading: var(--sans);
+    --typeset-font-mono: var(--mono);
+    --typeset-size: 15.5px;
+    --typeset-leading: 1.75;
+    --typeset-flow: 1.45em;
+    --color-foreground: var(--fg);
+    --color-muted-foreground: var(--muted);
+    --color-border: var(--hair-strong);
+    --color-muted: rgba(236, 227, 212, 0.055);
+    --color-ring: var(--accent);
+    --color-primary: var(--accent);
+    --radius: 9px;
+    width: 100%;
+    max-width: 760px;
+    color: var(--fg);
+  }
+
+  .typeset-docs > h1 {
+    max-width: 650px;
+    font-weight: 680;
+    letter-spacing: -0.035em;
+    text-wrap: balance;
+  }
+  .typeset-docs > h2,
+  .typeset-docs > h3 { letter-spacing: -0.018em; }
+  .typeset-docs > h2[id] { scroll-margin-top: 84px; }
+  .typeset-docs .docs-lead {
+    max-width: 680px;
+    color: rgba(236, 227, 212, 0.72);
+    font-size: 1.075em;
+    text-wrap: pretty;
+  }
+
+  .typeset-docs :where(a) { text-underline-offset: 0.18em; }
+  .typeset-docs :where(strong) { color: var(--fg); }
+  .typeset-docs :where(hr) { border-color: var(--hair); }
+  .typeset-docs :where(blockquote) {
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    background: rgba(236, 227, 212, 0.025);
+    padding: 14px 16px;
+    color: var(--muted);
+  }
+  .typeset-docs :where(table) {
+    width: 100%;
+    table-layout: fixed;
+  }
+  .typeset-docs :where(th, td) { overflow-wrap: anywhere; }
+  .typeset-docs :where(th) { color: var(--fg); }
+  .typeset-docs :where(td) { color: var(--muted); }
+
+  .typeset-docs :where(pre) {
+    position: relative;
+    overflow-x: hidden;
+    border: 1px solid var(--hair);
+    background: #0c0b09;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    padding: 1.1em 3.7em 1.1em 1.2em;
+  }
+  .typeset-docs :where(pre code) { white-space: inherit; }
+
+  .typeset-copy {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    display: inline-grid;
+    width: 32px;
+    height: 32px;
+    place-items: center;
+    border: 0;
+    border-radius: 7px;
+    background: rgba(236, 227, 212, 0.08);
+    color: rgba(236, 227, 212, 0.58);
+    transition: background 140ms ease, color 140ms ease, transform 120ms ease;
+  }
+  .typeset-copy:hover { background: rgba(236, 227, 212, 0.14); color: var(--fg); }
+  .typeset-copy:active { transform: scale(0.94); }
+  .typeset-copy svg {
+    grid-area: 1 / 1;
+    width: 16px;
+    height: 16px;
+    transition: opacity 120ms ease, transform 160ms ease;
+  }
+  .typeset-copy .copy-check { color: var(--accent); opacity: 0; transform: scale(0.45); }
+  .typeset-copy.copied .copy-icon { opacity: 0; transform: scale(0.45); }
+  .typeset-copy.copied .copy-check { opacity: 1; transform: scale(1); }
+
+  .typeset-docs .agent-heading {
+    display: flex;
+    align-items: center;
+    gap: 0.65em;
+  }
+  .typeset-docs .agent-heading img {
+    width: 1.35em;
+    height: 1.35em;
+    margin: 0;
+    border-radius: 0;
+    object-fit: contain;
+  }
+
+  .troubleshooting-list {
+    margin-top: 24px;
+    border-top: 1px solid var(--hair);
+  }
+  .troubleshooting-list details { border-bottom: 1px solid var(--hair); }
+  .troubleshooting-list details.is-animating {
+    overflow: hidden;
+    will-change: height;
+  }
+  .troubleshooting-list summary {
+    display: flex;
+    padding: 18px 2px;
+    color: var(--fg);
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 570;
+    list-style: none;
+    justify-content: space-between;
+    gap: 20px;
+  }
+  .troubleshooting-list summary::-webkit-details-marker { display: none; }
+  .troubleshooting-list summary::after {
+    color: var(--accent);
+    content: '+';
+    font-family: var(--mono);
+  }
+  .troubleshooting-list details[open] summary::after { content: '–'; }
+  .troubleshooting-list details p {
+    max-width: 680px;
+    padding: 0 36px 18px 2px;
+    color: var(--muted);
+    font-size: 13.5px;
+    line-height: 1.65;
+  }
+  .troubleshooting-list code {
+    border: 1px solid var(--hair);
+    border-radius: 5px;
+    background: rgba(236, 227, 212, 0.055);
+    color: var(--fg);
+    font-family: var(--mono);
+    font-size: 0.84em;
+    padding: 1px 5px;
+  }
+
+  .docs-footer {
+    display: flex;
+    margin-top: 96px;
+    padding-top: 28px;
+    border-top: 1px solid var(--hair);
+    align-items: center;
+    gap: 18px;
+    color: var(--quiet);
+    font-size: 12px;
+  }
+  .docs-footer > p { flex: 1; }
+  .docs-footer > div { display: flex; gap: 18px; }
+  .docs-footer a:hover { color: var(--fg); }
+
+  @media (max-width: 980px) {
+    .docs-layout {
+      display: block;
+      max-width: 820px;
+      padding-inline: 24px;
+    }
+    .sidebar { display: none; }
+    .doc-content { padding-top: 28px; }
+    .mobile-toc {
+      display: block;
+      margin-bottom: 56px;
+      padding: 0 16px;
+      border: 1px solid var(--hair);
+      border-radius: 9px;
+      background: var(--surface);
+    }
+    .mobile-toc summary {
+      display: flex;
+      padding: 14px 0;
+      color: var(--fg);
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      list-style: none;
+      justify-content: space-between;
+    }
+    .mobile-toc summary::-webkit-details-marker { display: none; }
+    .mobile-toc[open] summary { border-bottom: 1px solid var(--hair); }
+  }
+
+  @media (max-width: 720px) {
+    .header-inner { height: 58px; padding-inline: 18px; }
+    .header-links { gap: 14px; }
+    .header-links > a:not(.install-link) { display: none; }
+    .docs-layout { padding: 0 18px 80px; }
+    .typeset-docs { --typeset-size: 15px; --typeset-flow: 1.35em; }
+    .typeset-docs :where(table) { font-size: 0.9em; }
+    .docs-footer { align-items: flex-start; flex-wrap: wrap; }
+    .docs-footer > p { flex-basis: calc(100% - 50px); }
+  }
+
+  @media (max-width: 440px) {
+    .typeset-docs :where(pre) { padding-inline: 1em 3.5em; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .skip-link,
+    .typeset-copy,
+    .typeset-copy svg { transition: none; }
+  }
+</style>
+
+<script>
+  const clipboardIcon = `
+    <svg class="copy-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect x="9" y="9" width="11" height="11" rx="2.4" stroke="currentColor" stroke-width="1.8" />
+      <path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+    </svg>
+    <svg class="copy-check" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M20 6 9 17l-5-5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+    </svg>`;
+
+  for (const pre of document.querySelectorAll<HTMLElement>('.typeset-docs pre')) {
+    const code = pre.querySelector('code');
+    if (!code) continue;
+
+    const button = document.createElement('button');
+    button.className = 'typeset-copy';
+    button.type = 'button';
+    button.setAttribute('aria-label', 'Copy code');
+    button.innerHTML = clipboardIcon;
+    const value = code.textContent ?? '';
+
+    let resetTimer = 0;
+    button.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(value);
+      } catch {
+        // Clipboard access can be unavailable in non-secure preview contexts.
+      }
+      button.classList.add('copied');
+      button.setAttribute('aria-label', 'Copied');
+      window.clearTimeout(resetTimer);
+      resetTimer = window.setTimeout(() => {
+        button.classList.remove('copied');
+        button.setAttribute('aria-label', 'Copy code');
+      }, 1200);
+    });
+
+    pre.append(button);
+  }
+
+  interface AccordionState {
+    animation: Animation;
+    expanding: boolean;
+  }
+
+  const accordionStates = new WeakMap<HTMLDetailsElement, AccordionState>();
+  const troubleshootingItems = document.querySelectorAll<HTMLDetailsElement>('.troubleshooting-list details');
+
+  for (const item of troubleshootingItems) {
+    const summary = item.querySelector<HTMLElement>('summary');
+    if (!summary) continue;
+
+    summary.addEventListener('click', (event) => {
+      if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+      event.preventDefault();
+
+      const activeState = accordionStates.get(item);
+      const expand = activeState ? !activeState.expanding : !item.open;
+      const currentHeight = item.getBoundingClientRect().height;
+
+      if (activeState) activeState.animation.cancel();
+      item.style.height = `${currentHeight}px`;
+      item.classList.add('is-animating');
+
+      if (expand) item.open = true;
+
+      const borderHeight = item.offsetHeight - item.clientHeight;
+      const collapsedHeight = summary.getBoundingClientRect().height + borderHeight;
+      const expandedHeight = item.scrollHeight + borderHeight;
+      const targetHeight = expand ? expandedHeight : collapsedHeight;
+
+      const animation = item.animate(
+        { height: [`${currentHeight}px`, `${targetHeight}px`] },
+        { duration: 240, easing: 'cubic-bezier(0.4, 0, 0.2, 1)' },
+      );
+
+      accordionStates.set(item, { animation, expanding: expand });
+      animation.onfinish = () => {
+        if (accordionStates.get(item)?.animation !== animation) return;
+        item.open = expand;
+        item.style.height = '';
+        item.classList.remove('is-animating');
+        accordionStates.delete(item);
+      };
+    });
+  }
+</script>

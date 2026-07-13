@@ -1,0 +1,212 @@
+---
+import CopyButton from './CopyButton.astro';
+
+interface Props {
+  title?: string;
+  prompt?: string;
+  command: string;
+  output: string;
+  size?: 'hero' | 'panel' | 'compact';
+  copy?: boolean;
+  recording?: boolean;
+}
+
+const {
+  title = '~/Dev/relay-api',
+  prompt = '$',
+  command,
+  output,
+  size = 'panel',
+  copy = false,
+  recording = false,
+} = Astro.props;
+---
+
+<figure class="polished-terminal" data-size={size} aria-label={`${command} terminal output`}>
+  <div class="pt-bar">
+    <span class="pt-context">
+      <span class="pt-lights" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="pt-title">{title}</span>
+    </span>
+    <span class="pt-actions">
+      {recording && <span class="pt-rec">rendered from CLI output</span>}
+      {copy && <CopyButton text={command} label={`Copy ${command}`} />}
+    </span>
+  </div>
+  <pre class="pt-body"><code><span class="pt-command"><span class:list={["pt-prompt", { "pt-shell-prompt": prompt !== '$' }]}>{prompt}</span> {command}</span>
+<span class="pt-output" set:html={output} /></code></pre>
+</figure>
+
+<style>
+  .polished-terminal {
+    position: relative;
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    border: 1px solid rgba(236, 227, 212, 0.16);
+    border-radius: 12px;
+    background: #0c0b09;
+    box-shadow:
+      inset 0 1px 0 rgba(236, 227, 212, 0.08),
+      0 26px 70px -48px rgba(5, 4, 3, 0.82);
+    color: var(--fg, #ece3d4);
+    font-family: var(--mono, ui-monospace, monospace);
+    isolation: isolate;
+  }
+  .polished-terminal {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  .pt-bar {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 40px;
+    gap: 18px;
+    padding: 0 14px;
+    border-bottom: 1px solid rgba(236, 227, 212, 0.09);
+    background: #12100e;
+    transition: background-color 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+  }
+
+  .pt-context { display: flex; min-width: 0; align-items: center; gap: 14px; }
+  .pt-lights { display: inline-flex; gap: 7px; }
+  .pt-lights i {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: rgba(236, 227, 212, 0.2);
+    transition: background-color 180ms ease, box-shadow 180ms ease;
+  }
+
+  .polished-terminal:hover .pt-bar {
+    border-bottom-color: rgba(236, 227, 212, 0.17);
+    background: #171411;
+    box-shadow: inset 0 1px 0 rgba(236, 227, 212, 0.07);
+  }
+  .polished-terminal:hover .pt-lights i:nth-child(1) {
+    background: #ff5f57;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  }
+  .polished-terminal:hover .pt-lights i:nth-child(2) {
+    background: #febc2e;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  }
+  .polished-terminal:hover .pt-lights i:nth-child(3) {
+    background: #28c840;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  }
+
+  .pt-title {
+    min-width: 0;
+    overflow: hidden;
+    color: rgba(236, 227, 212, 0.48);
+    font-size: 10.5px;
+    font-weight: 500;
+    line-height: 1;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .pt-actions {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+  }
+
+  .pt-rec {
+    color: rgba(236, 227, 212, 0.36);
+    font-size: 9.5px;
+    font-weight: 500;
+  }
+
+  .pt-body {
+    position: relative;
+    margin: 0;
+    overflow: auto;
+    color: rgba(236, 227, 212, 0.84);
+    font-family: inherit;
+    font-size: 12px;
+    font-variant-ligatures: none;
+    line-height: 1.55;
+    scrollbar-color: rgba(236, 227, 212, 0.18) transparent;
+    scrollbar-width: thin;
+    tab-size: 2;
+  }
+  [data-size='hero'] .pt-body {
+    height: var(--pt-hero-body-height, clamp(400px, 46vw, 560px));
+    padding: calc(20px + var(--pt-hero-line-shift, 0px)) 22px 28px;
+  }
+  [data-size='hero'] .pt-body { overflow: hidden; scrollbar-width: none; }
+  [data-size='hero'] .pt-body::-webkit-scrollbar { display: none; }
+  [data-size='panel'] .pt-body { height: 490px; padding: 20px 22px 28px; }
+  [data-size='compact'] .pt-body { max-height: 310px; padding: 18px 20px 24px; }
+
+  .pt-body code {
+    display: block;
+    width: max-content;
+    min-width: 100%;
+    font-family: inherit;
+    white-space: pre;
+  }
+
+  .pt-command {
+    display: inline-block;
+    margin-bottom: 8px;
+    color: #f3ece2;
+    font-weight: 500;
+  }
+  .pt-prompt { color: var(--accent, #ff4f00); font-weight: 700; }
+  .pt-shell-prompt { color: rgba(236, 227, 212, 0.5); font-weight: 400; }
+  .pt-output { color: rgba(236, 227, 212, 0.78); }
+
+  .pt-output :global(.th-hash) { color: rgba(236, 227, 212, 0.45); }
+  .pt-output :global(.th-session-0) { color: #87ff87; }
+  .pt-output :global(.th-session-1) { color: #ffd700; }
+  .pt-output :global(.th-session-2) { color: #d7afff; }
+  .pt-output :global(.th-session-3) { color: #5fd7d7; }
+  .pt-output :global(.th-session-4) { color: #ff875f; }
+  .pt-output :global(.th-session-5) { color: #afafff; }
+  .pt-output :global(.th-action) { color: #87afff; }
+  .pt-output :global(.th-muted) { color: rgba(236, 227, 212, 0.44); }
+  .pt-output :global(.th-success) { color: #00ff87; }
+  .pt-output :global(.th-warning) { color: #ffd700; }
+  .pt-output :global(.th-danger) { color: #ff5f5f; }
+  .pt-output :global(.th-label) { color: #f0e4d5; font-weight: 600; }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .pt-output :global(.th-lane-token) {
+      display: inline-block;
+      animation: pt-lane-in 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
+    }
+    .pt-output :global(.th-session-1.th-lane-token) { animation-delay: 40ms; }
+    .pt-output :global(.th-session-2.th-lane-token) { animation-delay: 80ms; }
+    .pt-output :global(.th-session-3.th-lane-token) { animation-delay: 120ms; }
+    .pt-output :global(.th-session-4.th-lane-token) { animation-delay: 160ms; }
+    .pt-output :global(.th-session-5.th-lane-token) { animation-delay: 200ms; }
+  }
+
+  @keyframes pt-lane-in {
+    from { opacity: 0; transform: translateY(-3px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  @media (max-width: 700px) {
+    .pt-rec { display: none; }
+    [data-size='hero'] .pt-body { height: 420px; padding: 17px 16px 24px; }
+    [data-size='panel'] .pt-body { height: 420px; padding: 17px 16px 24px; }
+    .pt-body { font-size: 10.5px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .pt-bar,
+    .pt-lights i { transition: none; }
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    .polished-terminal { background: #0c0b09; }
+  }
+</style>

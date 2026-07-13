@@ -1,0 +1,611 @@
+---
+import { workflowScenes } from '../data/terminalHome';
+---
+
+<div class="turnal-workflow" data-turnal-workflow>
+  <div class="tw-stage" data-tw-boundary>
+    <div class="tw-positioner" data-tw-positioner>
+      <div class="tw-terminal">
+        <div class="tw-bar">
+          <span class="tw-lights" aria-hidden="true"><i></i><i></i><i></i></span>
+        </div>
+
+        <div class="tw-body">
+          <div class="tw-scroll" data-tw-scroll>
+            <div class="tw-output" data-tw-output></div>
+            <div class="tw-composer" data-tw-composer-row>
+              <span class="tw-shell-prompt"><span>aadijo@MacBook-Pro</span> <b>Project</b> %</span>
+              <span class="tw-typed-command"><span data-tw-composer></span><i aria-hidden="true"></i></span>
+            </div>
+          </div>
+          <div class="tw-pager-status" data-tw-pager-status hidden></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tw-dots" aria-label="Workflow scenes">
+      {workflowScenes.map((scene, index) => (
+        <button
+          type="button"
+          data-tw-dot={index}
+          aria-label={`Show ${scene.title}`}
+          aria-pressed={index === 0 ? 'true' : 'false'}
+        ><span></span></button>
+      ))}
+    </div>
+  </div>
+
+  <div class="tw-copy">
+    <h3><span>From first turn</span>to safe rollback</h3>
+    <p>Turnal captures the work in the background. Use the CLI when you need to inspect, trace, or recover it.</p>
+    <div class="tw-scenes">
+      {workflowScenes.map((scene, index) => (
+        <div class="tw-scene-row" data-tw-scene-row>
+          <span class="tw-scene-progress" aria-hidden="true"><span data-tw-progress></span></span>
+          <button
+            type="button"
+            data-tw-scene={index}
+            aria-pressed={index === 0 ? 'true' : 'false'}
+          >
+            <span>{scene.title}</span>
+            <code>{scene.command}</code>
+          </button>
+        </div>
+      ))}
+    </div>
+  </div>
+</div>
+
+<script>
+  import { workflowScenes } from '../data/terminalHome';
+
+  const roots = document.querySelectorAll<HTMLElement>('[data-turnal-workflow]');
+
+  roots.forEach((root) => {
+    const output = root.querySelector<HTMLElement>('[data-tw-output]')!;
+    const composer = root.querySelector<HTMLElement>('[data-tw-composer]')!;
+    const composerRow = root.querySelector<HTMLElement>('[data-tw-composer-row]')!;
+    const pagerStatus = root.querySelector<HTMLElement>('[data-tw-pager-status]')!;
+    const scroller = root.querySelector<HTMLElement>('[data-tw-scroll]')!;
+    const boundary = root.querySelector<HTMLElement>('[data-tw-boundary]')!;
+    const positioner = root.querySelector<HTMLElement>('[data-tw-positioner]')!;
+    const sceneButtons = [...root.querySelectorAll<HTMLButtonElement>('[data-tw-scene]')];
+    const dotButtons = [...root.querySelectorAll<HTMLButtonElement>('[data-tw-dot]')];
+    const progressFills = [...root.querySelectorAll<HTMLElement>('[data-tw-progress]')];
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+
+    let activeIndex = 0;
+    let runId = 0;
+    let inView = false;
+    let progressAnimation: Animation | null = null;
+    const timers = new Map<number, (completed: boolean) => void>();
+
+    const wait = (ms: number, id: number) => new Promise<boolean>((resolve) => {
+      const timer = window.setTimeout(() => {
+        timers.delete(timer);
+        resolve(id === runId);
+      }, ms);
+      timers.set(timer, resolve);
+    });
+
+    const clearRun = () => {
+      runId += 1;
+      timers.forEach((resolve, timer) => {
+        window.clearTimeout(timer);
+        resolve(false);
+      });
+      timers.clear();
+    };
+
+    const scrollToLatest = () => {
+      scroller.scrollTop = scroller.scrollHeight;
+    };
+
+    const resetTerminal = () => {
+      output.replaceChildren();
+      composer.textContent = '';
+      composerRow.classList.remove('is-typing');
+      composerRow.hidden = false;
+      pagerStatus.hidden = true;
+      scroller.scrollTo({ top: 0, behavior: 'auto' });
+    };
+
+    const updatePagerStatus = (totalLines: number, scrollTop: number) => {
+      const visibleLines = Math.max(1, Math.floor((scroller.clientHeight - 40) / 16.5));
+      const maxScroll = Math.max(1, scroller.scrollHeight - scroller.clientHeight);
+      const progress = Math.min(1, Math.max(0, scrollTop / maxScroll));
+      const firstLine = 1 + Math.round(Math.max(0, totalLines - visibleLines) * progress);
+      const lastLine = Math.min(totalLines, firstLine + visibleLines - 1);
+      const end = lastLine >= totalLines ? '  (END)' : '';
+      pagerStatus.textContent = `turnal log  ${firstLine}-${lastLine}/${totalLines}${end}`;
+    };
+
+    const appendCommand = (command: string) => {
+      const line = document.createElement('div');
+      line.className = 'tw-command-line';
+      const prompt = document.createElement('span');
+      prompt.className = 'tw-shell-prompt';
+      prompt.innerHTML = '<span>aadijo@MacBook-Pro</span> <b>Project</b> %';
+      const text = document.createElement('span');
+      text.textContent = command;
+      line.append(prompt, text);
+      output.append(line);
+      scrollToLatest();
+    };
+
+    const appendOutput = (html: string, shouldScroll = true) => {
+      const line = document.createElement('div');
+      line.className = 'tw-output-line';
+      line.innerHTML = html || '&nbsp;';
+      output.append(line);
+      if (shouldScroll) scrollToLatest();
+    };
+
+    const renderFinal = (index: number) => {
+      const scene = workflowScenes[index];
+      resetTerminal();
+      appendCommand(scene.command);
+      if (scene.mode === 'pager') {
+        scene.output.forEach((line) => appendOutput(line, false));
+        composerRow.hidden = true;
+        pagerStatus.hidden = false;
+        scroller.scrollTop = 0;
+        updatePagerStatus(scene.output.length, 0);
+      } else {
+        scene.output.forEach((line) => appendOutput(line));
+        composerRow.hidden = false;
+        scrollToLatest();
+      }
+    };
+
+    const characterDelay = (character: string) => {
+      if (character === ' ') return 35 + Math.floor(Math.random() * 16);
+      if (['.', ':', '-', '"'].includes(character)) return 48 + Math.floor(Math.random() * 20);
+      return 25 + Math.floor(Math.random() * 16);
+    };
+
+    const play = async (index: number, id: number) => {
+      const scene = workflowScenes[index];
+      resetTerminal();
+      if (!(await wait(360, id))) return;
+
+      let typed = '';
+      composerRow.classList.add('is-typing');
+      for (const character of scene.command) {
+        if (id !== runId) return;
+        typed += character;
+        composer.textContent = typed;
+        if (!(await wait(characterDelay(character), id))) return;
+      }
+      composerRow.classList.remove('is-typing');
+
+      if (!(await wait(520, id))) return;
+      appendCommand(scene.command);
+      composer.textContent = '';
+      composerRow.hidden = true;
+      if (!(await wait(180, id))) return;
+
+      if (scene.mode === 'pager') {
+        scene.output.forEach((line) => appendOutput(line, false));
+        pagerStatus.hidden = false;
+        scroller.scrollTop = 0;
+        updatePagerStatus(scene.output.length, 0);
+        if (!(await wait(650, id))) return;
+
+        const maxScroll = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+        const lineHeight = 16.5;
+        const lineCount = Math.max(1, Math.ceil(maxScroll / lineHeight));
+
+        for (let line = 1; line <= lineCount; line += 1) {
+          if (id !== runId) return;
+          const nextTop = Math.min(maxScroll, line * lineHeight);
+          scroller.scrollTo({ top: nextTop, behavior: 'smooth' });
+          updatePagerStatus(scene.output.length, nextTop);
+          if (!(await wait(280, id))) return;
+        }
+        return;
+      }
+
+      for (const line of scene.output) {
+        if (id !== runId) return;
+        appendOutput(line);
+        if (!(await wait(line === '' ? 70 : 115 + Math.floor(Math.random() * 65), id))) return;
+      }
+
+      if (id !== runId) return;
+      composerRow.hidden = false;
+      scrollToLatest();
+    };
+
+    const updateControls = () => {
+      sceneButtons.forEach((button, index) => button.setAttribute('aria-pressed', String(index === activeIndex)));
+      dotButtons.forEach((button, index) => button.setAttribute('aria-pressed', String(index === activeIndex)));
+    };
+
+    const resetProgress = (index: number) => {
+      progressAnimation?.cancel();
+      progressAnimation = null;
+      progressFills.forEach((fill, fillIndex) => {
+        fill.style.transform = fillIndex < index ? 'scaleY(1)' : 'scaleY(0)';
+      });
+    };
+
+    const startProgress = (index: number, id: number) => {
+      if (!inView || reduceMotion.matches) return;
+      const fill = progressFills[index];
+      if (!fill) return;
+      progressAnimation = fill.animate(
+        [{ transform: 'scaleY(0)' }, { transform: 'scaleY(1)' }],
+        {
+          duration: workflowScenes[index].durationMs,
+          easing: 'linear',
+          fill: 'forwards',
+        },
+      );
+      progressAnimation.onfinish = () => {
+        if (id === runId && inView && activeIndex === index) activate((index + 1) % workflowScenes.length);
+      };
+    };
+
+    const animateSceneChange = () => {
+      root.classList.remove('is-scene-entering');
+      void root.offsetWidth;
+      root.classList.add('is-scene-entering');
+    };
+
+    const activate = (index: number) => {
+      if (!workflowScenes[index]) return;
+      clearRun();
+      activeIndex = index;
+      resetProgress(index);
+      updateControls();
+      animateSceneChange();
+      const id = runId;
+      if (reduceMotion.matches) renderFinal(index);
+      else void play(index, id);
+      startProgress(index, id);
+    };
+
+    sceneButtons.forEach((button, index) => button.addEventListener('click', () => activate(index)));
+    dotButtons.forEach((button, index) => button.addEventListener('click', () => activate(index)));
+
+    const visibility = new IntersectionObserver(([entry]) => {
+      const wasInView = inView;
+      inView = entry.isIntersecting && entry.intersectionRatio >= 0.3;
+      if (inView && !wasInView) activate(activeIndex);
+      if (!inView && wasInView) {
+        clearRun();
+        progressAnimation?.cancel();
+        progressAnimation = null;
+        renderFinal(activeIndex);
+      }
+    }, { threshold: [0, 0.3, 1] });
+    visibility.observe(root);
+
+    const documentVisibilityChanged = () => {
+      if (document.hidden) {
+        clearRun();
+        progressAnimation?.cancel();
+        progressAnimation = null;
+        renderFinal(activeIndex);
+      } else if (inView) {
+        activate(activeIndex);
+      }
+    };
+    document.addEventListener('visibilitychange', documentVisibilityChanged);
+
+    const fitTerminal = () => {
+      const bounds = boundary.getBoundingClientRect();
+      const scale = Math.min(0.95, Math.max((bounds.width - 30) / 672, 0), Math.max((bounds.height - 54) / 500, 0));
+      positioner.style.setProperty('--tw-scale', String(scale));
+    };
+    const sizeObserver = new ResizeObserver(fitTerminal);
+    sizeObserver.observe(boundary);
+    window.addEventListener('resize', fitTerminal, { passive: true });
+
+    const motionChanged = () => activate(activeIndex);
+    reduceMotion.addEventListener('change', motionChanged);
+    fitTerminal();
+    renderFinal(0);
+    resetProgress(0);
+    updateControls();
+
+    window.addEventListener('pagehide', () => {
+      clearRun();
+      progressAnimation?.cancel();
+      visibility.disconnect();
+      sizeObserver.disconnect();
+      window.removeEventListener('resize', fitTerminal);
+      document.removeEventListener('visibilitychange', documentVisibilityChanged);
+      reduceMotion.removeEventListener('change', motionChanged);
+    }, { once: true });
+  });
+</script>
+
+<style is:global>
+  .turnal-workflow {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
+    gap: 32px;
+    min-height: 570px;
+  }
+
+  .tw-stage {
+    position: relative;
+    min-width: 0;
+    min-height: 570px;
+    overflow: hidden;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .tw-positioner {
+    --tw-scale: 0.95;
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 672px;
+    height: 500px;
+    transform: translate(-50%, -50%) scale(var(--tw-scale));
+    transform-origin: center;
+    will-change: transform;
+  }
+
+  .tw-terminal {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    border: 1px solid rgba(236, 227, 212, 0.18);
+    border-radius: 12px;
+    background: rgba(12, 11, 9, 0.94);
+    box-shadow:
+      inset 0 1px 0 rgba(236, 227, 212, 0.09),
+      0 28px 72px -44px rgba(5, 4, 3, 0.84);
+    color: #ece3d4;
+    font-family: var(--mono);
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  .tw-bar {
+    position: relative;
+    display: flex;
+    align-items: center;
+    min-height: 42px;
+    padding-inline: 14px;
+    border-bottom: 1px solid rgba(236, 227, 212, 0.1);
+    background: rgba(236, 227, 212, 0.045);
+    user-select: none;
+    transition: background-color 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+  }
+
+  .tw-lights { display: flex; gap: 8px; }
+  .tw-lights i {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: rgba(236, 227, 212, 0.2);
+    transition: background-color 180ms ease, box-shadow 180ms ease;
+  }
+
+  .tw-terminal:hover .tw-bar {
+    border-bottom-color: rgba(236, 227, 212, 0.18);
+    background: rgba(236, 227, 212, 0.075);
+    box-shadow: inset 0 1px 0 rgba(236, 227, 212, 0.08);
+  }
+  .tw-terminal:hover .tw-lights i:nth-child(1) {
+    background: #ff5f57;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  }
+  .tw-terminal:hover .tw-lights i:nth-child(2) {
+    background: #febc2e;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  }
+  .tw-terminal:hover .tw-lights i:nth-child(3) {
+    background: #28c840;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  }
+
+  .tw-body {
+    position: relative;
+    height: calc(100% - 42px);
+  }
+
+  .tw-scroll {
+    height: 100%;
+    overflow: hidden;
+    padding: 18px;
+    scrollbar-width: none;
+  }
+  .tw-scroll::-webkit-scrollbar { display: none; }
+
+  .tw-output {
+    display: block;
+    width: max-content;
+    min-width: 100%;
+    color: rgba(236, 227, 212, 0.8);
+    font-size: 11px;
+    font-variant-ligatures: none;
+    line-height: 1.5;
+    white-space: pre;
+  }
+
+  .tw-command-line { display: flex; gap: 8px; margin: 5px 0 9px; color: #f3ece2; font-weight: 500; }
+  .tw-shell-prompt { flex: none; color: rgba(236, 227, 212, 0.48); font-weight: 400; white-space: pre; }
+  .tw-shell-prompt b { color: rgba(236, 227, 212, 0.72); font-weight: 400; }
+  .tw-output-line { min-height: 1.5em; }
+
+  .tw-output .th-hash { color: rgba(236, 227, 212, 0.45); }
+  .tw-output .th-session-0 { color: #87ff87; }
+  .tw-output .th-session-1 { color: #ffd700; }
+  .tw-output .th-session-2 { color: #d7afff; }
+  .tw-output .th-session-3 { color: #5fd7d7; }
+  .tw-output .th-session-4 { color: #ff875f; }
+  .tw-output .th-session-5 { color: #afafff; }
+  .tw-output .th-action { color: #87afff; }
+  .tw-output .th-muted { color: rgba(236, 227, 212, 0.44); }
+  .tw-output .th-success { color: #00ff87; }
+  .tw-output .th-warning { color: #ffd700; }
+  .tw-output .th-danger { color: #ff5f5f; }
+  .tw-output .th-label { color: #f0e4d5; font-weight: 600; }
+
+  .tw-composer {
+    display: flex;
+    width: max-content;
+    min-width: 100%;
+    gap: 8px;
+    padding: 4px 0 10px;
+    color: #f3ece2;
+    font-size: 11px;
+    line-height: 1.5;
+    white-space: pre;
+  }
+  .tw-composer[hidden],
+  .tw-pager-status[hidden] { display: none; }
+  .tw-typed-command { display: block; min-width: 0; overflow: hidden; color: #f3ece2; text-overflow: ellipsis; white-space: nowrap; }
+  .tw-composer i {
+    display: inline-block;
+    width: 0.72em;
+    height: 0.92em;
+    vertical-align: -0.12em;
+    background: #f3ece2;
+    animation: tw-cursor 1s steps(1, end) infinite;
+  }
+  .tw-composer.is-typing i { opacity: 1; animation: none; }
+
+  .tw-pager-status {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    min-height: 24px;
+    padding: 5px 18px;
+    border-top: 1px solid rgba(236, 227, 212, 0.1);
+    background: #ece3d4;
+    color: #17130f;
+    font-family: var(--mono);
+    font-size: 10px;
+    line-height: 1.4;
+  }
+
+  .tw-dots {
+    position: absolute;
+    z-index: 3;
+    bottom: 22px;
+    left: 50%;
+    display: flex;
+    gap: 5px;
+    padding: 0;
+    transform: translateX(-50%);
+    border: 0;
+    background: transparent;
+  }
+  .tw-dots button {
+    display: grid;
+    width: 13px;
+    height: 13px;
+    padding: 0;
+    place-items: center;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    outline: none;
+    transition: transform 120ms ease;
+  }
+  .tw-dots button:hover { transform: scale(1.12); }
+  .tw-dots button:active { transform: scale(0.94); }
+  .tw-dots button:focus-visible { outline: 2px solid #ff6930; outline-offset: 2px; }
+  .tw-dots button span { width: 5px; height: 5px; border-radius: 50%; background: rgba(236, 227, 212, 0.2); transition: background-color 140ms ease, transform 140ms ease; }
+  .tw-dots button[aria-pressed='true'] span { background: rgba(236, 227, 212, 0.82); transform: scale(1.16); }
+
+  .tw-copy { min-width: 0; padding: 22px 12px 12px 8px; }
+  .tw-copy h3 { margin: 0; color: #ece3d4; font-size: 30px; font-weight: 600; letter-spacing: -0.035em; line-height: 1.03; }
+  .tw-copy h3 span { display: block; color: rgba(236, 227, 212, 0.5); }
+  .tw-copy > p { max-width: 34ch; margin-top: 14px; color: rgba(236, 227, 212, 0.56); font-size: 14px; line-height: 1.55; }
+  .tw-scenes { margin-top: 28px; }
+  .tw-scene-row { position: relative; padding-left: 17px; border-bottom: 1px solid rgba(236, 227, 212, 0.1); }
+  .tw-scene-progress {
+    position: absolute;
+    top: 14px;
+    bottom: 14px;
+    left: 0;
+    width: 2px;
+    overflow: hidden;
+    background: rgba(236, 227, 212, 0.1);
+  }
+  .tw-scene-progress > span {
+    position: absolute;
+    inset: 0;
+    display: block;
+    background: #ff6930;
+    transform: scaleY(0);
+    transform-origin: top;
+    will-change: transform;
+  }
+  .tw-scene-row button { width: 100%; padding: 14px 0; border: 0; background: transparent; color: rgba(236, 227, 212, 0.48); text-align: left; outline: none; }
+  .tw-scene-row button > span { display: block; font-size: 14px; font-weight: 600; line-height: 1.2; transition: color 140ms ease; }
+  .tw-scene-row button code { display: none; margin-top: 7px; color: rgba(236, 227, 212, 0.48); font-family: var(--mono); font-size: 10.5px; white-space: normal; }
+  .tw-scene-row button:hover > span,
+  .tw-scene-row button[aria-pressed='true'] > span { color: #ece3d4; }
+  .tw-scene-row button[aria-pressed='true'] code { display: block; }
+  .tw-scene-row button:focus-visible { outline: 2px solid #ff6930; outline-offset: 4px; border-radius: 4px; }
+
+  @keyframes tw-cursor { 50% { opacity: 0; } }
+  @keyframes tw-terminal-enter {
+    from { opacity: 0.62; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes tw-copy-enter {
+    from { opacity: 0; transform: translateY(5px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .turnal-workflow.is-scene-entering .tw-terminal { animation: tw-terminal-enter 520ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+    .turnal-workflow.is-scene-entering .tw-scene-row button[aria-pressed='true'] > span { animation: tw-copy-enter 420ms 60ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+    .turnal-workflow.is-scene-entering .tw-scene-row button[aria-pressed='true'] code { animation: tw-copy-enter 420ms 120ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+  }
+
+  @media (max-width: 960px) {
+    .turnal-workflow { grid-template-columns: 1fr; min-height: 0; }
+    .tw-stage { min-height: 560px; }
+    .tw-copy { padding: 4px 20px 0; }
+    .tw-copy > p { max-width: 54ch; }
+    .tw-scenes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 24px; }
+  }
+
+  @media (max-width: 600px) {
+    .turnal-workflow { gap: 22px; }
+    .tw-stage { min-height: 390px; }
+    .tw-positioner {
+      top: 14px;
+      right: 14px;
+      bottom: 58px;
+      left: 14px;
+      width: auto;
+      height: auto;
+      transform: none;
+      will-change: auto;
+    }
+    .tw-dots { bottom: 14px; }
+    .tw-copy { padding-inline: 2px; }
+    .tw-copy h3 { font-size: 25px; }
+    .tw-scenes { grid-template-columns: 1fr; }
+    .tw-output { font-size: 10px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .tw-composer i { animation: none; }
+    .tw-bar,
+    .tw-lights i,
+    .tw-dots button,
+    .tw-scene-row button > span { transition: none; }
+    .tw-scene-progress > span { will-change: auto; }
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    .tw-terminal { background: #0c0b09; backdrop-filter: none; }
+  }
+</style>
