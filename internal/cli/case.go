@@ -139,6 +139,25 @@ func writeCase(writer io.Writer, definition caseengine.Case) error {
 			return err
 		}
 	}
+	if len(definition.Readiness.Source.Adapters) > 0 {
+		adapters := make([]string, 0, len(definition.Readiness.Source.Adapters))
+		for _, adapter := range definition.Readiness.Source.Adapters {
+			adapters = append(adapters, adapter.String())
+		}
+		if _, err := fmt.Fprintf(writer, "adapter:         %s\n", strings.Join(adapters, ", ")); err != nil {
+			return err
+		}
+	}
+	if definition.Readiness.Source.Model != "" {
+		if _, err := fmt.Fprintf(writer, "model:           %s\n", definition.Readiness.Source.Model); err != nil {
+			return err
+		}
+	}
+	if definition.Readiness.Source.PermissionMode != "" {
+		if _, err := fmt.Fprintf(writer, "permissions:     %s\n", definition.Readiness.Source.PermissionMode); err != nil {
+			return err
+		}
+	}
 	if len(definition.Verifiers) == 0 {
 		if _, err := fmt.Fprintln(writer, "verifiers:      none"); err != nil {
 			return err

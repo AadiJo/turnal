@@ -99,6 +99,29 @@ func TestInspectReportsPartialRawAdapterTail(t *testing.T) {
 	}
 }
 
+func TestInspectReportsInvalidTaskCaseProjection(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	sessionID := sessionID(t, "demo")
+	turnID, _ := primitives.NewTurnID(1)
+	if _, err := repo.EventLog().Append(eventlog.AppendInput{
+		SessionID: sessionID,
+		TurnID:    &turnID,
+		Type:      primitives.EventTypeTaskCreate,
+		Payload:   json.RawMessage(`{"task_id":"task_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`),
+	}); err != nil {
+		t.Fatalf("append invalid task: %v", err)
+	}
+	report := Inspect(repo)
+	if !containsProblem(report.Problems, "task/case projection failed") {
+		t.Fatalf("problems = %#v, want task/case projection failure", report.Problems)
+	}
+}
+
 func appendCheckpointEvent(t *testing.T, repo *checkpoint.Repo, sessionID primitives.SessionID, turnID primitives.TurnID, ref string, commit string) {
 	t.Helper()
 	payload, err := json.Marshal(map[string]any{
