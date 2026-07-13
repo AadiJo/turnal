@@ -12,6 +12,8 @@ import (
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
+	importerengine "github.com/AadiJo/turnal/internal/importer"
+	integrityengine "github.com/AadiJo/turnal/internal/integrity"
 	"github.com/AadiJo/turnal/internal/manualcheckpoints"
 	"github.com/AadiJo/turnal/internal/primitives"
 	rollbackengine "github.com/AadiJo/turnal/internal/rollback"
@@ -302,4 +304,92 @@ func TestLogWarnsAndContinuesPastMalformedWorkspaceRollback(t *testing.T) {
 			t.Fatalf("log output missing %q:\n%s", want, out.String())
 		}
 	}
+}
+
+func TestCrossWorktreeManualRollbackSurvivesLogIntegrityAndImport(t *testing.T) {
+	requireGit(t)
+	t.Setenv("TURNAL_STATE_DIR", t.TempDir())
+	parent := t.TempDir()
+	mainPath := filepath.Join(parent, "main")
+	linkedPath := filepath.Join(parent, "linked")
+	if err := os.MkdirAll(mainPath, 0o755); err != nil {
+		t.Fatalf("mkdir main: %v", err)
+	}
+	runSaveUserGit(t, mainPath, "init")
+	runSaveUserGit(t, mainPath, "config", "user.email", "turnal@example.test")
+	runSaveUserGit(t, mainPath, "config", "user.name", "Turnal Test")
+	if err := os.WriteFile(filepath.Join(mainPath, "app.txt"), []byte("main\n"), 0o644); err != nil {
+		t.Fatalf("write main app: %v", err)
+	}
+	runSaveUserGit(t, mainPath, "add", "app.txt")
+	runSaveUserGit(t, mainPath, "commit", "-m", "initial")
+	mainRoot, _ := primitives.ParseWorkspaceRoot(mainPath)
+	mainRepo, err := checkpoint.Init(mainRoot)
+	if err != nil {
+		t.Fatalf("Init main: %v", err)
+	}
+	runSaveUserGit(t, mainPath, "worktree", "add", "-b", "save-linked", linkedPath)
+	linkedRoot, _ := primitives.ParseWorkspaceRoot(linkedPath)
+	linkedRepo, err := checkpoint.Open(linkedRoot)
+	if err != nil {
+		t.Fatalf("Open linked: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(linkedPath, "app.txt"), []byte("linked saved state\n"), 0o644); err != nil {
+		t.Fatalf("write linked state: %v", err)
+	}
+	created, err := linkedRepo.CreateManualCheckpoint()
+	if err != nil {
+		t.Fatalf("CreateManualCheckpoint: %v", err)
+	}
+	if _, err := manualcheckpoints.Append(linkedRepo, created, "linked save"); err != nil {
+		t.Fatalf("append linked save: %v", err)
+	}
+
+	t.Chdir(mainPath)
+	rollback := NewRootCmd()
+	var out bytes.Buffer
+	rollback.SetOut(&out)
+	rollback.SetErr(&out)
+	rollback.SetArgs([]string{"rollback", "--to", created.Commit.String(), "--from-worktree", linkedRepo.WorktreeID.String()})
+	if err := rollback.Execute(); err != nil {
+		t.Fatalf("cross-worktree rollback: %v\n%s", err, out.String())
+	}
+	if content, err := os.ReadFile(filepath.Join(mainPath, "app.txt")); err != nil || string(content) != "linked saved state\n" {
+		t.Fatalf("rolled back content = %q, err=%v", content, err)
+	}
+	log := NewRootCmd()
+	out.Reset()
+	log.SetOut(&out)
+	log.SetErr(&out)
+	log.SetArgs([]string{"log", "--all-worktrees", "--no-pager"})
+	if err := log.Execute(); err != nil || !strings.Contains(out.String(), "reverted to saved") {
+		t.Fatalf("cross-worktree log: err=%v\n%s", err, out.String())
+	}
+	if report := integrityengine.Inspect(mainRepo); len(report.Problems) != 0 {
+		t.Fatalf("cross-worktree integrity problems: %#v", report.Problems)
+	}
+
+	destinationRoot := workspaceRoot(t)
+	destination, err := checkpoint.Init(destinationRoot)
+	if err != nil {
+		t.Fatalf("Init destination: %v", err)
+	}
+	if _, err := importerengine.Run(destination, mainRepo.MetadataDir, importerengine.Options{AdoptSourceAsCurrentRepo: true}); err != nil {
+		t.Fatalf("import cross-worktree rollback: %v", err)
+	}
+	if report := integrityengine.Inspect(destination); len(report.Problems) != 0 {
+		t.Fatalf("imported integrity problems: %#v", report.Problems)
+	}
+}
+
+func runSaveUserGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, output)
+	}
+	return string(output)
 }

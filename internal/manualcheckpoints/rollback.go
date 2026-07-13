@@ -56,9 +56,6 @@ func ParseRollbackEvent(event eventlog.Event) (Rollback, error) {
 	if err != nil || !parts.Manual {
 		return Rollback{}, fmt.Errorf("workspace rollback event %s ref invariant failed: manual checkpoint ref required", event.Seq)
 	}
-	if event.WorktreeID != "" && event.WorktreeID != parts.WorktreeID {
-		return Rollback{}, fmt.Errorf("workspace rollback event %s worktree invariant failed: event=%s ref=%s", event.Seq, event.WorktreeID, parts.WorktreeID)
-	}
 	modeText := strings.TrimSpace(payload.Mode)
 	if modeText == "" {
 		modeText = primitives.RollbackModeCheckpoint.String()
