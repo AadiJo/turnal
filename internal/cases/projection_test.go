@@ -94,6 +94,64 @@ func TestProjectExistingHistoryWithoutTaskOrCaseRecords(t *testing.T) {
 	}
 }
 
+func TestProjectPreservesRevisionHistoryAndAllAttemptLinks(t *testing.T) {
+	fixture := projectionFixture(t)
+	revised := fork.Instruction{Status: fork.InstructionAvailable, Text: "Fix it without changing the API", Adapter: primitives.AdapterCodex}
+	revisionEvent := fixture.event(t, 2, primitives.EventTypeTaskRevision, taskRevisionPayload{TaskID: fixture.taskID, revisionDefinition: revisionDefinition{Revision: 2, Instruction: revised, Source: fixture.source}})
+	casePayload := fixture.casePayload
+	casePayload.TaskRevision = 2
+	casePayload.Readiness.Instruction = revised
+	caseEvent := fixture.event(t, 3, primitives.EventTypeCaseCreate, casePayload)
+
+	runOne, _ := primitives.ParseRunID("run_77777777777777777777777777777777")
+	runTwo, _ := primitives.ParseRunID("run_88888888888888888888888888888888")
+	attemptOne, _ := primitives.ParseAttemptID("attempt_77777777777777777777777777777777")
+	attemptTwo, _ := primitives.ParseAttemptID("attempt_88888888888888888888888888888888")
+	linkTwo := fixture.event(t, 5, primitives.EventTypeCaseAttemptLink, caseAttemptLinkPayload{CaseID: fixture.caseID, Scope: fixture.scope, RunID: runTwo, AttemptID: attemptTwo, Source: fixture.source})
+	linkOne := fixture.event(t, 4, primitives.EventTypeCaseAttemptLink, caseAttemptLinkPayload{CaseID: fixture.caseID, Scope: fixture.scope, RunID: runOne, AttemptID: attemptOne, Source: fixture.source})
+	attempts := map[primitives.AttemptID]attemptRecord{
+		attemptOne: {RunID: runOne, AttemptID: attemptOne, Scope: fixture.scope, Source: fixture.source},
+		attemptTwo: {RunID: runTwo, AttemptID: attemptTwo, Scope: fixture.scope, Source: fixture.source},
+	}
+	projection, err := project([]eventlog.DurableStream{{Events: []eventlog.Event{fixture.events[0], revisionEvent, caseEvent, linkTwo, linkOne}}}, fixture.scope, attempts)
+	if err != nil {
+		t.Fatalf("project: %v", err)
+	}
+	task, _ := projection.Task(fixture.taskID)
+	if len(task.Revisions) != 2 || task.Revisions[0].Instruction != fixture.instruction || task.Revisions[1].Instruction != revised {
+		t.Fatalf("task revisions = %#v", task.Revisions)
+	}
+	definition, _ := projection.Case(fixture.caseID)
+	if len(definition.AttemptLinks) != 2 || definition.AttemptLinks[0].AttemptID != attemptOne || definition.AttemptLinks[1].AttemptID != attemptTwo {
+		t.Fatalf("attempt links = %#v", definition.AttemptLinks)
+	}
+}
+
+func TestProjectRejectsRepositoryStoreAndWorktreeEnvelopeMismatches(t *testing.T) {
+	fixture := projectionFixture(t)
+	for name, mutate := range map[string]func(*taskCreatePayload){
+		"repository": func(payload *taskCreatePayload) {
+			payload.Scope.RepoID, _ = primitives.ParseRepoID("repo_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+		},
+		"store": func(payload *taskCreatePayload) {
+			payload.Scope.StoreID, _ = primitives.ParseStoreID("store_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+		},
+		"worktree": func(payload *taskCreatePayload) {
+			payload.Scope.WorktreeID, _ = primitives.ParseWorktreeID("wt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			payload := taskCreatePayload{TaskID: fixture.taskID, Scope: fixture.scope, InitialRevision: revisionDefinition{Revision: 1, Instruction: fixture.instruction, Source: fixture.source}}
+			mutate(&payload)
+			event := fixture.event(t, 1, primitives.EventTypeTaskCreate, payload)
+			_, err := project([]eventlog.DurableStream{{Events: []eventlog.Event{event}}}, fixture.scope, nil)
+			if err == nil || (!strings.Contains(err.Error(), "different repository, store, or worktree") && !strings.Contains(err.Error(), "event envelope")) {
+				t.Fatalf("project error = %v", err)
+			}
+		})
+	}
+}
+
 type projectionTestFixture struct {
 	scope       Scope
 	source      SourceTurn

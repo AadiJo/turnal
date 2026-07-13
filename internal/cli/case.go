@@ -1,0 +1,186 @@
+package cli
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"strings"
+
+	caseengine "github.com/AadiJo/turnal/internal/cases"
+	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/spf13/cobra"
+)
+
+type caseJSON struct {
+	Version int             `json:"version"`
+	Case    caseengine.Case `json:"case"`
+}
+
+type caseCreateJSON struct {
+	Version     int             `json:"version"`
+	TaskCreated bool            `json:"task_created"`
+	Task        caseengine.Task `json:"task"`
+	Case        caseengine.Case `json:"case"`
+}
+
+func caseCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "case", Short: "Create and inspect immutable experimental cases"}
+	cmd.AddCommand(caseCreateCmd())
+	cmd.AddCommand(caseShowCmd())
+	return cmd
+}
+
+func caseCreateCmd() *cobra.Command {
+	var taskText string
+	var jsonOutput bool
+	cmd := &cobra.Command{
+		Use:          "create <session>:<turn>",
+		Short:        "Promote a recorded turn into an immutable case",
+		Args:         cobra.ExactArgs(1),
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			sessionID, turnID, err := parseTurnTarget(args[0])
+			if err != nil {
+				return err
+			}
+			var taskID primitives.TaskID
+			if strings.TrimSpace(taskText) != "" {
+				taskID, err = primitives.ParseTaskID(taskText)
+				if err != nil {
+					return err
+				}
+			}
+			repo, err := openCheckpointRepo()
+			if err != nil {
+				return err
+			}
+			created, err := caseengine.Create(repo, caseengine.CreateRequest{SessionID: sessionID, TurnID: turnID, TaskID: taskID})
+			if err != nil {
+				return err
+			}
+			if jsonOutput {
+				return writeCaseJSON(cmd.OutOrStdout(), caseCreateJSON{Version: caseengine.JSONVersion, TaskCreated: created.TaskCreated, Task: created.Task, Case: created.Case})
+			}
+			if created.TaskCreated {
+				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "created task %s\n", created.Task.ID); err != nil {
+					return err
+				}
+			}
+			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "created case %s\n", created.Case.ID); err != nil {
+				return err
+			}
+			return writeCase(cmd.OutOrStdout(), created.Case)
+		},
+	}
+	cmd.Flags().StringVar(&taskText, "task", "", "Create a sibling Case under an existing Task")
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit versioned JSON")
+	return cmd
+}
+
+func caseShowCmd() *cobra.Command {
+	var jsonOutput bool
+	cmd := &cobra.Command{
+		Use:          "show <case-id>",
+		Short:        "Show one immutable case",
+		Args:         cobra.ExactArgs(1),
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			caseID, err := primitives.ParseCaseID(args[0])
+			if err != nil {
+				return err
+			}
+			repo, err := openCheckpointRepoReadOnly()
+			if err != nil {
+				return err
+			}
+			projection, err := caseengine.Rebuild(repo)
+			if err != nil {
+				return err
+			}
+			definition, ok := projection.Case(caseID)
+			if !ok {
+				return fmt.Errorf("case %s does not exist in this Turnal store", caseID)
+			}
+			if jsonOutput {
+				return writeCaseJSON(cmd.OutOrStdout(), caseJSON{Version: caseengine.JSONVersion, Case: definition})
+			}
+			return writeCase(cmd.OutOrStdout(), definition)
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit versioned JSON")
+	return cmd
+}
+
+func writeCase(writer io.Writer, definition caseengine.Case) error {
+	if _, err := fmt.Fprintf(writer,
+		"case:           %s\n"+
+			"task:           %s revision %d\n"+
+			"source turn:    %s:%s\n"+
+			"base ref:       %s\n"+
+			"base commit:    %s\n"+
+			"instruction:    %s\n"+
+			"readiness:      %s\n"+
+			"fidelity:       %s\n",
+		definition.ID,
+		definition.TaskID,
+		definition.TaskRevision,
+		definition.Source.SessionID,
+		definition.Source.TurnID,
+		definition.Readiness.Base.Ref,
+		definition.Readiness.Base.CommitSHA,
+		definition.Readiness.Instruction.Status,
+		definition.Readiness.Readiness,
+		definition.Readiness.FidelityLevel,
+	); err != nil {
+		return err
+	}
+	if definition.Readiness.Instruction.Text != "" {
+		if _, err := fmt.Fprintf(writer, "  %s\n", indentForkText(definition.Readiness.Instruction.Text, "  ")); err != nil {
+			return err
+		}
+	}
+	if len(definition.Verifiers) == 0 {
+		if _, err := fmt.Fprintln(writer, "verifiers:      none"); err != nil {
+			return err
+		}
+	} else {
+		names := make([]string, 0, len(definition.Verifiers))
+		for _, verifier := range definition.Verifiers {
+			names = append(names, verifier.Name)
+		}
+		if _, err := fmt.Fprintf(writer, "verifiers:      %s\n", strings.Join(names, ", ")); err != nil {
+			return err
+		}
+	}
+	if len(definition.AttemptLinks) == 0 {
+		if _, err := fmt.Fprintln(writer, "attempts:       none linked"); err != nil {
+			return err
+		}
+	} else {
+		if _, err := fmt.Fprintln(writer, "attempts:"); err != nil {
+			return err
+		}
+		for _, link := range definition.AttemptLinks {
+			if _, err := fmt.Fprintf(writer, "  - %s (run %s)\n", link.AttemptID, link.RunID); err != nil {
+				return err
+			}
+		}
+	}
+	if len(definition.Limitations) > 0 {
+		if _, err := fmt.Fprintln(writer, "limitations:"); err != nil {
+			return err
+		}
+		for _, limitation := range definition.Limitations {
+			if _, err := fmt.Fprintf(writer, "  - %s\n", limitation); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func writeCaseJSON(writer io.Writer, value any) error {
+	encoder := json.NewEncoder(writer)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(value)
+}

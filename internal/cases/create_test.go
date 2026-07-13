@@ -1,7 +1,11 @@
 package cases
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -131,6 +135,59 @@ func TestCreateRejectsCheckpointRefMismatchBeforeWritingTask(t *testing.T) {
 	}
 }
 
+func TestCreateInLinkedWorktreeUsesSharedStoreWithoutTouchingUserGit(t *testing.T) {
+	t.Setenv("TURNAL_STATE_DIR", t.TempDir())
+	parent := t.TempDir()
+	mainPath := filepath.Join(parent, "main")
+	linkedPath := filepath.Join(parent, "linked")
+	if err := os.MkdirAll(mainPath, 0o755); err != nil {
+		t.Fatalf("mkdir main: %v", err)
+	}
+	runCaseGit(t, mainPath, "init")
+	runCaseGit(t, mainPath, "config", "user.email", "turnal@example.test")
+	runCaseGit(t, mainPath, "config", "user.name", "Turnal Test")
+	writeCaseFile(t, filepath.Join(mainPath, "tracked.txt"), "tracked\n")
+	runCaseGit(t, mainPath, "add", "tracked.txt")
+	runCaseGit(t, mainPath, "commit", "-m", "initial")
+	mainRoot, _ := primitives.ParseWorkspaceRoot(mainPath)
+	mainRepo, err := checkpoint.Init(mainRoot)
+	if err != nil {
+		t.Fatalf("Init main: %v", err)
+	}
+	runCaseGit(t, mainPath, "worktree", "add", "-b", "case-linked-test", linkedPath)
+	linkedRoot, _ := primitives.ParseWorkspaceRoot(linkedPath)
+	linkedRepo, err := checkpoint.Open(linkedRoot)
+	if err != nil {
+		t.Fatalf("Open linked: %v", err)
+	}
+	sessionID, turnID := recordCaseTurn(t, linkedRepo, linkedRoot, "linked-source", "Fix it", false)
+	gitBefore := snapshotCasePaths(t, filepath.Join(mainPath, ".git"), filepath.Join(linkedPath, ".git"))
+
+	created, err := Create(linkedRepo, CreateRequest{SessionID: sessionID, TurnID: turnID})
+	if err != nil {
+		t.Fatalf("Create linked case: %v", err)
+	}
+	if created.Case.Scope.WorktreeID != linkedRepo.WorktreeID || created.Case.Scope.StoreID != mainRepo.StoreID {
+		t.Fatalf("linked case scope = %#v", created.Case.Scope)
+	}
+	gitAfter := snapshotCasePaths(t, filepath.Join(mainPath, ".git"), filepath.Join(linkedPath, ".git"))
+	if !reflect.DeepEqual(gitBefore, gitAfter) {
+		t.Fatalf("case creation changed user Git metadata\nbefore=%#v\nafter=%#v", gitBefore, gitAfter)
+	}
+
+	fromMain, err := Rebuild(mainRepo)
+	if err != nil {
+		t.Fatalf("Rebuild shared store from main: %v", err)
+	}
+	if _, ok := fromMain.Case(created.Case.ID); !ok {
+		t.Fatalf("linked case missing from shared-store projection")
+	}
+	mainSession, mainTurn := recordCaseTurn(t, mainRepo, mainRoot, "main-source", "Fix it", false)
+	if _, err := Create(mainRepo, CreateRequest{SessionID: mainSession, TurnID: mainTurn, TaskID: created.Task.ID}); err == nil || !strings.Contains(err.Error(), "different repository, store, or worktree") {
+		t.Fatalf("cross-worktree sibling error = %v", err)
+	}
+}
+
 func caseRepo(t *testing.T) (*checkpoint.Repo, primitives.WorkspaceRoot) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
@@ -182,4 +239,57 @@ func value(value *string) string {
 		return ""
 	}
 	return *value
+}
+
+func runCaseGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	for _, item := range os.Environ() {
+		name, _, _ := strings.Cut(item, "=")
+		if !strings.HasPrefix(name, "GIT_") {
+			cmd.Env = append(cmd.Env, item)
+		}
+	}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
+	return string(output)
+}
+
+func snapshotCasePaths(t *testing.T, roots ...string) map[string]string {
+	t.Helper()
+	result := map[string]string{}
+	for _, root := range roots {
+		if err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			info, err := os.Lstat(path)
+			if err != nil {
+				return err
+			}
+			value := fmt.Sprintf("%s", info.Mode())
+			if info.Mode().IsRegular() {
+				data, err := os.ReadFile(path)
+				if err != nil {
+					return err
+				}
+				digest := sha256.Sum256(data)
+				value += ":" + hex.EncodeToString(digest[:])
+			} else if info.Mode()&os.ModeSymlink != 0 {
+				target, err := os.Readlink(path)
+				if err != nil {
+					return err
+				}
+				value += ":" + target
+			}
+			result[path] = value
+			return nil
+		}); err != nil {
+			t.Fatalf("snapshot %s: %v", root, err)
+		}
+	}
+	return result
 }

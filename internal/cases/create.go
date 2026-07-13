@@ -84,19 +84,18 @@ func createLocked(repo *checkpoint.Repo, request CreateRequest) (CreateResult, e
 	taskID := request.TaskID
 	var task Task
 	var revision TaskRevision
+	var newTaskPayload *taskCreatePayload
 	if taskID == "" {
 		taskID, err = primitives.NewTaskID()
 		if err != nil {
 			return CreateResult{}, err
 		}
 		taskCreated = true
-		taskPayload := taskCreatePayload{
+		payload := taskCreatePayload{
 			TaskID: taskID, Scope: scope,
 			InitialRevision: revisionDefinition{Revision: 1, Instruction: readiness.Instruction, Source: source},
 		}
-		if _, err := appendRecord(repo, source, adapter, primitives.EventTypeTaskCreate, "task:"+taskID.String()+":create", taskPayload); err != nil {
-			return CreateResult{}, err
-		}
+		newTaskPayload = &payload
 		task = Task{ID: taskID, Scope: scope}
 		revision = TaskRevision{Number: 1, Instruction: readiness.Instruction, Source: source}
 	} else {
@@ -130,14 +129,19 @@ func createLocked(repo *checkpoint.Repo, request CreateRequest) (CreateResult, e
 		Scope: scope, Source: source, Readiness: readiness,
 		Verifiers: verifiers, Limitations: limitations,
 	}
-	if _, err := appendRecord(repo, source, adapter, primitives.EventTypeCaseCreate, "case:"+caseID.String()+":create", casePayload); err != nil {
-		return CreateResult{}, err
-	}
-
 	linkedAttempts, err := sourceAttempts(repo, source, scope)
 	if err != nil {
 		return CreateResult{}, err
 	}
+	if newTaskPayload != nil {
+		if _, err := appendRecord(repo, source, adapter, primitives.EventTypeTaskCreate, "task:"+taskID.String()+":create", *newTaskPayload); err != nil {
+			return CreateResult{}, err
+		}
+	}
+	if _, err := appendRecord(repo, source, adapter, primitives.EventTypeCaseCreate, "case:"+caseID.String()+":create", casePayload); err != nil {
+		return CreateResult{}, err
+	}
+
 	for _, attempt := range linkedAttempts {
 		payload := caseAttemptLinkPayload{CaseID: caseID, Scope: scope, RunID: attempt.RunID, AttemptID: attempt.AttemptID, Source: source}
 		if _, err := appendRecord(repo, source, adapter, primitives.EventTypeCaseAttemptLink, fmt.Sprintf("case:%s:attempt:%s", caseID, attempt.AttemptID), payload); err != nil {

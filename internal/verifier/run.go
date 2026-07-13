@@ -36,7 +36,7 @@ func Run(ctx context.Context, request Request) (Report, error) {
 		return Report{}, fmt.Errorf("no repository verifiers are configured")
 	}
 	request.Verifiers = append([]config.Verifier(nil), request.Verifiers...)
-	if err := validateDefinitions(request.Verifiers); err != nil {
+	if err := ValidateDefinitions(request.Verifiers); err != nil {
 		return Report{}, err
 	}
 	if request.OutputLimit <= 0 {
@@ -92,7 +92,9 @@ func Run(ctx context.Context, request Request) (Report, error) {
 	return report, nil
 }
 
-func validateDefinitions(definitions []config.Verifier) error {
+// ValidateDefinitions validates an effective repository verifier contract
+// without executing it.
+func ValidateDefinitions(definitions []config.Verifier) error {
 	if len(definitions) > config.MaxVerifierCount {
 		return fmt.Errorf("verify must contain at most %d entries", config.MaxVerifierCount)
 	}

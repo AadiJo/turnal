@@ -4,12 +4,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
+	"github.com/AadiJo/turnal/internal/config"
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/fork"
 	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/AadiJo/turnal/internal/runs"
+	verifierengine "github.com/AadiJo/turnal/internal/verifier"
 )
 
 // Rebuild derives Task and Case views exclusively from append-only events.
@@ -172,7 +175,7 @@ func validateTaskCreate(event eventlog.Event, payload taskCreatePayload, expecte
 	if _, err := primitives.ParseTaskID(payload.TaskID.String()); err != nil {
 		return relationshipError(event, err)
 	}
-	if payload.Scope != expected {
+	if payload.Scope.RepoID != expected.RepoID || payload.Scope.StoreID != expected.StoreID {
 		return relationshipError(event, scopeMismatch("task", payload.TaskID))
 	}
 	if payload.InitialRevision.Revision != 1 {
@@ -207,13 +210,13 @@ func validateCaseCreate(event eventlog.Event, payload caseCreatePayload, expecte
 	if _, err := primitives.ParseCaseID(payload.CaseID.String()); err != nil {
 		return relationshipError(event, err)
 	}
-	if payload.Scope != expected || payload.Scope != task.Scope {
+	if payload.Scope.RepoID != expected.RepoID || payload.Scope.StoreID != expected.StoreID || payload.Scope != task.Scope {
 		return relationshipError(event, scopeMismatch("case", payload.CaseID))
 	}
 	if err := validateEnvelope(event, payload.Scope, payload.Source); err != nil {
 		return relationshipError(event, err)
 	}
-	if payload.Readiness.Version != 1 {
+	if payload.Readiness.Version != fork.ReportVersion {
 		return relationshipError(event, fmt.Errorf("unsupported fork-readiness version %d", payload.Readiness.Version))
 	}
 	if payload.Readiness.Source.SessionID != payload.Source.SessionID || payload.Readiness.Source.TurnID != payload.Source.TurnID || payload.Readiness.Source.WorktreeID != payload.Scope.WorktreeID || payload.Readiness.Source.StreamID != payload.Source.StreamID {
@@ -225,12 +228,25 @@ func validateCaseCreate(event eventlog.Event, payload caseCreatePayload, expecte
 	if payload.Readiness.Instruction != task.Revisions[payload.TaskRevision-1].Instruction {
 		return relationshipError(event, fmt.Errorf("case instruction does not match task revision %d", payload.TaskRevision))
 	}
-	for _, verifier := range payload.Verifiers {
-		if verifier.Name == "" || verifier.Command == "" || verifier.Timeout == "" {
-			return relationshipError(event, fmt.Errorf("case contains an invalid verifier contract"))
-		}
+	if err := validateVerifierSnapshots(payload.Verifiers); err != nil {
+		return relationshipError(event, fmt.Errorf("case contains an invalid verifier contract: %w", err))
 	}
 	return nil
+}
+
+func validateVerifierSnapshots(snapshots []Verifier) error {
+	definitions := make([]config.Verifier, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		timeout, err := time.ParseDuration(snapshot.Timeout)
+		if err != nil {
+			return fmt.Errorf("verifier %q timeout: %w", snapshot.Name, err)
+		}
+		definitions = append(definitions, config.Verifier{Name: snapshot.Name, Command: snapshot.Command, Args: append([]string(nil), snapshot.Args...), Timeout: timeout})
+	}
+	if len(definitions) == 0 {
+		return nil
+	}
+	return verifierengine.ValidateDefinitions(definitions)
 }
 
 func validateAttemptLink(event eventlog.Event, payload caseAttemptLinkPayload, definition Case, attempt attemptRecord) error {

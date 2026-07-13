@@ -13,7 +13,7 @@ import (
 	"github.com/AadiJo/turnal/internal/recall"
 )
 
-const reportVersion = 1
+const ReportVersion = 1
 
 type Readiness string
 
@@ -127,7 +127,7 @@ func (analyzer Analyzer) Inspect(sessionID primitives.SessionID, turnID primitiv
 	}
 
 	report := Report{
-		Version:       reportVersion,
+		Version:       ReportVersion,
 		Target:        fmt.Sprintf("%s:turn:%s:pre", turn.SessionID, turn.TurnID),
 		Readiness:     ReadinessUnavailable,
 		FidelityLevel: "L0",
