@@ -57,6 +57,12 @@ func rollbackCmd() *cobra.Command {
 				return err
 			}
 			useWorkspaceGit := effective.Rollback.Mode == primitives.RollbackModeWorkspaceGit
+			// A manual save has no Git-sync state. Treat the configured default as
+			// checkpoint mode, while preserving an explicit --workspace-git request
+			// so the engine can reject it with the invariant-specific error.
+			if resolved != nil && resolved.Manual && !cmd.Flags().Changed("workspace-git") {
+				useWorkspaceGit = false
+			}
 			result, err := rollbackengine.New(repo).Run(rollbackengine.Request{
 				Target:       target,
 				Resolved:     resolved,

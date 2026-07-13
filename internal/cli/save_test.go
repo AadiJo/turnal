@@ -193,6 +193,51 @@ func TestManualSaveRejectsWorkspaceGitRollback(t *testing.T) {
 	}
 }
 
+func TestManualSaveUsesCheckpointModeWhenWorkspaceGitIsConfigured(t *testing.T) {
+	writeGlobalAgentConfig(t, `
+version = 1
+
+[rollback]
+mode = "workspace-git"
+`)
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+	if err := os.WriteFile(filepath.Join(root.String(), "app.txt"), []byte("saved\n"), 0o644); err != nil {
+		t.Fatalf("write saved state: %v", err)
+	}
+	created, err := repo.CreateManualCheckpoint()
+	if err != nil {
+		t.Fatalf("CreateManualCheckpoint: %v", err)
+	}
+	if _, err := manualcheckpoints.Append(repo, created, ""); err != nil {
+		t.Fatalf("append event: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root.String(), "app.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatalf("write changed state: %v", err)
+	}
+
+	cmd := NewRootCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"rollback", "--to", created.Commit.String()})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("rollback with workspace-git default: %v\n%s", err, out.String())
+	}
+	content, err := os.ReadFile(filepath.Join(root.String(), "app.txt"))
+	if err != nil || string(content) != "saved\n" {
+		t.Fatalf("restored content = %q, err=%v", content, err)
+	}
+	if !strings.Contains(out.String(), "Rollback complete") {
+		t.Fatalf("rollback output = %s", out.String())
+	}
+}
+
 func TestSaveRefusesPendingRollbackRecovery(t *testing.T) {
 	requireGit(t)
 	root := workspaceRoot(t)
