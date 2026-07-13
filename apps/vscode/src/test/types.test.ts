@@ -5,11 +5,13 @@ import {
   parseDiffDocumentsResult,
   parseRollbackPreview,
   parseSessionsResult,
+  TurnalCliCompatibilityError,
   turnsForSession,
 } from "../turnal/types";
 
 test("parses session turns and accepts the older latest_turn fallback", () => {
   const result = parseSessionsResult({
+    schema_version: 1,
     total_sessions: 1,
     sessions: [
       {
@@ -19,6 +21,8 @@ test("parses session turns and accepts the older latest_turn fallback", () => {
         complete_turn_count: 1,
         active_turn_count: 0,
         event_count: 3,
+        rollback_count: 0,
+        rollbacks: [],
         latest_turn: { turn_id: 1, status: "complete", prompt: "fix it" },
       },
     ],
@@ -30,6 +34,7 @@ test("parses session turns and accepts the older latest_turn fallback", () => {
 
 test("parses first-class rollback activity from sessions", () => {
   const result = parseSessionsResult({
+    schema_version: 1,
     total_sessions: 1,
     sessions: [
       {
@@ -57,6 +62,17 @@ test("parses first-class rollback activity from sessions", () => {
 
   assert.equal(result.sessions[0].rollbacks[0].target, "demo:turn:1:pre");
   assert.equal(result.sessions[0].rollbacks[0].change_summary.total, 2);
+});
+
+test("rejects a CLI without the supported sessions API", () => {
+  assert.throws(
+    () => parseSessionsResult({ total_sessions: 0, sessions: [] }),
+    (error) => error instanceof TurnalCliCompatibilityError && /Update Turnal/.test(error.message),
+  );
+  assert.throws(
+    () => parseSessionsResult({ schema_version: 2, total_sessions: 0, sessions: [] }),
+    (error) => error instanceof TurnalCliCompatibilityError && error.actualSchemaVersion === 2,
+  );
 });
 
 test("rejects malformed blame json at the boundary", () => {

@@ -99,6 +99,9 @@ func TestSessionsCommandShowsDurableSessionInventory(t *testing.T) {
 	if got.TotalSessions != 2 {
 		t.Fatalf("total sessions = %d, want 2", got.TotalSessions)
 	}
+	if got.SchemaVersion != sessionsJSONSchemaVersion {
+		t.Fatalf("schema version = %d, want %d", got.SchemaVersion, sessionsJSONSchemaVersion)
+	}
 	demo := findSessionSummary(t, got, "demo")
 	if demo.Status != "complete" || demo.Adapter != "codex" || demo.Model != "gpt-5.5" || demo.PermissionMode != "default" {
 		t.Fatalf("demo summary = %#v", demo)

@@ -104,12 +104,17 @@
       {
         "view": "turnal.sessions",
         "contents": "No Turnal history yet.\nTurnal records automatically after it is initialized and an AI agent edits this workspace.\n[Refresh](command:turnal.refresh)",
-        "when": "!turnal.cliMissing"
+        "when": "!turnal.cliMissing && !turnal.cliIncompatible"
       },
       {
         "view": "turnal.sessions",
         "contents": "Couldn’t find the Turnal CLI.\n[Set CLI path](command:workbench.action.openSettings?%5B%22turnal.cliPath%22%5D)",
         "when": "turnal.cliMissing"
+      },
+      {
+        "view": "turnal.sessions",
+        "contents": "The installed Turnal CLI is too old for this extension.\nUpdate Turnal, then [refresh](command:turnal.refresh).",
+        "when": "turnal.cliIncompatible"
       }
     ],
     "menus": {

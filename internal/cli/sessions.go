@@ -97,7 +97,10 @@ type sessionViewRollback struct {
 	ChangeSummary sessionJSONChangeSummary
 }
 
+const sessionsJSONSchemaVersion = 1
+
 type sessionsJSONOutput struct {
+	SchemaVersion int                  `json:"schema_version"`
 	TotalSessions int                  `json:"total_sessions"`
 	Sessions      []sessionJSONSummary `json:"sessions"`
 }
@@ -715,6 +718,7 @@ func styleSessionsMuted(value string) string {
 
 func sessionsJSONFromViews(sessions []sessionView) sessionsJSONOutput {
 	output := sessionsJSONOutput{
+		SchemaVersion: sessionsJSONSchemaVersion,
 		TotalSessions: len(sessions),
 		Sessions:      make([]sessionJSONSummary, 0, len(sessions)),
 	}

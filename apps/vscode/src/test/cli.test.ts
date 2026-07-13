@@ -6,10 +6,10 @@ test("uses the CLI JSON contracts without a shell", async () => {
   const calls: Array<{ executable: string; args: readonly string[]; cwd: string }> = [];
   const execute: CommandExecutor = async (executable, args, cwd) => {
     calls.push({ executable, args, cwd });
-    return { stdout: '{"total_sessions":0,"sessions":[]}', stderr: "" };
+    return { stdout: '{"schema_version":1,"total_sessions":0,"sessions":[]}', stderr: "" };
   };
   const cli = new TurnalCli("/workspace", "/opt/turnal", execute);
-  assert.deepEqual(await cli.sessions(), { total_sessions: 0, sessions: [] });
+  assert.deepEqual(await cli.sessions(), { schema_version: 1, total_sessions: 0, sessions: [] });
   assert.deepEqual(calls, [
     { executable: "/opt/turnal", args: ["sessions", "--json"], cwd: "/workspace" },
   ]);

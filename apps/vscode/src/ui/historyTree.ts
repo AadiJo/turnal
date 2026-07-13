@@ -1,7 +1,15 @@
 import * as vscode from "vscode";
 import { RollbackTarget, TurnFileTarget, TurnTarget } from "../model";
 import { TurnalCommandError } from "../turnal/cli";
-import { DiffDocument, SessionRollback, SessionSummary, SessionsResult, SessionTurn, turnsForSession } from "../turnal/types";
+import {
+  DiffDocument,
+  SessionRollback,
+  SessionSummary,
+  SessionsResult,
+  SessionTurn,
+  TurnalCliCompatibilityError,
+  turnsForSession,
+} from "../turnal/types";
 import { displayAgent, formatTimestamp, relativeTime, truncate, turnTitle } from "../utils/format";
 import { activitiesForSession, HistoryActivity, recentActivities } from "../utils/historyActivity";
 import { RefreshingCache } from "../utils/refreshingCache";
@@ -221,6 +229,9 @@ function providerIcon(adapter: string | undefined, extensionUri: vscode.Uri): vs
 
 function isPermanentSessionLoadError(error: unknown): boolean {
   if (error instanceof TurnalCommandError && error.missingExecutable) {
+    return true;
+  }
+  if (error instanceof TurnalCliCompatibilityError) {
     return true;
   }
   const message = error instanceof Error ? error.message : String(error);

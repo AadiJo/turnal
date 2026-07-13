@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { TurnalCommandError } from "./turnal/cli";
+import { TurnalCliCompatibilityError } from "./turnal/types";
 import { BlameController } from "./ui/blame";
 import { TurnCommands } from "./ui/commands";
 import { VirtualDocumentStore } from "./ui/documents";
@@ -27,7 +28,11 @@ export function activate(context: vscode.ExtensionContext): void {
     cliMissing = missing;
     void vscode.commands.executeCommand("setContext", "turnal.cliMissing", missing);
   };
+  const setCliCompatibility = (incompatible: boolean): void => {
+    void vscode.commands.executeCommand("setContext", "turnal.cliIncompatible", incompatible);
+  };
   setCliAvailability(false);
+  setCliCompatibility(false);
 
   const reportBackgroundError = (error: unknown, folder: vscode.WorkspaceFolder): void => {
     const detail = error instanceof Error ? error.message : String(error);
@@ -40,6 +45,13 @@ export function activate(context: vscode.ExtensionContext): void {
       setCliAvailability(true);
       if (treeView) {
         treeView.message = "Turnal CLI not found";
+      }
+      return;
+    }
+    if (error instanceof TurnalCliCompatibilityError) {
+      setCliCompatibility(true);
+      if (treeView) {
+        treeView.message = "Turnal CLI needs an update";
       }
       return;
     }
@@ -57,6 +69,7 @@ export function activate(context: vscode.ExtensionContext): void {
         setCliAvailability(missing);
       }
       if (!missing && treeView) {
+        setCliCompatibility(false);
         treeView.message = undefined;
       }
     },

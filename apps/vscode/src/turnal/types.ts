@@ -1,6 +1,19 @@
 export interface SessionsResult {
+  schema_version: number;
   total_sessions: number;
   sessions: SessionSummary[];
+}
+
+export const SUPPORTED_SESSIONS_SCHEMA_VERSION = 1;
+
+export class TurnalCliCompatibilityError extends Error {
+  constructor(readonly actualSchemaVersion?: number) {
+    const detail = actualSchemaVersion === undefined
+      ? "does not expose the versioned sessions API"
+      : `uses unsupported sessions API version ${actualSchemaVersion}`;
+    super(`The installed Turnal CLI ${detail}. Update Turnal, then refresh the extension.`);
+    this.name = "TurnalCliCompatibilityError";
+  }
 }
 
 export interface SessionSummary {
@@ -123,8 +136,13 @@ export interface DiffDocument {
 
 export function parseSessionsResult(value: unknown): SessionsResult {
   const result = record(value, "sessions result");
+  const schemaVersion = optionalNumber(result.schema_version, "schema_version");
+  if (schemaVersion !== SUPPORTED_SESSIONS_SCHEMA_VERSION) {
+    throw new TurnalCliCompatibilityError(schemaVersion);
+  }
   const sessions = array(result.sessions, "sessions").map((item, index) => parseSession(item, index));
   return {
+    schema_version: schemaVersion,
     total_sessions: number(result.total_sessions, "total_sessions"),
     sessions,
   };
@@ -194,11 +212,9 @@ export function turnsForSession(session: SessionSummary): SessionTurn[] {
 
 function parseSession(value: unknown, index: number): SessionSummary {
   const item = record(value, `sessions[${index}]`);
-  const rollbacks = item.rollbacks === undefined
-    ? []
-    : array(item.rollbacks, `sessions[${index}].rollbacks`).map((rollback, rollbackIndex) =>
-        parseSessionRollback(rollback, `sessions[${index}].rollbacks[${rollbackIndex}]`),
-      );
+  const rollbacks = array(item.rollbacks, `sessions[${index}].rollbacks`).map((rollback, rollbackIndex) =>
+    parseSessionRollback(rollback, `sessions[${index}].rollbacks[${rollbackIndex}]`),
+  );
   return {
     session_id: string(item.session_id, `sessions[${index}].session_id`),
     status: string(item.status, `sessions[${index}].status`),
@@ -209,7 +225,7 @@ function parseSession(value: unknown, index: number): SessionSummary {
     complete_turn_count: number(item.complete_turn_count, `sessions[${index}].complete_turn_count`),
     active_turn_count: number(item.active_turn_count, `sessions[${index}].active_turn_count`),
     event_count: number(item.event_count, `sessions[${index}].event_count`),
-    rollback_count: optionalNumber(item.rollback_count, `sessions[${index}].rollback_count`) ?? rollbacks.length,
+    rollback_count: number(item.rollback_count, `sessions[${index}].rollback_count`),
     first_activity: optionalString(item.first_activity, `sessions[${index}].first_activity`),
     last_activity: optionalString(item.last_activity, `sessions[${index}].last_activity`),
     head: item.head === undefined ? undefined : parseHead(item.head, index),
