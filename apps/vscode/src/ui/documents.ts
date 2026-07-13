@@ -10,9 +10,12 @@ interface NativeChangeResource {
 }
 
 export class VirtualDocumentStore implements vscode.TextDocumentContentProvider, vscode.Disposable {
+  private static readonly retainedDocumentSets = 4;
   private readonly contents = new Map<string, string>();
+  private readonly documentSets: string[][] = [];
   private readonly emitter = new vscode.EventEmitter<vscode.Uri>();
   private readonly registration: vscode.Disposable;
+  private currentDocumentSet: string[] = [];
   private sequence = 0;
 
   readonly onDidChange = this.emitter.event;
@@ -26,20 +29,20 @@ export class VirtualDocumentStore implements vscode.TextDocumentContentProvider,
   }
 
   async openTurnDetails(target: TurnTarget, content: string): Promise<void> {
-    this.contents.clear();
+    this.beginDocumentSet();
     const uri = this.virtualUri(target, `${target.title} — turn ${target.turnId}.txt`, "details", content);
     const document = await vscode.workspace.openTextDocument(uri);
     await vscode.window.showTextDocument(document, { preview: true, preserveFocus: false });
   }
 
   async openTurnChanges(target: TurnTarget, folder: vscode.WorkspaceFolder, files: DiffDocument[], selectedPath?: string): Promise<void> {
-    this.contents.clear();
+    this.beginDocumentSet();
     const resources = files.map((file) => this.turnResource(target, folder, file));
     await this.openNativeChanges(`${target.title} · ${target.sessionId}`, resources, selectedPath);
   }
 
   async openRollbackChanges(target: TurnTarget, folder: vscode.WorkspaceFolder, files: DiffDocument[]): Promise<void> {
-    this.contents.clear();
+    this.beginDocumentSet();
     const resources = files.map((file) => this.rollbackResource(target, folder, file));
     await this.openNativeChanges(`Rollback preview · before ${target.title}`, resources);
   }
@@ -132,8 +135,20 @@ export class VirtualDocumentStore implements vscode.TextDocumentContentProvider,
       revision: String(++this.sequence),
     }).toString();
     const uri = vscode.Uri.from({ scheme: "turnal-content", path: `/${path}`, query });
-    this.contents.set(uri.toString(), content);
+    const key = uri.toString();
+    this.contents.set(key, content);
+    this.currentDocumentSet.push(key);
     return uri;
+  }
+
+  private beginDocumentSet(): void {
+    this.currentDocumentSet = [];
+    this.documentSets.push(this.currentDocumentSet);
+    while (this.documentSets.length > VirtualDocumentStore.retainedDocumentSets) {
+      for (const key of this.documentSets.shift() ?? []) {
+        this.contents.delete(key);
+      }
+    }
   }
 }
 

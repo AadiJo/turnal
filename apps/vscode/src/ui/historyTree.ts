@@ -58,7 +58,17 @@ export class HistoryTreeProvider implements vscode.TreeDataProvider<HistoryNode>
 
   async pickTurn(completeOnly: boolean, placeHolder: string): Promise<TurnTarget | undefined> {
     const folders = vscode.workspace.workspaceFolders ?? [];
-    const groups = await Promise.all(folders.map(async (folder) => ({ folder, sessions: await this.load(folder) })));
+    const loaded = await Promise.all(
+      folders.map(async (folder) => {
+        try {
+          return { folder, sessions: await this.load(folder) };
+        } catch (error) {
+          this.options.onBackgroundError(error, folder);
+          return undefined;
+        }
+      }),
+    );
+    const groups = loaded.filter((group): group is NonNullable<typeof group> => group !== undefined);
     const picks: Array<vscode.QuickPickItem & { target: TurnTarget }> = [];
     for (const { folder, sessions } of groups) {
       for (const session of sessions.sessions) {
