@@ -19,6 +19,8 @@ type CheckpointID string
 type ImportID string
 type RunID string
 type AttemptID string
+type TaskID string
+type CaseID string
 
 func NewRepoID() (RepoID, error) {
 	value, err := newDurableID("repo")
@@ -184,6 +186,66 @@ func (id AttemptID) MarshalText() ([]byte, error) {
 
 func (id *AttemptID) UnmarshalText(text []byte) error {
 	parsed, err := ParseAttemptID(string(text))
+	if err != nil {
+		return err
+	}
+	*id = parsed
+	return nil
+}
+
+// TaskID identifies one evolving human problem episode.
+func NewTaskID() (TaskID, error) {
+	value, err := newDurableID("task")
+	return TaskID(value), err
+}
+
+func ParseTaskID(value string) (TaskID, error) {
+	parsed, err := parseDurableID("task id", "task", value)
+	return TaskID(parsed), err
+}
+
+func (id TaskID) String() string { return string(id) }
+
+func (id TaskID) MarshalText() ([]byte, error) {
+	parsed, err := ParseTaskID(id.String())
+	if err != nil {
+		return nil, err
+	}
+	return []byte(parsed), nil
+}
+
+func (id *TaskID) UnmarshalText(text []byte) error {
+	parsed, err := ParseTaskID(string(text))
+	if err != nil {
+		return err
+	}
+	*id = parsed
+	return nil
+}
+
+// CaseID identifies one immutable set of experimental conditions.
+func NewCaseID() (CaseID, error) {
+	value, err := newDurableID("case")
+	return CaseID(value), err
+}
+
+func ParseCaseID(value string) (CaseID, error) {
+	parsed, err := parseDurableID("case id", "case", value)
+	return CaseID(parsed), err
+}
+
+func (id CaseID) String() string { return string(id) }
+
+func (id CaseID) MarshalText() ([]byte, error) {
+	parsed, err := ParseCaseID(id.String())
+	if err != nil {
+		return nil, err
+	}
+	return []byte(parsed), nil
+}
+
+func (id *CaseID) UnmarshalText(text []byte) error {
+	parsed, err := ParseCaseID(string(text))
 	if err != nil {
 		return err
 	}

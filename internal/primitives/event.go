@@ -144,6 +144,10 @@ const (
 	EventTypeRunCaptureLink   EventType = "run.capture.link"
 	EventTypeRunAttemptLink   EventType = "run.attempt.link"
 	EventTypeRunFinish        EventType = "run.finish"
+	EventTypeTaskCreate       EventType = "task.create"
+	EventTypeTaskRevision     EventType = "task.revision.create"
+	EventTypeCaseCreate       EventType = "case.create"
+	EventTypeCaseAttemptLink  EventType = "case.attempt.link"
 )
 
 var validEventTypes = map[EventType]struct{}{
@@ -162,6 +166,10 @@ var validEventTypes = map[EventType]struct{}{
 	EventTypeRunCaptureLink:   {},
 	EventTypeRunAttemptLink:   {},
 	EventTypeRunFinish:        {},
+	EventTypeTaskCreate:       {},
+	EventTypeTaskRevision:     {},
+	EventTypeCaseCreate:       {},
+	EventTypeCaseAttemptLink:  {},
 }
 
 func ParseEventType(value string) (EventType, error) {

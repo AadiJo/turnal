@@ -86,6 +86,62 @@ func TestRunAndAttemptIDValidationAndSerialization(t *testing.T) {
 	}
 }
 
+func TestTaskAndCaseIDValidationAndSerialization(t *testing.T) {
+	taskID, err := ParseTaskID(" TASK_0123456789ABCDEF0123456789ABCDEF ")
+	if err != nil || taskID.String() != "task_0123456789abcdef0123456789abcdef" {
+		t.Fatalf("ParseTaskID() = %q, %v", taskID, err)
+	}
+	caseID, err := ParseCaseID("case_fedcba9876543210fedcba9876543210")
+	if err != nil {
+		t.Fatalf("ParseCaseID: %v", err)
+	}
+
+	type record struct {
+		Task TaskID `json:"task_id"`
+		Case CaseID `json:"case_id"`
+	}
+	encoded, err := json.Marshal(record{Task: taskID, Case: caseID})
+	if err != nil {
+		t.Fatalf("marshal ids: %v", err)
+	}
+	var decoded record
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("unmarshal ids: %v", err)
+	}
+	if decoded.Task != taskID || decoded.Case != caseID {
+		t.Fatalf("round trip = %+v", decoded)
+	}
+
+	generatedTask, err := NewTaskID()
+	if err != nil {
+		t.Fatalf("NewTaskID: %v", err)
+	}
+	if _, err := ParseTaskID(generatedTask.String()); err != nil {
+		t.Fatalf("parse generated task id: %v", err)
+	}
+	generatedCase, err := NewCaseID()
+	if err != nil {
+		t.Fatalf("NewCaseID: %v", err)
+	}
+	if _, err := ParseCaseID(generatedCase.String()); err != nil {
+		t.Fatalf("parse generated case id: %v", err)
+	}
+
+	invalidIDs := []struct {
+		value string
+		parse func(string) error
+	}{
+		{"case_0123456789abcdef0123456789abcdef", func(value string) error { _, err := ParseTaskID(value); return err }},
+		{"task_0123", func(value string) error { _, err := ParseTaskID(value); return err }},
+		{"case_0123456789abcdef0123456789abcdeg", func(value string) error { _, err := ParseCaseID(value); return err }},
+	}
+	for _, test := range invalidIDs {
+		if err := test.parse(test.value); err == nil {
+			t.Fatalf("expected %q to be rejected", test.value)
+		}
+	}
+}
+
 func TestTurnIDAndEventSeq(t *testing.T) {
 	turn, err := ParseTurnID("000007")
 	if err != nil {
@@ -168,6 +224,10 @@ func TestEventType(t *testing.T) {
 		EventTypeRunCaptureLink,
 		EventTypeRunAttemptLink,
 		EventTypeRunFinish,
+		EventTypeTaskCreate,
+		EventTypeTaskRevision,
+		EventTypeCaseCreate,
+		EventTypeCaseAttemptLink,
 	} {
 		if _, err := ParseEventType(eventType.String()); err != nil {
 			t.Fatalf("ParseEventType(%q): %v", eventType, err)
