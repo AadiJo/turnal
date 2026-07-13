@@ -190,8 +190,8 @@ function providerIcon(adapter: string | undefined, extensionUri: vscode.Uri): vs
   }
   if (normalized.includes("codex") || normalized.includes("openai")) {
     return {
-      light: vscode.Uri.joinPath(extensionUri, "media", "providers", "codex-light.svg"),
-      dark: vscode.Uri.joinPath(extensionUri, "media", "providers", "codex-dark.svg"),
+      light: vscode.Uri.joinPath(extensionUri, "media", "providers", "openai-light.svg"),
+      dark: vscode.Uri.joinPath(extensionUri, "media", "providers", "openai-dark.svg"),
     };
   }
   return new vscode.ThemeIcon("robot");
