@@ -76,7 +76,10 @@ export function activate(context: vscode.ExtensionContext): void {
       const resource = vscode.window.activeTextEditor?.document.uri;
       const configuration = vscode.workspace.getConfiguration("turnal", resource);
       const enabled = configuration.get<boolean>("inlineBlame.enabled", true);
-      await configuration.update("inlineBlame.enabled", !enabled, vscode.ConfigurationTarget.Workspace);
+      const target = vscode.workspace.workspaceFolders?.length
+        ? vscode.ConfigurationTarget.Workspace
+        : vscode.ConfigurationTarget.Global;
+      await configuration.update("inlineBlame.enabled", !enabled, target);
       void vscode.window.showInformationMessage(`Turnal inline blame ${enabled ? "disabled" : "enabled"}.`);
     }),
   );

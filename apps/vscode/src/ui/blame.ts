@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 import { TurnTarget } from "../model";
 import { BlameEntry, BlameResult } from "../turnal/types";
 import { displayAgent, formatTimestamp, relativeTime, truncate, turnTitle } from "../utils/format";
+import { recordedTextMatches } from "../utils/blame";
 import { cliForFolder } from "../workspaces";
 
 interface BlameControllerOptions {
@@ -174,9 +175,7 @@ function inlineBlameEnabled(uri: vscode.Uri): boolean {
 }
 
 export function matchesRecordedFile(document: vscode.TextDocument, result: BlameResult): boolean {
-  const recorded = result.entries.map((entry) => entry.text).join("\n");
-  const current = document.getText().replace(/\r\n/g, "\n").replace(/\n$/, "");
-  return current === recorded;
+  return recordedTextMatches(document.getText(), result.entries);
 }
 
 function blameHover(entry: BlameEntry, folder: vscode.WorkspaceFolder): vscode.MarkdownString | undefined {

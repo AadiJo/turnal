@@ -50,6 +50,10 @@ From source:
 go install github.com/AadiJo/turnal/cmd/turnal@latest
 ```
 
+### VS Code extension
+
+The first-party VS Code extension is under [`apps/vscode`](apps/vscode). It provides current-line AI blame, a native sessions and turns sidebar, read-only turn diffs, and previewed rollback while delegating history and restore operations to the installed `turnal` CLI. See the [extension README](apps/vscode/README.md) for development and local packaging instructions.
+
 ## Quick start
 
 From the root of the project you want to record:
