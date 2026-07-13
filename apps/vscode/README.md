@@ -14,10 +14,33 @@ The extension intentionally leaves recording controls, replay, verification, sea
 ## Requirements
 
 - VS Code 1.95 or newer.
-- A `turnal` executable on `PATH`, or an explicit `turnal.cliPath` setting.
+- A Turnal CLI that exposes `sessions` JSON schema 1, planned for CLI release 0.0.1.
 - A workspace initialized with `turnal init` and at least one completed turn for blame and diffs.
 
 The extension never reads `.turnal/index` or private Git objects directly. This keeps its behavior aligned with the installed CLI and avoids coupling the UI to internal storage schemas.
+
+## Install the CLI
+
+Install or update the release build with npm:
+
+```sh
+npm install -g @aadijo/turnal@latest
+turnal version
+```
+
+The compatible 0.0.1 CLI has not reached npm's `latest` channel yet. Until it does, build this repository's `vscode-extension` branch and point the extension at that binary:
+
+```sh
+git clone https://github.com/AadiJo/turnal.git
+cd turnal
+git switch vscode-extension
+make build
+./bin/turnal sessions --json
+```
+
+The JSON response must contain `"schema_version": 1`. Set **Turnal: CLI Path** to the absolute path of `bin/turnal`, or add the binary to `PATH`. The binary must be available in the environment running the extension host, which means a WSL, SSH, or Dev Container window needs a CLI installed inside that remote environment rather than only on the local machine.
+
+If the installed CLI is older, the sidebar says **Turnal CLI needs an update** and keeps the incompatibility visible instead of displaying an empty history.
 
 ## Develop
 
