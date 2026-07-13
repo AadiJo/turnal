@@ -18,3 +18,23 @@ test("uses the CLI JSON contracts without a shell", async () => {
 test("builds an explicit pre-turn rollback target", () => {
   assert.equal(rollbackTarget("codex-session", 7), "codex-session:turn:7:pre");
 });
+
+test("forces the extension rollback onto checkpoint-only mode", async () => {
+  const calls: string[][] = [];
+  const execute: CommandExecutor = async (_executable, args) => {
+    calls.push([...args]);
+    return {
+      stdout: args.includes("--dry-run")
+        ? "Dry-run rollback\n  target: demo:turn:2:pre\nmodified:\n  app.ts\n"
+        : "Rollback complete\n",
+      stderr: "",
+    };
+  };
+  const cli = new TurnalCli("/workspace", "turnal", execute);
+  await cli.previewRollback("demo", 2);
+  await cli.rollback("demo", 2);
+  assert.deepEqual(calls, [
+    ["rollback", "--to", "demo:turn:2:pre", "--workspace-git=false", "--dry-run"],
+    ["rollback", "--to", "demo:turn:2:pre", "--workspace-git=false"],
+  ]);
+});

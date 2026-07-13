@@ -47,4 +47,13 @@ deleted:
     { action: "modified", path: "src/app.ts" },
     { action: "deleted", path: "generated.txt" },
   ]);
+  assert.equal(preview.no_changes, false);
+});
+
+test("accepts an explicit empty rollback plan and rejects unknown output", () => {
+  assert.equal(parseRollbackPreview("Dry-run rollback\nno changes\n").no_changes, true);
+  assert.throws(
+    () => parseRollbackPreview("Dry-run workspace-git rollback\n  commits: abc -> def\n"),
+    /unrecognized rollback preview/,
+  );
 });

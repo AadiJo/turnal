@@ -121,3 +121,36 @@ func findSessionSummary(t *testing.T, output sessionsJSONOutput, sessionID strin
 	t.Fatalf("session %q not found in %#v", sessionID, output.Sessions)
 	return sessionJSONSummary{}
 }
+
+func TestSessionsJSONOrdersTurnsByLatestActivity(t *testing.T) {
+	firstTurn, _ := primitives.NewTurnID(1)
+	secondTurn, _ := primitives.NewTurnID(2)
+	firstAt := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	secondAt := firstAt.Add(time.Minute)
+	output := sessionsJSONFromViews([]sessionView{
+		{
+			ID: sessionID(t, "ordered"),
+			Turns: map[uint64]*sessionViewTurn{
+				firstTurn.Uint64(): {
+					TurnID: firstTurn,
+					Events: turnEventSummary{Count: 1, First: firstAt, Last: firstAt, Prompt: "first"},
+				},
+				secondTurn.Uint64(): {
+					TurnID: secondTurn,
+					Events: turnEventSummary{Count: 1, First: secondAt, Last: secondAt, Prompt: "second"},
+				},
+			},
+		},
+	})
+
+	if len(output.Sessions) != 1 || len(output.Sessions[0].Turns) != 2 {
+		t.Fatalf("sessions JSON = %#v", output)
+	}
+	turns := output.Sessions[0].Turns
+	if turns[0].TurnID != 2 || turns[1].TurnID != 1 {
+		t.Fatalf("turn order = %#v", turns)
+	}
+	if output.Sessions[0].LatestTurn == nil || output.Sessions[0].LatestTurn.TurnID != 2 {
+		t.Fatalf("latest turn = %#v", output.Sessions[0].LatestTurn)
+	}
+}

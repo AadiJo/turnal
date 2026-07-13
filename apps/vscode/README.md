@@ -45,3 +45,5 @@ npm run package
 - `turnal.cliPath` selects the CLI executable and defaults to `turnal`.
 
 Inline blame is suppressed when the editor text differs from the latest completed checkpoint. Missing attribution is safer than showing a turn against shifted or locally edited lines.
+
+Editor rollbacks always use Turnal’s checkpoint-only mode, even if `rollback.mode` is configured as `workspace-git`. The extension won’t move the project’s Git HEAD or index; use the CLI when you intentionally need the more invasive workspace-Git restore.

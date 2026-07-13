@@ -52,7 +52,7 @@ export class TurnCommands {
         () => cli.previewRollback(target.sessionId, target.turnId),
       );
 
-      if (preview.changes.length === 0) {
+      if (preview.no_changes) {
         void vscode.window.showInformationMessage(`Turnal: ${folder.name} already matches the state before turn #${target.turnId}.`);
         return;
       }
@@ -173,9 +173,14 @@ function requiredFolder(target: TurnTarget): vscode.WorkspaceFolder {
 
 function affectedDirtyDocuments(folder: vscode.WorkspaceFolder, preview: RollbackPreview): vscode.TextDocument[] {
   const affected = new Set(
-    preview.changes.map((change) => vscode.Uri.joinPath(folder.uri, ...change.path.split("/")).toString()),
+    preview.changes.map((change) => normalizedUri(vscode.Uri.joinPath(folder.uri, ...change.path.split("/")))),
   );
-  return vscode.workspace.textDocuments.filter((document) => document.isDirty && affected.has(document.uri.toString()));
+  return vscode.workspace.textDocuments.filter((document) => document.isDirty && affected.has(normalizedUri(document.uri)));
+}
+
+function normalizedUri(uri: vscode.Uri): string {
+  const value = uri.toString();
+  return process.platform === "win32" ? value.toLowerCase() : value;
 }
 
 function confirmationDetail(target: TurnTarget, preview: RollbackPreview): string {

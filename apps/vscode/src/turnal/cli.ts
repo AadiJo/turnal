@@ -64,12 +64,20 @@ export class TurnalCli {
   }
 
   async previewRollback(sessionId: string, turnId: number): Promise<RollbackPreview> {
-    const output = await this.run(["rollback", "--to", rollbackTarget(sessionId, turnId), "--dry-run"]);
+    const output = await this.run([
+      "rollback",
+      "--to",
+      rollbackTarget(sessionId, turnId),
+      "--workspace-git=false",
+      "--dry-run",
+    ]);
     return parseRollbackPreview(output.stdout);
   }
 
   async rollback(sessionId: string, turnId: number): Promise<string> {
-    return (await this.run(["rollback", "--to", rollbackTarget(sessionId, turnId)])).stdout;
+    return (
+      await this.run(["rollback", "--to", rollbackTarget(sessionId, turnId), "--workspace-git=false"])
+    ).stdout;
   }
 
   async run(args: readonly string[]): Promise<CommandOutput> {

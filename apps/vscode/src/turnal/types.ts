@@ -75,6 +75,7 @@ export interface RollbackChange {
 export interface RollbackPreview {
   raw: string;
   changes: RollbackChange[];
+  no_changes: boolean;
 }
 
 export function parseSessionsResult(value: unknown): SessionsResult {
@@ -101,8 +102,12 @@ export function parseBlameResult(value: unknown): BlameResult {
 
 export function parseRollbackPreview(raw: string): RollbackPreview {
   const changes: RollbackChange[] = [];
+  let noChanges = false;
   let action: RollbackChange["action"] | undefined;
   for (const line of raw.split(/\r?\n/)) {
+    if (line.trim() === "no changes") {
+      noChanges = true;
+    }
     const heading = /^(added|modified|deleted|mode-changed):$/.exec(line);
     if (heading) {
       action = heading[1] as RollbackChange["action"];
@@ -116,7 +121,10 @@ export function parseRollbackPreview(raw: string): RollbackPreview {
       action = undefined;
     }
   }
-  return { raw, changes };
+  if (changes.length === 0 && !noChanges) {
+    throw new TypeError("Turnal returned an unrecognized rollback preview. No changes were made.");
+  }
+  return { raw, changes, no_changes: noChanges };
 }
 
 export function turnsForSession(session: SessionSummary): SessionTurn[] {
