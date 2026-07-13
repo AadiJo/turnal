@@ -225,6 +225,12 @@ func (fixture projectionTestFixture) event(t *testing.T, seq uint64, eventType p
 		t.Fatalf("marshal payload: %v", err)
 	}
 	parsedSeq, _ := primitives.NewEventSeq(seq)
-	turnID := fixture.source.TurnID
-	return eventlog.Event{Version: 2, RepoID: fixture.scope.RepoID, WorktreeID: fixture.scope.WorktreeID, StreamID: fixture.source.StreamID, Seq: parsedSeq, SessionID: fixture.source.SessionID, TurnID: &turnID, Type: eventType, Adapter: primitives.AdapterCodex, Payload: encoded}
+	event := eventlog.Event{Version: 2, RepoID: fixture.scope.RepoID, WorktreeID: fixture.scope.WorktreeID, StreamID: fixture.source.StreamID, Seq: parsedSeq, SessionID: fixture.source.SessionID, Type: eventType, Adapter: primitives.AdapterCodex, Payload: encoded}
+	switch eventType {
+	case primitives.EventTypeTaskCreate, primitives.EventTypeTaskRevision, primitives.EventTypeCaseCreate, primitives.EventTypeCaseAttemptLink:
+	default:
+		turnID := fixture.source.TurnID
+		event.TurnID = &turnID
+	}
+	return event
 }

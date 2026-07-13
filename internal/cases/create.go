@@ -243,7 +243,7 @@ func appendRecord(repo *checkpoint.Repo, source SourceTurn, adapter primitives.A
 	if err != nil {
 		return eventlog.Event{}, err
 	}
-	return repo.EventLog().Append(eventlog.AppendInput{SessionID: source.SessionID, TurnID: &source.TurnID, Type: eventType, Adapter: adapter, SourceID: sourceID, Payload: encoded})
+	return repo.EventLog().Append(eventlog.AppendInput{SessionID: source.SessionID, Type: eventType, Adapter: adapter, SourceID: sourceID, Payload: encoded})
 }
 
 func deduplicateStrings(values []string) []string {
