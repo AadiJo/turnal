@@ -241,13 +241,17 @@ func validateCaseCreate(event eventlog.Event, payload caseCreatePayload, expecte
 	if !parts.HasPhase || parts.SessionID != payload.Source.SessionID || parts.TurnID != payload.Source.TurnID || parts.Phase != primitives.CheckpointPhasePre || (parts.Scoped && (parts.WorktreeID != payload.Scope.WorktreeID || parts.StreamID != payload.Source.StreamID)) {
 		return relationshipError(event, fmt.Errorf("case base checkpoint ref does not match source turn"))
 	}
-	if payload.Readiness.Instruction != task.Revisions[payload.TaskRevision-1].Instruction {
+	if !sameObservableInstruction(payload.Readiness.Instruction, task.Revisions[payload.TaskRevision-1].Instruction) {
 		return relationshipError(event, fmt.Errorf("case instruction does not match task revision %d", payload.TaskRevision))
 	}
 	if err := validateVerifierSnapshots(payload.Verifiers); err != nil {
 		return relationshipError(event, fmt.Errorf("case contains an invalid verifier contract: %w", err))
 	}
 	return nil
+}
+
+func sameObservableInstruction(left, right fork.Instruction) bool {
+	return left.Status == right.Status && left.Text == right.Text
 }
 
 func validateVerifierSnapshots(snapshots []Verifier) error {

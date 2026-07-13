@@ -111,6 +111,21 @@ func TestProjectKeepsSourceAndRelationshipStreamProvenanceDistinct(t *testing.T)
 	}
 }
 
+func TestProjectAllowsSameObservableInstructionFromAnotherAdapter(t *testing.T) {
+	fixture := projectionFixture(t)
+	casePayload := fixture.casePayload
+	casePayload.Readiness.Instruction.Adapter = primitives.AdapterClaudeCode
+	caseEvent := fixture.event(t, 2, primitives.EventTypeCaseCreate, casePayload)
+	projection, err := project([]eventlog.DurableStream{{Events: []eventlog.Event{fixture.events[0], caseEvent}}}, fixture.scope, nil)
+	if err != nil {
+		t.Fatalf("project: %v", err)
+	}
+	definition, ok := projection.Case(fixture.caseID)
+	if !ok || definition.Readiness.Instruction.Adapter != primitives.AdapterClaudeCode {
+		t.Fatalf("case = %#v", definition)
+	}
+}
+
 func TestProjectPreservesRevisionHistoryAndAllAttemptLinks(t *testing.T) {
 	fixture := projectionFixture(t)
 	revised := fork.Instruction{Status: fork.InstructionAvailable, Text: "Fix it without changing the API", Adapter: primitives.AdapterCodex}

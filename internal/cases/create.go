@@ -114,7 +114,7 @@ func createLocked(repo *checkpoint.Repo, request CreateRequest) (CreateResult, e
 			return CreateResult{}, fmt.Errorf("task %s has no applicable revision", taskID)
 		}
 		revision = task.Revisions[len(task.Revisions)-1]
-		if revision.Instruction != readiness.Instruction {
+		if !sameObservableInstruction(revision.Instruction, readiness.Instruction) {
 			return CreateResult{}, fmt.Errorf("source turn instruction does not match task %s revision %d; instruction editing requires a new task revision", taskID, revision.Number)
 		}
 	}
