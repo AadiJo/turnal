@@ -1,23 +1,34 @@
 # Turnal for VS Code
 
-Turnal’s VS Code extension puts the useful parts of the local flight recorder in the editor without recreating the CLI. It shells out to `turnal` for every history operation, so the CLI remains responsible for validating durable logs, resolving checkpoints, computing blame, and performing safe rollbacks.
+See which AI turn wrote the line under your cursor, retrace what your agents changed, and roll back a bad turn safely—all without leaving the editor.
 
-## What’s in the first cut
+Turnal reads from a local flight recorder of your agents’ work. The extension surfaces that history inside VS Code and hands every history operation to the `turnal` CLI, so the CLI stays the single source of truth for durable logs, checkpoints, blame, and safe rollbacks.
 
-- The current line shows a quiet end-of-line annotation with the agent, prompt, turn, and relative time. Hover any attributed line for the full turn context and links to its diff, details, and rollback action.
-- The Turnal Activity Bar view can group recorded turns and rollbacks by session or show every event in a newest-first Recent Activity list. Clicking a completed turn opens its changes in VS Code's native diff UI, while clicking a rollback opens its recorded target and file summary.
-- **Roll Back to Before Turn…** runs `turnal rollback --to <session>:turn:<n>:pre --dry-run`, checks for affected unsaved editors, shows the file plan in a native confirmation dialog, and verifies the plan again before it runs the real rollback.
-- **Show Turn Details** opens the CLI’s readable `turnal show` output without a custom webview.
+## What you get
 
-The extension intentionally leaves recording controls, replay, verification, search, retention, worktree management, and configuration editing in the CLI.
+- **Blame for the current line.** A quiet end-of-line note shows the agent, prompt, turn, and relative time for the line you’re on. Hover it for the full turn context, with links to that turn’s diff, details, and rollback.
+
+  ![Inline blame hover showing the agent, prompt, and turn behind the current line, with links to its diff, details, and rollback.](media/screenshots/inline-blame-hover.png)
+
+- **Your agent history, two ways.** The Turnal view in the Activity Bar groups recorded turns and rollbacks by session, or flattens everything into a newest-first Recent Activity list. Both layouts are backed entirely by the CLI.
+
+- **Native turn diffs.** Click a completed turn to open exactly what it changed in VS Code’s built-in diff—single-file or multi-file—with no custom viewer to learn.
+
+  ![A completed agent turn opened in VS Code’s native multi-file Changes editor.](media/screenshots/turn-diff-native.png)
+
+- **Safe rollback, previewed first.** **Roll Back to Before Turn…** runs a dry run, checks for affected unsaved editors, and opens the exact file plan in VS Code’s native Changes editor before asking for confirmation. It verifies that plan again before touching the workspace.
+
+  ![A rollback plan opened in VS Code’s native multi-file Changes editor before confirmation.](media/screenshots/rollback-preview.png)
+
+Editor rollbacks always use Turnal’s checkpoint-only mode, even when `rollback.mode` is set to `workspace-git`. The extension never moves your project’s Git HEAD or index; use the CLI when you intentionally want the more invasive workspace-Git restore.
+
+Recording, replay, verification, search, retention, worktree management, and configuration editing stay in the CLI by design. The extension also never reads `.turnal/index` or private Git objects directly, so its behavior tracks the installed CLI instead of coupling to internal storage.
 
 ## Requirements
 
 - VS Code 1.95 or newer.
 - A Turnal CLI that exposes `sessions` JSON schema 1, planned for CLI release 0.0.1.
-- A workspace initialized with `turnal init` and at least one completed turn for blame and diffs.
-
-The extension never reads `.turnal/index` or private Git objects directly. This keeps its behavior aligned with the installed CLI and avoids coupling the UI to internal storage schemas.
+- A workspace initialized with `turnal init` and at least one completed turn, so there’s history to blame and diff.
 
 ## Install the CLI
 
@@ -28,7 +39,7 @@ npm install -g @aadijo/turnal@latest
 turnal version
 ```
 
-The compatible 0.0.1 CLI has not reached npm's `latest` channel yet. Until it does, build this repository's `vscode-extension` branch and point the extension at that binary:
+The compatible 0.0.1 CLI hasn’t reached npm’s `latest` channel yet. Until it does, build this repository’s `vscode-extension` branch and point the extension at that binary:
 
 ```sh
 git clone https://github.com/AadiJo/turnal.git
@@ -38,9 +49,23 @@ make build
 ./bin/turnal sessions --json
 ```
 
-The JSON response must contain `"schema_version": 1`. Set **Turnal: CLI Path** to the absolute path of `bin/turnal`, or add the binary to `PATH`. The binary must be available in the environment running the extension host, which means a WSL, SSH, or Dev Container window needs a CLI installed inside that remote environment rather than only on the local machine.
+The JSON response must contain `"schema_version": 1`. Set **Turnal: CLI Path** to the absolute path of `bin/turnal`, or add the binary to `PATH`. The CLI must live in the environment running the extension host—a WSL, SSH, or Dev Container window needs the CLI installed inside that remote, not only on your local machine.
 
-If the installed CLI is older, the sidebar says **Turnal CLI needs an update** and keeps the incompatibility visible instead of displaying an empty history.
+If the installed CLI is older, the sidebar shows **Turnal CLI needs an update** and keeps the incompatibility visible instead of showing empty history.
+
+## Commands and settings
+
+- **Turnal: Refresh History** clears cached session and blame data.
+- **Turnal: Show Recent Activity** switches the sidebar to a newest-first list across sessions.
+- **Turnal: Group by Session** restores the session hierarchy.
+- **Turnal: View Turn Changes** opens a completed turn in the native diff or multi-file Changes editor.
+- **Turnal: Show Turn Details** opens the CLI’s readable `turnal show` output.
+- **Turnal: Roll Back to Before Turn…** previews and performs a checkpoint rollback.
+- **Turnal: Toggle Inline Blame** flips `turnal.inlineBlame.enabled` for the workspace; the sidebar icon reflects the current state.
+- `turnal.history.layout` persists the sidebar layout as `sessions` or `activity`.
+- `turnal.cliPath` selects the CLI executable and defaults to `turnal`.
+
+Inline blame is suppressed when the editor text differs from the latest completed checkpoint. Missing attribution is safer than pinning a turn to shifted or locally edited lines.
 
 ## Develop
 
@@ -57,19 +82,3 @@ Package a local VSIX with:
 ```sh
 npm run package
 ```
-
-## Commands and settings
-
-- **Turnal: Refresh History** clears cached session and blame data.
-- **Turnal: Show Recent Activity** switches the sidebar to a newest-first list across sessions.
-- **Turnal: Group by Session** restores the session hierarchy.
-- **Turnal: View Turn Changes** opens a completed turn in VS Code’s native diff or multi-file Changes editor.
-- **Turnal: Show Turn Details** opens the CLI’s turn view.
-- **Turnal: Roll Back to Before Turn…** previews and performs a checkpoint rollback.
-- **Turnal: Toggle Inline Blame** updates `turnal.inlineBlame.enabled` for the workspace; the sidebar icon changes between visible and hidden states.
-- `turnal.history.layout` persists the sidebar layout as `sessions` or `activity`.
-- `turnal.cliPath` selects the CLI executable and defaults to `turnal`.
-
-Inline blame is suppressed when the editor text differs from the latest completed checkpoint. Missing attribution is safer than showing a turn against shifted or locally edited lines.
-
-Editor rollbacks always use Turnal’s checkpoint-only mode, even if `rollback.mode` is configured as `workspace-git`. The extension won’t move the project’s Git HEAD or index; use the CLI when you intentionally need the more invasive workspace-Git restore.
