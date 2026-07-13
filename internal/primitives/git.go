@@ -362,7 +362,10 @@ func parseCheckpointRefParts(value string) (CheckpointRefParts, error) {
 		}
 		return CheckpointRefParts{CheckpointID: checkpointID, Canonical: true}, nil
 	}
-	if len(segments) == 6 && strings.Join(segments[:4], "/") == checkpointRefPrefix+"/manual" {
+	// A legacy checkpoint for the valid session id "manual" has the shape
+	// checkpoints/manual/turn/<number>. Preserve that grammar before treating
+	// the same prefix as the manual-checkpoint namespace.
+	if len(segments) == 6 && segments[4] != "turn" && strings.Join(segments[:4], "/") == checkpointRefPrefix+"/manual" {
 		worktreeID, err := ParseWorktreeID(segments[4])
 		if err != nil {
 			return CheckpointRefParts{}, err

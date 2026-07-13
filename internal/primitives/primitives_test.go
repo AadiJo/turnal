@@ -330,6 +330,18 @@ func TestCheckpointRef(t *testing.T) {
 	if _, err := ParseCheckpointRef(noPhase); err != nil {
 		t.Fatalf("ParseCheckpointRef no phase: %v", err)
 	}
+	legacyManualSession := "refs/agent-vcs/checkpoints/manual/turn/000001"
+	legacyManualRef, err := ParseCheckpointRef(legacyManualSession)
+	if err != nil {
+		t.Fatalf("ParseCheckpointRef legacy manual session: %v", err)
+	}
+	legacyManualParts, err := legacyManualRef.Parts()
+	if err != nil {
+		t.Fatalf("legacy manual session Parts: %v", err)
+	}
+	if legacyManualParts.SessionID != "manual" || legacyManualParts.TurnID != 1 || legacyManualParts.Manual || legacyManualParts.HasPhase {
+		t.Fatalf("legacy manual session parts = %+v", legacyManualParts)
+	}
 
 	for _, input := range []string{
 		"refs/agent-vcs/checkpoints/Demo/turn/000007/pre",
