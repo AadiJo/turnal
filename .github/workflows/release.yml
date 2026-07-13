@@ -5,7 +5,6 @@ on:
     tags:
       - "v*.*.*"
       - "!v*-nightly.*"
-  workflow_dispatch:
 
 permissions:
   contents: write
@@ -35,28 +34,14 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - id: nightly_date
-        if: github.event_name == 'workflow_dispatch'
-        name: Resolve nightly date
-        run: echo "value=$(date -u -d '${{ github.run_started_at }}' +%Y%m%d)" >> "$GITHUB_OUTPUT"
-
       - id: release_meta
         name: Resolve release metadata
-        run: |
-          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            node scripts/resolve-release.js nightly \
-              "${{ steps.nightly_date.outputs.value }}" \
-              "${{ github.run_number }}" \
-              "${{ github.sha }}"
-          else
-            node scripts/resolve-release.js stable "${GITHUB_REF_NAME}"
-          fi
+        run: node scripts/resolve-release.js stable "${GITHUB_REF_NAME}"
 
       - name: Align package version
         run: node scripts/set-release-version.js "${{ steps.release_meta.outputs.version }}"
 
       - name: Verify package version
-        if: github.event_name == 'push'
         run: |
           tag_version="${GITHUB_REF_NAME#v}"
           package_version="$(node -p "require('./package.json').version")"
@@ -69,7 +54,6 @@ jobs:
         run: npm test
 
       - name: Check Go formatting
-        if: steps.release_meta.outputs.channel == 'stable'
         run: |
           unformatted="$(gofmt -l .)"
           if [[ -n "$unformatted" ]]; then
@@ -79,17 +63,14 @@ jobs:
           fi
 
       - name: Check Go modules are tidy
-        if: steps.release_meta.outputs.channel == 'stable'
         run: |
           go mod tidy
           git diff --exit-code -- go.mod go.sum
 
       - name: Vet
-        if: steps.release_meta.outputs.channel == 'stable'
         run: go vet ./...
 
       - name: Build
-        if: steps.release_meta.outputs.channel == 'stable'
         run: npm run build
 
       - name: Pack dry run
@@ -127,9 +108,7 @@ jobs:
           if [[ "${{ steps.release_meta.outputs.prerelease }}" == "true" ]]; then
             args+=(--prerelease)
           fi
-          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
-            args+=(--verify-tag)
-          fi
+          args+=(--verify-tag)
           if [[ "${{ steps.release_meta.outputs.make_latest }}" == "false" ]]; then
             args+=(--latest=false)
           fi

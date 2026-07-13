@@ -1,5 +1,10 @@
 version: 2.1
 
+parameters:
+  nightly:
+    type: boolean
+    default: false
+
 jobs:
   quality:
     docker:
@@ -56,7 +61,86 @@ jobs:
             go install golang.org/x/vuln/cmd/govulncheck@latest
             govulncheck ./...
 
+  nightly-publish:
+    docker:
+      - image: cimg/go:1.26.4-node
+    resource_class: small
+    steps:
+      - checkout
+
+      - run:
+          name: Require publishing credentials
+          command: |
+            if [ -z "${NPM_TOKEN:-}" ] || [ -z "${GH_TOKEN:-}" ]; then
+              echo "NPM_TOKEN and GH_TOKEN must be configured in the CircleCI project" >&2
+              exit 1
+            fi
+
+      - run:
+          name: Resolve nightly release
+          command: |
+            node scripts/resolve-release.js nightly \
+              "$(date -u +%Y%m%d)" \
+              "${CIRCLE_BUILD_NUM}" \
+              "${CIRCLE_SHA1}" | while IFS='=' read -r key value; do
+                printf 'export RELEASE_%s=%q\n' "$key" "$value" >> "$BASH_ENV"
+              done
+
+      - run:
+          name: Align package version
+          command: node scripts/set-release-version.js "$RELEASE_version"
+
+      - run:
+          name: Test
+          command: npm test
+
+      - run:
+          name: Pack dry run
+          command: npm run pack:dry-run
+          environment:
+            TURNAL_RELEASE_CHANNEL: nightly
+            TURNAL_COMMIT: << pipeline.git.revision >>
+
+      - run:
+          name: Generate SBOM
+          command: |
+            go install github.com/anchore/syft/cmd/syft@v1.33.0
+            syft dir:. --output spdx-json=turnal.spdx.json
+
+      - run:
+          name: Install GitHub CLI
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y gh
+
+      - run:
+          name: Publish npm package
+          command: |
+            npm config set //registry.npmjs.org/:_authToken '${NPM_TOKEN}'
+            npm publish --access public --tag "$RELEASE_npm_tag"
+          environment:
+            TURNAL_RELEASE_CHANNEL: nightly
+            TURNAL_COMMIT: << pipeline.git.revision >>
+
+      - run:
+          name: Publish GitHub prerelease
+          command: |
+            gh release create \
+              "$RELEASE_tag" \
+              turnal.spdx.json \
+              --target "$CIRCLE_SHA1" \
+              --title "$RELEASE_name" \
+              --generate-notes \
+              --prerelease \
+              --latest=false
+
 workflows:
   ci:
+    unless: << pipeline.parameters.nightly >>
     jobs:
       - quality
+
+  nightly:
+    when: << pipeline.parameters.nightly >>
+    jobs:
+      - nightly-publish
