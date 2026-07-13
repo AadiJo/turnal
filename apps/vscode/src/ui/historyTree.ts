@@ -3,6 +3,7 @@ import { TurnFileTarget, TurnTarget } from "../model";
 import { TurnalCommandError } from "../turnal/cli";
 import { DiffDocument, SessionSummary, SessionsResult, SessionTurn, turnsForSession } from "../turnal/types";
 import { displayAgent, formatTimestamp, relativeTime, truncate, turnTitle } from "../utils/format";
+import { RefreshingCache } from "../utils/refreshingCache";
 import { cliForFolder } from "../workspaces";
 
 export type HistoryNode = WorkspaceNode | SessionNode | TurnNode | TurnFileNode;
@@ -15,8 +16,7 @@ interface HistoryTreeOptions {
 
 export class HistoryTreeProvider implements vscode.TreeDataProvider<HistoryNode>, vscode.Disposable {
   private readonly emitter = new vscode.EventEmitter<HistoryNode | undefined | null | void>();
-  private readonly cache = new Map<string, SessionsResult>();
-  private readonly inFlight = new Map<string, Promise<SessionsResult>>();
+  private readonly sessions = new RefreshingCache<string, SessionsResult>();
   private readonly diffCache = new Map<string, DiffDocument[]>();
   private readonly diffInFlight = new Map<string, Promise<DiffDocument[]>>();
 
@@ -52,7 +52,7 @@ export class HistoryTreeProvider implements vscode.TreeDataProvider<HistoryNode>
   }
 
   refresh(): void {
-    this.cache.clear();
+    this.sessions.invalidate();
     this.diffCache.clear();
     this.emitter.fire();
   }
@@ -63,8 +63,7 @@ export class HistoryTreeProvider implements vscode.TreeDataProvider<HistoryNode>
       folders.map(async (folder) => {
         try {
           return { folder, sessions: await this.load(folder) };
-        } catch (error) {
-          this.options.onBackgroundError(error, folder);
+        } catch {
           return undefined;
         }
       }),
@@ -98,38 +97,28 @@ export class HistoryTreeProvider implements vscode.TreeDataProvider<HistoryNode>
     try {
       const result = await this.load(folder);
       return result.sessions.map((session) => new SessionNode(folder, session, this.options.extensionUri));
-    } catch (error) {
-      this.options.onBackgroundError(error, folder);
+    } catch {
       return [];
     }
   }
 
   private load(folder: vscode.WorkspaceFolder): Promise<SessionsResult> {
     const key = folder.uri.toString();
-    const cached = this.cache.get(key);
-    if (cached) {
-      return Promise.resolve(cached);
-    }
-    const active = this.inFlight.get(key);
-    if (active) {
-      return active;
-    }
-    const request = cliForFolder(folder)
-      .sessions()
-      .then((result) => {
-        this.cache.set(key, result);
-        this.options.onCliAvailability(false);
-        return result;
-      })
-      .catch((error: unknown) => {
-        if (error instanceof TurnalCommandError && error.missingExecutable) {
-          this.options.onCliAvailability(true);
-        }
-        throw error;
-      })
-      .finally(() => this.inFlight.delete(key));
-    this.inFlight.set(key, request);
-    return request;
+    return this.sessions.load(
+      key,
+      () => cliForFolder(folder).sessions(),
+      {
+        retryDelaysMs: [150, 450],
+        shouldRetry: (error) => !isPermanentSessionLoadError(error),
+        onSuccess: () => this.options.onCliAvailability(false),
+        onError: (error) => {
+          if (error instanceof TurnalCommandError && error.missingExecutable) {
+            this.options.onCliAvailability(true);
+          }
+          this.options.onBackgroundError(error, folder);
+        },
+      },
+    );
   }
 
   private async turnFileNodes(turn: TurnNode): Promise<TurnFileNode[]> {
@@ -195,6 +184,14 @@ function providerIcon(adapter: string | undefined, extensionUri: vscode.Uri): vs
     };
   }
   return new vscode.ThemeIcon("robot");
+}
+
+function isPermanentSessionLoadError(error: unknown): boolean {
+  if (error instanceof TurnalCommandError && error.missingExecutable) {
+    return true;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return /turnal root|not initialized|not a turnal workspace/i.test(message);
 }
 
 export class TurnNode extends vscode.TreeItem {
