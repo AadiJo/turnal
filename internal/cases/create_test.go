@@ -17,6 +17,7 @@ import (
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/fork"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/recall"
 	"github.com/AadiJo/turnal/internal/turnevents"
 	"github.com/AadiJo/turnal/internal/turns"
 )
@@ -28,6 +29,10 @@ func TestCreateNewTaskAndSiblingCaseFromRecordedTurns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read workspace before create: %v", err)
 	}
+	turnBefore, err := recall.NewScopedReader(repo.MetadataDir, repo.WorktreeID).RecallTurn(sessionOne, turnOne, recall.Options{WorktreeID: repo.WorktreeID})
+	if err != nil {
+		t.Fatalf("recall source before create: %v", err)
+	}
 
 	created, err := Create(repo, CreateRequest{SessionID: sessionOne, TurnID: turnOne})
 	if err != nil {
@@ -38,6 +43,13 @@ func TestCreateNewTaskAndSiblingCaseFromRecordedTurns(t *testing.T) {
 	}
 	if created.Case.TaskID != created.Task.ID || created.Case.TaskRevision != 1 || created.Case.Readiness.Base.Status != "available" {
 		t.Fatalf("created case = %#v", created.Case)
+	}
+	turnAfter, err := recall.NewScopedReader(repo.MetadataDir, repo.WorktreeID).RecallTurn(sessionOne, turnOne, recall.Options{WorktreeID: repo.WorktreeID})
+	if err != nil {
+		t.Fatalf("recall source after create: %v", err)
+	}
+	if !reflect.DeepEqual(turnBefore.Events, turnAfter.Events) || !reflect.DeepEqual(turnBefore.SessionEvents, turnAfter.SessionEvents) {
+		t.Fatalf("case creation changed projected source turn history")
 	}
 
 	sessionTwo, turnTwo := recordCaseTurn(t, repo, root, "source-two", "Fix the parser", false)
