@@ -298,6 +298,23 @@ func TestInspectInstructionDistinguishesLiteralRedactionMarker(t *testing.T) {
 	}
 }
 
+func TestInspectInstructionPreservesRecordedWhitespace(t *testing.T) {
+	turnID, _ := primitives.NewTurnID(1)
+	instruction, err := inspectInstruction([]eventlog.Event{{
+		Seq:     1,
+		TurnID:  &turnID,
+		Type:    primitives.EventTypePromptUser,
+		Adapter: primitives.AdapterCodex,
+		Payload: json.RawMessage("{\"text\":\"  first line\\nsecond line\\n\"}"),
+	}})
+	if err != nil {
+		t.Fatalf("inspectInstruction: %v", err)
+	}
+	if instruction.Status != InstructionAvailable || instruction.Text != "  first line\nsecond line\n" {
+		t.Fatalf("instruction = %#v", instruction)
+	}
+}
+
 func TestInspectInstructionKeepsAdapterForEmptyPrompt(t *testing.T) {
 	turnID, _ := primitives.NewTurnID(1)
 	instruction, err := inspectInstruction([]eventlog.Event{{

@@ -337,7 +337,7 @@ func inspectInstruction(events []eventlog.Event) (Instruction, error) {
 		case "":
 			continue
 		default:
-			instruction = Instruction{Status: InstructionAvailable, Text: text, Adapter: event.Adapter}
+			instruction = Instruction{Status: InstructionAvailable, Text: textValue, Adapter: event.Adapter}
 		}
 	}
 	return instruction, nil

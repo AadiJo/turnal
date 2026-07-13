@@ -131,7 +131,7 @@ func project(streams []eventlog.DurableStream, expected Scope, attempts map[prim
 		if err := validateCaseCreate(event, payload, expected, *task); err != nil {
 			return Projection{}, err
 		}
-		casesByID[payload.CaseID] = &Case{ID: payload.CaseID, TaskID: payload.TaskID, TaskRevision: payload.TaskRevision, Scope: payload.Scope, Source: payload.Source, Readiness: payload.Readiness, Verifiers: cloneVerifiers(payload.Verifiers), Limitations: append([]string(nil), payload.Limitations...), Created: provenance(event)}
+		casesByID[payload.CaseID] = &Case{ID: payload.CaseID, TaskID: payload.TaskID, TaskRevision: payload.TaskRevision, Scope: payload.Scope, Source: payload.Source, Readiness: payload.Readiness, Verifiers: cloneVerifiers(payload.Verifiers), Limitations: append([]string(nil), payload.Limitations...), AttemptLinks: make([]AttemptLink, 0), Created: provenance(event)}
 	}
 
 	seenLinks := make(map[string]bool)
