@@ -3,13 +3,16 @@ import { TurnFileTarget, TurnTarget } from "../model";
 import { TurnalCommandError } from "../turnal/cli";
 import { DiffDocument, SessionSummary, SessionsResult, SessionTurn, turnsForSession } from "../turnal/types";
 import { displayAgent, formatTimestamp, relativeTime, truncate, turnTitle } from "../utils/format";
+import { recentTurns } from "../utils/recentTurns";
 import { RefreshingCache } from "../utils/refreshingCache";
 import { cliForFolder } from "../workspaces";
 
 export type HistoryNode = WorkspaceNode | SessionNode | TurnNode | TurnFileNode;
+export type HistoryLayout = "sessions" | "activity";
 
 interface HistoryTreeOptions {
   extensionUri: vscode.Uri;
+  getLayout(): HistoryLayout;
   onBackgroundError(error: unknown, folder: vscode.WorkspaceFolder): void;
   onCliAvailability(missing: boolean): void;
 }
@@ -30,7 +33,7 @@ export class HistoryTreeProvider implements vscode.TreeDataProvider<HistoryNode>
 
   async getChildren(element?: HistoryNode): Promise<HistoryNode[]> {
     if (element instanceof WorkspaceNode) {
-      return this.sessionNodes(element.folder);
+      return this.folderNodes(element.folder);
     }
     if (element instanceof SessionNode) {
       return turnsForSession(element.session).map(
@@ -48,12 +51,16 @@ export class HistoryTreeProvider implements vscode.TreeDataProvider<HistoryNode>
     if (folders.length > 1) {
       return folders.map((folder) => new WorkspaceNode(folder));
     }
-    return folders.length === 1 ? this.sessionNodes(folders[0]) : [];
+    return folders.length === 1 ? this.folderNodes(folders[0]) : [];
   }
 
   refresh(): void {
     this.sessions.invalidate();
     this.diffCache.clear();
+    this.emitter.fire();
+  }
+
+  relayout(): void {
     this.emitter.fire();
   }
 
@@ -97,6 +104,21 @@ export class HistoryTreeProvider implements vscode.TreeDataProvider<HistoryNode>
     try {
       const result = await this.load(folder);
       return result.sessions.map((session) => new SessionNode(folder, session, this.options.extensionUri));
+    } catch {
+      return [];
+    }
+  }
+
+  private folderNodes(folder: vscode.WorkspaceFolder): Promise<SessionNode[] | TurnNode[]> {
+    return this.options.getLayout() === "activity" ? this.activityNodes(folder) : this.sessionNodes(folder);
+  }
+
+  private async activityNodes(folder: vscode.WorkspaceFolder): Promise<TurnNode[]> {
+    try {
+      const result = await this.load(folder);
+      return recentTurns(result.sessions).map(
+        ({ session, turn }) => new TurnNode(folder, session, turn, this.options.extensionUri, true),
+      );
     } catch {
       return [];
     }
@@ -201,6 +223,8 @@ export class TurnNode extends vscode.TreeItem {
     readonly folder: vscode.WorkspaceFolder,
     session: SessionSummary,
     turn: SessionTurn,
+    extensionUri?: vscode.Uri,
+    activityLayout = false,
   ) {
     const title = turnTitle(turn.prompt, turn.turn_id);
     super(
@@ -209,8 +233,14 @@ export class TurnNode extends vscode.TreeItem {
     );
     this.target = turnTarget(folder, session, turn);
     this.id = `turn:${folder.uri.toString()}:${session.session_id}:${turn.turn_id}`;
-    this.description = `#${turn.turn_id} · ${relativeTime(turn.last_activity ?? turn.first_activity)}`;
-    this.iconPath = turnIcon(turn.status);
+    const activity = turn.last_activity ?? turn.first_activity ?? session.last_activity ?? session.first_activity;
+    const activityStatus = turn.status === "complete" ? "" : `${turn.status} · `;
+    this.description = activityLayout
+      ? `${displayAgent(session.adapter)} · ${activityStatus}#${turn.turn_id} · ${relativeTime(activity)}`
+      : `#${turn.turn_id} · ${relativeTime(activity)}`;
+    this.iconPath = activityLayout && extensionUri
+      ? providerIcon(session.adapter, extensionUri)
+      : turnIcon(turn.status);
     this.contextValue = turn.status === "complete" ? "turnalTurnComplete" : "turnalTurn";
     this.tooltip = turnTooltip(session, turn);
     this.command = {

@@ -32,8 +32,18 @@
     "commands": [
       {
         "command": "turnal.refresh",
-        "title": "Turnal: Refresh Sessions",
+        "title": "Turnal: Refresh History",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "turnal.showRecentActivity",
+        "title": "Turnal: Show Recent Activity",
+        "icon": "$(list-flat)"
+      },
+      {
+        "command": "turnal.groupBySession",
+        "title": "Turnal: Group by Session",
+        "icon": "$(list-tree)"
       },
       {
         "command": "turnal.openTurnDiff",
@@ -78,7 +88,7 @@
     "viewsWelcome": [
       {
         "view": "turnal.sessions",
-        "contents": "No Turnal sessions yet.\nTurnal records automatically after it is initialized and an AI agent edits this workspace.\n[Refresh](command:turnal.refresh)",
+        "contents": "No Turnal history yet.\nTurnal records automatically after it is initialized and an AI agent edits this workspace.\n[Refresh](command:turnal.refresh)",
         "when": "!turnal.cliMissing"
       },
       {
@@ -95,9 +105,19 @@
           "group": "navigation@1"
         },
         {
+          "command": "turnal.showRecentActivity",
+          "when": "view == turnal.sessions && turnal.historyLayout != activity",
+          "group": "navigation@2"
+        },
+        {
+          "command": "turnal.groupBySession",
+          "when": "view == turnal.sessions && turnal.historyLayout == activity",
+          "group": "navigation@2"
+        },
+        {
           "command": "turnal.toggleInlineBlame",
           "when": "view == turnal.sessions",
-          "group": "navigation@2"
+          "group": "navigation@3"
         }
       ],
       "view/item/context": [
@@ -131,6 +151,20 @@
           "default": true,
           "scope": "resource",
           "description": "Show the originating AI turn at the end of the current line."
+        },
+        "turnal.history.layout": {
+          "type": "string",
+          "enum": [
+            "sessions",
+            "activity"
+          ],
+          "enumDescriptions": [
+            "Group turns under their agent sessions.",
+            "Show turns from every session in newest-first order."
+          ],
+          "default": "sessions",
+          "scope": "window",
+          "description": "Choose how Turnal history is arranged in the Activity Bar."
         },
         "turnal.cliPath": {
           "type": "string",

@@ -3,13 +3,18 @@ import { TurnalCommandError } from "./turnal/cli";
 import { BlameController } from "./ui/blame";
 import { TurnCommands } from "./ui/commands";
 import { VirtualDocumentStore } from "./ui/documents";
-import { HistoryTreeProvider } from "./ui/historyTree";
+import { HistoryLayout, HistoryNode, HistoryTreeProvider } from "./ui/historyTree";
 
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel("Turnal", { log: true });
-  let treeView: vscode.TreeView<unknown> | undefined;
+  let treeView: vscode.TreeView<HistoryNode> | undefined;
   let cliMissing = false;
   const backgroundErrors = new Set<string>();
+
+  const getHistoryLayout = (): HistoryLayout =>
+    vscode.workspace.getConfiguration("turnal").get<string>("history.layout", "sessions") === "activity"
+      ? "activity"
+      : "sessions";
 
   const setCliAvailability = (missing: boolean): void => {
     cliMissing = missing;
@@ -38,6 +43,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const history = new HistoryTreeProvider({
     extensionUri: context.extensionUri,
+    getLayout: getHistoryLayout,
     onBackgroundError: reportBackgroundError,
     onCliAvailability: (missing) => {
       if (missing || cliMissing) {
@@ -52,6 +58,36 @@ export function activate(context: vscode.ExtensionContext): void {
     treeDataProvider: history,
     showCollapseAll: true,
   });
+  let displayedHistoryLayout: HistoryLayout | undefined;
+  const syncHistoryLayout = (relayout = true): void => {
+    const layout = getHistoryLayout();
+    if (displayedHistoryLayout === layout) {
+      return;
+    }
+    displayedHistoryLayout = layout;
+    if (treeView) {
+      treeView.title = layout === "activity" ? "Recent Activity" : "Sessions";
+    }
+    void vscode.commands.executeCommand("setContext", "turnal.historyLayout", layout);
+    if (relayout) {
+      history.relayout();
+    }
+  };
+  const setHistoryLayout = async (layout: HistoryLayout): Promise<void> => {
+    const configuration = vscode.workspace.getConfiguration("turnal");
+    const target = vscode.workspace.workspaceFolders?.length
+      ? vscode.ConfigurationTarget.Workspace
+      : vscode.ConfigurationTarget.Global;
+    try {
+      await configuration.update("history.layout", layout, target);
+      syncHistoryLayout();
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      output.error(`Couldn’t save history layout: ${detail}`);
+      void vscode.window.showErrorMessage(`Couldn’t save the Turnal history layout: ${detail}`);
+    }
+  };
+  syncHistoryLayout(false);
 
   const documents = new VirtualDocumentStore();
   const blame = new BlameController({ onBackgroundError: reportBackgroundError });
@@ -70,6 +106,8 @@ export function activate(context: vscode.ExtensionContext): void {
     blame,
     vscode.languages.registerHoverProvider({ scheme: "file" }, blame),
     vscode.commands.registerCommand("turnal.refresh", refresh),
+    vscode.commands.registerCommand("turnal.showRecentActivity", () => setHistoryLayout("activity")),
+    vscode.commands.registerCommand("turnal.groupBySession", () => setHistoryLayout("sessions")),
     vscode.commands.registerCommand("turnal.openTurnDiff", (target?: unknown) => commands.openDiff(target)),
     vscode.commands.registerCommand("turnal.showTurnDetails", (target?: unknown) => commands.showDetails(target)),
     vscode.commands.registerCommand("turnal.rollbackBeforeTurn", (target?: unknown) => commands.rollbackBefore(target)),
@@ -110,6 +148,11 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
       resetWatchers();
       refresh();
+    }),
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration("turnal.history.layout")) {
+        syncHistoryLayout();
+      }
     }),
     vscode.window.onDidChangeWindowState((state) => {
       if (state.focused) {
