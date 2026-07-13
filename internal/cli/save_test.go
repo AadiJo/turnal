@@ -155,7 +155,7 @@ func TestSaveRejectsOversizedMessageBeforeCheckpointing(t *testing.T) {
 	t.Chdir(root.String())
 
 	cmd := NewRootCmd()
-	cmd.SetArgs([]string{"save", strings.Repeat("x", maxSaveMessageBytes+1)})
+	cmd.SetArgs([]string{"save", strings.Repeat("x", manualcheckpoints.MaxMessageBytes+1)})
 	err = cmd.Execute()
 	if err == nil || !strings.Contains(err.Error(), "at most") {
 		t.Fatalf("save error = %v", err)

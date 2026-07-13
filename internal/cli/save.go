@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	queryindex "github.com/AadiJo/turnal/internal/index"
@@ -12,8 +11,6 @@ import (
 	rollbackengine "github.com/AadiJo/turnal/internal/rollback"
 	"github.com/spf13/cobra"
 )
-
-const maxSaveMessageBytes = 4096
 
 func saveCmd() *cobra.Command {
 	var jsonOutput bool
@@ -24,11 +21,8 @@ func saveCmd() *cobra.Command {
 		Args:         cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			message := strings.TrimSpace(strings.Join(args, " "))
-			if !utf8.ValidString(message) {
-				return fmt.Errorf("save message must be valid UTF-8")
-			}
-			if len(message) > maxSaveMessageBytes {
-				return fmt.Errorf("save message must be at most %d bytes", maxSaveMessageBytes)
+			if err := manualcheckpoints.ValidateMessage(message); err != nil {
+				return err
 			}
 
 			repo, err := openCheckpointRepo()

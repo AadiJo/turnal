@@ -67,3 +67,30 @@ func TestReadRejectsMalformedManualCheckpointEvent(t *testing.T) {
 		t.Fatalf("Read error = %v", err)
 	}
 }
+
+func TestAppendRejectsInvalidMessageBeforeWritingEvent(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git executable not found")
+	}
+	root, _ := primitives.ParseWorkspaceRoot(t.TempDir())
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	created, err := repo.CreateManualCheckpoint()
+	if err != nil {
+		t.Fatalf("CreateManualCheckpoint: %v", err)
+	}
+	for _, message := range []string{strings.Repeat("x", MaxMessageBytes+1), string([]byte{0xff})} {
+		if _, err := Append(repo, created, message); err == nil {
+			t.Fatalf("Append accepted invalid message %q", message)
+		}
+	}
+	events, err := ReadEvents(repo, false)
+	if err != nil {
+		t.Fatalf("ReadEvents: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("invalid message wrote durable events: %#v", events)
+	}
+}

@@ -15,6 +15,18 @@ import (
 
 const eventSessionText = "workspace"
 
+const MaxMessageBytes = 4096
+
+func ValidateMessage(message string) error {
+	if !utf8.ValidString(message) {
+		return fmt.Errorf("save message must be valid UTF-8")
+	}
+	if len(message) > MaxMessageBytes {
+		return fmt.Errorf("save message must be at most %d bytes", MaxMessageBytes)
+	}
+	return nil
+}
+
 type Payload struct {
 	Origin       string `json:"origin"`
 	Message      string `json:"message,omitempty"`
@@ -35,6 +47,9 @@ type Save struct {
 func Append(repo *checkpoint.Repo, created checkpoint.Checkpoint, message string) (eventlog.Event, error) {
 	if repo == nil {
 		return eventlog.Event{}, fmt.Errorf("append manual checkpoint event: repo is required")
+	}
+	if err := ValidateMessage(message); err != nil {
+		return eventlog.Event{}, err
 	}
 	parts, err := created.Ref.Parts()
 	if err != nil || !parts.Manual {
@@ -201,8 +216,8 @@ func saveFromEvent(event eventlog.Event, byRef map[string]checkpoint.CheckpointR
 	if event.TurnID != nil || event.Adapter != primitives.AdapterManual {
 		return Save{}, fmt.Errorf("manual checkpoint event %s provenance invariant failed", event.Seq)
 	}
-	if !utf8.ValidString(payload.Message) || len(payload.Message) > 4096 {
-		return Save{}, fmt.Errorf("manual checkpoint event %s message invariant failed", event.Seq)
+	if err := ValidateMessage(payload.Message); err != nil {
+		return Save{}, fmt.Errorf("manual checkpoint event %s message invariant failed: %w", event.Seq, err)
 	}
 	checkpointID, err := primitives.ParseCheckpointID(payload.CheckpointID)
 	if err != nil {
