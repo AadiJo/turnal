@@ -1,0 +1,151 @@
+{
+  "name": "turnal-vscode",
+  "displayName": "Turnal",
+  "description": "See which AI turn changed a line, browse agent history, and roll back safely.",
+  "version": "0.0.1",
+  "publisher": "aadijo",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AadiJo/turnal"
+  },
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "SCM Providers",
+    "Visualization"
+  ],
+  "keywords": [
+    "ai",
+    "agent",
+    "blame",
+    "history",
+    "rollback"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "workspaceContains:.turnal/version"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "turnal.refresh",
+        "title": "Turnal: Refresh Sessions",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "turnal.openTurnDiff",
+        "title": "Turnal: Open Turn Diff",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "turnal.showTurnDetails",
+        "title": "Turnal: Show Turn Details",
+        "icon": "$(info)"
+      },
+      {
+        "command": "turnal.rollbackBeforeTurn",
+        "title": "Turnal: Roll Back to Before Turn…",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "turnal.toggleInlineBlame",
+        "title": "Turnal: Toggle Inline Blame",
+        "icon": "$(eye)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "turnal",
+          "title": "Turnal",
+          "icon": "media/turnal.svg"
+        }
+      ]
+    },
+    "views": {
+      "turnal": [
+        {
+          "id": "turnal.sessions",
+          "name": "Sessions",
+          "icon": "media/turnal.svg",
+          "contextualTitle": "Turnal"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "turnal.sessions",
+        "contents": "No Turnal sessions yet.\nTurnal records automatically after it is initialized and an AI agent edits this workspace.\n[Refresh](command:turnal.refresh)"
+      },
+      {
+        "view": "turnal.sessions",
+        "contents": "Couldn’t find the Turnal CLI.\n[Set CLI path](command:workbench.action.openSettings?%5B%22turnal.cliPath%22%5D)",
+        "when": "turnal.cliMissing"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "turnal.refresh",
+          "when": "view == turnal.sessions",
+          "group": "navigation@1"
+        },
+        {
+          "command": "turnal.toggleInlineBlame",
+          "when": "view == turnal.sessions",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "turnal.openTurnDiff",
+          "when": "view == turnal.sessions && viewItem == turnalTurn",
+          "group": "inline@1"
+        },
+        {
+          "command": "turnal.showTurnDetails",
+          "when": "view == turnal.sessions && viewItem == turnalTurn",
+          "group": "1_turnal@1"
+        },
+        {
+          "command": "turnal.rollbackBeforeTurn",
+          "when": "view == turnal.sessions && viewItem == turnalTurnComplete",
+          "group": "2_destructive@1"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Turnal",
+      "properties": {
+        "turnal.inlineBlame.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the originating AI turn at the end of the current line."
+        },
+        "turnal.cliPath": {
+          "type": "string",
+          "default": "turnal",
+          "scope": "machine-overridable",
+          "description": "Path to the Turnal CLI executable."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "compile": "npm run clean && tsc -p .",
+    "watch": "tsc -p . --watch --preserveWatchOutput",
+    "test": "npm run compile && node --test dist/test/*.test.js",
+    "check": "npm run compile && npm test",
+    "package": "npm run compile && vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/vscode": "1.95.0",
+    "@vscode/vsce": "^3.9.2",
+    "typescript": "^5.7.3"
+  }
+}
