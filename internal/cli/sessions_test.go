@@ -98,6 +98,12 @@ func TestSessionsCommandShowsDurableSessionInventory(t *testing.T) {
 	if demo.LatestTurn == nil || demo.LatestTurn.Prompt != "change app.txt" || len(demo.LatestTurn.ToolNames) != 1 || demo.LatestTurn.ToolNames[0] != "apply_patch" {
 		t.Fatalf("demo latest turn = %#v", demo.LatestTurn)
 	}
+	if len(demo.Turns) != 1 || demo.Turns[0].TurnID != 1 || demo.Turns[0].Status != "complete" {
+		t.Fatalf("demo turns = %#v", demo.Turns)
+	}
+	if demo.Turns[0].FirstActivity == "" || demo.Turns[0].LastActivity == "" {
+		t.Fatalf("demo turn activity = %#v", demo.Turns[0])
+	}
 
 	active := findSessionSummary(t, got, "active-session")
 	if active.Status != "active" || active.ActiveTurnCount != 1 {

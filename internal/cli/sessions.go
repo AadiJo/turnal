@@ -91,20 +91,21 @@ type sessionsJSONOutput struct {
 }
 
 type sessionJSONSummary struct {
-	SessionID         string           `json:"session_id"`
-	Status            string           `json:"status"`
-	Adapter           string           `json:"adapter,omitempty"`
-	Model             string           `json:"model,omitempty"`
-	PermissionMode    string           `json:"permission_mode,omitempty"`
-	TurnCount         int              `json:"turn_count"`
-	CompleteTurnCount int              `json:"complete_turn_count"`
-	ActiveTurnCount   int              `json:"active_turn_count"`
-	EventCount        int              `json:"event_count"`
-	FirstActivity     string           `json:"first_activity,omitempty"`
-	LastActivity      string           `json:"last_activity,omitempty"`
-	Head              *sessionJSONHead `json:"head,omitempty"`
-	LatestTurn        *sessionJSONTurn `json:"latest_turn,omitempty"`
-	Warnings          []string         `json:"warnings,omitempty"`
+	SessionID         string            `json:"session_id"`
+	Status            string            `json:"status"`
+	Adapter           string            `json:"adapter,omitempty"`
+	Model             string            `json:"model,omitempty"`
+	PermissionMode    string            `json:"permission_mode,omitempty"`
+	TurnCount         int               `json:"turn_count"`
+	CompleteTurnCount int               `json:"complete_turn_count"`
+	ActiveTurnCount   int               `json:"active_turn_count"`
+	EventCount        int               `json:"event_count"`
+	FirstActivity     string            `json:"first_activity,omitempty"`
+	LastActivity      string            `json:"last_activity,omitempty"`
+	Head              *sessionJSONHead  `json:"head,omitempty"`
+	LatestTurn        *sessionJSONTurn  `json:"latest_turn,omitempty"`
+	Turns             []sessionJSONTurn `json:"turns,omitempty"`
+	Warnings          []string          `json:"warnings,omitempty"`
 }
 
 type sessionJSONHead struct {
@@ -116,11 +117,13 @@ type sessionJSONHead struct {
 }
 
 type sessionJSONTurn struct {
-	TurnID    uint64   `json:"turn_id"`
-	Status    string   `json:"status"`
-	Prompt    string   `json:"prompt,omitempty"`
-	Assistant string   `json:"assistant,omitempty"`
-	ToolNames []string `json:"tool_names,omitempty"`
+	TurnID        uint64   `json:"turn_id"`
+	Status        string   `json:"status"`
+	Prompt        string   `json:"prompt,omitempty"`
+	Assistant     string   `json:"assistant,omitempty"`
+	ToolNames     []string `json:"tool_names,omitempty"`
+	FirstActivity string   `json:"first_activity,omitempty"`
+	LastActivity  string   `json:"last_activity,omitempty"`
 }
 
 type sessionStartPayload struct {
@@ -456,25 +459,27 @@ func formatSessionTurnCounts(counts sessionTurnCountSummary) string {
 }
 
 func latestSessionTurn(session sessionView) *sessionViewTurn {
-	var latest *sessionViewTurn
-	for _, turn := range session.Turns {
-		if latest == nil {
-			latest = turn
-			continue
-		}
-		left := sessionTurnActivity(*turn)
-		right := sessionTurnActivity(*latest)
-		if !left.Equal(right) {
-			if left.After(right) {
-				latest = turn
-			}
-			continue
-		}
-		if turn.TurnID.Uint64() > latest.TurnID.Uint64() {
-			latest = turn
-		}
+	turns := orderedSessionTurns(session)
+	if len(turns) == 0 {
+		return nil
 	}
-	return latest
+	return turns[0]
+}
+
+func orderedSessionTurns(session sessionView) []*sessionViewTurn {
+	turns := make([]*sessionViewTurn, 0, len(session.Turns))
+	for _, turn := range session.Turns {
+		turns = append(turns, turn)
+	}
+	sort.Slice(turns, func(i, j int) bool {
+		left := sessionTurnActivity(*turns[i])
+		right := sessionTurnActivity(*turns[j])
+		if !left.Equal(right) {
+			return left.After(right)
+		}
+		return turns[i].TurnID.Uint64() > turns[j].TurnID.Uint64()
+	})
+	return turns
 }
 
 func sessionTurnActivity(turn sessionViewTurn) time.Time {
@@ -609,7 +614,7 @@ func sessionsJSONFromViews(sessions []sessionView) sessionsJSONOutput {
 	}
 	for _, session := range sessions {
 		counts := sessionTurnCounts(session)
-		latest := latestSessionTurn(session)
+		turns := orderedSessionTurns(session)
 		summary := sessionJSONSummary{
 			SessionID:         session.ID.String(),
 			Status:            sessionStatus(session, counts),
@@ -621,6 +626,7 @@ func sessionsJSONFromViews(sessions []sessionView) sessionsJSONOutput {
 			ActiveTurnCount:   counts.Active,
 			EventCount:        session.EventCount,
 			Warnings:          session.Warnings,
+			Turns:             make([]sessionJSONTurn, 0, len(turns)),
 		}
 		if !session.FirstActivity.IsZero() {
 			summary.FirstActivity = session.FirstActivity.UTC().Format(time.RFC3339Nano)
@@ -637,16 +643,37 @@ func sessionsJSONFromViews(sessions []sessionView) sessionsJSONOutput {
 				Time:      session.Head.Time.UTC().Format(time.RFC3339Nano),
 			}
 		}
-		if latest != nil {
-			summary.LatestTurn = &sessionJSONTurn{
-				TurnID:    latest.TurnID.Uint64(),
-				Status:    sessionTurnStatus(*latest),
-				Prompt:    latest.Events.Prompt,
-				Assistant: latest.Events.Assistant,
-				ToolNames: latest.Events.ToolNames,
-			}
+		for _, turn := range turns {
+			jsonTurn := sessionJSONTurnFromView(*turn)
+			summary.Turns = append(summary.Turns, jsonTurn)
+		}
+		if len(summary.Turns) > 0 {
+			latest := summary.Turns[0]
+			summary.LatestTurn = &latest
 		}
 		output.Sessions = append(output.Sessions, summary)
+	}
+	return output
+}
+
+func sessionJSONTurnFromView(turn sessionViewTurn) sessionJSONTurn {
+	output := sessionJSONTurn{
+		TurnID:    turn.TurnID.Uint64(),
+		Status:    sessionTurnStatus(turn),
+		Prompt:    turn.Events.Prompt,
+		Assistant: turn.Events.Assistant,
+		ToolNames: turn.Events.ToolNames,
+	}
+	first := turn.Events.First
+	last := sessionTurnActivity(turn)
+	if first.IsZero() {
+		first = checkpointInfoTime(turn.Pre)
+	}
+	if !first.IsZero() {
+		output.FirstActivity = first.UTC().Format(time.RFC3339Nano)
+	}
+	if !last.IsZero() {
+		output.LastActivity = last.UTC().Format(time.RFC3339Nano)
 	}
 	return output
 }
