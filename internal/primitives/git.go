@@ -190,6 +190,7 @@ type CheckpointRefParts struct {
 	CheckpointID CheckpointID
 	Scoped       bool
 	Canonical    bool
+	Manual       bool
 }
 
 const checkpointRefPrefix = "refs/agent-vcs/checkpoints"
@@ -277,6 +278,25 @@ func NewCheckpointIDRef(checkpointID CheckpointID) (CheckpointRef, error) {
 	return CheckpointRef(ref), nil
 }
 
+// NewManualCheckpointRef returns the durable, worktree-scoped ref for a
+// checkpoint explicitly saved by a user. Manual checkpoints do not pretend to
+// belong to an agent session or turn.
+func NewManualCheckpointRef(worktreeID WorktreeID, checkpointID CheckpointID) (CheckpointRef, error) {
+	parsedWorktreeID, err := ParseWorktreeID(worktreeID.String())
+	if err != nil {
+		return "", err
+	}
+	parsedCheckpointID, err := ParseCheckpointID(checkpointID.String())
+	if err != nil {
+		return "", err
+	}
+	ref := fmt.Sprintf("%s/manual/%s/%s", checkpointRefPrefix, parsedWorktreeID, parsedCheckpointID)
+	if err := validateGitRefName(ref); err != nil {
+		return "", err
+	}
+	return CheckpointRef(ref), nil
+}
+
 func ParseCheckpointRef(value string) (CheckpointRef, error) {
 	parts, err := parseCheckpointRefParts(value)
 	if err != nil {
@@ -289,6 +309,9 @@ func ParseCheckpointRef(value string) (CheckpointRef, error) {
 	}
 	if parts.Canonical {
 		expected = checkpointRefPrefix + "/by-id/" + parts.CheckpointID.String()
+	}
+	if parts.Manual {
+		expected = fmt.Sprintf("%s/manual/%s/%s", checkpointRefPrefix, parts.WorktreeID, parts.CheckpointID)
 	}
 	if value = strings.TrimSpace(value); value != expected {
 		return "", invalid("checkpoint ref", value, fmt.Sprintf("must be canonical %q", expected))
@@ -339,6 +362,17 @@ func parseCheckpointRefParts(value string) (CheckpointRefParts, error) {
 		}
 		return CheckpointRefParts{CheckpointID: checkpointID, Canonical: true}, nil
 	}
+	if len(segments) == 6 && strings.Join(segments[:4], "/") == checkpointRefPrefix+"/manual" {
+		worktreeID, err := ParseWorktreeID(segments[4])
+		if err != nil {
+			return CheckpointRefParts{}, err
+		}
+		checkpointID, err := ParseCheckpointID(segments[5])
+		if err != nil {
+			return CheckpointRefParts{}, err
+		}
+		return CheckpointRefParts{WorktreeID: worktreeID, CheckpointID: checkpointID, Manual: true}, nil
+	}
 	if (len(segments) == 9 || len(segments) == 10) && strings.Join(segments[:4], "/") == checkpointRefPrefix+"/by-worktree" {
 		worktreeID, err := ParseWorktreeID(segments[4])
 		if err != nil {
@@ -371,7 +405,7 @@ func parseCheckpointRefParts(value string) (CheckpointRefParts, error) {
 		return parts, nil
 	}
 	if len(segments) != 6 && len(segments) != 7 {
-		return CheckpointRefParts{}, invalid("checkpoint ref", value, "must be a legacy, scoped, or by-id checkpoint ref")
+		return CheckpointRefParts{}, invalid("checkpoint ref", value, "must be a legacy, scoped, manual, or by-id checkpoint ref")
 	}
 	if strings.Join(segments[:3], "/") != checkpointRefPrefix {
 		return CheckpointRefParts{}, invalid("checkpoint ref", value, "must be under refs/agent-vcs/checkpoints")

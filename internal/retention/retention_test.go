@@ -209,6 +209,10 @@ func TestPruneOrphanRefsKeepsEventReferencedRefs(t *testing.T) {
 		t.Fatalf("CreateCheckpoint: %v", err)
 	}
 	appendCheckpointEvent(t, repo, sessionID, turnID, created)
+	manual, err := repo.CreateManualCheckpoint()
+	if err != nil {
+		t.Fatalf("CreateManualCheckpoint: %v", err)
+	}
 	orphan, err := repo.CreateSnapshotRef("refs/agent-vcs/rollback-safety/demo/turn/000001/pre/orphan", "orphan")
 	if err != nil {
 		t.Fatalf("CreateSnapshotRef: %v", err)
@@ -237,6 +241,12 @@ func TestPruneOrphanRefsKeepsEventReferencedRefs(t *testing.T) {
 	}
 	if _, err := repo.CheckpointCommit(created.Ref); err != nil {
 		t.Fatalf("event-referenced checkpoint ref was pruned: %v", err)
+	}
+	if _, err := repo.CheckpointCommit(manual.Ref); err != nil {
+		t.Fatalf("manual checkpoint ref was pruned: %v", err)
+	}
+	if _, err := repo.CheckpointCommit(manual.CanonicalRef); err != nil {
+		t.Fatalf("manual canonical checkpoint ref was pruned: %v", err)
 	}
 }
 

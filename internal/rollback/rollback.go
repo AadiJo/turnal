@@ -13,6 +13,7 @@ import (
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/gitsync"
+	"github.com/AadiJo/turnal/internal/manualcheckpoints"
 	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/AadiJo/turnal/internal/workspacegit"
 )
@@ -43,6 +44,7 @@ type ResolvedTarget struct {
 	SessionID     primitives.SessionID
 	TurnID        primitives.TurnID
 	Phase         primitives.CheckpointPhase
+	Manual        bool
 }
 
 type Result struct {
@@ -66,8 +68,8 @@ type ChangeSummary struct {
 }
 
 type EventPayload struct {
-	Turn               uint64        `json:"turn"`
-	Phase              string        `json:"phase"`
+	Turn               uint64        `json:"turn,omitempty"`
+	Phase              string        `json:"phase,omitempty"`
 	Mode               string        `json:"mode,omitempty"`
 	Target             string        `json:"target"`
 	Ref                string        `json:"ref"`
@@ -89,6 +91,7 @@ type Journal struct {
 	Target             string                     `json:"target"`
 	CheckpointRef      string                     `json:"checkpoint_ref"`
 	TargetCommitSHA    string                     `json:"target_commit_sha"`
+	Manual             bool                       `json:"manual,omitempty"`
 	Mode               string                     `json:"mode,omitempty"`
 	GitSyncRef         string                     `json:"git_sync_ref,omitempty"`
 	SafetyRef          string                     `json:"safety_ref"`
@@ -364,6 +367,30 @@ func ResolveCheckpointInfo(target primitives.TargetRef, info checkpoint.Checkpoi
 	}, nil
 }
 
+func ResolveManualCheckpointInfo(info checkpoint.CheckpointRefInfo) (ResolvedTarget, error) {
+	parts, err := info.Ref.Parts()
+	if err != nil {
+		return ResolvedTarget{}, err
+	}
+	if !info.Manual || !parts.Manual || info.Commit == "" || info.WorktreeID == "" {
+		return ResolvedTarget{}, fmt.Errorf("manual checkpoint selection invariant failed: ref=%s", info.Ref)
+	}
+	return ResolvedTarget{
+		CheckpointRef: info.Ref,
+		Commit:        info.Commit,
+		Manual:        true,
+	}, nil
+}
+
+func (target ResolvedTarget) selector() string {
+	if target.Manual {
+		return target.Commit.String()
+	}
+	return target.Target.String()
+}
+
+func (target ResolvedTarget) Selector() string { return target.selector() }
+
 func (engine Engine) resolveRequestTarget(request Request) (ResolvedTarget, error) {
 	if request.Resolved != nil {
 		return *request.Resolved, nil
@@ -373,6 +400,9 @@ func (engine Engine) resolveRequestTarget(request Request) (ResolvedTarget, erro
 
 func (engine Engine) Run(request Request) (Result, error) {
 	if request.WorkspaceGit {
+		if request.Resolved != nil && request.Resolved.Manual {
+			return Result{}, fmt.Errorf("workspace-git rollback is unavailable for manual checkpoints because turnal save does not capture the user's Git HEAD or index")
+		}
 		return engine.runWorkspaceGit(request)
 	}
 	return engine.runCheckpoint(request)
@@ -417,9 +447,10 @@ func (engine Engine) runCheckpointUnlocked(request Request) (Result, error) {
 		RestorePhase:    "intent",
 		StartedAt:       now.Format(time.RFC3339Nano),
 		Mode:            primitives.RollbackModeCheckpoint.String(),
-		Target:          target.Target.String(),
+		Target:          target.selector(),
 		CheckpointRef:   target.CheckpointRef.String(),
 		TargetCommitSHA: target.Commit.String(),
+		Manual:          target.Manual,
 		Changes:         plan.Changes,
 	}
 	if err := writeJournal(JournalPath(engine.Repo), journal); err != nil {
@@ -427,7 +458,7 @@ func (engine Engine) runCheckpointUnlocked(request Request) (Result, error) {
 	}
 
 	safetyRef := safetyRef(target, time.Now().UTC())
-	safety, err := engine.Repo.CreateSnapshotRef(safetyRef, fmt.Sprintf("turnal rollback safety %s", target.Target))
+	safety, err := engine.Repo.CreateSnapshotRef(safetyRef, fmt.Sprintf("turnal rollback safety %s", target.selector()))
 	if err != nil {
 		return result, err
 	}
@@ -689,7 +720,7 @@ func appendRollbackEvent(repo *checkpoint.Repo, target ResolvedTarget, safety ch
 		Turn:            target.TurnID.Uint64(),
 		Phase:           target.Phase.String(),
 		Mode:            primitives.RollbackModeCheckpoint.String(),
-		Target:          target.Target.String(),
+		Target:          target.selector(),
 		Ref:             target.CheckpointRef.String(),
 		CommitSHA:       target.Commit.String(),
 		SafetyRef:       safety.Ref,
@@ -698,6 +729,19 @@ func appendRollbackEvent(repo *checkpoint.Repo, target ResolvedTarget, safety ch
 	})
 	if err != nil {
 		return eventlog.Event{}, fmt.Errorf("marshal rollback event: %w", err)
+	}
+	if target.Manual {
+		event, err := manualcheckpoints.AppendEvent(repo, primitives.EventTypeRollback, sourceID, target.selector(), payload)
+		if err != nil {
+			return eventlog.Event{}, err
+		}
+		var recorded EventPayload
+		if event.Type != primitives.EventTypeRollback || event.RawRef != target.selector() || json.Unmarshal(event.Payload, &recorded) != nil ||
+			recorded.Target != target.selector() || recorded.Ref != target.CheckpointRef.String() || recorded.CommitSHA != target.Commit.String() ||
+			recorded.SafetyRef != safety.Ref || recorded.SafetyCommitSHA != safety.Commit.String() {
+			return eventlog.Event{}, fmt.Errorf("manual rollback event source collision for %s", sourceID)
+		}
+		return event, nil
 	}
 	return repo.EventLog().Append(eventlog.AppendInput{
 		SessionID: target.SessionID,
@@ -742,6 +786,11 @@ func appendWorkspaceGitRollbackEvent(repo *checkpoint.Repo, target ResolvedTarge
 }
 
 func rollbackEventExists(log eventlog.Log, target ResolvedTarget, safety checkpoint.Snapshot, sourceID string) (bool, error) {
+	if target.Manual {
+		// Workspace events are idempotent by source id in AppendEvent. Recovery
+		// can safely append again and receive the existing durable event.
+		return false, nil
+	}
 	if sourceID != "" {
 		exists, err := log.ContainsSourceID(target.SessionID, sourceID)
 		if err != nil || exists {
@@ -754,7 +803,7 @@ func rollbackEventExists(log eventlog.Log, target ResolvedTarget, safety checkpo
 		return false, err
 	}
 	for _, event := range events {
-		if event.Type != primitives.EventTypeRollback || event.RawRef != target.Target.String() {
+		if event.Type != primitives.EventTypeRollback || event.RawRef != target.selector() {
 			continue
 		}
 		var payload EventPayload
@@ -769,18 +818,6 @@ func rollbackEventExists(log eventlog.Log, target ResolvedTarget, safety checkpo
 }
 
 func journalRollback(journal Journal) (ResolvedTarget, checkpoint.Snapshot, checkpoint.RestorePlan, string, error) {
-	targetRef, err := primitives.ParseTargetRef(journal.Target)
-	if err != nil {
-		return ResolvedTarget{}, checkpoint.Snapshot{}, checkpoint.RestorePlan{}, "", fmt.Errorf("rollback journal target invariant failed: %w", err)
-	}
-	phase, ok := targetRef.Phase()
-	if !ok {
-		phase = DefaultTargetPhase
-		targetRef, err = primitives.NewTargetRef(targetRef.SessionID(), targetRef.TurnID(), phase)
-		if err != nil {
-			return ResolvedTarget{}, checkpoint.Snapshot{}, checkpoint.RestorePlan{}, "", err
-		}
-	}
 	ref, err := primitives.ParseCheckpointRef(journal.CheckpointRef)
 	if err != nil {
 		return ResolvedTarget{}, checkpoint.Snapshot{}, checkpoint.RestorePlan{}, "", fmt.Errorf("rollback journal checkpoint ref invariant failed: %w", err)
@@ -797,13 +834,34 @@ func journalRollback(journal Journal) (ResolvedTarget, checkpoint.Snapshot, chec
 		return ResolvedTarget{}, checkpoint.Snapshot{}, checkpoint.RestorePlan{}, "", fmt.Errorf("rollback journal safety ref invariant failed: must not be empty")
 	}
 
-	target := ResolvedTarget{
-		Target:        targetRef,
-		CheckpointRef: ref,
-		Commit:        commit,
-		SessionID:     targetRef.SessionID(),
-		TurnID:        targetRef.TurnID(),
-		Phase:         phase,
+	var target ResolvedTarget
+	if journal.Manual {
+		parts, partsErr := ref.Parts()
+		if partsErr != nil || !parts.Manual {
+			return ResolvedTarget{}, checkpoint.Snapshot{}, checkpoint.RestorePlan{}, "", fmt.Errorf("rollback journal manual checkpoint ref invariant failed: %s", ref)
+		}
+		selector, selectorErr := primitives.ParseCommitSHA(journal.Target)
+		if selectorErr != nil || selector != commit {
+			return ResolvedTarget{}, checkpoint.Snapshot{}, checkpoint.RestorePlan{}, "", fmt.Errorf("rollback journal manual target invariant failed: target must equal target commit")
+		}
+		target = ResolvedTarget{CheckpointRef: ref, Commit: commit, Manual: true}
+	} else {
+		targetRef, targetErr := primitives.ParseTargetRef(journal.Target)
+		if targetErr != nil {
+			return ResolvedTarget{}, checkpoint.Snapshot{}, checkpoint.RestorePlan{}, "", fmt.Errorf("rollback journal target invariant failed: %w", targetErr)
+		}
+		phase, ok := targetRef.Phase()
+		if !ok {
+			phase = DefaultTargetPhase
+			targetRef, targetErr = primitives.NewTargetRef(targetRef.SessionID(), targetRef.TurnID(), phase)
+			if targetErr != nil {
+				return ResolvedTarget{}, checkpoint.Snapshot{}, checkpoint.RestorePlan{}, "", targetErr
+			}
+		}
+		target = ResolvedTarget{
+			Target: targetRef, CheckpointRef: ref, Commit: commit,
+			SessionID: targetRef.SessionID(), TurnID: targetRef.TurnID(), Phase: phase,
+		}
 	}
 	safety := checkpoint.Snapshot{Ref: journal.SafetyRef, Commit: safetyCommit}
 	plan := checkpoint.RestorePlan{TargetCommit: commit, Changes: journal.Changes}
@@ -887,7 +945,7 @@ func rollbackEventSourceID(target ResolvedTarget, safety checkpoint.Snapshot) st
 }
 
 func rollbackEventSourceIDForMode(target ResolvedTarget, safety checkpoint.Snapshot, mode primitives.RollbackMode) string {
-	return fmt.Sprintf("turnal:rollback:%s:%s:%s", mode, target.Target, safety.Commit)
+	return fmt.Sprintf("turnal:rollback:%s:%s:%s", mode, target.selector(), safety.Commit)
 }
 
 func readJournal(path string) (Journal, bool, error) {
@@ -971,6 +1029,12 @@ func clearJournal(path string) error {
 }
 
 func safetyRef(target ResolvedTarget, now time.Time) string {
+	if target.Manual {
+		return fmt.Sprintf(
+			"refs/agent-vcs/rollback-safety/manual/%s/%d-%s",
+			target.Commit, now.UnixNano(), randomSuffix(),
+		)
+	}
 	return fmt.Sprintf(
 		"refs/agent-vcs/rollback-safety/%s/turn/%s/%s/%d-%s",
 		target.SessionID,

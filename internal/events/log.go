@@ -1016,6 +1016,14 @@ func (log Log) ensureStreamMetadata(sessionID primitives.SessionID, streamID pri
 }
 
 func WriteStreamMetadata(metadataDir string, metadata StreamMetadata) error {
+	return writeStreamMetadata(filepath.Join(metadataDir, "log", "streams"), metadata)
+}
+
+func WriteWorkspaceStreamMetadata(metadataDir string, metadata StreamMetadata) error {
+	return writeStreamMetadata(filepath.Join(metadataDir, "log", "manual-checkpoints", metadata.WorktreeID.String(), "streams"), metadata)
+}
+
+func writeStreamMetadata(dir string, metadata StreamMetadata) error {
 	if metadata.Version != 1 {
 		return fmt.Errorf("event stream metadata invariant failed: unsupported version %d", metadata.Version)
 	}
@@ -1041,7 +1049,6 @@ func WriteStreamMetadata(metadataDir string, metadata StreamMetadata) error {
 	if metadata.CreatedAt == "" {
 		metadata.CreatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	}
-	dir := filepath.Join(metadataDir, "log", "streams")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create event stream metadata dir: %w", err)
 	}

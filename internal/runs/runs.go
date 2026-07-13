@@ -114,6 +114,9 @@ func Inspect(repo *checkpoint.Repo) (Inventory, error) {
 	}
 	runIDs := map[primitives.RunID]bool{}
 	for _, stream := range streams {
+		if stream.Workspace {
+			continue
+		}
 		for _, event := range stream.Events {
 			if event.Type != primitives.EventTypeRunStart {
 				continue
@@ -137,6 +140,9 @@ func Inspect(repo *checkpoint.Repo) (Inventory, error) {
 		}
 	}
 	for _, stream := range streams {
+		if stream.Workspace {
+			continue
+		}
 		if linked[stream.StreamID.String()] || len(stream.Events) == 0 {
 			continue
 		}

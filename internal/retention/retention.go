@@ -12,6 +12,7 @@ import (
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/index"
+	"github.com/AadiJo/turnal/internal/manualcheckpoints"
 	"github.com/AadiJo/turnal/internal/primitives"
 	rollbackengine "github.com/AadiJo/turnal/internal/rollback"
 )
@@ -338,6 +339,13 @@ func referencedPrivateRefs(repo *checkpoint.Repo) (map[string]struct{}, error) {
 			collectPrivateRefs(referenced, event.Payload)
 		}
 	}
+	workspaceEvents, err := manualcheckpoints.ReadEvents(repo, true)
+	if err != nil {
+		return nil, err
+	}
+	for _, event := range workspaceEvents {
+		collectPrivateRefs(referenced, event.Payload)
+	}
 	journals, err := repo.ListCheckpointJournals()
 	if err != nil {
 		return nil, err
@@ -359,6 +367,13 @@ func referencedPrivateRefs(repo *checkpoint.Repo) (map[string]struct{}, error) {
 		return nil, err
 	}
 	for _, info := range infos {
+		if info.Manual {
+			referenced[info.Ref.String()] = struct{}{}
+			if info.CanonicalRef != "" {
+				referenced[info.CanonicalRef.String()] = struct{}{}
+			}
+			continue
+		}
 		if _, ok := referenced[info.Ref.String()]; !ok {
 			continue
 		}

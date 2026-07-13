@@ -161,6 +161,9 @@ func loadSessionViews(repo *checkpoint.Repo) ([]sessionView, error) {
 		return nil, err
 	}
 	for _, info := range infos {
+		if info.Manual {
+			continue
+		}
 		session := ensure(info.SessionID)
 		turn := ensureTurn(session, info.TurnID)
 		infoCopy := info

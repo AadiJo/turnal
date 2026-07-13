@@ -22,6 +22,7 @@ Turnal should be piloted before company-wide adoption. Pin a version and validat
 - Diff the workspace before and after a specific agent turn.
 - Attribute current lines to the turns that last changed them.
 - Roll the workspace back with a safety checkpoint created first.
+- Save an explicit rollback point without committing to the project's Git history.
 - Search recorded turns without making SQLite the source of truth.
 - Replay checkpoints in isolated worktrees.
 - Run repository-defined checks against the live workspace or a recorded checkpoint.
@@ -31,7 +32,7 @@ Turnal should be piloted before company-wide adoption. Pin a version and validat
 
 - Git available on `PATH`. Turnal uses Git plumbing for its private checkpoint store.
 - Node.js 18 or newer when installing through npm.
-- Claude Code or Codex for automatic agent capture. Manual checkpoints are also available.
+- Claude Code or Codex for automatic agent capture. `turnal save` also works without an agent session.
 
 Turnal does not initialize a Git repository for your project. It works in both Git and non-Git directories.
 
@@ -86,6 +87,16 @@ turnal rollback --to <session>:<turn>:pre
 ```
 
 Rollback targets default to the post-turn checkpoint when the phase is omitted. Use `:pre` to return to the state before the turn and `:post` to return to the state after it.
+
+To record the current workspace as an explicit rollback point, use `save`. The optional message is descriptive metadata; rollback uses the hidden Git commit hash printed by the command.
+
+```sh
+turnal save "tests passing before refactor"
+turnal rollback --to <printed-hash> --dry-run
+turnal rollback --to <printed-hash>
+```
+
+Manual saves capture the same project surface as automatic checkpoints. They do not capture the project's Git HEAD or index, so `--workspace-git` rollback is unavailable for them.
 
 ### Codex wrapper mode
 

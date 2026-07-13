@@ -130,6 +130,7 @@ type CheckpointRefInfo struct {
 	StreamID     primitives.EventStreamID
 	Commit       primitives.CommitSHA
 	Time         time.Time
+	Manual       bool
 }
 
 type DiffFileStat struct {
@@ -388,6 +389,46 @@ func (repo *Repo) CreateCheckpoint(sessionID primitives.SessionID, turnID primit
 		return err
 	})
 	return checkpoint, err
+}
+
+// CreateManualCheckpoint captures the current workspace without assigning the
+// checkpoint to an agent session or turn.
+func (repo *Repo) CreateManualCheckpoint() (Checkpoint, error) {
+	var created Checkpoint
+	err := repo.WithWorkspaceLock("create manual checkpoint", func() error {
+		checkpointID, err := primitives.NewCheckpointID()
+		if err != nil {
+			return err
+		}
+		ref, err := primitives.NewManualCheckpointRef(repo.WorktreeID, checkpointID)
+		if err != nil {
+			return err
+		}
+		canonicalRef, err := primitives.NewCheckpointIDRef(checkpointID)
+		if err != nil {
+			return err
+		}
+		commit, err := repo.createSnapshotCommit(fmt.Sprintf("turnal manual checkpoint %s", checkpointID))
+		if err != nil {
+			return err
+		}
+		if _, err := runHiddenGit(repo, "", "update-ref", canonicalRef.String(), commit.String(), ""); err != nil {
+			return err
+		}
+		if _, err := runHiddenGit(repo, "", "update-ref", ref.String(), commit.String(), ""); err != nil {
+			_, _ = runHiddenGit(repo, "", "update-ref", "-d", canonicalRef.String())
+			return err
+		}
+		created = Checkpoint{
+			ID:           checkpointID,
+			Ref:          ref,
+			CanonicalRef: canonicalRef,
+			Commit:       commit,
+			WorktreeID:   repo.WorktreeID,
+		}
+		return nil
+	})
+	return created, err
 }
 
 func (repo *Repo) createCheckpoint(sessionID primitives.SessionID, turnID primitives.TurnID, phase primitives.CheckpointPhase) (Checkpoint, error) {
@@ -898,10 +939,11 @@ func (repo *Repo) listCheckpointRefInfos(refPrefix string) ([]CheckpointRefInfo,
 				worktreeID = repo.WorktreeID
 			}
 		}
-		if streamID == "" && repo.StoreID != "" {
+		if streamID == "" && repo.StoreID != "" && !refParts.Manual {
 			streamID, _ = primitives.DeriveLegacyEventStreamID(repo.StoreID, refParts.SessionID)
 		}
 		infos = append(infos, CheckpointRefInfo{
+			ID:         refParts.CheckpointID,
 			Ref:        ref,
 			SessionID:  refParts.SessionID,
 			TurnID:     refParts.TurnID,
@@ -911,13 +953,17 @@ func (repo *Repo) listCheckpointRefInfos(refPrefix string) ([]CheckpointRefInfo,
 			StreamID:   streamID,
 			Commit:     commit,
 			Time:       createdAt,
+			Manual:     refParts.Manual,
 		})
 	}
 	for index := range infos {
 		if canonical, ok := canonicalByCommit[infos[index].Commit.String()]; ok {
+			if infos[index].Manual && infos[index].ID != canonical.id {
+				return nil, fmt.Errorf("manual checkpoint identity invariant failed: ref %s names %s but canonical ref names %s", infos[index].Ref, infos[index].ID, canonical.id)
+			}
 			infos[index].ID = canonical.id
 			infos[index].CanonicalRef = canonical.ref
-			if parts, err := infos[index].Ref.Parts(); err == nil && !parts.Scoped {
+			if parts, err := infos[index].Ref.Parts(); err == nil && !parts.Scoped && !parts.Manual {
 				producerID := repo.EventProducerID
 				if primary, ok := repo.primaryWorktreeBinding(); ok {
 					producerID = primary.ProducerID
@@ -926,6 +972,9 @@ func (repo *Repo) listCheckpointRefInfos(refPrefix string) ([]CheckpointRefInfo,
 					infos[index].StreamID = streamID
 				}
 			}
+		}
+		if infos[index].Manual && infos[index].CanonicalRef == "" {
+			return nil, fmt.Errorf("manual checkpoint identity invariant failed: ref %s has no matching canonical ref", infos[index].Ref)
 		}
 	}
 

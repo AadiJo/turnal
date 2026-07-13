@@ -349,6 +349,45 @@ func TestCheckpointRef(t *testing.T) {
 	}
 }
 
+func TestManualCheckpointRef(t *testing.T) {
+	worktreeID, err := ParseWorktreeID("wt_0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatalf("ParseWorktreeID: %v", err)
+	}
+	checkpointID, err := ParseCheckpointID("chk_0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatalf("ParseCheckpointID: %v", err)
+	}
+	ref, err := NewManualCheckpointRef(worktreeID, checkpointID)
+	if err != nil {
+		t.Fatalf("NewManualCheckpointRef: %v", err)
+	}
+	want := "refs/agent-vcs/checkpoints/manual/wt_0123456789abcdef0123456789abcdef/chk_0123456789abcdef0123456789abcdef"
+	if ref.String() != want {
+		t.Fatalf("manual ref = %q, want %q", ref, want)
+	}
+	parsed, err := ParseCheckpointRef(want)
+	if err != nil {
+		t.Fatalf("ParseCheckpointRef: %v", err)
+	}
+	parts, err := parsed.Parts()
+	if err != nil {
+		t.Fatalf("Parts: %v", err)
+	}
+	if !parts.Manual || parts.Canonical || parts.Scoped || parts.WorktreeID != worktreeID || parts.CheckpointID != checkpointID || parts.SessionID != "" || parts.TurnID != 0 || parts.HasPhase {
+		t.Fatalf("manual ref parts = %+v", parts)
+	}
+	for _, invalid := range []string{
+		"refs/agent-vcs/checkpoints/manual/demo/" + checkpointID.String(),
+		"refs/agent-vcs/checkpoints/manual/" + worktreeID.String() + "/demo",
+		want + "/extra",
+	} {
+		if _, err := ParseCheckpointRef(invalid); err == nil {
+			t.Fatalf("ParseCheckpointRef(%q) succeeded", invalid)
+		}
+	}
+}
+
 func TestGitSyncRefAndRollbackMode(t *testing.T) {
 	sessionID, _ := ParseSessionID("Demo")
 	turnID, _ := NewTurnID(7)
