@@ -1,0 +1,62 @@
+version: 2.1
+
+jobs:
+  quality:
+    docker:
+      - image: cimg/go:1.26.4
+    resource_class: small
+    steps:
+      - checkout
+
+      - restore_cache:
+          keys:
+            - go-mod-v1-{{ checksum "go.sum" }}
+            - go-mod-v1-
+
+      - run:
+          name: Download Go modules
+          command: go mod download
+
+      - save_cache:
+          key: go-mod-v1-{{ checksum "go.sum" }}
+          paths:
+            - /home/circleci/go/pkg/mod
+
+      - run:
+          name: Check Go formatting
+          command: |
+            unformatted="$(gofmt -l .)"
+            if [ -n "$unformatted" ]; then
+              echo "Go files need formatting:" >&2
+              echo "$unformatted" >&2
+              exit 1
+            fi
+
+      - run:
+          name: Check modules are tidy
+          command: |
+            go mod tidy
+            git diff --exit-code -- go.mod go.sum
+
+      - run:
+          name: Vet
+          command: go vet ./...
+
+      - run:
+          name: Race tests
+          command: go test -race ./...
+
+      - run:
+          name: Build CLI
+          command: go build ./cmd/turnal
+
+      - run:
+          name: Vulnerability scan
+          command: |
+            go install golang.org/x/vuln/cmd/govulncheck@latest
+            govulncheck ./...
+
+workflows:
+  ci:
+    jobs:
+      - quality
