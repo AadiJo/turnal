@@ -314,7 +314,7 @@ func validateEventSource(event eventlog.Event, source SourceTurn) error {
 	if err := validateSource(source); err != nil {
 		return err
 	}
-	if event.SessionID != source.SessionID || event.TurnID == nil || *event.TurnID != source.TurnID || event.StreamID != source.StreamID {
+	if event.SessionID != source.SessionID || event.TurnID == nil || *event.TurnID != source.TurnID {
 		return fmt.Errorf("event envelope does not match source turn")
 	}
 	return nil

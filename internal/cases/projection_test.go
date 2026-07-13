@@ -94,6 +94,23 @@ func TestProjectExistingHistoryWithoutTaskOrCaseRecords(t *testing.T) {
 	}
 }
 
+func TestProjectKeepsSourceAndRelationshipStreamProvenanceDistinct(t *testing.T) {
+	fixture := projectionFixture(t)
+	recordStream, _ := primitives.ParseEventStreamID("stream_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+	events := append([]eventlog.Event(nil), fixture.events...)
+	for index := range events {
+		events[index].StreamID = recordStream
+	}
+	projection, err := project([]eventlog.DurableStream{{Events: events}}, fixture.scope, nil)
+	if err != nil {
+		t.Fatalf("project: %v", err)
+	}
+	definition, ok := projection.Case(fixture.caseID)
+	if !ok || definition.Source.StreamID != fixture.source.StreamID || definition.Created.StreamID != recordStream {
+		t.Fatalf("case provenance = source %#v created %#v", definition.Source, definition.Created)
+	}
+}
+
 func TestProjectPreservesRevisionHistoryAndAllAttemptLinks(t *testing.T) {
 	fixture := projectionFixture(t)
 	revised := fork.Instruction{Status: fork.InstructionAvailable, Text: "Fix it without changing the API", Adapter: primitives.AdapterCodex}

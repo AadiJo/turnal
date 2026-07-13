@@ -72,6 +72,9 @@ func createLocked(repo *checkpoint.Repo, request CreateRequest) (CreateResult, e
 	}
 	scope := Scope{RepoID: repo.RepoID, StoreID: repo.StoreID, WorktreeID: repo.WorktreeID}
 	source := SourceTurn{SessionID: readiness.Source.SessionID, TurnID: readiness.Source.TurnID, StreamID: readiness.Source.StreamID}
+	if err := validateSourceStream(repo, source); err != nil {
+		return CreateResult{}, err
+	}
 	adapter := readiness.Source.MetadataAdapter
 	if adapter == "" {
 		adapter = readiness.Instruction.Adapter
@@ -162,6 +165,33 @@ func createLocked(repo *checkpoint.Repo, request CreateRequest) (CreateResult, e
 		return CreateResult{}, fmt.Errorf("created case %s is missing from durable projection", caseID)
 	}
 	return CreateResult{TaskCreated: taskCreated, Task: createdTask, Case: createdCase}, nil
+}
+
+func validateSourceStream(repo *checkpoint.Repo, source SourceTurn) error {
+	streams, err := eventlog.ListDurableStreams(repo.MetadataDir)
+	if err != nil {
+		return err
+	}
+	for _, stream := range streams {
+		if stream.SessionID != source.SessionID {
+			continue
+		}
+		if source.StreamID != "" && stream.StreamID != source.StreamID {
+			continue
+		}
+		if source.StreamID == "" && !stream.Legacy {
+			continue
+		}
+		if stream.RepoID != repo.RepoID || (stream.WorktreeID != "" && stream.WorktreeID != repo.WorktreeID) {
+			return fmt.Errorf("source turn belongs to a different repository or worktree")
+		}
+		for _, event := range stream.Events {
+			if event.TurnID != nil && *event.TurnID == source.TurnID {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("source turn %s:%s does not exist in the expected durable event stream", source.SessionID, source.TurnID)
 }
 
 func snapshotRepositoryContract(repo *checkpoint.Repo, readiness forkengine.Report) ([]Verifier, []string, error) {
