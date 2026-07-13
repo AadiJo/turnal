@@ -1,11 +1,11 @@
 import * as vscode from "vscode";
-import { TurnTarget } from "../model";
+import { TurnFileTarget, TurnTarget } from "../model";
 import { TurnalCommandError } from "../turnal/cli";
-import { SessionSummary, SessionsResult, SessionTurn, turnsForSession } from "../turnal/types";
+import { DiffDocument, SessionSummary, SessionsResult, SessionTurn, turnsForSession } from "../turnal/types";
 import { displayAgent, formatTimestamp, relativeTime, truncate, turnTitle } from "../utils/format";
 import { cliForFolder } from "../workspaces";
 
-export type HistoryNode = WorkspaceNode | SessionNode | TurnNode;
+export type HistoryNode = WorkspaceNode | SessionNode | TurnNode | TurnFileNode;
 
 interface HistoryTreeOptions {
   onBackgroundError(error: unknown, folder: vscode.WorkspaceFolder): void;
@@ -16,6 +16,8 @@ export class HistoryTreeProvider implements vscode.TreeDataProvider<HistoryNode>
   private readonly emitter = new vscode.EventEmitter<HistoryNode | undefined | null | void>();
   private readonly cache = new Map<string, SessionsResult>();
   private readonly inFlight = new Map<string, Promise<SessionsResult>>();
+  private readonly diffCache = new Map<string, DiffDocument[]>();
+  private readonly diffInFlight = new Map<string, Promise<DiffDocument[]>>();
 
   readonly onDidChangeTreeData = this.emitter.event;
 
@@ -35,6 +37,9 @@ export class HistoryTreeProvider implements vscode.TreeDataProvider<HistoryNode>
       );
     }
     if (element instanceof TurnNode) {
+      return element.target.status === "complete" ? this.turnFileNodes(element) : [];
+    }
+    if (element instanceof TurnFileNode) {
       return [];
     }
 
@@ -47,6 +52,7 @@ export class HistoryTreeProvider implements vscode.TreeDataProvider<HistoryNode>
 
   refresh(): void {
     this.cache.clear();
+    this.diffCache.clear();
     this.emitter.fire();
   }
 
@@ -114,6 +120,31 @@ export class HistoryTreeProvider implements vscode.TreeDataProvider<HistoryNode>
     this.inFlight.set(key, request);
     return request;
   }
+
+  private async turnFileNodes(turn: TurnNode): Promise<TurnFileNode[]> {
+    const key = `${turn.target.folderUri}\0${turn.target.sessionId}\0${turn.target.turnId}`;
+    try {
+      const cached = this.diffCache.get(key);
+      if (cached) {
+        return cached.map((file) => new TurnFileNode(turn.folder, turn.target, file));
+      }
+      let request = this.diffInFlight.get(key);
+      if (!request) {
+        request = cliForFolder(turn.folder)
+          .diffDocuments(turn.target.sessionId, turn.target.turnId)
+          .then((result) => {
+            this.diffCache.set(key, result.files);
+            return result.files;
+          })
+          .finally(() => this.diffInFlight.delete(key));
+        this.diffInFlight.set(key, request);
+      }
+      return (await request).map((file) => new TurnFileNode(turn.folder, turn.target, file));
+    } catch (error) {
+      this.options.onBackgroundError(error, turn.folder);
+      return [];
+    }
+  }
 }
 
 class WorkspaceNode extends vscode.TreeItem {
@@ -144,12 +175,15 @@ export class TurnNode extends vscode.TreeItem {
   readonly target: TurnTarget;
 
   constructor(
-    folder: vscode.WorkspaceFolder,
+    readonly folder: vscode.WorkspaceFolder,
     session: SessionSummary,
     turn: SessionTurn,
   ) {
     const title = turnTitle(turn.prompt, turn.turn_id);
-    super(title, vscode.TreeItemCollapsibleState.None);
+    super(
+      title,
+      turn.status === "complete" ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None,
+    );
     this.target = turnTarget(folder, session, turn);
     this.id = `turn:${folder.uri.toString()}:${session.session_id}:${turn.turn_id}`;
     this.description = `#${turn.turn_id} · ${relativeTime(turn.last_activity ?? turn.first_activity)}`;
@@ -159,6 +193,30 @@ export class TurnNode extends vscode.TreeItem {
     this.command = {
       command: turn.status === "complete" ? "turnal.openTurnDiff" : "turnal.showTurnDetails",
       title: turn.status === "complete" ? "Open Turn Diff" : "Show Turn Details",
+      arguments: [this.target],
+    };
+  }
+}
+
+export class TurnFileNode extends vscode.TreeItem {
+  readonly target: TurnFileTarget;
+
+  constructor(
+    folder: vscode.WorkspaceFolder,
+    turn: TurnTarget,
+    readonly file: DiffDocument,
+  ) {
+    super(file.path, vscode.TreeItemCollapsibleState.None);
+    this.target = { target: turn, path: file.path, oldPath: file.old_path };
+    this.id = `file:${turn.folderUri}:${turn.sessionId}:${turn.turnId}:${file.path}`;
+    this.description = fileDescription(file);
+    this.resourceUri = vscode.Uri.joinPath(folder.uri, ...file.path.split("/"));
+    this.iconPath = fileIcon(file.status);
+    this.contextValue = "turnalTurnFile";
+    this.tooltip = fileTooltip(file);
+    this.command = {
+      command: "turnal.openTurnDiff",
+      title: "Open File Changes",
       arguments: [this.target],
     };
   }
@@ -188,6 +246,44 @@ function turnIcon(status: string): vscode.ThemeIcon {
     default:
       return new vscode.ThemeIcon("warning");
   }
+}
+
+function fileIcon(status: string): vscode.ThemeIcon {
+  switch (status) {
+    case "A":
+      return new vscode.ThemeIcon("diff-added", new vscode.ThemeColor("gitDecoration.addedResourceForeground"));
+    case "D":
+      return new vscode.ThemeIcon("diff-removed", new vscode.ThemeColor("gitDecoration.deletedResourceForeground"));
+    case "R":
+      return new vscode.ThemeIcon("diff-renamed", new vscode.ThemeColor("gitDecoration.renamedResourceForeground"));
+    default:
+      return new vscode.ThemeIcon("diff-modified", new vscode.ThemeColor("gitDecoration.modifiedResourceForeground"));
+  }
+}
+
+function fileDescription(file: DiffDocument): string {
+  const status = file.status === "A" ? "added" : file.status === "D" ? "deleted" : file.status === "R" ? "renamed" : "modified";
+  if (file.binary || file.truncated || (file.additions === 0 && file.deletions === 0)) {
+    return status;
+  }
+  return `${status} · +${file.additions} −${file.deletions}`;
+}
+
+function fileTooltip(file: DiffDocument): vscode.MarkdownString {
+  const markdown = new vscode.MarkdownString();
+  markdown.appendMarkdown(`**${file.path}**\n\n`);
+  if (file.old_path) {
+    markdown.appendText(`Renamed from ${file.old_path}`);
+    markdown.appendMarkdown("\n\n");
+  }
+  if (file.binary) {
+    markdown.appendText("Binary file change");
+  } else if (file.truncated) {
+    markdown.appendText("File exceeds the 4 MiB editor preview limit");
+  } else {
+    markdown.appendMarkdown(`$(add) ${file.additions} additions · $(remove) ${file.deletions} deletions`);
+  }
+  return markdown;
 }
 
 function compactSessionId(value: string): string {

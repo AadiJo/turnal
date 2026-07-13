@@ -2,8 +2,10 @@ import { execFile } from "node:child_process";
 import {
   BlameResult,
   parseBlameResult,
+  parseDiffDocumentsResult,
   parseRollbackPreview,
   parseSessionsResult,
+  DiffDocumentsResult,
   RollbackPreview,
   SessionsResult,
 } from "./types";
@@ -57,6 +59,16 @@ export class TurnalCli {
 
   async diff(sessionId: string, turnId: number): Promise<string> {
     return (await this.run(["diff", `${sessionId}:${turnId}`])).stdout;
+  }
+
+  async diffDocuments(sessionId: string, turnId: number): Promise<DiffDocumentsResult> {
+    return parseDiffDocumentsResult(await this.json(["diff", `${sessionId}:${turnId}`, "--json"]));
+  }
+
+  async rollbackDocuments(sessionId: string, turnId: number): Promise<DiffDocumentsResult> {
+    return parseDiffDocumentsResult(
+      await this.json(["diff", `${sessionId}:${turnId}`, "--json", "--rollback-preview"]),
+    );
   }
 
   async show(sessionId: string, turnId: number): Promise<string> {

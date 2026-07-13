@@ -78,6 +78,27 @@ export interface RollbackPreview {
   no_changes: boolean;
 }
 
+export interface DiffDocumentsResult {
+  kind: "turn" | "rollback";
+  session_id: string;
+  turn_id: number;
+  files: DiffDocument[];
+}
+
+export interface DiffDocument {
+  status: string;
+  path: string;
+  old_path?: string;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+  truncated: boolean;
+  before_exists: boolean;
+  after_exists: boolean;
+  before_text?: string;
+  after_text?: string;
+}
+
 export function parseSessionsResult(value: unknown): SessionsResult {
   const result = record(value, "sessions result");
   const sessions = array(result.sessions, "sessions").map((item, index) => parseSession(item, index));
@@ -125,6 +146,20 @@ export function parseRollbackPreview(raw: string): RollbackPreview {
     throw new TypeError("Turnal returned an unrecognized rollback preview. No changes were made.");
   }
   return { raw, changes, no_changes: noChanges };
+}
+
+export function parseDiffDocumentsResult(value: unknown): DiffDocumentsResult {
+  const result = record(value, "diff documents result");
+  const kind = string(result.kind, "kind");
+  if (kind !== "turn" && kind !== "rollback") {
+    throw new TypeError("kind must be turn or rollback");
+  }
+  return {
+    kind,
+    session_id: string(result.session_id, "session_id"),
+    turn_id: number(result.turn_id, "turn_id"),
+    files: array(result.files, "files").map((item, index) => parseDiffDocument(item, index)),
+  };
 }
 
 export function turnsForSession(session: SessionSummary): SessionTurn[] {
@@ -203,6 +238,28 @@ function parseBlameEntry(value: unknown, index: number): BlameEntry {
   };
 }
 
+function parseDiffDocument(value: unknown, index: number): DiffDocument {
+  const name = `files[${index}]`;
+  const item = record(value, name);
+  const status = string(item.status, `${name}.status`);
+  if (!/^[ACDMRTUXB]$/.test(status)) {
+    throw new TypeError(`${name}.status is not a supported Git status`);
+  }
+  return {
+    status,
+    path: string(item.path, `${name}.path`),
+    old_path: optionalString(item.old_path, `${name}.old_path`),
+    additions: optionalNumber(item.additions, `${name}.additions`) ?? 0,
+    deletions: optionalNumber(item.deletions, `${name}.deletions`) ?? 0,
+    binary: optionalBoolean(item.binary, `${name}.binary`) ?? false,
+    truncated: optionalBoolean(item.truncated, `${name}.truncated`) ?? false,
+    before_exists: boolean(item.before_exists, `${name}.before_exists`),
+    after_exists: boolean(item.after_exists, `${name}.after_exists`),
+    before_text: optionalBase64Text(item.before_base64, `${name}.before_base64`),
+    after_text: optionalBase64Text(item.after_base64, `${name}.after_base64`),
+  };
+}
+
 function record(value: unknown, name: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new TypeError(`${name} must be an object`);
@@ -226,6 +283,30 @@ function string(value: unknown, name: string): string {
 
 function optionalString(value: unknown, name: string): string | undefined {
   return value === undefined ? undefined : string(value, name);
+}
+
+function boolean(value: unknown, name: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new TypeError(`${name} must be a boolean`);
+  }
+  return value;
+}
+
+function optionalBoolean(value: unknown, name: string): boolean | undefined {
+  return value === undefined ? undefined : boolean(value, name);
+}
+
+function optionalBase64Text(value: unknown, name: string): string | undefined {
+  const encoded = optionalString(value, name);
+  if (encoded === undefined) {
+    return undefined;
+  }
+  const normalized = encoded.replace(/=+$/, "");
+  const decoded = Buffer.from(encoded, "base64");
+  if (decoded.toString("base64").replace(/=+$/, "") !== normalized) {
+    throw new TypeError(`${name} must be valid base64`);
+  }
+  return decoded.toString("utf8");
 }
 
 function optionalStrings(value: unknown, name: string): string[] | undefined {

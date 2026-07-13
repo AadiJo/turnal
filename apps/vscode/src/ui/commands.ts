@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { isTurnTarget, TurnTarget } from "../model";
+import { isTurnFileTarget, isTurnTarget, TurnTarget } from "../model";
 import { RollbackPreview } from "../turnal/types";
 import { folderForTarget, cliForFolder } from "../workspaces";
 import { VirtualDocumentStore } from "./documents";
@@ -16,31 +16,33 @@ export class TurnCommands {
   constructor(private readonly options: TurnCommandsOptions) {}
 
   async openDiff(value?: unknown): Promise<void> {
-    const target = await this.resolveTarget(value, true, "Choose a completed turn to diff");
+    const argument = commandArgument(value);
+    const fileTarget = isTurnFileTarget(argument) ? argument : undefined;
+    const target = fileTarget?.target ?? (await this.resolveTarget(argument, true, "Choose a completed turn to review"));
     if (!target) {
       return;
     }
-    await this.runCommand("Opening turn diff…", target, async () => {
+    await this.runCommand("Opening turn changes…", target, async () => {
       const folder = requiredFolder(target);
-      const content = await cliForFolder(folder).diff(target.sessionId, target.turnId);
-      await this.options.documents.open("diff", target, content || "No changes in this turn.\n");
+      const result = await cliForFolder(folder).diffDocuments(target.sessionId, target.turnId);
+      await this.options.documents.openTurnChanges(target, folder, result.files, fileTarget?.path);
     });
   }
 
   async showDetails(value?: unknown): Promise<void> {
-    const target = await this.resolveTarget(value, false, "Choose a turn to inspect");
+    const target = await this.resolveTarget(commandArgument(value), false, "Choose a turn to inspect");
     if (!target) {
       return;
     }
     await this.runCommand("Loading turn details…", target, async () => {
       const folder = requiredFolder(target);
       const content = await cliForFolder(folder).show(target.sessionId, target.turnId);
-      await this.options.documents.open("turn", target, content);
+      await this.options.documents.openTurnDetails(target, content);
     });
   }
 
   async rollbackBefore(value?: unknown): Promise<void> {
-    const target = await this.resolveTarget(value, true, "Choose a completed turn to roll back before");
+    const target = await this.resolveTarget(commandArgument(value), true, "Choose a completed turn to roll back before");
     if (!target) {
       return;
     }
@@ -75,6 +77,12 @@ export class TurnCommands {
         return;
       }
 
+      const rollbackDocuments = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: "Turnal: Preparing native change review…" },
+        () => cli.rollbackDocuments(target.sessionId, target.turnId),
+      );
+      await this.options.documents.openRollbackChanges(target, folder, rollbackDocuments.files);
+
       const choice = await vscode.window.showWarningMessage(
         `Roll back to before “${target.title}”?`,
         {
@@ -82,12 +90,7 @@ export class TurnCommands {
           detail: confirmationDetail(target, preview),
         },
         "Roll Back",
-        "Show Preview",
       );
-      if (choice === "Show Preview") {
-        await this.options.documents.open("preview", target, preview.raw);
-        return;
-      }
       if (choice !== "Roll Back") {
         return;
       }
@@ -97,7 +100,8 @@ export class TurnCommands {
         () => cli.previewRollback(target.sessionId, target.turnId),
       );
       if (previewFingerprint(preview) !== previewFingerprint(verified)) {
-        await this.options.documents.open("preview", target, verified.raw);
+        const updatedDocuments = await cli.rollbackDocuments(target.sessionId, target.turnId);
+        await this.options.documents.openRollbackChanges(target, folder, updatedDocuments.files);
         void vscode.window.showWarningMessage(
           "Turnal: The workspace changed after the preview. Review the updated plan and try again.",
         );
@@ -192,6 +196,8 @@ function confirmationDetail(target: TurnTarget, preview: RollbackPreview): strin
   return [
     `This restores the workspace to just before turn #${target.turnId} in ${target.sessionId}.`,
     "",
+    "The full change set is open in VS Code’s Changes editor.",
+    "",
     `Will change ${preview.changes.length} ${preview.changes.length === 1 ? "file" : "files"}:`,
     ...files,
     "",
@@ -208,4 +214,14 @@ function previewFingerprint(preview: RollbackPreview): string {
 
 function firstLine(value: string): string {
   return value.trim().split(/\r?\n/, 1)[0] || "Command failed";
+}
+
+function commandArgument(value: unknown): unknown {
+  if (isTurnTarget(value) || isTurnFileTarget(value)) {
+    return value;
+  }
+  if (typeof value !== "object" || value === null || !("target" in value)) {
+    return value;
+  }
+  return (value as { target: unknown }).target;
 }

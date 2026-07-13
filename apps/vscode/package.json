@@ -37,8 +37,8 @@
       },
       {
         "command": "turnal.openTurnDiff",
-        "title": "Turnal: Open Turn Diff",
-        "icon": "$(diff)"
+        "title": "Turnal: View Turn Changes",
+        "icon": "$(diff-multiple)"
       },
       {
         "command": "turnal.showTurnDetails",
@@ -104,6 +104,11 @@
         {
           "command": "turnal.openTurnDiff",
           "when": "view == turnal.sessions && viewItem == turnalTurnComplete",
+          "group": "inline@1"
+        },
+        {
+          "command": "turnal.openTurnDiff",
+          "when": "view == turnal.sessions && viewItem == turnalTurnFile",
           "group": "inline@1"
         },
         {

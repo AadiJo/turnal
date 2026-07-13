@@ -9,6 +9,12 @@ export interface TurnTarget {
   time?: string;
 }
 
+export interface TurnFileTarget {
+  target: TurnTarget;
+  path: string;
+  oldPath?: string;
+}
+
 export function isTurnTarget(value: unknown): value is TurnTarget {
   if (typeof value !== "object" || value === null) {
     return false;
@@ -22,4 +28,12 @@ export function isTurnTarget(value: unknown): value is TurnTarget {
     typeof target.title === "string" &&
     typeof target.status === "string"
   );
+}
+
+export function isTurnFileTarget(value: unknown): value is TurnFileTarget {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const candidate = value as Partial<TurnFileTarget>;
+  return isTurnTarget(candidate.target) && typeof candidate.path === "string";
 }

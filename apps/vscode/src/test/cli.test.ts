@@ -38,3 +38,26 @@ test("forces the extension rollback onto checkpoint-only mode", async () => {
     ["rollback", "--to", "demo:turn:2:pre", "--workspace-git=false"],
   ]);
 });
+
+test("requests CLI-backed documents for native turn and rollback diffs", async () => {
+  const calls: string[][] = [];
+  const execute: CommandExecutor = async (_executable, args) => {
+    calls.push([...args]);
+    return {
+      stdout: JSON.stringify({
+        kind: args.includes("--rollback-preview") ? "rollback" : "turn",
+        session_id: "demo",
+        turn_id: 3,
+        files: [],
+      }),
+      stderr: "",
+    };
+  };
+  const cli = new TurnalCli("/workspace", "turnal", execute);
+  assert.equal((await cli.diffDocuments("demo", 3)).kind, "turn");
+  assert.equal((await cli.rollbackDocuments("demo", 3)).kind, "rollback");
+  assert.deepEqual(calls, [
+    ["diff", "demo:3", "--json"],
+    ["diff", "demo:3", "--json", "--rollback-preview"],
+  ]);
+});

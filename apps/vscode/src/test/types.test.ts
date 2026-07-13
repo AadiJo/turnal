@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseBlameResult, parseRollbackPreview, parseSessionsResult, turnsForSession } from "../turnal/types";
+import {
+  parseBlameResult,
+  parseDiffDocumentsResult,
+  parseRollbackPreview,
+  parseSessionsResult,
+  turnsForSession,
+} from "../turnal/types";
 
 test("parses session turns and accepts the older latest_turn fallback", () => {
   const result = parseSessionsResult({
@@ -56,4 +62,27 @@ test("accepts an explicit empty rollback plan and rejects unknown output", () =>
     () => parseRollbackPreview("Dry-run workspace-git rollback\n  commits: abc -> def\n"),
     /unrecognized rollback preview/,
   );
+});
+
+test("decodes checkpoint documents for VS Code native diff editors", () => {
+  const result = parseDiffDocumentsResult({
+    kind: "turn",
+    session_id: "claude-session",
+    turn_id: 2,
+    files: [
+      {
+        status: "M",
+        path: "src/app.ts",
+        additions: 2,
+        deletions: 1,
+        before_exists: true,
+        after_exists: true,
+        before_base64: Buffer.from("const version = 1;\n").toString("base64"),
+        after_base64: Buffer.from("const version = 2;\n").toString("base64"),
+      },
+    ],
+  });
+  assert.equal(result.files[0].before_text, "const version = 1;\n");
+  assert.equal(result.files[0].after_text, "const version = 2;\n");
+  assert.equal(result.files[0].additions, 2);
 });
