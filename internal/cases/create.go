@@ -97,7 +97,7 @@ func createLocked(repo *checkpoint.Repo, request CreateRequest) (CreateResult, e
 		}
 		newTaskPayload = &payload
 		task = Task{ID: taskID, Scope: scope}
-		revision = TaskRevision{Number: 1, Instruction: readiness.Instruction, Source: source}
+		revision = TaskRevision{Number: 1, Scope: scope, Instruction: readiness.Instruction, Source: source}
 	} else {
 		var exists bool
 		task, exists = projection.Task(taskID)

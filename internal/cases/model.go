@@ -40,6 +40,7 @@ type Task struct {
 
 type TaskRevision struct {
 	Number      uint64           `json:"number"`
+	Scope       Scope            `json:"scope"`
 	Instruction fork.Instruction `json:"observable_problem"`
 	Source      SourceTurn       `json:"source"`
 	Created     Provenance       `json:"created"`

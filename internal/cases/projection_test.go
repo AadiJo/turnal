@@ -22,7 +22,7 @@ func TestProjectRejectsDuplicateCreationAndRevisionGaps(t *testing.T) {
 		}
 	})
 	t.Run("revision gap", func(t *testing.T) {
-		payload := taskRevisionPayload{TaskID: fixture.taskID, revisionDefinition: revisionDefinition{Revision: 3, Instruction: fixture.instruction, Source: fixture.source}}
+		payload := taskRevisionPayload{TaskID: fixture.taskID, Scope: fixture.scope, revisionDefinition: revisionDefinition{Revision: 3, Instruction: fixture.instruction, Source: fixture.source}}
 		event := fixture.event(t, 4, primitives.EventTypeTaskRevision, payload)
 		_, err := project([]eventlog.DurableStream{{Events: append(fixture.events, event)}}, fixture.scope, nil)
 		if err == nil || !strings.Contains(err.Error(), "skip number 2") {
@@ -30,7 +30,7 @@ func TestProjectRejectsDuplicateCreationAndRevisionGaps(t *testing.T) {
 		}
 	})
 	t.Run("revision reuse", func(t *testing.T) {
-		payload := taskRevisionPayload{TaskID: fixture.taskID, revisionDefinition: revisionDefinition{Revision: 1, Instruction: fixture.instruction, Source: fixture.source}}
+		payload := taskRevisionPayload{TaskID: fixture.taskID, Scope: fixture.scope, revisionDefinition: revisionDefinition{Revision: 1, Instruction: fixture.instruction, Source: fixture.source}}
 		event := fixture.event(t, 4, primitives.EventTypeTaskRevision, payload)
 		_, err := project([]eventlog.DurableStream{{Events: append(fixture.events, event)}}, fixture.scope, nil)
 		if err == nil || !strings.Contains(err.Error(), "duplicated or reused") {
@@ -97,7 +97,7 @@ func TestProjectExistingHistoryWithoutTaskOrCaseRecords(t *testing.T) {
 func TestProjectPreservesRevisionHistoryAndAllAttemptLinks(t *testing.T) {
 	fixture := projectionFixture(t)
 	revised := fork.Instruction{Status: fork.InstructionAvailable, Text: "Fix it without changing the API", Adapter: primitives.AdapterCodex}
-	revisionEvent := fixture.event(t, 2, primitives.EventTypeTaskRevision, taskRevisionPayload{TaskID: fixture.taskID, revisionDefinition: revisionDefinition{Revision: 2, Instruction: revised, Source: fixture.source}})
+	revisionEvent := fixture.event(t, 2, primitives.EventTypeTaskRevision, taskRevisionPayload{TaskID: fixture.taskID, Scope: fixture.scope, revisionDefinition: revisionDefinition{Revision: 2, Instruction: revised, Source: fixture.source}})
 	casePayload := fixture.casePayload
 	casePayload.TaskRevision = 2
 	casePayload.Readiness.Instruction = revised
@@ -150,6 +150,20 @@ func TestProjectRejectsRepositoryStoreAndWorktreeEnvelopeMismatches(t *testing.T
 			}
 		})
 	}
+	t.Run("revision from another worktree", func(t *testing.T) {
+		foreignScope := fixture.scope
+		foreignScope.WorktreeID, _ = primitives.ParseWorktreeID("wt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+		foreignSource := fixture.source
+		foreignSource.StreamID, _ = primitives.ParseEventStreamID("stream_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+		payload := taskRevisionPayload{TaskID: fixture.taskID, Scope: foreignScope, revisionDefinition: revisionDefinition{Revision: 2, Instruction: fixture.instruction, Source: foreignSource}}
+		event := fixture.event(t, 1, primitives.EventTypeTaskRevision, payload)
+		event.WorktreeID = foreignScope.WorktreeID
+		event.StreamID = foreignSource.StreamID
+		_, err := project([]eventlog.DurableStream{{Events: []eventlog.Event{fixture.events[0]}}, {Events: []eventlog.Event{event}}}, fixture.scope, nil)
+		if err == nil || !strings.Contains(err.Error(), "revision 2 belongs to a different repository, store, or worktree") {
+			t.Fatalf("project error = %v", err)
+		}
+	})
 }
 
 type projectionTestFixture struct {
@@ -177,7 +191,7 @@ func projectionFixture(t *testing.T) projectionTestFixture {
 	scope := Scope{RepoID: repoID, StoreID: storeID, WorktreeID: worktreeID}
 	source := SourceTurn{SessionID: sessionID, TurnID: turnID, StreamID: streamID}
 	instruction := fork.Instruction{Status: fork.InstructionAvailable, Text: "Fix it", Adapter: primitives.AdapterCodex}
-	readiness := fork.Report{Version: 1, Source: fork.Source{SessionID: sessionID, TurnID: turnID, WorktreeID: worktreeID, StreamID: streamID}, Base: fork.Base{Status: "available", Phase: primitives.CheckpointPhasePre, Ref: ref, CommitSHA: commit}, Instruction: instruction}
+	readiness := fork.Report{Version: 1, Target: "session:turn:1:pre", Source: fork.Source{SessionID: sessionID, TurnID: turnID, WorktreeID: worktreeID, StreamID: streamID}, Base: fork.Base{Status: "available", Phase: primitives.CheckpointPhasePre, Ref: ref, CommitSHA: commit}, Instruction: instruction}
 	fixture := projectionTestFixture{scope: scope, source: source, taskID: taskID, caseID: caseID, instruction: instruction}
 	fixture.casePayload = caseCreatePayload{CaseID: caseID, TaskID: taskID, TaskRevision: 1, Scope: scope, Source: source, Readiness: readiness}
 	fixture.events = []eventlog.Event{

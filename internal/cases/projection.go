@@ -72,13 +72,13 @@ func project(streams []eventlog.DurableStream, expected Scope, attempts map[prim
 				if revisions[payload.TaskID] == nil {
 					revisions[payload.TaskID] = make(map[uint64]TaskRevision)
 				}
-				revisions[payload.TaskID][1] = TaskRevision{Number: 1, Instruction: payload.InitialRevision.Instruction, Source: payload.InitialRevision.Source, Created: provenance(event)}
+				revisions[payload.TaskID][1] = TaskRevision{Number: 1, Scope: payload.Scope, Instruction: payload.InitialRevision.Instruction, Source: payload.InitialRevision.Source, Created: provenance(event)}
 			case primitives.EventTypeTaskRevision:
 				var payload taskRevisionPayload
 				if err := decodeRelationship(event, &payload); err != nil {
 					return Projection{}, err
 				}
-				if err := validateTaskRevision(event, payload); err != nil {
+				if err := validateTaskRevision(event, payload, expected); err != nil {
 					return Projection{}, err
 				}
 				if revisions[payload.TaskID] == nil {
@@ -87,7 +87,7 @@ func project(streams []eventlog.DurableStream, expected Scope, attempts map[prim
 				if _, exists := revisions[payload.TaskID][payload.Revision]; exists {
 					return Projection{}, relationshipError(event, fmt.Errorf("task %s revision %d is duplicated or reused", payload.TaskID, payload.Revision))
 				}
-				revisions[payload.TaskID][payload.Revision] = TaskRevision{Number: payload.Revision, Instruction: payload.Instruction, Source: payload.Source, Created: provenance(event)}
+				revisions[payload.TaskID][payload.Revision] = TaskRevision{Number: payload.Revision, Scope: payload.Scope, Instruction: payload.Instruction, Source: payload.Source, Created: provenance(event)}
 			case primitives.EventTypeCaseCreate:
 				caseEvents = append(caseEvents, event)
 			case primitives.EventTypeCaseAttemptLink:
@@ -105,6 +105,9 @@ func project(streams []eventlog.DurableStream, expected Scope, attempts map[prim
 			revision, ok := byNumber[number]
 			if !ok {
 				return Projection{}, fmt.Errorf("task %s revisions skip number %d", taskID, number)
+			}
+			if revision.Scope != task.Scope {
+				return Projection{}, fmt.Errorf("task %s revision %d belongs to a different repository, store, or worktree", taskID, number)
 			}
 			task.Revisions = append(task.Revisions, revision)
 		}
@@ -190,17 +193,20 @@ func validateTaskCreate(event eventlog.Event, payload taskCreatePayload, expecte
 	return nil
 }
 
-func validateTaskRevision(event eventlog.Event, payload taskRevisionPayload) error {
+func validateTaskRevision(event eventlog.Event, payload taskRevisionPayload, expected Scope) error {
 	if _, err := primitives.ParseTaskID(payload.TaskID.String()); err != nil {
 		return relationshipError(event, err)
 	}
 	if payload.Revision == 0 {
 		return relationshipError(event, fmt.Errorf("task revision must be greater than zero"))
 	}
+	if payload.Scope.RepoID != expected.RepoID || payload.Scope.StoreID != expected.StoreID {
+		return relationshipError(event, scopeMismatch("task", payload.TaskID))
+	}
 	if err := validateInstruction(payload.Instruction); err != nil {
 		return relationshipError(event, err)
 	}
-	if err := validateEventSource(event, payload.Source); err != nil {
+	if err := validateEnvelope(event, payload.Scope, payload.Source); err != nil {
 		return relationshipError(event, err)
 	}
 	return nil
@@ -219,11 +225,21 @@ func validateCaseCreate(event eventlog.Event, payload caseCreatePayload, expecte
 	if payload.Readiness.Version != fork.ReportVersion {
 		return relationshipError(event, fmt.Errorf("unsupported fork-readiness version %d", payload.Readiness.Version))
 	}
+	if payload.Readiness.Target != fmt.Sprintf("%s:turn:%s:pre", payload.Source.SessionID, payload.Source.TurnID) {
+		return relationshipError(event, fmt.Errorf("fork-readiness target does not match case source"))
+	}
 	if payload.Readiness.Source.SessionID != payload.Source.SessionID || payload.Readiness.Source.TurnID != payload.Source.TurnID || payload.Readiness.Source.WorktreeID != payload.Scope.WorktreeID || payload.Readiness.Source.StreamID != payload.Source.StreamID {
 		return relationshipError(event, fmt.Errorf("fork-readiness source does not match case source"))
 	}
 	if payload.Readiness.Base.Status != "available" || payload.Readiness.Base.Phase != primitives.CheckpointPhasePre || payload.Readiness.Base.Ref == "" || payload.Readiness.Base.CommitSHA == "" {
 		return relationshipError(event, fmt.Errorf("case requires an available pre-turn checkpoint"))
+	}
+	parts, err := payload.Readiness.Base.Ref.Parts()
+	if err != nil {
+		return relationshipError(event, fmt.Errorf("case base checkpoint ref: %w", err))
+	}
+	if !parts.HasPhase || parts.SessionID != payload.Source.SessionID || parts.TurnID != payload.Source.TurnID || parts.Phase != primitives.CheckpointPhasePre || (parts.Scoped && (parts.WorktreeID != payload.Scope.WorktreeID || parts.StreamID != payload.Source.StreamID)) {
+		return relationshipError(event, fmt.Errorf("case base checkpoint ref does not match source turn"))
 	}
 	if payload.Readiness.Instruction != task.Revisions[payload.TaskRevision-1].Instruction {
 		return relationshipError(event, fmt.Errorf("case instruction does not match task revision %d", payload.TaskRevision))

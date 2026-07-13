@@ -19,6 +19,7 @@ type revisionDefinition struct {
 
 type taskRevisionPayload struct {
 	TaskID primitives.TaskID `json:"task_id"`
+	Scope  Scope             `json:"scope"`
 	revisionDefinition
 }
 
