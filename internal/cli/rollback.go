@@ -57,6 +57,12 @@ func rollbackCmd() *cobra.Command {
 				return err
 			}
 			useWorkspaceGit := effective.Rollback.Mode == primitives.RollbackModeWorkspaceGit
+			// A manual save has no Git-sync state. Treat the configured default as
+			// checkpoint mode, while preserving an explicit --workspace-git request
+			// so the engine can reject it with the invariant-specific error.
+			if resolved != nil && resolved.Manual && !cmd.Flags().Changed("workspace-git") {
+				useWorkspaceGit = false
+			}
 			result, err := rollbackengine.New(repo).Run(rollbackengine.Request{
 				Target:       target,
 				Resolved:     resolved,
@@ -134,6 +140,10 @@ func resolveRollbackSelection(repo *checkpoint.Repo, value string, fromWorktree 
 		return target, nil, fmt.Errorf("checkpoint %s is ambiguous; matches %s", selector, formatRollbackIDMatches(matches))
 	}
 	info := matches[0]
+	if info.Manual {
+		resolved, err := rollbackengine.ResolveManualCheckpointInfo(info)
+		return target, &resolved, err
+	}
 	if target.SessionID() == "" {
 		target, err = primitives.NewTargetRef(info.SessionID, info.TurnID, info.Phase)
 		if err != nil {
@@ -243,7 +253,11 @@ func formatRollbackIDMatches(matches []checkpoint.CheckpointRefInfo) string {
 		if match.ID != "" {
 			identity = match.ID.String()
 		}
-		parts = append(parts, fmt.Sprintf("%s:turn:%s:%s worktree=%s (%s)", match.SessionID, match.TurnID, match.Phase, match.WorktreeID, identity))
+		if match.Manual {
+			parts = append(parts, fmt.Sprintf("manual worktree=%s (%s)", match.WorktreeID, identity))
+		} else {
+			parts = append(parts, fmt.Sprintf("%s:turn:%s:%s worktree=%s (%s)", match.SessionID, match.TurnID, match.Phase, match.WorktreeID, identity))
+		}
 	}
 	if len(matches) > limit {
 		parts = append(parts, fmt.Sprintf("+%d more", len(matches)-limit))
@@ -341,7 +355,7 @@ func writeRollbackTargetBlock(w io.Writer, title string, result rollbackengine.R
 	if _, err := fmt.Fprintln(w, title); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(w, "  target: %s\n", result.Target.Target); err != nil {
+	if _, err := fmt.Fprintf(w, "  target: %s\n", result.Target.Selector()); err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintf(w, "  id:     %s\n", formatObjectID(result.Target.Commit, false)); err != nil {

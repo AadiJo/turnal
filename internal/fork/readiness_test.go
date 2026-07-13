@@ -54,6 +54,23 @@ func TestInspectRequiresUnrecordedConversationContext(t *testing.T) {
 	}
 }
 
+func TestInspectDistinguishesConfiguredRepositoryVerifiers(t *testing.T) {
+	repo, sessionID, turnID := readinessFixture(t, "Fix the parser", true)
+	configPath := filepath.Join(repo.MetadataDir, "config.toml")
+	data := []byte("version = 1\n[[verify]]\nname = \"tests\"\ncommand = \"go\"\nargs = [\"test\", \"./...\"]\ntimeout = \"2m\"\n")
+	if err := os.WriteFile(configPath, data, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	report, err := NewAnalyzer(repo).Inspect(sessionID, turnID)
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	if report.Conditions.Evaluators.Status != "configured" || !strings.Contains(report.Conditions.Evaluators.Detail, "1 repository verifier") {
+		t.Fatalf("evaluators = %#v", report.Conditions.Evaluators)
+	}
+}
+
 func TestInspectReportsRedactedInstructionWithoutExposingMarker(t *testing.T) {
 	repo, sessionID, turnID := readinessFixture(t, primitives.SecretsRedactionText, true)
 
@@ -278,6 +295,23 @@ func TestInspectInstructionDistinguishesLiteralRedactionMarker(t *testing.T) {
 	}
 	if instruction.Status != InstructionRedacted || instruction.Text != "" {
 		t.Fatalf("redacted instruction = %#v", instruction)
+	}
+}
+
+func TestInspectInstructionPreservesRecordedWhitespace(t *testing.T) {
+	turnID, _ := primitives.NewTurnID(1)
+	instruction, err := inspectInstruction([]eventlog.Event{{
+		Seq:     1,
+		TurnID:  &turnID,
+		Type:    primitives.EventTypePromptUser,
+		Adapter: primitives.AdapterCodex,
+		Payload: json.RawMessage("{\"text\":\"  first line\\nsecond line\\n\"}"),
+	}})
+	if err != nil {
+		t.Fatalf("inspectInstruction: %v", err)
+	}
+	if instruction.Status != InstructionAvailable || instruction.Text != "  first line\nsecond line\n" {
+		t.Fatalf("instruction = %#v", instruction)
 	}
 }
 

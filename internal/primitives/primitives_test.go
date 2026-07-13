@@ -45,6 +45,103 @@ func TestAdapterName(t *testing.T) {
 	}
 }
 
+func TestRunAndAttemptIDValidationAndSerialization(t *testing.T) {
+	run, err := ParseRunID(" RUN_0123456789ABCDEF0123456789ABCDEF ")
+	if err != nil || run.String() != "run_0123456789abcdef0123456789abcdef" {
+		t.Fatalf("ParseRunID() = %q, %v", run, err)
+	}
+	attempt, err := ParseAttemptID("attempt_fedcba9876543210fedcba9876543210")
+	if err != nil {
+		t.Fatalf("ParseAttemptID: %v", err)
+	}
+
+	type record struct {
+		Run     RunID     `json:"run_id"`
+		Attempt AttemptID `json:"attempt_id"`
+	}
+	encoded, err := json.Marshal(record{Run: run, Attempt: attempt})
+	if err != nil {
+		t.Fatalf("marshal ids: %v", err)
+	}
+	var decoded record
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("unmarshal ids: %v", err)
+	}
+	if decoded.Run != run || decoded.Attempt != attempt {
+		t.Fatalf("round trip = %+v", decoded)
+	}
+
+	invalidIDs := []struct {
+		value string
+		parse func(string) error
+	}{
+		{"attempt_0123456789abcdef0123456789abcdef", func(value string) error { _, err := ParseRunID(value); return err }},
+		{"run_0123", func(value string) error { _, err := ParseRunID(value); return err }},
+		{"attempt_0123456789abcdef0123456789abcdeg", func(value string) error { _, err := ParseAttemptID(value); return err }},
+	}
+	for _, test := range invalidIDs {
+		if err := test.parse(test.value); err == nil {
+			t.Fatalf("expected %q to be rejected", test.value)
+		}
+	}
+}
+
+func TestTaskAndCaseIDValidationAndSerialization(t *testing.T) {
+	taskID, err := ParseTaskID(" TASK_0123456789ABCDEF0123456789ABCDEF ")
+	if err != nil || taskID.String() != "task_0123456789abcdef0123456789abcdef" {
+		t.Fatalf("ParseTaskID() = %q, %v", taskID, err)
+	}
+	caseID, err := ParseCaseID("case_fedcba9876543210fedcba9876543210")
+	if err != nil {
+		t.Fatalf("ParseCaseID: %v", err)
+	}
+
+	type record struct {
+		Task TaskID `json:"task_id"`
+		Case CaseID `json:"case_id"`
+	}
+	encoded, err := json.Marshal(record{Task: taskID, Case: caseID})
+	if err != nil {
+		t.Fatalf("marshal ids: %v", err)
+	}
+	var decoded record
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("unmarshal ids: %v", err)
+	}
+	if decoded.Task != taskID || decoded.Case != caseID {
+		t.Fatalf("round trip = %+v", decoded)
+	}
+
+	generatedTask, err := NewTaskID()
+	if err != nil {
+		t.Fatalf("NewTaskID: %v", err)
+	}
+	if _, err := ParseTaskID(generatedTask.String()); err != nil {
+		t.Fatalf("parse generated task id: %v", err)
+	}
+	generatedCase, err := NewCaseID()
+	if err != nil {
+		t.Fatalf("NewCaseID: %v", err)
+	}
+	if _, err := ParseCaseID(generatedCase.String()); err != nil {
+		t.Fatalf("parse generated case id: %v", err)
+	}
+
+	invalidIDs := []struct {
+		value string
+		parse func(string) error
+	}{
+		{"case_0123456789abcdef0123456789abcdef", func(value string) error { _, err := ParseTaskID(value); return err }},
+		{"task_0123", func(value string) error { _, err := ParseTaskID(value); return err }},
+		{"case_0123456789abcdef0123456789abcdeg", func(value string) error { _, err := ParseCaseID(value); return err }},
+	}
+	for _, test := range invalidIDs {
+		if err := test.parse(test.value); err == nil {
+			t.Fatalf("expected %q to be rejected", test.value)
+		}
+	}
+}
+
 func TestTurnIDAndEventSeq(t *testing.T) {
 	turn, err := ParseTurnID("000007")
 	if err != nil {
@@ -123,6 +220,14 @@ func TestEventType(t *testing.T) {
 		EventTypeRollback,
 		EventTypeError,
 		EventTypeAdapterRaw,
+		EventTypeRunStart,
+		EventTypeRunCaptureLink,
+		EventTypeRunAttemptLink,
+		EventTypeRunFinish,
+		EventTypeTaskCreate,
+		EventTypeTaskRevision,
+		EventTypeCaseCreate,
+		EventTypeCaseAttemptLink,
 	} {
 		if _, err := ParseEventType(eventType.String()); err != nil {
 			t.Fatalf("ParseEventType(%q): %v", eventType, err)
@@ -225,6 +330,18 @@ func TestCheckpointRef(t *testing.T) {
 	if _, err := ParseCheckpointRef(noPhase); err != nil {
 		t.Fatalf("ParseCheckpointRef no phase: %v", err)
 	}
+	legacyManualSession := "refs/agent-vcs/checkpoints/manual/turn/000001"
+	legacyManualRef, err := ParseCheckpointRef(legacyManualSession)
+	if err != nil {
+		t.Fatalf("ParseCheckpointRef legacy manual session: %v", err)
+	}
+	legacyManualParts, err := legacyManualRef.Parts()
+	if err != nil {
+		t.Fatalf("legacy manual session Parts: %v", err)
+	}
+	if legacyManualParts.SessionID != "manual" || legacyManualParts.TurnID != 1 || legacyManualParts.Manual || legacyManualParts.HasPhase {
+		t.Fatalf("legacy manual session parts = %+v", legacyManualParts)
+	}
 
 	for _, input := range []string{
 		"refs/agent-vcs/checkpoints/Demo/turn/000007/pre",
@@ -241,6 +358,45 @@ func TestCheckpointRef(t *testing.T) {
 
 	if _, err := CheckpointRef("refs/agent-vcs/checkpoints/demo/turn/0000007/pre").Parts(); err == nil {
 		t.Fatal("CheckpointRef.Parts accepted non-canonical ref")
+	}
+}
+
+func TestManualCheckpointRef(t *testing.T) {
+	worktreeID, err := ParseWorktreeID("wt_0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatalf("ParseWorktreeID: %v", err)
+	}
+	checkpointID, err := ParseCheckpointID("chk_0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatalf("ParseCheckpointID: %v", err)
+	}
+	ref, err := NewManualCheckpointRef(worktreeID, checkpointID)
+	if err != nil {
+		t.Fatalf("NewManualCheckpointRef: %v", err)
+	}
+	want := "refs/agent-vcs/checkpoints/manual/wt_0123456789abcdef0123456789abcdef/chk_0123456789abcdef0123456789abcdef"
+	if ref.String() != want {
+		t.Fatalf("manual ref = %q, want %q", ref, want)
+	}
+	parsed, err := ParseCheckpointRef(want)
+	if err != nil {
+		t.Fatalf("ParseCheckpointRef: %v", err)
+	}
+	parts, err := parsed.Parts()
+	if err != nil {
+		t.Fatalf("Parts: %v", err)
+	}
+	if !parts.Manual || parts.Canonical || parts.Scoped || parts.WorktreeID != worktreeID || parts.CheckpointID != checkpointID || parts.SessionID != "" || parts.TurnID != 0 || parts.HasPhase {
+		t.Fatalf("manual ref parts = %+v", parts)
+	}
+	for _, invalid := range []string{
+		"refs/agent-vcs/checkpoints/manual/demo/" + checkpointID.String(),
+		"refs/agent-vcs/checkpoints/manual/" + worktreeID.String() + "/demo",
+		want + "/extra",
+	} {
+		if _, err := ParseCheckpointRef(invalid); err == nil {
+			t.Fatalf("ParseCheckpointRef(%q) succeeded", invalid)
+		}
 	}
 }
 

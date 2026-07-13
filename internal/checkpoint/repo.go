@@ -59,6 +59,12 @@ version = 1
 # [rollback]
 # mode = "checkpoint" # checkpoint | workspace-git
 #
+# [[verify]]
+# name = "unit-tests"
+# command = "go"
+# args = ["test", "./..."]
+# timeout = "2m"
+#
 # [retention]
 # Hidden Git objects are retained while private refs exist. Use
 # turnal session drop, turnal retention prune, then explicit
@@ -124,6 +130,7 @@ type CheckpointRefInfo struct {
 	StreamID     primitives.EventStreamID
 	Commit       primitives.CommitSHA
 	Time         time.Time
+	Manual       bool
 }
 
 type DiffFileStat struct {
@@ -173,7 +180,8 @@ type RestorePlan struct {
 }
 
 type MaterializeOptions struct {
-	PreservePaths []string
+	PreservePaths               []string
+	ApplyCurrentSecretDenyGlobs bool
 }
 
 func Init(root primitives.WorkspaceRoot) (*Repo, error) {
@@ -381,6 +389,57 @@ func (repo *Repo) CreateCheckpoint(sessionID primitives.SessionID, turnID primit
 		return err
 	})
 	return checkpoint, err
+}
+
+// CreateManualCheckpoint captures the current workspace without assigning the
+// checkpoint to an agent session or turn.
+func (repo *Repo) CreateManualCheckpoint() (Checkpoint, error) {
+	var created Checkpoint
+	err := repo.WithWorkspaceLock("create manual checkpoint", func() error {
+		checkpointID, err := primitives.NewCheckpointID()
+		if err != nil {
+			return err
+		}
+		ref, err := primitives.NewManualCheckpointRef(repo.WorktreeID, checkpointID)
+		if err != nil {
+			return err
+		}
+		canonicalRef, err := primitives.NewCheckpointIDRef(checkpointID)
+		if err != nil {
+			return err
+		}
+		commit, err := repo.createSnapshotCommit(fmt.Sprintf("turnal manual checkpoint %s", checkpointID))
+		if err != nil {
+			return err
+		}
+		if err := repo.installCheckpointRefsAtomic(canonicalRef, ref, commit); err != nil {
+			return err
+		}
+		created = Checkpoint{
+			ID:           checkpointID,
+			Ref:          ref,
+			CanonicalRef: canonicalRef,
+			Commit:       commit,
+			WorktreeID:   repo.WorktreeID,
+		}
+		return nil
+	})
+	return created, err
+}
+
+func (repo *Repo) installCheckpointRefsAtomic(canonicalRef, friendlyRef primitives.CheckpointRef, commit primitives.CommitSHA) error {
+	input := strings.Join([]string{
+		"start",
+		fmt.Sprintf("create %s %s", canonicalRef, commit),
+		fmt.Sprintf("create %s %s", friendlyRef, commit),
+		"prepare",
+		"commit",
+		"",
+	}, "\n")
+	if _, err := runHiddenGitWithInput(repo, "", strings.NewReader(input), "update-ref", "--stdin"); err != nil {
+		return fmt.Errorf("install checkpoint refs atomically: %w", err)
+	}
+	return nil
 }
 
 func (repo *Repo) createCheckpoint(sessionID primitives.SessionID, turnID primitives.TurnID, phase primitives.CheckpointPhase) (Checkpoint, error) {
@@ -891,10 +950,11 @@ func (repo *Repo) listCheckpointRefInfos(refPrefix string) ([]CheckpointRefInfo,
 				worktreeID = repo.WorktreeID
 			}
 		}
-		if streamID == "" && repo.StoreID != "" {
+		if streamID == "" && repo.StoreID != "" && !refParts.Manual {
 			streamID, _ = primitives.DeriveLegacyEventStreamID(repo.StoreID, refParts.SessionID)
 		}
 		infos = append(infos, CheckpointRefInfo{
+			ID:         refParts.CheckpointID,
 			Ref:        ref,
 			SessionID:  refParts.SessionID,
 			TurnID:     refParts.TurnID,
@@ -904,13 +964,17 @@ func (repo *Repo) listCheckpointRefInfos(refPrefix string) ([]CheckpointRefInfo,
 			StreamID:   streamID,
 			Commit:     commit,
 			Time:       createdAt,
+			Manual:     refParts.Manual,
 		})
 	}
 	for index := range infos {
 		if canonical, ok := canonicalByCommit[infos[index].Commit.String()]; ok {
+			if infos[index].Manual && infos[index].ID != canonical.id {
+				return nil, fmt.Errorf("manual checkpoint identity invariant failed: ref %s names %s but canonical ref names %s", infos[index].Ref, infos[index].ID, canonical.id)
+			}
 			infos[index].ID = canonical.id
 			infos[index].CanonicalRef = canonical.ref
-			if parts, err := infos[index].Ref.Parts(); err == nil && !parts.Scoped {
+			if parts, err := infos[index].Ref.Parts(); err == nil && !parts.Scoped && !parts.Manual {
 				producerID := repo.EventProducerID
 				if primary, ok := repo.primaryWorktreeBinding(); ok {
 					producerID = primary.ProducerID
@@ -919,6 +983,9 @@ func (repo *Repo) listCheckpointRefInfos(refPrefix string) ([]CheckpointRefInfo,
 					infos[index].StreamID = streamID
 				}
 			}
+		}
+		if infos[index].Manual && infos[index].CanonicalRef == "" {
+			return nil, fmt.Errorf("manual checkpoint identity invariant failed: ref %s has no matching canonical ref", infos[index].Ref)
 		}
 	}
 
@@ -1359,6 +1426,14 @@ func (repo *Repo) MaterializeCommit(commit primitives.CommitSHA, root string, op
 	if err != nil {
 		return err
 	}
+	var denyGlobs []string
+	if options.ApplyCurrentSecretDenyGlobs {
+		denyGlobs, err = repo.secretDenyGlobs()
+		if err != nil {
+			return fmt.Errorf("resolve current materialization secret policy: %w", err)
+		}
+		entries = filterSecretDeniedTreeEntries(entries, denyGlobs)
+	}
 	modes, err := repo.readModeManifest(parsedCommit)
 	if err != nil {
 		return err
@@ -1366,6 +1441,11 @@ func (repo *Repo) MaterializeCommit(commit primitives.CommitSHA, root string, op
 	preservePaths, err := materializePreserveSet(options.PreservePaths)
 	if err != nil {
 		return err
+	}
+	for preservedPath := range preservePaths {
+		if secretDeniedPath(preservedPath, denyGlobs) {
+			delete(preservePaths, preservedPath)
+		}
 	}
 	for _, entry := range entries {
 		mode, hasMode := modes[entry.Path]
@@ -1383,6 +1463,19 @@ func (repo *Repo) MaterializeCommit(commit primitives.CommitSHA, root string, op
 		return err
 	}
 	return materializeRemoveEmptyDirs(materializeRoot)
+}
+
+func filterSecretDeniedTreeEntries(entries []TreeEntry, denyGlobs []string) []TreeEntry {
+	if len(entries) == 0 || len(denyGlobs) == 0 {
+		return entries
+	}
+	filtered := make([]TreeEntry, 0, len(entries))
+	for _, entry := range entries {
+		if !secretDeniedPath(entry.Path, denyGlobs) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
 }
 
 func (repo *Repo) restoreCommit(commit primitives.CommitSHA) error {

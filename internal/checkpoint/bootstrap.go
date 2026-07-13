@@ -189,7 +189,7 @@ func EnsureGitignoreEntry(root primitives.WorkspaceRoot) (string, bool, error) {
 
 func Inspect(root primitives.WorkspaceRoot) Status {
 	repo := paths(root)
-	if opened, err := Open(root); err == nil {
+	if opened, err := OpenReadOnly(root); err == nil {
 		repo = opened
 	}
 	status := Status{

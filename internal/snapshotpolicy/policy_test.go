@@ -13,3 +13,17 @@ func TestDeniedMatchesRepositoryGlobs(t *testing.T) {
 		t.Fatal("Denied(src/app.go) = true")
 	}
 }
+
+func TestDeniedMatchesDirectoryAncestor(t *testing.T) {
+	patterns := []string{"secret-dir", "nested/private"}
+	for _, candidate := range []string{"secret-dir", "secret-dir/key.txt", "secret-dir/deeper/key.txt", "nested/private/token"} {
+		if !Denied(candidate, patterns) {
+			t.Fatalf("Denied(%q) = false", candidate)
+		}
+	}
+	for _, candidate := range []string{"public/secret-dir-name/key.txt", "nested/private-name/token"} {
+		if Denied(candidate, patterns) {
+			t.Fatalf("Denied(%q) = true", candidate)
+		}
+	}
+}

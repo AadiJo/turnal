@@ -15,6 +15,7 @@ import (
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/fsidentity"
 	queryindex "github.com/AadiJo/turnal/internal/index"
+	"github.com/AadiJo/turnal/internal/manualcheckpoints"
 	"github.com/AadiJo/turnal/internal/primitives"
 )
 
@@ -39,6 +40,7 @@ type StreamPlan struct {
 	Events     int                      `json:"events"`
 	Legacy     bool                     `json:"legacy"`
 	Status     string                   `json:"status"`
+	Workspace  bool                     `json:"workspace,omitempty"`
 }
 
 type Plan struct {
@@ -87,6 +89,7 @@ type Manifest struct {
 }
 
 type checkpointPayload struct {
+	Origin       string `json:"origin"`
 	CheckpointID string `json:"checkpoint_id"`
 	WorktreeID   string `json:"worktree_id"`
 	StreamID     string `json:"stream_id"`
@@ -239,6 +242,7 @@ func runWithID(repo *checkpoint.Repo, sourcePath string, importID primitives.Imp
 			Events:     len(stream.Events),
 			Legacy:     stream.Legacy,
 			Status:     status,
+			Workspace:  stream.Workspace,
 		})
 	}
 	if options.DryRun {
@@ -314,6 +318,19 @@ func inspectCheckpoints(streams []eventlog.DurableStream, refs map[string]checkp
 	var aliases []checkpointAlias
 	for _, stream := range streams {
 		for _, event := range stream.Events {
+			if stream.Workspace && event.Type == primitives.EventTypeRollback {
+				_, err := manualcheckpoints.ValidateRollbackEventWithResolver(event, func(ref string) (primitives.CommitSHA, error) {
+					imported, ok := refs[ref]
+					if !ok {
+						return "", fmt.Errorf("source ref %s is missing", ref)
+					}
+					return imported.Commit, nil
+				})
+				if err != nil {
+					return nil, err
+				}
+				continue
+			}
 			if event.Type != primitives.EventTypeCheckpoint {
 				continue
 			}
@@ -331,6 +348,46 @@ func inspectCheckpoints(streams []eventlog.DurableStream, refs map[string]checkp
 			}
 			if importedRef.Commit != commit {
 				return nil, fmt.Errorf("checkpoint event %s:%s commit mismatch: ref=%s payload=%s", stream.StreamID, event.Seq, importedRef.Commit, commit)
+			}
+			if stream.Workspace {
+				if payload.Origin != "manual" || event.TurnID != nil {
+					return nil, fmt.Errorf("workspace checkpoint event %s:%s must be a turnless manual checkpoint", stream.StreamID, event.Seq)
+				}
+				checkpointID, err := primitives.ParseCheckpointID(payload.CheckpointID)
+				if err != nil {
+					return nil, err
+				}
+				worktreeID, err := primitives.ParseWorktreeID(payload.WorktreeID)
+				if err != nil {
+					return nil, err
+				}
+				if stream.WorktreeID != "" && stream.WorktreeID != worktreeID {
+					return nil, fmt.Errorf("workspace checkpoint event %s:%s worktree mismatch", stream.StreamID, event.Seq)
+				}
+				ref, err := primitives.ParseCheckpointRef(payload.Ref)
+				if err != nil {
+					return nil, err
+				}
+				parts, err := ref.Parts()
+				if err != nil || !parts.Manual || parts.WorktreeID != worktreeID || parts.CheckpointID != checkpointID {
+					return nil, fmt.Errorf("workspace checkpoint event %s:%s manual ref identity mismatch", stream.StreamID, event.Seq)
+				}
+				alias, err := primitives.NewManualCheckpointRef(worktreeID, checkpointID)
+				if err != nil {
+					return nil, err
+				}
+				canonicalRef, err := primitives.NewCheckpointIDRef(checkpointID)
+				if err != nil {
+					return nil, err
+				}
+				aliases = append(aliases, checkpointAlias{Ref: alias, Commit: commit}, checkpointAlias{Ref: canonicalRef, Commit: commit})
+				if plan != nil {
+					plan.Checkpoints++
+				}
+				continue
+			}
+			if payload.Origin == "manual" {
+				return nil, fmt.Errorf("session checkpoint event %s:%s cannot have manual origin", stream.StreamID, event.Seq)
 			}
 			worktreeID := stream.WorktreeID
 			if payload.WorktreeID != "" {
@@ -375,7 +432,7 @@ func inspectCheckpoints(streams []eventlog.DurableStream, refs map[string]checkp
 
 func stageStreams(repo *checkpoint.Repo, importID primitives.ImportID, streams []eventlog.DurableStream) error {
 	for _, stream := range streams {
-		destination := filepath.Join(importTmpDir(repo, importID), "streams", stream.SessionID.String(), stream.StreamID.String()+".jsonl")
+		destination := stagedStreamPath(repo, importID, stream)
 		if err := copyExactFile(stream.Path, destination); err != nil {
 			return err
 		}
@@ -385,7 +442,7 @@ func stageStreams(repo *checkpoint.Repo, importID primitives.ImportID, streams [
 
 func installStreams(repo *checkpoint.Repo, importID primitives.ImportID, streams []eventlog.DurableStream, primary checkpoint.WorktreeIdentity) error {
 	for _, stream := range streams {
-		finalPath := eventlog.StreamPath(repo.MetadataDir, stream.SessionID, stream.StreamID)
+		finalPath := destinationStreamPath(repo.MetadataDir, stream)
 		status, err := destinationStreamStatus(repo.MetadataDir, stream)
 		if err != nil {
 			return err
@@ -394,7 +451,7 @@ func installStreams(repo *checkpoint.Repo, importID primitives.ImportID, streams
 			if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
 				return err
 			}
-			stagedPath := filepath.Join(importTmpDir(repo, importID), "streams", stream.SessionID.String(), stream.StreamID.String()+".jsonl")
+			stagedPath := stagedStreamPath(repo, importID, stream)
 			if err := os.Rename(stagedPath, finalPath); err != nil {
 				return fmt.Errorf("install event stream %s: %w", stream.StreamID, err)
 			}
@@ -407,14 +464,19 @@ func installStreams(repo *checkpoint.Repo, importID primitives.ImportID, streams
 		if producerID == "" {
 			producerID = primary.ProducerID
 		}
-		if err := eventlog.WriteStreamMetadata(repo.MetadataDir, eventlog.StreamMetadata{
+		metadata := eventlog.StreamMetadata{
 			Version:    1,
 			StreamID:   stream.StreamID,
 			ProducerID: producerID,
 			RepoID:     stream.RepoID,
 			WorktreeID: worktreeID,
 			SessionID:  stream.SessionID,
-		}); err != nil {
+		}
+		writeMetadata := eventlog.WriteStreamMetadata
+		if stream.Workspace {
+			writeMetadata = eventlog.WriteWorkspaceStreamMetadata
+		}
+		if err := writeMetadata(repo.MetadataDir, metadata); err != nil {
 			return err
 		}
 	}
@@ -422,7 +484,7 @@ func installStreams(repo *checkpoint.Repo, importID primitives.ImportID, streams
 }
 
 func destinationStreamStatus(metadataDir string, stream eventlog.DurableStream) (string, error) {
-	path := eventlog.StreamPath(metadataDir, stream.SessionID, stream.StreamID)
+	path := destinationStreamPath(metadataDir, stream)
 	digest, exists, err := fileDigest(path)
 	if err != nil {
 		return "", err
@@ -434,6 +496,20 @@ func destinationStreamStatus(metadataDir string, stream eventlog.DurableStream) 
 		return "duplicate", nil
 	}
 	return "", fmt.Errorf("divergent stream conflict: %s exists with digest %s, source has %s", stream.StreamID, digest, stream.ByteSHA256)
+}
+
+func stagedStreamPath(repo *checkpoint.Repo, importID primitives.ImportID, stream eventlog.DurableStream) string {
+	if stream.Workspace {
+		return filepath.Join(importTmpDir(repo, importID), "workspace-streams", stream.WorktreeID.String(), stream.StreamID.String()+".jsonl")
+	}
+	return filepath.Join(importTmpDir(repo, importID), "streams", stream.SessionID.String(), stream.StreamID.String()+".jsonl")
+}
+
+func destinationStreamPath(metadataDir string, stream eventlog.DurableStream) string {
+	if stream.Workspace {
+		return eventlog.WorkspaceStreamPath(metadataDir, stream.WorktreeID, stream.StreamID)
+	}
+	return eventlog.StreamPath(metadataDir, stream.SessionID, stream.StreamID)
 }
 
 func writeManifest(repo *checkpoint.Repo, source checkpoint.StoreIdentity, plan Plan, refs []checkpoint.ImportedRef) (string, error) {

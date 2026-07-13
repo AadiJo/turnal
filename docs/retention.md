@@ -2,6 +2,8 @@
 
 `turnal session drop <session>` removes the session event log, active/checkpoint state, per-session v2 raw logs, and private refs, redacts matching payloads in legacy v1 raw logs without shifting references, and invalidates the disposable search index.
 
+Workspace-level checkpoints created by `turnal save` do not belong to an agent session, so dropping a session does not remove them.
+
 Hidden Git objects may remain reachable through reflogs or as unreachable objects until garbage collection. For immediate local cleanup after confirming the drop, run:
 
 ```sh

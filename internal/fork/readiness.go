@@ -3,15 +3,17 @@ package fork
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
+	"github.com/AadiJo/turnal/internal/config"
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/AadiJo/turnal/internal/recall"
 )
 
-const reportVersion = 1
+const ReportVersion = 1
 
 type Readiness string
 
@@ -119,9 +121,13 @@ func (analyzer Analyzer) Inspect(sessionID primitives.SessionID, turnID primitiv
 			return Report{}, err
 		}
 	}
+	configuredVerifiers, err := repositoryVerifierCount(analyzer.Repo)
+	if err != nil {
+		return Report{}, err
+	}
 
 	report := Report{
-		Version:       reportVersion,
+		Version:       ReportVersion,
 		Target:        fmt.Sprintf("%s:turn:%s:pre", turn.SessionID, turn.TurnID),
 		Readiness:     ReadinessUnavailable,
 		FidelityLevel: "L0",
@@ -160,6 +166,7 @@ func (analyzer Analyzer) Inspect(sessionID primitives.SessionID, turnID primitiv
 	}
 
 	if turn.PreCheckpoint == nil {
+		applyEvaluatorCondition(&report, configuredVerifiers)
 		return report, nil
 	}
 	tree, err := analyzer.Repo.ListCommitTree(turn.PreCheckpoint.CommitSHA)
@@ -179,6 +186,7 @@ func (analyzer Analyzer) Inspect(sessionID primitives.SessionID, turnID primitiv
 		Detail: fmt.Sprintf("%d captured files can be materialized byte-exactly from the pre-turn checkpoint.", len(tree)),
 	}
 	report.Conditions.WorkspaceVCS = workspaceVCSCondition(*turn.PreCheckpoint)
+	applyEvaluatorCondition(&report, configuredVerifiers)
 
 	switch report.Instruction.Status {
 	case InstructionAvailable:
@@ -187,6 +195,27 @@ func (analyzer Analyzer) Inspect(sessionID primitives.SessionID, turnID primitiv
 		report.Readiness = ReadinessNeedsInstruction
 	}
 	return report, nil
+}
+
+func repositoryVerifierCount(repo *checkpoint.Repo) (int, error) {
+	effective, origins, err := config.ResolvePath(filepath.Join(repo.MetadataDir, "config.toml"), config.Overrides{})
+	if err != nil {
+		return 0, fmt.Errorf("inspect repository verifier configuration: %w", err)
+	}
+	if origins["verify"] != config.OriginWorkspace {
+		return 0, nil
+	}
+	return len(effective.Verify), nil
+}
+
+func applyEvaluatorCondition(report *Report, count int) {
+	if count == 0 {
+		return
+	}
+	report.Conditions.Evaluators = Condition{
+		Status: "configured",
+		Detail: fmt.Sprintf("%d repository verifier command(s) are configured and can be run separately with turnal verify.", count),
+	}
 }
 
 func metadataAdapterFor(instruction Instruction, adapters []primitives.AdapterName) primitives.AdapterName {
@@ -308,7 +337,7 @@ func inspectInstruction(events []eventlog.Event) (Instruction, error) {
 		case "":
 			continue
 		default:
-			instruction = Instruction{Status: InstructionAvailable, Text: text, Adapter: event.Adapter}
+			instruction = Instruction{Status: InstructionAvailable, Text: textValue, Adapter: event.Adapter}
 		}
 	}
 	return instruction, nil

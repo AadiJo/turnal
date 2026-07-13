@@ -151,7 +151,7 @@ func (repo *Repo) RekeyStore() (RekeyResult, error) {
 		}
 		for _, info := range infos {
 			parts, err := info.Ref.Parts()
-			if err != nil || parts.Scoped || parts.Canonical {
+			if err != nil || parts.Scoped || parts.Canonical || parts.Manual {
 				continue
 			}
 			alias, err := primitives.NewScopedCheckpointRef(info.WorktreeID, info.StreamID, info.SessionID, info.TurnID, info.Phase)

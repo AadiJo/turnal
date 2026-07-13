@@ -2,13 +2,145 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AadiJo/turnal/internal/primitives"
 )
+
+func TestResolveVerifierConfiguration(t *testing.T) {
+	root := t.TempDir()
+	writeConfig(t, WorkspacePath(root), `
+version = 1
+
+[[verify]]
+name = "unit-tests"
+command = "go"
+args = ["test", "./..."]
+timeout = "2m"
+
+[[verify]]
+name = "literal-arguments"
+command = "test helper"
+args = ["$HOME", "argument with spaces"]
+timeout = "1500ms"
+`)
+
+	effective, origins, err := testLoader(t, nil).Resolve(root, Overrides{})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(effective.Verify) != 2 {
+		t.Fatalf("verify count = %d, want 2", len(effective.Verify))
+	}
+	if effective.Verify[0].Name != "unit-tests" || effective.Verify[1].Name != "literal-arguments" {
+		t.Fatalf("verifier order = %#v", effective.Verify)
+	}
+	if effective.Verify[0].Command != "go" || effective.Verify[0].Timeout != 2*time.Minute {
+		t.Fatalf("first verifier = %#v", effective.Verify[0])
+	}
+	if got := effective.Verify[1].Args; len(got) != 2 || got[0] != "$HOME" || got[1] != "argument with spaces" {
+		t.Fatalf("literal args = %#v", got)
+	}
+	if origins["verify"] != OriginWorkspace {
+		t.Fatalf("verify origin = %q, want workspace", origins["verify"])
+	}
+}
+
+func TestResolveExistingConfigurationHasNoVerifiers(t *testing.T) {
+	root := t.TempDir()
+	writeConfig(t, WorkspacePath(root), "version = 1\n[run]\nquiet = true\n")
+
+	effective, _, err := testLoader(t, nil).Resolve(root, Overrides{})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if effective.Verify == nil || len(effective.Verify) != 0 {
+		t.Fatalf("verify = %#v, want non-nil empty list", effective.Verify)
+	}
+}
+
+func TestResolveRejectsInvalidVerifiers(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{name: "duplicate name", body: verifierTOML("same", "helper", `timeout = "1s"`) + verifierTOML("same", "helper", `timeout = "1s"`), wantErr: `verify[2] "same": name duplicates verify[1]`},
+		{name: "empty name", body: verifierTOML("", "helper", `timeout = "1s"`), wantErr: "verify[1]: name must not be empty"},
+		{name: "empty command", body: verifierTOML("empty-command", "", `timeout = "1s"`), wantErr: `verify[1] "empty-command": command must not be empty`},
+		{name: "missing timeout", body: verifierTOML("missing-timeout", "helper", ""), wantErr: `verify[1] "missing-timeout": timeout must not be empty`},
+		{name: "invalid timeout", body: verifierTOML("bad-timeout", "helper", `timeout = "later"`), wantErr: `verify[1] "bad-timeout": timeout`},
+		{name: "zero timeout", body: verifierTOML("zero-timeout", "helper", `timeout = "0s"`), wantErr: `verify[1] "zero-timeout": timeout must be positive`},
+		{name: "negative timeout", body: verifierTOML("negative-timeout", "helper", `timeout = "-1s"`), wantErr: `verify[1] "negative-timeout": timeout must be positive`},
+		{name: "nul name", body: "\n[[verify]]\nname = \"bad\\u0000name\"\ncommand = \"helper\"\ntimeout = \"1s\"\n", wantErr: `verify[1] "bad\x00name": name must not contain NUL`},
+		{name: "newline name", body: "\n[[verify]]\nname = \"bad\\nname\"\ncommand = \"helper\"\ntimeout = \"1s\"\n", wantErr: `name must contain only printable characters; found U+000A`},
+		{name: "carriage return name", body: "\n[[verify]]\nname = \"bad\\rname\"\ncommand = \"helper\"\ntimeout = \"1s\"\n", wantErr: `name must contain only printable characters; found U+000D`},
+		{name: "ANSI escape name", body: "\n[[verify]]\nname = \"bad\\u001b[2Jname\"\ncommand = \"helper\"\ntimeout = \"1s\"\n", wantErr: `name must contain only printable characters; found U+001B`},
+		{name: "Unicode formatting name", body: "\n[[verify]]\nname = \"bad\\u202ename\"\ncommand = \"helper\"\ntimeout = \"1s\"\n", wantErr: `name must contain only printable characters; found U+202E`},
+		{name: "nul command", body: "\n[[verify]]\nname = \"nul-command\"\ncommand = \"bad\\u0000command\"\ntimeout = \"1s\"\n", wantErr: `verify[1] "nul-command": command must not contain NUL`},
+		{name: "nul argument", body: verifierTOML("nul-argument", "helper", "args = [\"bad\\u0000arg\"]\ntimeout = \"1s\""), wantErr: `verify[1] "nul-argument": args[1] must not contain NUL`},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeConfig(t, WorkspacePath(root), "version = 1\n"+test.body)
+			_, _, err := testLoader(t, nil).Resolve(root, Overrides{})
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("Resolve error = %v, want substring %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestResolveRejectsVerifierBounds(t *testing.T) {
+	t.Run("verifier count", func(t *testing.T) {
+		root := t.TempDir()
+		var body strings.Builder
+		body.WriteString("version = 1\n")
+		for index := 0; index <= MaxVerifierCount; index++ {
+			body.WriteString(verifierTOML(fmt.Sprintf("check-%d", index), "helper", `timeout = "1s"`))
+		}
+		writeConfig(t, WorkspacePath(root), body.String())
+		_, _, err := testLoader(t, nil).Resolve(root, Overrides{})
+		if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("at most %d entries", MaxVerifierCount)) {
+			t.Fatalf("Resolve error = %v", err)
+		}
+	})
+
+	t.Run("argument count", func(t *testing.T) {
+		root := t.TempDir()
+		args := make([]string, MaxVerifierArgCount+1)
+		for index := range args {
+			args[index] = `"arg"`
+		}
+		body := verifierTOML("too-many-args", "helper", "args = ["+strings.Join(args, ",")+"]\ntimeout = \"1s\"")
+		writeConfig(t, WorkspacePath(root), "version = 1\n"+body)
+		_, _, err := testLoader(t, nil).Resolve(root, Overrides{})
+		if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("at most %d arguments", MaxVerifierArgCount)) {
+			t.Fatalf("Resolve error = %v", err)
+		}
+	})
+
+	t.Run("argument size", func(t *testing.T) {
+		root := t.TempDir()
+		body := verifierTOML("large-arg", "helper", fmt.Sprintf("args = [%q]\ntimeout = \"1s\"", strings.Repeat("x", MaxVerifierArgBytes+1)))
+		writeConfig(t, WorkspacePath(root), "version = 1\n"+body)
+		_, _, err := testLoader(t, nil).Resolve(root, Overrides{})
+		if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("args[1] must be at most %d bytes", MaxVerifierArgBytes)) {
+			t.Fatalf("Resolve error = %v", err)
+		}
+	})
+}
+
+func verifierTOML(name, command, extra string) string {
+	return fmt.Sprintf("\n[[verify]]\nname = %q\ncommand = %q\n%s\n", name, command, extra)
+}
 
 func TestResolveDefaultsWhenFilesAreMissing(t *testing.T) {
 	loader := testLoader(t, map[string]string{})

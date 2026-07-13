@@ -77,6 +77,17 @@ func Run(start string, opts Options) (Result, error) {
 }
 
 func FindRoot(start string) (primitives.WorkspaceRoot, string, error) {
+	var discoveryErr error
+	if root, err := checkpoint.FindRoot(start); err == nil {
+		if repo, err := checkpoint.OpenReadOnly(root); err == nil {
+			return root, repo.MetadataDir, nil
+		} else {
+			discoveryErr = err
+		}
+	} else {
+		discoveryErr = err
+	}
+
 	abs, err := filepath.Abs(start)
 	if err != nil {
 		return "", "", fmt.Errorf("resolve start path: %w", err)
@@ -106,7 +117,7 @@ func FindRoot(start string) (primitives.WorkspaceRoot, string, error) {
 		abs = parent
 	}
 
-	return "", "", fmt.Errorf("not a turnal workspace: no .turnal directory found")
+	return "", "", discoveryErr
 }
 
 func uninstallHooks(projectRoot string, opts Options) ([]adapters.UninstallResult, error) {

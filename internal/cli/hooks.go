@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/AadiJo/turnal/internal/adapters"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/runs"
 	"github.com/spf13/cobra"
 )
 
@@ -65,7 +67,7 @@ func readHookPayload(reader io.Reader) ([]byte, error) {
 }
 
 func handleHookFailure(cmd *cobra.Command, adapter primitives.AdapterName, hookName string, raw []byte) {
-	err := adapters.HandleHookPayload(adapter, hookName, raw)
+	err := adapters.HandleHookPayloadWithRunID(adapter, hookName, raw, os.Getenv(runs.EnvRunID))
 	if err == nil {
 		return
 	}
