@@ -117,7 +117,12 @@ jobs:
           name: Publish npm package
           command: |
             npm config set //registry.npmjs.org/:_authToken '${NPM_TOKEN}'
-            npm publish --ignore-scripts --access public --tag "$RELEASE_npm_tag"
+            npm whoami
+            if ! timeout 120s npm publish --ignore-scripts --access public --tag "$RELEASE_npm_tag" </dev/null; then
+              echo "npm publish did not complete non-interactively" >&2
+              echo "NPM_TOKEN must be a read/write granular token with bypass 2FA enabled" >&2
+              exit 1
+            fi
           environment:
             TURNAL_RELEASE_CHANNEL: nightly
             TURNAL_COMMIT: << pipeline.git.revision >>
@@ -229,7 +234,12 @@ jobs:
           name: Publish npm package
           command: |
             npm config set //registry.npmjs.org/:_authToken '${NPM_TOKEN}'
-            npm publish --ignore-scripts --access public --tag "$RELEASE_npm_tag"
+            npm whoami
+            if ! timeout 120s npm publish --ignore-scripts --access public --tag "$RELEASE_npm_tag" </dev/null; then
+              echo "npm publish did not complete non-interactively" >&2
+              echo "NPM_TOKEN must be a read/write granular token with bypass 2FA enabled" >&2
+              exit 1
+            fi
           environment:
             TURNAL_RELEASE_CHANNEL: stable
             TURNAL_COMMIT: << pipeline.git.revision >>
