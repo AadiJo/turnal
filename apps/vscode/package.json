@@ -4,6 +4,7 @@
   "description": "See which AI turn changed a line, browse agent history, and roll back safely.",
   "version": "0.0.1",
   "publisher": "aadijo",
+  "icon": "media/icon.png",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
