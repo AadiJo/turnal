@@ -218,6 +218,10 @@ Git-sync capture requires the workspace to already be a valid Git worktree. It i
 turnal sessions                         # Session summaries
 turnal sessions --json                  # Scriptable session output
 turnal log                              # Turn graph for this worktree
+turnal log --max-lanes 12               # Override the bounded eight-column graph
+turnal log --max-lanes 0                # Allow unlimited graph columns
+turnal log --session-limit 10           # Keep the ten most recently active sessions
+turnal log --limit 20                   # Keep at most twenty turns per session
 turnal log --transcript                 # Prompt/assistant/tool transcript
 turnal log --all-worktrees              # Shared-store history
 turnal show <session>:<turn>             # Normalized events for one turn
@@ -226,6 +230,8 @@ turnal diff <session>:<turn>             # Pre-to-post patch
 turnal search "authentication failure"  # Search the SQLite projection
 turnal blame src/auth.go:42              # Turn that last changed a line
 ```
+
+The checkpoint graph packs non-overlapping or timestamp-touching session spans into reusable lanes and caps the display at eight columns by default. When more lanes are needed, the most recently active spans keep dedicated lanes and the eighth becomes an overflow lane with turn markers but no connecting line; each inline session label and session-derived true color continues to identify the turn. Graph summaries always include the displayed lane count and disclose overflow or session/turn filtering. Use `--verbose` to print the full session legend.
 
 If the disposable index is missing or stale:
 
