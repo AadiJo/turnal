@@ -4,25 +4,29 @@ import Logo from '../components/Logo.astro';
 import CopyButton from '../components/CopyButton.astro';
 import PolishedTerminal from '../components/PolishedTerminal.astro';
 import TurnalWorkflow from '../components/TurnalWorkflow.astro';
+import SnapshotComparison from '../components/SnapshotComparison.astro';
+import AgentHistoryDemo from '../components/AgentHistoryDemo.astro';
 import { commandPanels, graphOutput, installCommand } from '../data/terminalHome';
 import { product } from '../data/content';
 
 const capabilities = [
   {
-    title: 'Private by construction.',
-    body: 'Checkpoints and durable event logs live under .turnal, separate from your workspace Git history.',
+    title: 'Private by default.',
+    body: 'Checkpoints and event logs stay in ',
+    code: '.turnal',
+    bodyTail: ', separate from your workspace Git history.',
   },
   {
-    title: 'One history model.',
-    body: 'Claude Code and Codex hooks normalize prompts, tool calls, and turn boundaries into the same local record.',
+    title: 'One shared history.',
+    body: 'Agent hooks unify prompts, tools, and boundaries in one local workspace record.',
   },
   {
-    title: 'Parallel work stays connected.',
-    body: 'Every checkpoint retains repository and worktree identity, keeping concurrent sessions traceable without merging their state.',
+    title: 'Parallel work stays linked.',
+    body: 'Each checkpoint keeps repository and worktree identity, so sessions stay traceable.',
   },
   {
-    title: 'Rollback preserves an exit.',
-    body: 'Before restoring a checkpoint, Turnal saves the current workspace to a dedicated rollback-safety ref.',
+    title: 'Safe rollback, always.',
+    body: 'Before restoring, Turnal saves the current workspace to a dedicated safety checkpoint.',
   },
 ];
 ---
@@ -50,10 +54,10 @@ const capabilities = [
     <main id="main-content">
       <section id="top" class="hero th-wrap">
         <div class="hero-intro">
-          <h1>Every agent turn,<span>on the record.</span></h1>
+          <h1>Every agent run,<span>on the record.</span></h1>
 
           <div class="hero-copy">
-            <p>Turnal records Claude Code and Codex turns as searchable, reversible checkpoints in a hidden Git repository beside your code.</p>
+            <p>Turnal records Claude Code and Codex runs as searchable, reversible checkpoints in a hidden Git repository beside your code.</p>
 
             <div class="hero-actions">
               <div class="install-command" id="install">
@@ -92,10 +96,21 @@ const capabilities = [
           {capabilities.map((capability) => (
             <article>
               <h3>{capability.title}</h3>
-              <p>{capability.body}</p>
+              <p>{capability.body}{capability.code && <><code>{capability.code}</code>{capability.bodyTail}</>}</p>
             </article>
           ))}
         </div>
+      </section>
+
+      <AgentHistoryDemo />
+
+      <section id="difference" class="compare-section th-wrap">
+        <header class="section-heading">
+          <h2>A commit shows the code. An agent turn shows the story.</h2>
+          <p>A Git commit preserves what the code looked like. An agent turn adds what happened, why, what changed, and how to get back safely.</p>
+        </header>
+
+        <SnapshotComparison />
       </section>
 
       <section id="how" class="workflow-section th-wrap">
@@ -108,7 +123,7 @@ const capabilities = [
 
       <section class="commands-section th-wrap">
         <header class="commands-heading">
-          <h2>Inspect beyond the timeline.</h2>
+          <h2>Go beyond the timeline.</h2>
           <p>Check workspace health, open a turn record, compare checkpoints, or inspect one safely in an isolated replay worktree.</p>
         </header>
 
@@ -385,20 +400,50 @@ const capabilities = [
 
   .terminal-home-theme .capability-ledger {
     display: grid;
-    grid-template-columns: 1.18fr 0.82fr 1fr 1fr;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     margin-top: 54px;
     border-top: 1px solid var(--hair);
     border-bottom: 1px solid var(--hair);
   }
-  .terminal-home-theme .capability-ledger article { min-width: 0; padding: 64px 26px 36px; border-right: 1px solid var(--hair); }
+  .terminal-home-theme .capability-ledger article {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    justify-content: center;
+    padding: 48px 26px;
+    border-right: 1px solid var(--hair);
+  }
   .terminal-home-theme .capability-ledger article:first-child { padding-left: 0; }
   .terminal-home-theme .capability-ledger article:last-child { padding-right: 0; border-right: 0; }
   .terminal-home-theme .capability-ledger h3 { margin-top: 0; font-size: 18px; font-weight: 620; letter-spacing: -0.025em; line-height: 1.18; }
   .terminal-home-theme .capability-ledger p { margin-top: 11px; color: var(--muted); font-size: 13.5px; line-height: 1.55; }
+  .terminal-home-theme .capability-ledger code {
+    padding: 0.08em 0.28em;
+    border: 1px solid rgba(236, 227, 212, 0.14);
+    border-radius: 4px;
+    background: rgba(236, 227, 212, 0.05);
+    color: var(--fg);
+    font-family: var(--mono);
+    font-size: 0.88em;
+    white-space: nowrap;
+  }
 
   .terminal-home-theme .workflow-section { padding-top: 104px; padding-bottom: 104px; scroll-margin-top: 82px; }
   .terminal-home-theme .workflow-heading { max-width: 660px; margin-bottom: 24px; }
 
+  .terminal-home-theme .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .terminal-home-theme .compare-section { padding-top: 24px; padding-bottom: 112px; }
   .terminal-home-theme .commands-section { padding-top: 104px; padding-bottom: 112px; border-top: 1px solid var(--hair); }
   .terminal-home-theme .commands-heading { max-width: 710px; margin-bottom: 48px; }
   .terminal-home-theme .command-workbench { display: grid; grid-template-columns: minmax(250px, 0.72fr) minmax(0, 1.62fr); gap: 30px; align-items: stretch; }
@@ -461,6 +506,7 @@ const capabilities = [
     .terminal-home-theme .hero h1 { max-width: 12ch; font-size: clamp(46px, 10vw, 68px); }
     .terminal-home-theme .hero-visual { margin-top: 34px; }
     .terminal-home-theme .command-workbench { grid-template-columns: 1fr; }
+
     .terminal-home-theme .command-menu { display: flex; overflow-x: auto; padding: 0 0 7px; scroll-snap-type: x mandatory; }
     .terminal-home-theme .command-menu button { width: min(76vw, 300px); flex: none; scroll-snap-align: start; border-right: 1px solid var(--hair); }
   }
@@ -506,4 +552,3 @@ const capabilities = [
     .terminal-home-theme .site-nav { background: var(--bg); backdrop-filter: none; }
   }
 </style>
-
