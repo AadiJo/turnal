@@ -18,6 +18,7 @@ func rollbackCmd() *cobra.Command {
 	var dryRun bool
 	var workspaceGit bool
 	var fromWorktree string
+	var expectedWorkspaceTree string
 
 	cmd := &cobra.Command{
 		Use:          "rollback --to <target|checkpoint-hash>",
@@ -64,10 +65,11 @@ func rollbackCmd() *cobra.Command {
 				useWorkspaceGit = false
 			}
 			result, err := rollbackengine.New(repo).Run(rollbackengine.Request{
-				Target:       target,
-				Resolved:     resolved,
-				DryRun:       dryRun,
-				WorkspaceGit: useWorkspaceGit,
+				Target:                target,
+				Resolved:              resolved,
+				DryRun:                dryRun,
+				WorkspaceGit:          useWorkspaceGit,
+				ExpectedWorkspaceTree: expectedWorkspaceTree,
 			})
 			if err != nil {
 				return err
@@ -80,6 +82,8 @@ func rollbackCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show changes without modifying the workspace")
 	cmd.Flags().BoolVar(&workspaceGit, "workspace-git", false, "Restore captured workspace Git HEAD, index, dirty tracked files, and untracked files")
 	cmd.Flags().StringVar(&fromWorktree, "from-worktree", "", "Explicit source worktree id for an otherwise ambiguous or cross-worktree target")
+	cmd.Flags().StringVar(&expectedWorkspaceTree, "expect-workspace-tree", "", "Require the workspace to match a previously reviewed rollback preview")
+	_ = cmd.Flags().MarkHidden("expect-workspace-tree")
 	return cmd
 }
 

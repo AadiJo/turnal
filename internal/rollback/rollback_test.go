@@ -651,6 +651,43 @@ func TestRunFailsWhenWorkspaceLockHeld(t *testing.T) {
 	}
 }
 
+func TestRunRejectsWorkspaceChangedAfterPreview(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	sessionID := sessionID(t, "demo")
+	turnID, _ := primitives.NewTurnID(1)
+	writeFile(t, root, "app.txt", "target\n")
+	if _, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre); err != nil {
+		t.Fatalf("target checkpoint: %v", err)
+	}
+	writeFile(t, root, "app.txt", "previewed\n")
+	targetRef, err := primitives.NewTargetRef(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("NewTargetRef: %v", err)
+	}
+	preview, err := New(repo).Run(Request{Target: targetRef, DryRun: true})
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	writeFile(t, root, "app.txt", "changed after preview\n")
+
+	_, err = New(repo).Run(Request{Target: targetRef, ExpectedWorkspaceTree: preview.Plan.WorkspaceTree})
+	if err == nil || !strings.Contains(err.Error(), "workspace changed since rollback preview") {
+		t.Fatalf("Run error = %v, want stale preview rejection", err)
+	}
+	if got := readFile(t, root, "app.txt"); got != "changed after preview\n" {
+		t.Fatalf("app.txt = %q, want workspace left untouched", got)
+	}
+	if _, err := os.Stat(JournalPath(repo)); !os.IsNotExist(err) {
+		t.Fatalf("rollback journal created for rejected preview: %v", err)
+	}
+}
+
 func TestRunRestoreFailureReturnsSafetyAndKeepsExtraFiles(t *testing.T) {
 	requireGit(t)
 
