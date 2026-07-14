@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"os"
 	"os/exec"
@@ -31,6 +32,8 @@ func logCmd() *cobra.Command {
 	var worktree string
 	var allWorktrees bool
 	var stream string
+	var maxLanes int
+	var sessionLimit int
 
 	cmd := &cobra.Command{
 		Use:          "log",
@@ -40,6 +43,12 @@ func logCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if limit < 0 {
 				return fmt.Errorf("--limit must be zero or greater")
+			}
+			if maxLanes < 0 {
+				return fmt.Errorf("--max-lanes must be zero or greater")
+			}
+			if sessionLimit < 0 {
+				return fmt.Errorf("--session-limit must be zero or greater")
 			}
 			if useIndex && durable {
 				return fmt.Errorf("--index and --durable cannot be combined")
@@ -99,19 +108,21 @@ func logCmd() *cobra.Command {
 				}
 			}
 
-			options := graphRenderOptions{
-				Verbose: verbose,
-			}
+			options := graphRenderOptions{Verbose: verbose, MaxLanes: maxLanes}
 			var buf bytes.Buffer
 			if transcript {
 				sessions, err = attachTranscriptEvents(repo, sessions, session, limit, scope)
 				if err != nil {
 					return err
 				}
+				options.Totals = graphHistoryTotalsFor(sessions)
+				sessions = limitGraphSessions(sessions, sessionLimit)
 				if err := renderTranscriptLog(&buf, sessions, options); err != nil {
 					return err
 				}
 			} else {
+				options.Totals = graphHistoryTotalsFor(sessions)
+				sessions = limitGraphSessions(sessions, sessionLimit)
 				attachGraphRollbackEvents(repo, sessions, scope)
 				var saves []graphSave
 				var workspaceRollbacks []graphRollback
@@ -139,6 +150,8 @@ func logCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&session, "session", "", "Session id to show; defaults to all sessions")
 	cmd.Flags().IntVarP(&limit, "limit", "n", 0, "Maximum turns per session; 0 shows all")
+	cmd.Flags().IntVar(&maxLanes, "max-lanes", 8, "Maximum graph columns; 0 allows unlimited columns")
+	cmd.Flags().IntVar(&sessionLimit, "session-limit", 0, "Include only the most recently active sessions; 0 shows all")
 	cmd.Flags().BoolVar(&verbose, "verbose", false, "Show full refs, checkpoint ids, event counts, and per-file stats")
 	cmd.Flags().BoolVar(&noPager, "no-pager", false, "Print directly instead of opening a pager")
 	cmd.Flags().BoolVar(&useIndex, "index", false, "Read from the disposable SQLite index when available")
@@ -167,7 +180,14 @@ func (scope graphScope) matches(worktreeID primitives.WorktreeID, streamID primi
 }
 
 type graphRenderOptions struct {
-	Verbose bool
+	Verbose  bool
+	MaxLanes int
+	Totals   *graphHistoryTotals
+}
+
+type graphHistoryTotals struct {
+	Sessions int
+	Turns    int
 }
 
 type graphSession struct {
@@ -227,8 +247,70 @@ type graphTimelineRow struct {
 }
 
 type laneSpan struct {
-	First int
-	Last  int
+	First  int
+	Last   int
+	Oldest time.Time
+	Newest time.Time
+}
+
+type graphLaneLayout struct {
+	Spans        map[int]laneSpan
+	SessionLanes map[int]int
+	LaneCount    int
+	OverflowLane int
+	OverflowUsed bool
+}
+
+func graphHistoryCounts(sessions []graphSession) (int, int) {
+	totalTurns := 0
+	for _, session := range sessions {
+		totalTurns += session.TotalTurns
+	}
+	return len(sessions), totalTurns
+}
+
+func graphHistoryTotalsFor(sessions []graphSession) *graphHistoryTotals {
+	totalSessions, totalTurns := graphHistoryCounts(sessions)
+	return &graphHistoryTotals{Sessions: totalSessions, Turns: totalTurns}
+}
+
+func limitGraphSessions(sessions []graphSession, limit int) []graphSession {
+	if limit == 0 || len(sessions) <= limit {
+		return sessions
+	}
+
+	ranked := append([]graphSession(nil), sessions...)
+	sort.Slice(ranked, func(i, j int) bool {
+		left := graphSessionLastActive(ranked[i])
+		right := graphSessionLastActive(ranked[j])
+		if !left.Equal(right) {
+			return left.After(right)
+		}
+		return ranked[i].ID.String() < ranked[j].ID.String()
+	})
+	selected := make(map[primitives.SessionID]struct{}, limit)
+	for _, session := range ranked[:limit] {
+		selected[session.ID] = struct{}{}
+	}
+
+	filtered := make([]graphSession, 0, limit)
+	for _, session := range sessions {
+		if _, ok := selected[session.ID]; ok {
+			filtered = append(filtered, session)
+		}
+	}
+	return filtered
+}
+
+func graphSessionLastActive(session graphSession) time.Time {
+	var latest time.Time
+	for _, turn := range session.Turns {
+		at := turnDisplayTime(turn)
+		if at.After(latest) {
+			latest = at
+		}
+	}
+	return latest
 }
 
 func loadDurableGraph(repo *checkpoint.Repo, session string, limit int, scope graphScope) ([]graphSession, error) {
@@ -610,34 +692,42 @@ func renderCheckpointGraphWithWorkspace(w io.Writer, sessions []graphSession, sa
 	}
 
 	rows := buildGraphTimelineRowsWithWorkspace(sessions, saves, workspaceRollbacks)
-	spans := buildLaneSpans(rows)
+	layout := buildGraphLaneLayout(rows, sessions, options.MaxLanes)
 	labels := buildGraphSessionLabels(sessions)
-	totalTurns := 0
 	totalShownTurns := 0
 	totalRollbacks := 0
 	for _, session := range sessions {
-		totalTurns += session.TotalTurns
 		totalShownTurns += len(session.Turns)
 		totalRollbacks += len(session.Rollbacks)
 	}
+	totals := options.Totals
+	if totals == nil {
+		totals = graphHistoryTotalsFor(sessions)
+	}
 	totalRollbacks += len(workspaceRollbacks)
-	countSuffix := formatRollbackCountSuffix(totalRollbacks) + formatSaveCountSuffix(len(saves))
-	if totalShownTurns == totalTurns {
+	countSuffix := formatLaneCountSuffix(layout) + formatRollbackCountSuffix(totalRollbacks) + formatSaveCountSuffix(len(saves))
+	if len(sessions) < totals.Sessions {
+		fmt.Fprintf(w, "checkpoint graph: showing %d of %d %s, %d of %d %s%s\n\n",
+			len(sessions), totals.Sessions, pluralWord(totals.Sessions, "session", "sessions"),
+			totalShownTurns, totals.Turns, pluralWord(totals.Turns, "turn", "turns"),
+			countSuffix)
+	} else if totalShownTurns == totals.Turns {
 		fmt.Fprintf(w, "checkpoint graph: %d %s, %d %s%s\n\n",
 			len(sessions), pluralWord(len(sessions), "session", "sessions"),
-			totalTurns, pluralWord(totalTurns, "turn", "turns"),
+			totals.Turns, pluralWord(totals.Turns, "turn", "turns"),
 			countSuffix)
 	} else {
 		fmt.Fprintf(w, "checkpoint graph: %d %s, showing %d of %d %s%s\n\n",
 			len(sessions), pluralWord(len(sessions), "session", "sessions"),
-			totalShownTurns, totalTurns, pluralWord(totalTurns, "turn", "turns"),
+			totalShownTurns, totals.Turns, pluralWord(totals.Turns, "turn", "turns"),
 			countSuffix)
 	}
 
-	if len(sessions) > 0 {
+	wrotePreamble := false
+	if options.Verbose && len(sessions) > 0 {
 		fmt.Fprintf(w, "sessions:")
 		for sessionIndex, session := range sessions {
-			label := formatSessionLabel(labels[sessionIndex], sessionIndex, options)
+			label := formatSessionLabel(labels[sessionIndex], session.ID, options)
 			if len(session.Turns) == session.TotalTurns {
 				fmt.Fprintf(w, " %s", label)
 			} else {
@@ -645,23 +735,28 @@ func renderCheckpointGraphWithWorkspace(w io.Writer, sessions []graphSession, sa
 			}
 		}
 		fmt.Fprintln(w)
+		wrotePreamble = true
 	}
 
 	for _, session := range sessions {
 		for _, warning := range session.Warnings {
 			fmt.Fprintf(w, "warning %s: %s\n", session.ID, warning)
+			wrotePreamble = true
 		}
 	}
 	if len(rows) == 0 {
 		fmt.Fprintln(w)
 		return nil
 	}
-	fmt.Fprintln(w)
+	if wrotePreamble {
+		fmt.Fprintln(w)
+	}
 
 	for rowIndex, row := range rows {
-		detailPrefix := renderTimelineDetailPrefix(rowIndex, row, len(sessions), spans, options)
+		detailPrefix := renderTimelineDetailPrefix(rowIndex, row, sessions, layout, options)
+		continuationPrefix := renderTimelineContinuationPrefix(rowIndex, row, sessions, layout, options)
 		if row.Save != nil {
-			renderSaveRow(w, *row.Save, len(sessions), options)
+			renderSaveRow(w, *row.Save, options)
 			if options.Verbose {
 				renderVerboseSaveDetails(w, detailPrefix, *row.Save)
 			}
@@ -669,7 +764,7 @@ func renderCheckpointGraphWithWorkspace(w io.Writer, sessions []graphSession, sa
 				fmt.Fprintf(w, "%swarning: %s\n", detailPrefix, warning)
 			}
 		} else if row.Rollback != nil {
-			renderRollbackRow(w, *row.Rollback, sessions, labels, options)
+			renderRollbackRow(w, rowIndex, row.SessionIndex, *row.Rollback, sessions, labels, layout, options)
 			if options.Verbose {
 				renderVerboseRollbackDetails(w, detailPrefix, *row.Rollback, options)
 			}
@@ -678,12 +773,12 @@ func renderCheckpointGraphWithWorkspace(w io.Writer, sessions []graphSession, sa
 			}
 		} else if row.Turn != nil {
 			turn := *row.Turn
-			linePrefix := renderLanePrefix(rowIndex, row.SessionIndex, len(sessions), spans, true, options)
+			linePrefix := renderLanePrefix(rowIndex, row.SessionIndex, sessions, layout, "* ", false, false, options)
 			fmt.Fprintf(w, "%s%s - %s %s turn %-6s %s %s %s\n",
 				linePrefix,
 				styleHash(formatDisplayID(turn), options),
 				formatDisplayTime(turn),
-				formatSessionLabel(labels[row.SessionIndex], row.SessionIndex, options),
+				formatSessionLabel(labels[row.SessionIndex], row.SessionID, options),
 				turn.TurnID,
 				styleTool(formatTurnAction(turn), options),
 				styleDim(turnStatus(turn), options),
@@ -701,7 +796,7 @@ func renderCheckpointGraphWithWorkspace(w io.Writer, sessions []graphSession, sa
 			}
 		}
 		if rowIndex < len(rows)-1 {
-			fmt.Fprintln(w, detailPrefix)
+			fmt.Fprintln(w, continuationPrefix)
 		}
 	}
 
@@ -834,26 +929,36 @@ func renderTranscriptLog(w io.Writer, sessions []graphSession, options graphRend
 		totalTurns += session.TotalTurns
 		totalShownTurns += len(session.Turns)
 	}
-	if totalShownTurns == totalTurns {
+	totals := options.Totals
+	if totals == nil {
+		totals = &graphHistoryTotals{Sessions: len(sessions), Turns: totalTurns}
+	}
+	if len(sessions) < totals.Sessions {
+		fmt.Fprintf(w, "transcript log: showing %d of %d %s, %d of %d %s\n\n",
+			len(sessions), totals.Sessions, pluralWord(totals.Sessions, "session", "sessions"),
+			totalShownTurns, totals.Turns, pluralWord(totals.Turns, "turn", "turns"))
+	} else if totalShownTurns == totals.Turns {
 		fmt.Fprintf(w, "transcript log: %d %s, %d %s\n\n",
 			len(sessions), pluralWord(len(sessions), "session", "sessions"),
-			totalTurns, pluralWord(totalTurns, "turn", "turns"))
+			totals.Turns, pluralWord(totals.Turns, "turn", "turns"))
 	} else {
 		fmt.Fprintf(w, "transcript log: %d %s, showing %d of %d %s\n\n",
 			len(sessions), pluralWord(len(sessions), "session", "sessions"),
-			totalShownTurns, totalTurns, pluralWord(totalTurns, "turn", "turns"))
+			totalShownTurns, totals.Turns, pluralWord(totals.Turns, "turn", "turns"))
 	}
 
-	fmt.Fprintf(w, "sessions:")
-	for sessionIndex, session := range sessions {
-		label := formatSessionLabel(labels[sessionIndex], sessionIndex, options)
-		if len(session.Turns) == session.TotalTurns {
-			fmt.Fprintf(w, " %s", label)
-		} else {
-			fmt.Fprintf(w, " %s(%d/%d)", label, len(session.Turns), session.TotalTurns)
+	if options.Verbose {
+		fmt.Fprintf(w, "sessions:")
+		for sessionIndex, session := range sessions {
+			label := formatSessionLabel(labels[sessionIndex], session.ID, options)
+			if len(session.Turns) == session.TotalTurns {
+				fmt.Fprintf(w, " %s", label)
+			} else {
+				fmt.Fprintf(w, " %s(%d/%d)", label, len(session.Turns), session.TotalTurns)
+			}
 		}
+		fmt.Fprintln(w)
 	}
-	fmt.Fprintln(w)
 
 	for sessionIndex, session := range sessions {
 		for _, warning := range session.Warnings {
@@ -862,8 +967,10 @@ func renderTranscriptLog(w io.Writer, sessions []graphSession, options graphRend
 		if len(session.Turns) == 0 {
 			continue
 		}
-		fmt.Fprintln(w)
-		fmt.Fprintf(w, "Session: %s\n", formatSessionLabel(labels[sessionIndex], sessionIndex, options))
+		if options.Verbose || sessionIndex > 0 || len(session.Warnings) > 0 {
+			fmt.Fprintln(w)
+		}
+		fmt.Fprintf(w, "Session: %s\n", formatSessionLabel(labels[sessionIndex], session.ID, options))
 		for turnIndex := len(session.Turns) - 1; turnIndex >= 0; turnIndex-- {
 			if err := renderTranscriptTurn(w, session.Turns[turnIndex], options); err != nil {
 				return err
@@ -1143,7 +1250,9 @@ func buildGraphTimelineRows(sessions []graphSession) []graphTimelineRow {
 
 func buildGraphTimelineRowsWithWorkspace(sessions []graphSession, saves []graphSave, workspaceRollbacks []graphRollback) []graphTimelineRow {
 	var rows []graphTimelineRow
+	sessionNewest := make(map[primitives.SessionID]time.Time, len(sessions))
 	for sessionIndex, session := range sessions {
+		sessionNewest[session.ID] = graphSessionLastActive(session)
 		for _, turn := range session.Turns {
 			turnCopy := turn
 			rows = append(rows, graphTimelineRow{
@@ -1180,6 +1289,14 @@ func buildGraphTimelineRowsWithWorkspace(sessions []graphSession, saves []graphS
 		}
 		if rows[i].Rollback == nil && rows[j].Rollback != nil {
 			return false
+		}
+		leftNewest := sessionNewest[rows[i].SessionID]
+		rightNewest := sessionNewest[rows[j].SessionID]
+		if !leftNewest.Equal(rightNewest) {
+			return leftNewest.After(rightNewest)
+		}
+		if rows[i].SessionID != rows[j].SessionID {
+			return rows[i].SessionID.String() < rows[j].SessionID.String()
 		}
 		if rows[i].SessionIndex != rows[j].SessionIndex {
 			return rows[i].SessionIndex < rows[j].SessionIndex
@@ -1294,9 +1411,10 @@ func buildLaneSpans(rows []graphTimelineRow) map[int]laneSpan {
 		if row.Turn == nil {
 			continue
 		}
+		at := turnDisplayTime(*row.Turn)
 		span, ok := spans[row.SessionIndex]
 		if !ok {
-			spans[row.SessionIndex] = laneSpan{First: rowIndex, Last: rowIndex}
+			spans[row.SessionIndex] = laneSpan{First: rowIndex, Last: rowIndex, Oldest: at, Newest: at}
 			continue
 		}
 		if rowIndex < span.First {
@@ -1305,68 +1423,178 @@ func buildLaneSpans(rows []graphTimelineRow) map[int]laneSpan {
 		if rowIndex > span.Last {
 			span.Last = rowIndex
 		}
+		if span.Oldest.IsZero() || (!at.IsZero() && at.Before(span.Oldest)) {
+			span.Oldest = at
+		}
+		if at.After(span.Newest) {
+			span.Newest = at
+		}
 		spans[row.SessionIndex] = span
 	}
 	return spans
 }
 
-func renderLanePrefix(rowIndex, currentSessionIndex, sessionCount int, spans map[int]laneSpan, marker bool, options graphRenderOptions) string {
-	var line strings.Builder
-	for sessionIndex := 0; sessionIndex < sessionCount; sessionIndex++ {
-		span, active := spans[sessionIndex]
-		active = active && rowIndex >= span.First && rowIndex <= span.Last
-		token := "  "
-		if sessionIndex == currentSessionIndex {
-			if marker {
-				token = "* "
-			} else {
-				token = "| "
-			}
-		} else if active {
-			token = "| "
+func buildGraphLaneLayout(rows []graphTimelineRow, sessions []graphSession, maxLanes int) graphLaneLayout {
+	layout := graphLaneLayout{
+		Spans:        buildLaneSpans(rows),
+		SessionLanes: make(map[int]int),
+		OverflowLane: -1,
+	}
+	type candidate struct {
+		SessionIndex int
+		SessionID    primitives.SessionID
+		Span         laneSpan
+	}
+	candidates := make([]candidate, 0, len(layout.Spans))
+	for sessionIndex, span := range layout.Spans {
+		candidates = append(candidates, candidate{SessionIndex: sessionIndex, SessionID: sessions[sessionIndex].ID, Span: span})
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if !candidates[i].Span.Oldest.Equal(candidates[j].Span.Oldest) {
+			return candidates[i].Span.Oldest.Before(candidates[j].Span.Oldest)
 		}
-		line.WriteString(styleSession(token, sessionIndex, options))
+		if !candidates[i].Span.Newest.Equal(candidates[j].Span.Newest) {
+			return candidates[i].Span.Newest.Before(candidates[j].Span.Newest)
+		}
+		return candidates[i].SessionID.String() < candidates[j].SessionID.String()
+	})
+
+	var laneEnds []time.Time
+	for _, item := range candidates {
+		lane := -1
+		for laneIndex, end := range laneEnds {
+			if !end.IsZero() && !item.Span.Oldest.IsZero() && !end.After(item.Span.Oldest) {
+				lane = laneIndex
+				break
+			}
+		}
+		if lane < 0 {
+			lane = len(laneEnds)
+			laneEnds = append(laneEnds, item.Span.Newest)
+		} else {
+			laneEnds[lane] = item.Span.Newest
+		}
+		layout.SessionLanes[item.SessionIndex] = lane
 	}
-	return line.String()
+
+	layout.LaneCount = len(laneEnds)
+	if maxLanes > 0 && layout.LaneCount > maxLanes {
+		type rankedLane struct {
+			Original  int
+			Newest    time.Time
+			SessionID string
+		}
+		ranked := make([]rankedLane, len(laneEnds))
+		for lane := range ranked {
+			ranked[lane].Original = lane
+		}
+		for _, item := range candidates {
+			lane := layout.SessionLanes[item.SessionIndex]
+			current := &ranked[lane]
+			if item.Span.Newest.After(current.Newest) ||
+				(item.Span.Newest.Equal(current.Newest) && (current.SessionID == "" || item.SessionID.String() < current.SessionID)) {
+				current.Newest = item.Span.Newest
+				current.SessionID = item.SessionID.String()
+			}
+		}
+		sort.Slice(ranked, func(i, j int) bool {
+			if !ranked[i].Newest.Equal(ranked[j].Newest) {
+				return ranked[i].Newest.After(ranked[j].Newest)
+			}
+			if ranked[i].SessionID != ranked[j].SessionID {
+				return ranked[i].SessionID < ranked[j].SessionID
+			}
+			return ranked[i].Original < ranked[j].Original
+		})
+		displayLanes := make(map[int]int, len(ranked))
+		for rank, lane := range ranked {
+			displayLane := maxLanes - 1
+			if rank < maxLanes-1 {
+				displayLane = rank
+			}
+			displayLanes[lane.Original] = displayLane
+		}
+		for sessionIndex, lane := range layout.SessionLanes {
+			layout.SessionLanes[sessionIndex] = displayLanes[lane]
+		}
+		layout.LaneCount = maxLanes
+		layout.OverflowLane = maxLanes - 1
+		layout.OverflowUsed = true
+	}
+	return layout
 }
 
-func renderTimelineDetailPrefix(rowIndex int, row graphTimelineRow, sessionCount int, spans map[int]laneSpan, options graphRenderOptions) string {
-	if row.Rollback != nil || row.Save != nil {
-		return renderAllLanePrefix(sessionCount, options)
+func (layout graphLaneLayout) displayLane(sessionIndex int) int {
+	lane, ok := layout.SessionLanes[sessionIndex]
+	if !ok {
+		return -1
 	}
-	return renderLanePrefix(rowIndex, row.SessionIndex, sessionCount, spans, false, options)
+	if layout.OverflowUsed && lane >= layout.OverflowLane {
+		return layout.OverflowLane
+	}
+	return lane
 }
 
-func renderAllLanePrefix(sessionCount int, options graphRenderOptions) string {
+func renderLanePrefix(rowIndex, currentSessionIndex int, sessions []graphSession, layout graphLaneLayout, marker string, rollbackMarker, continuation bool, options graphRenderOptions) string {
 	var line strings.Builder
-	if sessionCount == 0 {
-		sessionCount = 1
-	}
-	for sessionIndex := 0; sessionIndex < sessionCount; sessionIndex++ {
-		line.WriteString(styleSession("| ", sessionIndex, options))
+	currentLane := layout.displayLane(currentSessionIndex)
+	for lane := 0; lane < layout.LaneCount; lane++ {
+		token := "  "
+		styleSessionIndex := -1
+		if lane == currentLane && marker != "" {
+			token = marker
+			styleSessionIndex = currentSessionIndex
+		} else if lane != layout.OverflowLane {
+			for sessionIndex := range sessions {
+				sessionLane, ok := layout.SessionLanes[sessionIndex]
+				if !ok {
+					continue
+				}
+				span := layout.Spans[sessionIndex]
+				active := rowIndex >= span.First && rowIndex <= span.Last
+				if continuation {
+					active = rowIndex >= span.First && rowIndex < span.Last
+				}
+				if sessionLane == lane && active {
+					token = "| "
+					styleSessionIndex = sessionIndex
+					break
+				}
+			}
+		}
+		if rollbackMarker && lane == currentLane && marker != "" {
+			line.WriteString(styleRollback(token, options))
+		} else if styleSessionIndex >= 0 {
+			line.WriteString(styleSession(token, sessions[styleSessionIndex].ID, options))
+		} else {
+			line.WriteString(token)
+		}
 	}
 	return line.String()
 }
 
-func renderRollbackLanePrefix(sessionCount int, options graphRenderOptions) string {
-	var line strings.Builder
-	if sessionCount == 0 {
-		sessionCount = 1
+func renderTimelineDetailPrefix(rowIndex int, row graphTimelineRow, sessions []graphSession, layout graphLaneLayout, options graphRenderOptions) string {
+	if row.Save != nil || (row.Rollback != nil && row.Rollback.Manual) {
+		return "  "
 	}
-	for range sessionCount {
-		line.WriteString(styleRollback("! ", options))
-	}
-	return line.String()
+	return renderLanePrefix(rowIndex, -1, sessions, layout, "", false, false, options)
 }
 
-func renderRollbackRow(w io.Writer, rollback graphRollback, sessions []graphSession, labels []string, options graphRenderOptions) {
+func renderTimelineContinuationPrefix(rowIndex int, row graphTimelineRow, sessions []graphSession, layout graphLaneLayout, options graphRenderOptions) string {
+	if row.Save != nil || (row.Rollback != nil && row.Rollback.Manual) {
+		return "  "
+	}
+	return renderLanePrefix(rowIndex, -1, sessions, layout, "", false, true, options)
+}
+
+func renderRollbackRow(w io.Writer, rowIndex, attachedSessionIndex int, rollback graphRollback, sessions []graphSession, labels []string, layout graphLaneLayout, options graphRenderOptions) {
 	if rollback.Manual {
 		id := formatObjectID(rollback.CommitSHA, false)
 		if id == "" {
 			id = "<invalid>"
 		}
 		fmt.Fprintf(w, "%s%s %s %s\n",
-			renderRollbackLanePrefix(len(sessions), options),
+			styleRollback("! ", options),
 			styleRollback("------------", options),
 			styleRollback("reverted to saved", options),
 			styleHash(id, options),
@@ -1376,14 +1604,22 @@ func renderRollbackRow(w io.Writer, rollback graphRollback, sessions []graphSess
 	sessionIndex := graphSessionIndex(sessions, rollback.Target.SessionID())
 	targetLabel := "[" + rollback.Target.SessionID().String() + "]"
 	if sessionIndex >= 0 {
-		targetLabel = formatSessionLabel(labels[sessionIndex], sessionIndex, options)
+		targetLabel = formatSessionLabel(labels[sessionIndex], sessions[sessionIndex].ID, options)
+	}
+	markerSessionIndex := sessionIndex
+	if markerSessionIndex < 0 {
+		markerSessionIndex = attachedSessionIndex
+	}
+	prefix := renderLanePrefix(rowIndex, markerSessionIndex, sessions, layout, "! ", true, false, options)
+	if layout.displayLane(markerSessionIndex) < 0 {
+		prefix = styleRollback("! ", options) + renderLanePrefix(rowIndex, -1, sessions, layout, "", false, false, options)
 	}
 	phase := formatRollbackPhase(rollback, options)
 	if phase != "" {
 		phase += " "
 	}
 	fmt.Fprintf(w, "%s%s %s %s turn %s %s%s\n",
-		renderRollbackLanePrefix(len(sessions), options),
+		prefix,
 		styleRollback("------------", options),
 		styleRollback("reverted to", options),
 		targetLabel,
@@ -1425,21 +1661,13 @@ func renderVerboseRollbackDetails(w io.Writer, prefix string, rollback graphRoll
 	}
 }
 
-func renderSaveRow(w io.Writer, save graphSave, sessionCount int, options graphRenderOptions) {
-	count := sessionCount
-	if count == 0 {
-		count = 1
-	}
-	var prefix strings.Builder
-	for range count {
-		prefix.WriteString(styleTool("+ ", options))
-	}
+func renderSaveRow(w io.Writer, save graphSave, options graphRenderOptions) {
 	message := ""
 	if save.Message != "" {
 		message = " " + fmt.Sprintf("%q", truncateText(save.Message, 120))
 	}
 	fmt.Fprintf(w, "%s%s %s%s\n",
-		prefix.String(),
+		styleTool("+ ", options),
 		styleTool("------------ saved", options),
 		styleHash(formatObjectID(save.Info.Commit, false), options),
 		message,
@@ -1682,6 +1910,17 @@ func formatRollbackCountSuffix(count int) string {
 	return fmt.Sprintf(", %d %s", count, pluralWord(count, "rollback", "rollbacks"))
 }
 
+func formatLaneCountSuffix(layout graphLaneLayout) string {
+	if layout.LaneCount == 0 {
+		return ""
+	}
+	suffix := fmt.Sprintf(", %d %s", layout.LaneCount, pluralWord(layout.LaneCount, "lane", "lanes"))
+	if layout.OverflowUsed {
+		suffix += ", overflow used"
+	}
+	return suffix
+}
+
 func formatSaveCountSuffix(count int) string {
 	if count == 0 {
 		return ""
@@ -1775,21 +2014,19 @@ const (
 	ansiYellow = "\x1b[38;5;220m"
 )
 
-var graphSessionColors = []string{
-	"\x1b[38;5;120m",
-	"\x1b[38;5;220m",
-	"\x1b[38;5;183m",
-	"\x1b[38;5;80m",
-	"\x1b[38;5;209m",
-	"\x1b[38;5;147m",
+func formatSessionLabel(label string, sessionID primitives.SessionID, options graphRenderOptions) string {
+	return styleSession("["+label+"]", sessionID, options)
 }
 
-func formatSessionLabel(label string, sessionIndex int, options graphRenderOptions) string {
-	return styleSession("["+label+"]", sessionIndex, options)
-}
-
-func styleSession(value string, sessionIndex int, options graphRenderOptions) string {
-	return graphSessionColors[sessionIndex%len(graphSessionColors)] + value + ansiReset
+func styleSession(value string, sessionID primitives.SessionID, options graphRenderOptions) string {
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(sessionID.String()))
+	sum := hash.Sum32()
+	channel := func(value byte) int {
+		return 80 + int(value)*140/255
+	}
+	color := fmt.Sprintf("\x1b[38;2;%d;%d;%dm", channel(byte(sum>>16)), channel(byte(sum>>8)), channel(byte(sum)))
+	return color + value + ansiReset
 }
 
 func styleHash(value string, options graphRenderOptions) string {

@@ -78,6 +78,52 @@ func TestGraphCommandShowsCheckpointGraph(t *testing.T) {
 	}
 }
 
+func TestLogCommandAppliesLaneAndSessionLimits(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+	sessionA := sessionID(t, "session-a")
+	sessionB := sessionID(t, "session-b")
+	turn1, _ := primitives.NewTurnID(1)
+	turn2, _ := primitives.NewTurnID(2)
+
+	create := func(sessionID primitives.SessionID, turnID primitives.TurnID, content string) {
+		t.Helper()
+		writeFile(t, root, "app.txt", content)
+		if _, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePost); err != nil {
+			t.Fatalf("checkpoint %s turn %s: %v", sessionID, turnID, err)
+		}
+	}
+	create(sessionA, turn1, "a1\n")
+	time.Sleep(1100 * time.Millisecond)
+	create(sessionB, turn1, "b1\n")
+	time.Sleep(1100 * time.Millisecond)
+	create(sessionA, turn2, "a2\n")
+
+	bounded := stripANSI(runRootStdout(t, "log", "--max-lanes", "1", "--no-pager"))
+	if !strings.Contains(bounded, "checkpoint graph: 2 sessions, 3 turns, 1 lane, overflow used") {
+		t.Fatalf("--max-lanes was not applied:\n%s", bounded)
+	}
+	unlimited := stripANSI(runRootStdout(t, "log", "--max-lanes", "0", "--no-pager"))
+	if !strings.Contains(unlimited, "checkpoint graph: 2 sessions, 3 turns, 2 lanes") || strings.Contains(unlimited, "overflow used") {
+		t.Fatalf("--max-lanes 0 was not applied:\n%s", unlimited)
+	}
+
+	limited := stripANSI(runRootStdout(t, "log", "--session-limit", "1", "--no-pager"))
+	if !strings.Contains(limited, "checkpoint graph: showing 1 of 2 sessions, 2 of 3 turns, 1 lane") || strings.Contains(limited, "[session-b]") {
+		t.Fatalf("--session-limit was not applied to graph output:\n%s", limited)
+	}
+	transcript := stripANSI(runRootStdout(t, "log", "--transcript", "--session-limit", "1", "--no-pager"))
+	if !strings.Contains(transcript, "transcript log: showing 1 of 2 sessions, 2 of 3 turns") ||
+		!strings.Contains(transcript, "Session: [session-a]") || strings.Contains(transcript, "Session: [session-b]") {
+		t.Fatalf("--session-limit was not applied to transcript output:\n%s", transcript)
+	}
+}
+
 func TestReindexThenIndexedLogMatchesDurableAndFallsBack(t *testing.T) {
 	root, repo, sessionID, turnID := createTurnWithDiff(t)
 	t.Chdir(root.String())
@@ -171,7 +217,6 @@ func TestLogCommandTranscriptShowsEventOnlyTurn(t *testing.T) {
 	output := stripANSI(runRootStdout(t, "log", "--transcript", "--session", "demo", "--no-pager"))
 	for _, want := range []string{
 		"transcript log: 1 session, 1 turn",
-		"sessions: [codex 12:03]",
 		"Session: [codex 12:03]",
 		"* Write +1 - 12:03 - turn 1",
 		"Human: update app.txt and run tests",
@@ -250,7 +295,7 @@ func TestLogCommandShowsRollbackEventRow(t *testing.T) {
 
 	output := stripANSI(runRootStdout(t, "log", "--durable", "--session", sessionID.String(), "--verbose"))
 	for _, want := range []string{
-		"checkpoint graph: 1 session, 1 turn, 1 rollback",
+		"checkpoint graph: 1 session, 1 turn, 1 lane, 1 rollback",
 		"------------ reverted to [demo] turn 1 pre",
 		"target: demo:turn:1:pre",
 		"mode: checkpoint",
@@ -283,8 +328,8 @@ func TestRenderCheckpointGraphShowsLimitTruncation(t *testing.T) {
 
 	output := stripANSI(out.String())
 	for _, want := range []string{
-		"checkpoint graph: 1 session, showing 1 of 2 turns",
-		"sessions: [demo](1/2)",
+		"checkpoint graph: 1 session, showing 1 of 2 turns, 1 lane",
+		"[demo] turn 1",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("limited graph output missing %q:\n%s", want, output)
@@ -323,7 +368,7 @@ func TestRenderCheckpointGraphShowsOverlappingSessionLanes(t *testing.T) {
 
 	output := stripANSI(out.String())
 	for _, want := range []string{
-		"sessions: [session-a] [session-b]",
+		"checkpoint graph: 2 sessions, 3 turns, 2 lanes",
 		"*   222222222222 - 12:10 [session-a] turn 2",
 		"| * 333333333333 - 12:05 [session-b] turn 1",
 		"*   111111111111 - 12:00 [session-a] turn 1",
@@ -331,6 +376,256 @@ func TestRenderCheckpointGraphShowsOverlappingSessionLanes(t *testing.T) {
 		if !strings.Contains(output, want) {
 			t.Fatalf("overlap graph output missing %q:\n%s", want, output)
 		}
+	}
+}
+
+func TestGraphLanePackingReusesSequentialSessionsAndExpandsResumedSessions(t *testing.T) {
+	turn1, _ := primitives.NewTurnID(1)
+	turn2, _ := primitives.NewTurnID(2)
+	turn3, _ := primitives.NewTurnID(3)
+	base := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	sessionA := sessionID(t, "session-a")
+	sessionB := sessionID(t, "session-b")
+	sessionC := sessionID(t, "session-c")
+
+	sequential := []graphSession{
+		{ID: sessionA, TotalTurns: 2, Turns: []graphTurn{
+			{TurnID: turn2, Post: checkpointInfo(sessionA, turn2, base.Add(10*time.Minute), "2")},
+			{TurnID: turn1, Post: checkpointInfo(sessionA, turn1, base, "1")},
+		}},
+		{ID: sessionC, TotalTurns: 2, Turns: []graphTurn{
+			{TurnID: turn2, Post: checkpointInfo(sessionC, turn2, base.Add(30*time.Minute), "4")},
+			{TurnID: turn1, Post: checkpointInfo(sessionC, turn1, base.Add(20*time.Minute), "3")},
+		}},
+	}
+	sequentialRows := buildGraphTimelineRows(sequential)
+	sequentialLayout := buildGraphLaneLayout(sequentialRows, sequential, 8)
+	if sequentialLayout.LaneCount != 1 || sequentialLayout.SessionLanes[0] != sequentialLayout.SessionLanes[1] {
+		t.Fatalf("sequential layout = %#v, want one reused lane", sequentialLayout)
+	}
+
+	resumed := []graphSession{
+		{ID: sessionA, TotalTurns: 2, Turns: []graphTurn{
+			{TurnID: turn2, Post: checkpointInfo(sessionA, turn2, base.Add(20*time.Minute), "6")},
+			{TurnID: turn1, Post: checkpointInfo(sessionA, turn1, base.Add(10*time.Minute), "5")},
+		}},
+		{ID: sessionB, TotalTurns: 3, Turns: []graphTurn{
+			{TurnID: turn3, Post: checkpointInfo(sessionB, turn3, base.Add(30*time.Minute), "9")},
+			{TurnID: turn2, Post: checkpointInfo(sessionB, turn2, base.Add(5*time.Minute), "8")},
+			{TurnID: turn1, Post: checkpointInfo(sessionB, turn1, base, "7")},
+		}},
+	}
+	resumedLayout := buildGraphLaneLayout(buildGraphTimelineRows(resumed), resumed, 8)
+	if resumedLayout.LaneCount != 2 || resumedLayout.SessionLanes[0] == resumedLayout.SessionLanes[1] {
+		t.Fatalf("resumed layout = %#v, want overlapping spans in separate lanes", resumedLayout)
+	}
+
+	touching := []graphSession{
+		{ID: sessionA, TotalTurns: 2, Turns: []graphTurn{
+			{TurnID: turn2, Post: checkpointInfo(sessionA, turn2, base.Add(10*time.Minute), "2")},
+			{TurnID: turn1, Post: checkpointInfo(sessionA, turn1, base, "1")},
+		}},
+		{ID: sessionB, TotalTurns: 2, Turns: []graphTurn{
+			{TurnID: turn2, Post: checkpointInfo(sessionB, turn2, base.Add(20*time.Minute), "4")},
+			{TurnID: turn1, Post: checkpointInfo(sessionB, turn1, base.Add(10*time.Minute), "3")},
+		}},
+	}
+	touchingRows := buildGraphTimelineRows(touching)
+	touchingLayout := buildGraphLaneLayout(touchingRows, touching, 8)
+	if touchingLayout.LaneCount != 1 || touchingLayout.SessionLanes[0] != touchingLayout.SessionLanes[1] {
+		t.Fatalf("equal-timestamp layout = %#v, want touching spans to reuse a lane", touchingLayout)
+	}
+	newerSpan := touchingLayout.Spans[1]
+	olderSpan := touchingLayout.Spans[0]
+	if newerSpan.Last >= olderSpan.First {
+		t.Fatalf("touching row spans overlap: newer=%#v older=%#v", newerSpan, olderSpan)
+	}
+	if prefix := stripANSI(renderTimelineContinuationPrefix(newerSpan.Last, touchingRows[newerSpan.Last], touching, touchingLayout, graphRenderOptions{})); prefix != "  " {
+		t.Fatalf("touching sessions were joined by a connector: %q", prefix)
+	}
+}
+
+func TestRenderCheckpointGraphCapsOverflowLaneWithoutConnectingIt(t *testing.T) {
+	turn1, _ := primitives.NewTurnID(1)
+	turn2, _ := primitives.NewTurnID(2)
+	base := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	var sessions []graphSession
+	for _, suffix := range []string{"a", "b", "c", "d", "e", "f", "g", "h", "i"} {
+		id := sessionID(t, "session-"+suffix)
+		sessions = append(sessions, graphSession{ID: id, TotalTurns: 2, Turns: []graphTurn{
+			{TurnID: turn2, Post: checkpointInfo(id, turn2, base.Add(time.Minute), suffix)},
+			{TurnID: turn1, Post: checkpointInfo(id, turn1, base, suffix)},
+		}})
+	}
+	rows := buildGraphTimelineRows(sessions)
+	if layout := buildGraphLaneLayout(rows, sessions, 0); layout.LaneCount != 9 || layout.OverflowUsed {
+		t.Fatalf("unlimited layout = %#v, want nine lanes without overflow", layout)
+	}
+	layout := buildGraphLaneLayout(rows, sessions, 8)
+	if layout.LaneCount != 8 || !layout.OverflowUsed || layout.OverflowLane != 7 {
+		t.Fatalf("bounded layout = %#v, want eighth lane as overflow", layout)
+	}
+	oneLane := buildGraphLaneLayout(rows, sessions, 1)
+	if oneLane.LaneCount != 1 || !oneLane.OverflowUsed || oneLane.OverflowLane != 0 {
+		t.Fatalf("one-column layout = %#v, want marker-only overflow", oneLane)
+	}
+	for sessionIndex := range sessions {
+		if oneLane.displayLane(sessionIndex) != 0 {
+			t.Fatalf("session %d display lane = %d, want overflow lane 0", sessionIndex, oneLane.displayLane(sessionIndex))
+		}
+	}
+
+	var out bytes.Buffer
+	if err := renderCheckpointGraph(&out, sessions, graphRenderOptions{MaxLanes: 8}); err != nil {
+		t.Fatalf("renderCheckpointGraph: %v", err)
+	}
+	output := stripANSI(out.String())
+	if !strings.Contains(output, "checkpoint graph: 9 sessions, 18 turns, 8 lanes, overflow used") {
+		t.Fatalf("overflow summary missing:\n%s", output)
+	}
+	for rowIndex, row := range rows {
+		prefix := stripANSI(renderLanePrefix(rowIndex, row.SessionIndex, sessions, layout, "* ", false, false, graphRenderOptions{}))
+		overflowOffset := layout.OverflowLane * 2
+		if len(prefix) < overflowOffset+2 {
+			t.Fatalf("rendered prefix %q does not include overflow lane %d", prefix, layout.OverflowLane)
+		}
+		want := "  "
+		if layout.displayLane(row.SessionIndex) == layout.OverflowLane {
+			want = "* "
+		}
+		if got := prefix[overflowOffset : overflowOffset+2]; got != want {
+			t.Fatalf("row %d overflow token = %q, want %q; prefix=%q", rowIndex, got, want, prefix)
+		}
+	}
+}
+
+func TestOverflowKeepsMostRecentlyActiveLanesVisible(t *testing.T) {
+	turn1, _ := primitives.NewTurnID(1)
+	turn2, _ := primitives.NewTurnID(2)
+	base := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	var sessions []graphSession
+	for index, suffix := range []string{"a", "b", "c", "d", "e", "f", "g", "h", "i"} {
+		id := sessionID(t, "session-"+suffix)
+		sessions = append(sessions, graphSession{ID: id, TotalTurns: 2, Turns: []graphTurn{
+			{TurnID: turn2, Post: checkpointInfo(id, turn2, base.Add(time.Duration(index+1)*time.Minute), suffix)},
+			{TurnID: turn1, Post: checkpointInfo(id, turn1, base, suffix)},
+		}})
+	}
+	layout := buildGraphLaneLayout(buildGraphTimelineRows(sessions), sessions, 8)
+	for sessionIndex := range sessions {
+		inOverflow := layout.displayLane(sessionIndex) == layout.OverflowLane
+		wantOverflow := sessionIndex < 2
+		if inOverflow != wantOverflow {
+			t.Fatalf("session %s overflow=%t, want %t; layout=%#v", sessions[sessionIndex].ID, inOverflow, wantOverflow, layout)
+		}
+	}
+}
+
+func TestLogGraphCompactionFlagDefaults(t *testing.T) {
+	cmd := logCmd()
+	maxLanes, err := cmd.Flags().GetInt("max-lanes")
+	if err != nil || maxLanes != 8 {
+		t.Fatalf("--max-lanes default = %d, %v; want 8", maxLanes, err)
+	}
+	sessionLimit, err := cmd.Flags().GetInt("session-limit")
+	if err != nil || sessionLimit != 0 {
+		t.Fatalf("--session-limit default = %d, %v; want 0", sessionLimit, err)
+	}
+}
+
+func TestSessionLimitKeepsMostRecentlyActiveSessionsAndReportsCompaction(t *testing.T) {
+	turnID, _ := primitives.NewTurnID(1)
+	base := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	sessionA := sessionID(t, "session-a")
+	sessionB := sessionID(t, "session-b")
+	sessionC := sessionID(t, "session-c")
+	sessions := []graphSession{
+		{ID: sessionA, TotalTurns: 1, Turns: []graphTurn{{TurnID: turnID, Post: checkpointInfo(sessionA, turnID, base, "1")}}},
+		{ID: sessionB, TotalTurns: 1, Turns: []graphTurn{{TurnID: turnID, Post: checkpointInfo(sessionB, turnID, base.Add(2*time.Minute), "2")}}},
+		{ID: sessionC, TotalTurns: 1, Turns: []graphTurn{{TurnID: turnID, Post: checkpointInfo(sessionC, turnID, base.Add(time.Minute), "3")}}},
+	}
+	limited := limitGraphSessions(sessions, 2)
+	if len(limited) != 2 || limited[0].ID != sessionB || limited[1].ID != sessionC {
+		t.Fatalf("limited sessions = %#v, want session-b and session-c", limited)
+	}
+
+	var out bytes.Buffer
+	if err := renderCheckpointGraph(&out, limited, graphRenderOptions{MaxLanes: 8, Totals: &graphHistoryTotals{Sessions: 3, Turns: 3}}); err != nil {
+		t.Fatalf("renderCheckpointGraph: %v", err)
+	}
+	output := stripANSI(out.String())
+	if !strings.Contains(output, "checkpoint graph: showing 2 of 3 sessions, 2 of 3 turns, 1 lane") {
+		t.Fatalf("session compaction summary missing:\n%s", output)
+	}
+	if strings.Contains(output, "[session-a]") {
+		t.Fatalf("older session survived session limit:\n%s", output)
+	}
+}
+
+func TestSessionColorDependsOnIDRatherThanLane(t *testing.T) {
+	sessionA := sessionID(t, "session-a")
+	first := styleSession("* ", sessionA, graphRenderOptions{})
+	second := styleSession("[session-a]", sessionA, graphRenderOptions{})
+	firstColor := strings.TrimSuffix(first, "* "+ansiReset)
+	secondColor := strings.TrimSuffix(second, "[session-a]"+ansiReset)
+	if firstColor != secondColor {
+		t.Fatalf("session color changed between marker and label: %q != %q", firstColor, secondColor)
+	}
+	colors := make(map[string]struct{})
+	for _, name := range []string{"session-a", "session-b", "session-c", "session-d", "session-e", "session-f", "session-g", "session-h", "session-i"} {
+		id := sessionID(t, name)
+		styled := styleSession("* ", id, graphRenderOptions{})
+		color := strings.TrimSuffix(styled, "* "+ansiReset)
+		if _, exists := colors[color]; exists {
+			t.Fatalf("displayed sessions %s and an earlier id received the same color %q", id, color)
+		}
+		colors[color] = struct{}{}
+	}
+}
+
+func TestWorkspaceEventsUseOneSeparateMarker(t *testing.T) {
+	commit := primitives.CommitSHA(strings.Repeat("a", 40))
+	var out bytes.Buffer
+	renderSaveRow(&out, graphSave{Info: checkpoint.CheckpointRefInfo{Commit: commit}}, graphRenderOptions{})
+	if got := stripANSI(out.String()); !strings.HasPrefix(got, "+ ------------ saved ") || strings.HasPrefix(got, "+ + ") {
+		t.Fatalf("save marker = %q, want one separate event marker", got)
+	}
+
+	out.Reset()
+	renderRollbackRow(&out, 0, -1, graphRollback{Manual: true, CommitSHA: commit}, nil, nil, graphLaneLayout{}, graphRenderOptions{})
+	if got := stripANSI(out.String()); !strings.HasPrefix(got, "! ------------ reverted to saved ") || strings.HasPrefix(got, "! ! ") {
+		t.Fatalf("workspace rollback marker = %q, want one separate event marker", got)
+	}
+}
+
+func TestRollbackUsesAttachedLaneWhenTargetSessionIsHidden(t *testing.T) {
+	visibleID := sessionID(t, "visible")
+	hiddenID := sessionID(t, "hidden")
+	turnID, _ := primitives.NewTurnID(1)
+	target, err := primitives.NewTargetRef(hiddenID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("target ref: %v", err)
+	}
+	base := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	sessions := []graphSession{{
+		ID:         visibleID,
+		TotalTurns: 1,
+		Turns:      []graphTurn{{TurnID: turnID, Post: checkpointInfo(visibleID, turnID, base, "1")}},
+		Rollbacks: []graphRollback{{
+			Time:      base.Add(time.Minute),
+			Seq:       mustEventSeq(t, 1),
+			Target:    target,
+			CommitSHA: primitives.CommitSHA(strings.Repeat("2", 40)),
+		}},
+	}}
+
+	var out bytes.Buffer
+	if err := renderCheckpointGraph(&out, sessions, graphRenderOptions{MaxLanes: 8}); err != nil {
+		t.Fatalf("renderCheckpointGraph: %v", err)
+	}
+	output := stripANSI(out.String())
+	if !strings.Contains(output, "! ------------ reverted to [hidden] turn 1 pre 222222222222") {
+		t.Fatalf("rollback targeting hidden session lost its marker:\n%s", output)
 	}
 }
 
@@ -385,11 +680,11 @@ func TestRenderCheckpointGraphShowsRollbackRowsAcrossSessions(t *testing.T) {
 
 	output := stripANSI(out.String())
 	for _, want := range []string{
-		"\ncheckpoint graph: 2 sessions, 5 turns, 1 rollback",
+		"\ncheckpoint graph: 2 sessions, 5 turns, 2 lanes, 1 rollback",
 		"sessions: [codex 12:00] [session-b]",
 		"*   333333333333 - 12:30 [codex 12:00] turn 3",
 		"| * 555555555555 - 12:25 [session-b] turn 2",
-		"! ! ------------ reverted to [codex 12:00] turn 1 pre 999999999999",
+		"! | ------------ reverted to [codex 12:00] turn 1 pre 999999999999",
 		"| | rollback: 2026-07-06 12:20:00 UTC",
 		"| | target: codex-sess_aaaaaaaa:turn:1:pre",
 		"| | safety:",
@@ -469,8 +764,10 @@ func TestRenderCheckpointGraphShowsReadableProviderSessionLabels(t *testing.T) {
 	}
 
 	output := stripANSI(out.String())
+	if strings.Contains(output, "sessions:") {
+		t.Fatalf("default graph output should hide the session legend:\n%s", output)
+	}
 	for _, want := range []string{
-		"sessions: [codex 12:00]",
 		"[codex 12:00] turn 1",
 	} {
 		if !strings.Contains(output, want) {
