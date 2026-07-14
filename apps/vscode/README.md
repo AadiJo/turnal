@@ -8,21 +8,35 @@ Turnal reads from a local flight recorder of your agents’ work. The extension 
 
 - **Blame for the current line.** A quiet end-of-line note shows the agent, prompt, turn, and relative time for the line you’re on. Hover it for the full turn context, with links to that turn’s diff, details, and rollback.
 
-  ![Inline blame hover showing the agent, prompt, and turn behind the current line, with links to its diff, details, and rollback.](media/screenshots/inline-blame-hover.png)
-
 - **Your agent history, two ways.** The Turnal view in the Activity Bar groups recorded turns and rollbacks by session, or flattens everything into a newest-first Recent Activity list. Both layouts are backed entirely by the CLI.
 
 - **Native turn diffs.** Click a completed turn to open exactly what it changed in VS Code’s built-in diff—single-file or multi-file—with no custom viewer to learn.
 
-  ![A completed agent turn opened in VS Code’s native multi-file Changes editor.](media/screenshots/turn-diff-native.png)
-
 - **Safe rollback, previewed first.** **Roll Back to Before Turn…** runs a dry run, checks for affected unsaved editors, and opens the exact file plan in VS Code’s native Changes editor before asking for confirmation. It verifies that plan again before touching the workspace.
-
-  ![A rollback plan opened in VS Code’s native multi-file Changes editor before confirmation.](media/screenshots/rollback-preview.png)
 
 Editor rollbacks always use Turnal’s checkpoint-only mode, even when `rollback.mode` is set to `workspace-git`. The extension never moves your project’s Git HEAD or index; use the CLI when you intentionally want the more invasive workspace-Git restore.
 
 Recording, replay, verification, search, retention, worktree management, and configuration editing stay in the CLI by design. The extension also never reads `.turnal/index` or private Git objects directly, so its behavior tracks the installed CLI instead of coupling to internal storage.
+
+## Screenshots
+
+### Inline blame and turn details
+
+Hover the current line to see the agent, prompt, tools, session, turn, and links to the recorded changes.
+
+![Inline blame hover showing the agent, prompt, and turn behind the current line, with links to its diff, details, and rollback.](media/screenshots/inline-blame-hover.png)
+
+### Native turn changes
+
+Completed turns open as familiar, read-only multi-file changes in VS Code’s built-in diff editor.
+
+![A completed agent turn opened in VS Code’s native multi-file Changes editor.](media/screenshots/turn-diff-native.png)
+
+### Native rollback preview
+
+Before confirmation, Turnal opens the complete rollback plan against the live workspace in the same native changes UI.
+
+![A rollback plan opened in VS Code’s native multi-file Changes editor before confirmation.](media/screenshots/rollback-preview.png)
 
 ## Requirements
 
