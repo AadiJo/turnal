@@ -1,0 +1,35 @@
+---
+import logoUrl from '../../../../assets/logo.svg?url';
+import lockupDarkUrl from '../../../../assets/logo-lockup-dark.svg?url';
+
+interface Props {
+  size?: number;
+  wordmark?: boolean;
+}
+
+const { size = 28, wordmark = true } = Astro.props;
+const src = wordmark ? lockupDarkUrl : logoUrl;
+const width = wordmark ? Math.round(size * (620 / 220)) : size;
+---
+
+<span class="logo">
+  <img
+    src={src}
+    width={width}
+    height={size}
+    alt={wordmark ? 'Turnal' : ''}
+    decoding="async"
+  />
+</span>
+
+<style>
+  .logo {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+  }
+  img {
+    display: block;
+    max-width: none;
+  }
+</style>

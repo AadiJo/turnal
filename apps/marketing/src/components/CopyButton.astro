@@ -1,0 +1,80 @@
+---
+/*
+ * Icon copy button. Shows a clipboard glyph; on click it copies `text` and
+ * briefly swaps to a checkmark (handled by the inline script below, which is
+ * emitted once per page).
+ */
+interface Props { text: string; label?: string }
+const { text, label = 'Copy install command' } = Astro.props;
+---
+
+<button class="copybtn" type="button" data-copy={text} data-label={label} aria-label={label}>
+  <svg class="ic ic-copy" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <rect x="9" y="9" width="11" height="11" rx="2.4" stroke="currentColor" stroke-width="1.8" />
+    <path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+  </svg>
+  <svg class="ic ic-check" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="M20 6 9 17l-5-5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+  </svg>
+</button>
+
+<style>
+  .copybtn {
+    position: relative;
+    display: inline-grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    flex: none;
+    border: none;
+    border-radius: 8px;
+    background: var(--copy-bg, rgba(236, 227, 212, 0.08));
+    color: var(--copy-fg, rgba(236, 227, 212, 0.6));
+    transition: background 0.15s ease, color 0.15s ease, transform 0.12s ease;
+  }
+  .copybtn:hover { background: var(--copy-bg-hover, rgba(236, 227, 212, 0.14)); color: var(--copy-fg-hover, #fff); }
+  .copybtn:active { transform: scale(0.94); }
+  .copybtn:focus-visible { outline: 2px solid var(--accent, #ff4f00); outline-offset: 2px; }
+
+  .ic {
+    grid-area: 1 / 1;
+    width: 17px;
+    height: 17px;
+    transition: transform 0.18s cubic-bezier(0.2, 0.8, 0.3, 1.2), opacity 0.14s ease;
+  }
+  .ic-check { transform: scale(0.4); opacity: 0; color: var(--accent, #ff4f00); }
+
+  .copybtn.copied .ic-copy { transform: scale(0.4); opacity: 0; }
+  .copybtn.copied .ic-check { transform: scale(1); opacity: 1; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .ic { transition: opacity 0.1s ease; }
+  }
+</style>
+
+<script>
+  // Attach once; idempotent across multiple CopyButton instances on a page.
+  if (!(window as any).__turnalCopyInit) {
+    (window as any).__turnalCopyInit = true;
+    const resetTimers = new WeakMap<HTMLButtonElement, number>();
+    document.addEventListener('click', async (e) => {
+      const btn = (e.target as HTMLElement)?.closest?.('.copybtn') as HTMLButtonElement | null;
+      if (!btn) return;
+      try {
+        await navigator.clipboard.writeText(btn.dataset.copy || '');
+      } catch {
+        /* clipboard may be unavailable; still show feedback */
+      }
+      btn.classList.add('copied');
+      btn.setAttribute('aria-label', 'Copied');
+
+      const activeTimer = resetTimers.get(btn);
+      if (activeTimer) window.clearTimeout(activeTimer);
+      resetTimers.set(btn, window.setTimeout(() => {
+        btn.classList.remove('copied');
+        btn.setAttribute('aria-label', btn.dataset.label || 'Copy');
+        resetTimers.delete(btn);
+      }, 1200));
+    });
+  }
+</script>
