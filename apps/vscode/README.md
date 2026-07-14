@@ -53,18 +53,6 @@ npm install -g @aadijo/turnal@latest
 turnal version
 ```
 
-The compatible 0.0.1 CLI hasn’t reached npm’s `latest` channel yet. Until it does, build this repository’s `vscode-extension` branch and point the extension at that binary:
-
-```sh
-git clone https://github.com/AadiJo/turnal.git
-cd turnal
-git switch vscode-extension
-make build
-./bin/turnal sessions --json
-```
-
-The JSON response must contain `"schema_version": 1`. Set **Turnal: CLI Path** to the absolute path of `bin/turnal`, or add the binary to `PATH`. The CLI must live in the environment running the extension host—a WSL, SSH, or Dev Container window needs the CLI installed inside that remote, not only on your local machine.
-
 If the installed CLI is older, the sidebar shows **Turnal CLI needs an update** and keeps the incompatibility visible instead of showing empty history.
 
 ## Commands and settings
