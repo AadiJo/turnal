@@ -1,0 +1,1247 @@
+---
+// Two real agent surfaces feed an interleaved, multi-session Turnal log.
+---
+
+<section id="agent-history" class="agent-history-lab" aria-labelledby="agent-history-title">
+  <div class="ah-page">
+    <div class="ah-stage" aria-label="Claude Code and Codex sessions recording into one Turnal history" data-stage>
+      <header class="ah-head">
+        <h2 id="agent-history-title">Every session, in one history.</h2>
+        <p>Claude Code and Codex can work in sequence or in parallel. Turnal keeps every completed turn in one interleaved record.</p>
+      </header>
+
+      <div class="ah-sessions" data-sessions data-active="claude">
+        <article class="ah-surface ah-surface--claude" data-surface="claude" aria-label="Claude Code terminal">
+          <div class="ah-mobile-ident" aria-hidden="true">
+            <img src="/brands/claude.svg" alt="" width="18" height="18" />
+            <span>Claude Code</span>
+          </div>
+
+          <div class="ah-window-bar">
+            <span class="ah-traffic" aria-hidden="true"><i></i><i></i><i></i></span>
+          </div>
+
+          <div class="ah-terminal-body ah-terminal-body--claude">
+            <div class="ah-scroll ah-scroll--claude" data-scroll="claude">
+              <div class="ah-claude-welcome">
+                <img
+                  class="ah-claude-ui"
+                  src="/labs/terminal-animation/claude-code.svg"
+                  alt="Claude Code v2.1.11 welcome screen using Fable 5"
+                  width="725"
+                  height="189"
+                  draggable="false"
+                />
+                <p class="ah-claude-welcome-model">Fable 5 with high effort · Claude API</p>
+              </div>
+              <div class="ah-log ah-log--claude" data-log="claude"></div>
+            </div>
+            <div class="ah-divider"></div>
+            <div class="ah-composer ah-composer--claude" data-composer="claude">
+              <span class="ah-mark ah-mark--claude" aria-hidden="true">❯</span>
+              <span class="ah-composer-text" data-composer-text="claude"></span><i class="ah-caret" aria-hidden="true"></i>
+            </div>
+            <div class="ah-divider"></div>
+            <p class="ah-shortcuts">? for shortcuts</p>
+          </div>
+        </article>
+
+        <article class="ah-surface ah-surface--codex" data-surface="codex" aria-label="Codex CLI terminal">
+          <div class="ah-mobile-ident" aria-hidden="true">
+            <img src="/brands/codex.svg" alt="" width="18" height="18" />
+            <span>Codex</span>
+          </div>
+
+          <div class="ah-window-bar">
+            <span class="ah-traffic" aria-hidden="true"><i></i><i></i><i></i></span>
+          </div>
+
+          <div class="ah-terminal-body">
+            <div class="ah-scroll ah-scroll--codex" data-scroll="codex">
+              <div class="ah-codex-card">
+                <p><span class="ah-codex-prompt">&gt;_</span> OpenAI Codex <span class="ah-dim">(v0.144.0)</span></p>
+                <p><span class="ah-dim">model:</span> gpt-5.6-sol high fast</p>
+                <p><span class="ah-dim">directory:</span> ~/Dev/relay-api</p>
+              </div>
+              <div class="ah-log ah-log--codex" data-log="codex"></div>
+            </div>
+            <div class="ah-composer ah-composer--codex" data-composer="codex">
+              <span class="ah-mark ah-mark--codex" aria-hidden="true">›</span>
+              <span class="ah-composer-text" data-composer-text="codex"></span><i class="ah-caret" aria-hidden="true"></i>
+            </div>
+            <div class="ah-codex-footer">
+              <span>gpt-5.6-sol high fast</span>
+            </div>
+          </div>
+        </article>
+      </div>
+
+      <section class="ah-history" aria-label="Turnal multi-session checkpoint history">
+        <header class="ah-history-head" aria-hidden="true">
+          <span class="ah-traffic ah-traffic--history"><i></i><i></i><i></i></span>
+        </header>
+
+        <p class="ah-graph-summary">checkpoint graph: <span data-session-count>2 sessions</span>, <span data-history-count>0 turns</span>, <span data-lane-count>0 lanes</span></p>
+
+        <div class="ah-history-scroll" data-history-scroll>
+          <div class="ah-history-empty" data-history-empty aria-hidden="true"></div>
+          <div class="ah-history-rows" data-history-rows></div>
+        </div>
+      </section>
+
+      <div class="ah-controls">
+        <button type="button" data-toggle aria-pressed="false" aria-label="Pause animation" title="Pause">
+          <span data-icon-pause aria-hidden="true">Ⅱ</span>
+          <span data-icon-play aria-hidden="true" hidden>▶</span>
+        </button>
+        <button type="button" data-replay aria-label="Replay animation" title="Replay">
+          <svg class="ah-replay-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path fill="currentColor" d="M12 5V1L7 6l5 5V7a6 6 0 0 1 6 6a6 6 0 0 1-6 6a6 6 0 0 1-6-6H4a8 8 0 0 0 8 8a8 8 0 0 0 8-8a8 8 0 0 0-8-8" />
+          </svg>
+        </button>
+      </div>
+
+      <p class="ah-sr" role="status" aria-live="polite" data-live></p>
+    </div>
+  </div>
+</section>
+
+<script>
+  type Agent = 'claude' | 'codex';
+  type Session = {
+    id: string;
+    agent: Agent;
+    label: string;
+  };
+  type HistoryTurn = {
+    session: string;
+    turn: number;
+    order: number;
+    time: string;
+    hash: string;
+    prompt: string;
+    tools: string[];
+    changes: string;
+  };
+  type SurfaceEvent = { kind: 'tool' | 'group'; label: string; output: string };
+  type SurfaceTurn = {
+    history: HistoryTurn;
+    events: SurfaceEvent[];
+    assistant: string;
+  };
+  type WaitTimer = {
+    timer: number;
+    remaining: number;
+    startedAt: number;
+    id: number;
+    resolve: (value: boolean) => void;
+  };
+  type Line =
+    | { kind: 'prompt'; text: string }
+    | { kind: 'tool'; label: string; out?: string }
+    | { kind: 'working'; seconds: number }
+    | { kind: 'group'; label: string; items: string[] }
+    | { kind: 'assistant'; text: string };
+
+  const SESSIONS: Session[] = [
+    { id: 'claude-a13f', agent: 'claude', label: '[claude 14:16]' },
+    { id: 'codex-b91e', agent: 'codex', label: '[codex 14:18]' },
+    { id: 'codex-d44a', agent: 'codex', label: '[codex 14:23]' },
+  ];
+
+  const TURNS: SurfaceTurn[] = [
+    {
+      history: { session: 'claude-a13f', turn: 1, order: 0, time: '14:16', hash: 'ad8a917cf3bd', prompt: 'Map the existing fulfillment boundary.', tools: ['Read', 'Bash'], changes: 'no file changes' },
+      events: [
+        { kind: 'tool', label: 'Read(src/webhooks/stripe.ts)', output: 'Read 128 lines' },
+        { kind: 'tool', label: 'Bash(rg "fulfill|claim" src)', output: 'Found 8 matches' },
+      ],
+      assistant: 'Mapped the claim, fulfillment, and response boundary.',
+    },
+    {
+      history: { session: 'codex-b91e', turn: 1, order: 1, time: '14:18', hash: '993f79127546', prompt: 'Define provider timeout configuration.', tools: ['Read', 'Bash'], changes: '3 files +46 -2' },
+      events: [
+        { kind: 'group', label: 'Explored', output: 'Read config/provider.ts' },
+        { kind: 'group', label: 'Ran rg providerTimeout', output: 'Found 6 matches in 3 files' },
+      ],
+      assistant: 'Added typed provider timeout configuration.',
+    },
+    {
+      history: { session: 'claude-a13f', turn: 2, order: 2, time: '14:20', hash: '7f68c3762e1a', prompt: 'Scope raw-body parsing to the Stripe route.', tools: ['Read', 'Edit', 'Bash'], changes: '2 files +16 -10' },
+      events: [
+        { kind: 'tool', label: 'Read(src/http/body.ts)', output: 'Read 94 lines' },
+        { kind: 'tool', label: 'Edit(src/http/body.ts)', output: 'Scoped raw parsing to /stripe' },
+        { kind: 'tool', label: 'Bash(npm test -- stripe)', output: '12 passed' },
+      ],
+      assistant: 'Raw-body parsing is isolated to the signed webhook route.',
+    },
+    {
+      history: { session: 'codex-b91e', turn: 2, order: 3, time: '14:22', hash: '68459d51926d', prompt: 'Synchronize eight delivery workers.', tools: ['Read', 'Edit', 'Bash'], changes: '1 file +63 -7' },
+      events: [
+        { kind: 'group', label: 'Explored', output: 'Read test/webhooks/stripe.test.ts' },
+        { kind: 'group', label: 'Edited stripe.test.ts', output: 'Added an eight-worker barrier' },
+        { kind: 'group', label: 'Ran npm test -- stripe', output: '8 workers synchronized; 12 passed' },
+      ],
+      assistant: 'The integration test now proves fulfillment runs once.',
+    },
+    {
+      history: { session: 'codex-d44a', turn: 1, order: 4, time: '14:23', hash: 'b31b0e743646', prompt: 'Audit retry metrics from a clean context.', tools: ['Read', 'Bash'], changes: 'no file changes' },
+      events: [
+        { kind: 'group', label: 'Explored', output: 'Read src/metrics/webhooks.ts' },
+        { kind: 'group', label: 'Ran rg "duplicate|retry" src', output: 'Found 11 matches' },
+      ],
+      assistant: 'Mapped the duplicate and retry metric paths in the new session.',
+    },
+    {
+      history: { session: 'codex-d44a', turn: 2, order: 5, time: '14:25', hash: '3251ca08a1b4', prompt: 'Separate duplicate metrics from retries.', tools: ['Read', 'Edit', 'Bash'], changes: '2 files +29 -12' },
+      events: [
+        { kind: 'group', label: 'Explored', output: 'Read src/metrics/webhooks.ts' },
+        { kind: 'group', label: 'Edited webhook metrics', output: 'Split duplicate and retry counters' },
+        { kind: 'group', label: 'Ran npm test && npm run lint', output: '12 passed; no problems found' },
+      ],
+      assistant: 'Duplicate deliveries and provider retries now report separately.',
+    },
+    {
+      history: { session: 'claude-a13f', turn: 3, order: 6, time: '14:27', hash: 'eadff0409763', prompt: 'Release the claim only for retryable failures.', tools: ['Read', 'Edit', 'Bash'], changes: '2 files +23 -9' },
+      events: [
+        { kind: 'tool', label: 'Read(src/webhooks/stripe.ts)', output: 'Read 152 lines' },
+        { kind: 'tool', label: 'Edit(src/webhooks/stripe.ts)', output: 'Applied 23 additions, 9 removals' },
+        { kind: 'tool', label: 'Bash(npm test -- stripe)', output: '12 passed' },
+      ],
+      assistant: 'Retryable failures now release the claim safely.',
+    },
+    {
+      history: { session: 'codex-d44a', turn: 3, order: 7, time: '14:29', hash: '5027e8e66e1f', prompt: 'Add the final concurrent delivery regression.', tools: ['Read', 'Write', 'Bash'], changes: '1 file +71 -0' },
+      events: [
+        { kind: 'group', label: 'Explored', output: 'Read test/webhooks/stripe.test.ts' },
+        { kind: 'group', label: 'Wrote concurrent regression', output: 'Added 71 lines to stripe.test.ts' },
+        { kind: 'group', label: 'Ran npm test -- stripe', output: '13 passed' },
+      ],
+      assistant: 'The new session added and verified the final concurrency regression.',
+    },
+  ];
+
+  const stage = document.querySelector<HTMLElement>('[data-stage]');
+  if (stage) {
+    const surfaces: Record<Agent, HTMLElement> = {
+      claude: stage.querySelector<HTMLElement>('[data-surface="claude"]')!,
+      codex: stage.querySelector<HTMLElement>('[data-surface="codex"]')!,
+    };
+    const sessionsRoot = stage.querySelector<HTMLElement>('[data-sessions]')!;
+    const logs: Record<Agent, HTMLElement> = {
+      claude: stage.querySelector<HTMLElement>('[data-log="claude"]')!,
+      codex: stage.querySelector<HTMLElement>('[data-log="codex"]')!,
+    };
+    const scrolls: Record<Agent, HTMLElement> = {
+      claude: stage.querySelector<HTMLElement>('[data-scroll="claude"]')!,
+      codex: stage.querySelector<HTMLElement>('[data-scroll="codex"]')!,
+    };
+    const composers: Record<Agent, HTMLElement> = {
+      claude: stage.querySelector<HTMLElement>('[data-composer-text="claude"]')!,
+      codex: stage.querySelector<HTMLElement>('[data-composer-text="codex"]')!,
+    };
+    const historyRows = stage.querySelector<HTMLElement>('[data-history-rows]')!;
+    const historyRoot = stage.querySelector<HTMLElement>('.ah-history')!;
+    const historySummary = stage.querySelector<HTMLElement>('.ah-graph-summary')!;
+    const historyScroll = stage.querySelector<HTMLElement>('.ah-history-scroll')!;
+    const historyEmpty = stage.querySelector<HTMLElement>('[data-history-empty]')!;
+    const historyCount = stage.querySelector<HTMLElement>('[data-history-count]')!;
+    const sessionCount = stage.querySelector<HTMLElement>('[data-session-count]')!;
+    const laneCount = stage.querySelector<HTMLElement>('[data-lane-count]')!;
+    const live = stage.querySelector<HTMLElement>('[data-live]')!;
+    const toggleBtn = stage.querySelector<HTMLButtonElement>('[data-toggle]')!;
+    const replayBtn = stage.querySelector<HTMLButtonElement>('[data-replay]')!;
+    const pauseIcon = toggleBtn.querySelector<HTMLElement>('[data-icon-pause]')!;
+    const playIcon = toggleBtn.querySelector<HTMLElement>('[data-icon-play]')!;
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+
+    let runId = 0;
+    let paused = false;
+    let inView = true;
+    let lastActive: Agent = 'claude';
+    const currentSession: Record<Agent, string> = { claude: '', codex: '' };
+    const recordedTurns: HistoryTurn[] = [];
+    const working = new Set<Agent>();
+    const timers = new Set<WaitTimer>();
+    let historyFadeFrame = 0;
+    let historyFadeResolve: ((value: boolean) => void) | null = null;
+
+    const el = (tag: string, cls?: string, text?: string) => {
+      const node = document.createElement(tag);
+      if (cls) node.className = cls;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    };
+
+    const armTimer = (entry: WaitTimer) => {
+      entry.startedAt = performance.now();
+      entry.timer = window.setTimeout(() => {
+        entry.timer = 0;
+        timers.delete(entry);
+        entry.resolve(entry.id === runId);
+      }, entry.remaining);
+    };
+
+    const wait = (ms: number, id: number) => new Promise<boolean>((resolve) => {
+      if (id !== runId) {
+        resolve(false);
+        return;
+      }
+      const entry: WaitTimer = { timer: 0, remaining: ms, startedAt: 0, id, resolve };
+      timers.add(entry);
+      if (!paused) armTimer(entry);
+    });
+
+    const pauseTimers = () => {
+      const now = performance.now();
+      timers.forEach((entry) => {
+        if (!entry.timer) return;
+        window.clearTimeout(entry.timer);
+        entry.remaining = Math.max(0, entry.remaining - (now - entry.startedAt));
+        entry.timer = 0;
+      });
+    };
+
+    const resumeTimers = () => {
+      timers.forEach((entry) => {
+        if (!entry.timer) armTimer(entry);
+      });
+    };
+
+    const clearTimers = () => {
+      timers.forEach((entry) => {
+        if (entry.timer) window.clearTimeout(entry.timer);
+        entry.timer = 0;
+        entry.resolve(false);
+      });
+      timers.clear();
+    };
+
+    const clearHistoryResetAnimations = () => {
+      if (historyFadeFrame) window.cancelAnimationFrame(historyFadeFrame);
+      historyFadeFrame = 0;
+      historyFadeResolve?.(false);
+      historyFadeResolve = null;
+      historySummary.style.removeProperty('opacity');
+      historySummary.style.removeProperty('transform');
+      historyScroll.style.removeProperty('opacity');
+      historyScroll.style.removeProperty('transform');
+    };
+
+    const fadeHistory = (id: number) => new Promise<boolean>((resolve) => {
+      clearHistoryResetAnimations();
+      historyFadeResolve = resolve;
+      let elapsed = 0;
+      let previousFrame = performance.now();
+      const duration = 680;
+      const tick = (now: number) => {
+        if (id !== runId) {
+          clearHistoryResetAnimations();
+          return;
+        }
+        const frameDuration = now - previousFrame;
+        previousFrame = now;
+        if (paused) {
+          historyFadeFrame = window.requestAnimationFrame(tick);
+          return;
+        }
+        elapsed += frameDuration;
+        const progress = Math.min(1, elapsed / duration);
+        const eased = progress * progress * (3 - 2 * progress);
+        const opacity = String(1 - eased);
+        const transform = `translateY(${(5 * eased).toFixed(2)}px)`;
+        historySummary.style.opacity = opacity;
+        historySummary.style.transform = transform;
+        historyScroll.style.opacity = opacity;
+        historyScroll.style.transform = transform;
+        if (progress < 1) historyFadeFrame = window.requestAnimationFrame(tick);
+        else {
+          historyFadeFrame = 0;
+          historyFadeResolve = null;
+          resolve(true);
+        }
+      };
+      historyFadeFrame = window.requestAnimationFrame(tick);
+    });
+
+    const getSession = (id: string) => SESSIONS.find((session) => session.id === id)!;
+
+    const scrollDown = (agent: Agent) => {
+      scrolls[agent].scrollTop = scrolls[agent].scrollHeight;
+    };
+
+    const syncActivity = () => {
+      surfaces.claude.classList.toggle('is-working', working.has('claude'));
+      surfaces.codex.classList.toggle('is-working', working.has('codex'));
+      if (working.size === 2) {
+        sessionsRoot.dataset.active = 'both';
+      } else if (working.size === 1) {
+        const [agent] = [...working];
+        lastActive = agent;
+        sessionsRoot.dataset.active = agent;
+      } else {
+        sessionsRoot.dataset.active = lastActive;
+      }
+    };
+
+    const setSession = (agent: Agent, sessionId: string) => {
+      if (currentSession[agent] !== sessionId) {
+        currentSession[agent] = sessionId;
+        logs[agent].replaceChildren();
+        scrolls[agent].scrollTop = 0;
+      }
+      lastActive = agent;
+    };
+
+    const renderLine = (agent: Agent, line: Line) => {
+      const log = logs[agent];
+      if (line.kind === 'prompt') {
+        const row = el('div', `ah-line ah-line--prompt ah-line--${agent}`);
+        row.append(el('span', 'ah-line-mark', agent === 'claude' ? '❯' : '›'));
+        row.append(el('span', 'ah-line-text', line.text));
+        log.append(row);
+      } else if (line.kind === 'tool') {
+        const wrap = el('div', 'ah-line ah-line--tool');
+        const head = el('div', 'ah-tool-head');
+        head.append(el('span', 'ah-tool-status'));
+        head.append(el('span', 'ah-tool-label', line.label));
+        wrap.append(head);
+        if (line.out) {
+          const out = el('div', 'ah-tool-out');
+          out.append(el('span', 'ah-branch', '└'));
+          out.append(el('span', '', line.out));
+          wrap.append(out);
+        }
+        log.append(wrap);
+      } else if (line.kind === 'working') {
+        const row = el('div', 'ah-line ah-line--working');
+        row.append(el('span', 'ah-working-dot', '•'));
+        row.append(el('span', 'ah-working-text', `Working (${line.seconds}s · esc to interrupt)`));
+        log.append(row);
+      } else if (line.kind === 'group') {
+        const wrap = el('div', 'ah-line ah-line--group');
+        const head = el('div', 'ah-group-head');
+        head.append(el('span', '', '•'));
+        head.append(el('span', '', line.label));
+        wrap.append(head);
+        line.items.forEach((itemText) => {
+          const item = el('div', 'ah-group-item');
+          item.append(el('span', 'ah-branch', '└'));
+          item.append(el('span', '', itemText));
+          wrap.append(item);
+        });
+        log.append(wrap);
+      } else {
+        const row = el('div', `ah-line ah-line--assistant ah-line--assistant-${agent}`);
+        row.append(el('span', 'ah-assistant-status'));
+        row.append(el('span', '', line.text));
+        log.append(row);
+      }
+      scrollDown(agent);
+      return log.lastElementChild as HTMLElement;
+    };
+
+    const typePrompt = async (agent: Agent, text: string, id: number) => {
+      composers[agent].textContent = '';
+      let typed = '';
+      for (const character of text) {
+        if (id !== runId) return false;
+        typed += character;
+        composers[agent].textContent = typed;
+        if (!(await wait(character === ' ' ? 20 : 11 + (typed.length % 5) * 2, id))) return false;
+      }
+      if (!(await wait(170, id))) return false;
+      renderLine(agent, { kind: 'prompt', text });
+      composers[agent].textContent = '';
+      return true;
+    };
+
+    type PackedSpan = { sessionId: string; minOrder: number; maxOrder: number; lane: number };
+
+    // Same xterm palette and creation-order assignment used by internal/cli/graph.go.
+    // The resulting lookup is keyed by session ID, so lane repacking never changes identity.
+    const cliSessionPalette = ['#87ff87', '#ffd700', '#d7afff', '#5fd7d7', '#ff875f', '#afafff'];
+    const sessionColors = new Map(SESSIONS.map((session, index) => [session.id, cliSessionPalette[index % cliSessionPalette.length]]));
+    const sessionColor = (sessionId: string) => sessionColors.get(sessionId) ?? cliSessionPalette[0];
+
+    const packSessionSpans = (turns: HistoryTurn[]) => {
+      const bounds = new Map<string, { minOrder: number; maxOrder: number }>();
+      turns.forEach((turn) => {
+        const bound = bounds.get(turn.session);
+        if (bound) {
+          bound.minOrder = Math.min(bound.minOrder, turn.order);
+          bound.maxOrder = Math.max(bound.maxOrder, turn.order);
+        } else bounds.set(turn.session, { minOrder: turn.order, maxOrder: turn.order });
+      });
+
+      const spans: PackedSpan[] = [...bounds.entries()]
+        .map(([sessionId, bound]) => ({ sessionId, ...bound, lane: -1 }))
+        .sort((a, b) => a.minOrder - b.minOrder || a.maxOrder - b.maxOrder || a.sessionId.localeCompare(b.sessionId));
+      const lanes: PackedSpan[][] = [];
+
+      spans.forEach((span) => {
+        let lane = lanes.findIndex((members) => members.every((member) => span.maxOrder < member.minOrder || member.maxOrder < span.minOrder));
+        if (lane < 0) lane = lanes.length;
+        // The real renderer caps this at eight; the eighth is reserved for overflow.
+        lane = Math.min(lane, 7);
+        span.lane = lane;
+        if (!lanes[lane]) lanes[lane] = [];
+        lanes[lane].push(span);
+      });
+
+      return { spans, laneTotal: lanes.length };
+    };
+
+    const makeLaneTokens = (turn: HistoryTurn, node: boolean, spans: PackedSpan[], total: number) => {
+      const fragment = document.createDocumentFragment();
+      const ownSpan = spans.find((span) => span.sessionId === turn.session)!;
+      for (let lane = 0; lane < total; lane += 1) {
+        const token = el('span', 'ah-lane-token');
+        if (node && ownSpan.lane === lane) {
+          token.textContent = '*';
+          token.style.color = sessionColor(turn.session);
+        } else {
+          const activeSpan = spans.find((span) =>
+            span.lane === lane &&
+            span.minOrder < turn.order &&
+            span.maxOrder >= turn.order
+          );
+          token.textContent = activeSpan ? '|' : '';
+          if (activeSpan) token.style.color = sessionColor(activeSpan.sessionId);
+        }
+        fragment.append(token);
+      }
+      return fragment;
+    };
+
+    const renderHistory = (freshOrder?: number) => {
+      historyRows.replaceChildren();
+      historyEmpty.hidden = recordedTurns.length > 0;
+      const { spans, laneTotal } = packSessionSpans(recordedTurns);
+      const total = Math.max(1, laneTotal);
+      historyRoot.style.setProperty('--lane-count', String(total));
+      laneCount.textContent = `${laneTotal} ${laneTotal === 1 ? 'lane' : 'lanes'}`;
+      const uniqueSessions = new Set(recordedTurns.map((turn) => turn.session)).size;
+      const displayedSessions = Math.max(2, uniqueSessions);
+      sessionCount.textContent = `${displayedSessions} sessions`;
+      historyCount.textContent = `${recordedTurns.length} ${recordedTurns.length === 1 ? 'turn' : 'turns'}`;
+
+      [...recordedTurns].sort((a, b) => b.order - a.order).forEach((turn) => {
+        const session = getSession(turn.session);
+        const row = el('article', `ah-history-row${turn.order === freshOrder ? ' is-fresh' : ''}`);
+        row.dataset.agent = session.agent;
+        row.dataset.session = session.id;
+        row.dataset.order = String(turn.order);
+
+        const main = el('div', 'ah-graph-line ah-graph-line--main');
+        main.append(makeLaneTokens(turn, true, spans, total));
+        const record = el('div', 'ah-record-main');
+        record.append(el('span', 'ah-hash', turn.hash));
+        record.append(el('time', 'ah-time', turn.time));
+        const label = el('span', 'ah-record-session', session.label);
+        label.style.color = sessionColor(session.id);
+        record.append(label);
+        record.append(el('strong', 'ah-turn-number', `turn ${turn.turn}`));
+        const toolSummary = turn.tools.length > 1 ? `${turn.tools[0]} +${turn.tools.length - 1}` : turn.tools[0];
+        record.append(el('span', 'ah-result', toolSummary));
+        record.append(el('span', 'ah-complete', 'complete'));
+        record.append(el('span', 'ah-changes', turn.changes));
+        record.append(el('span', 'ah-tools', `tools: ${turn.tools.join(', ')}`));
+        main.append(record);
+
+        const prompt = el('div', 'ah-graph-line ah-graph-line--prompt');
+        prompt.append(makeLaneTokens(turn, false, spans, total));
+        const promptText = el('p');
+        promptText.append(el('span', '', 'Prompt: '));
+        promptText.append(document.createTextNode(`“${turn.prompt}”`));
+        prompt.append(promptText);
+        row.append(main, prompt);
+        historyRows.append(row);
+      });
+    };
+
+    const landTurn = (turn: HistoryTurn) => {
+      recordedTurns.push(turn);
+      renderHistory(turn.order);
+      const session = getSession(turn.session);
+      live.textContent = `${session.id}, turn ${turn.turn}, recorded at ${turn.time}.`;
+    };
+
+    const runTurn = async (surfaceTurn: SurfaceTurn, id: number, startDelay = 0) => {
+      if (startDelay && !(await wait(startDelay, id))) return false;
+      const session = getSession(surfaceTurn.history.session);
+      const agent = session.agent;
+      setSession(agent, session.id);
+      working.add(agent);
+      syncActivity();
+      if (!(await typePrompt(agent, surfaceTurn.history.prompt, id))) return false;
+
+      if (agent === 'codex') {
+        const status = renderLine(agent, { kind: 'working', seconds: 1 });
+        if (!(await wait(320, id))) return false;
+        const text = status.querySelector<HTMLElement>('.ah-working-text');
+        if (text) text.textContent = 'Working (2s · esc to interrupt)';
+        if (!(await wait(240, id))) return false;
+        status.remove();
+      }
+
+      for (const event of surfaceTurn.events) {
+        if (!(await wait(agent === 'claude' ? 150 : 180, id))) return false;
+        if (event.kind === 'tool') renderLine(agent, { kind: 'tool', label: event.label, out: event.output });
+        else renderLine(agent, { kind: 'group', label: event.label, items: [event.output] });
+      }
+
+      if (!(await wait(220, id))) return false;
+      renderLine(agent, { kind: 'assistant', text: surfaceTurn.assistant });
+      if (!(await wait(230, id))) return false;
+      landTurn(surfaceTurn.history);
+      working.delete(agent);
+      syncActivity();
+      return true;
+    };
+
+    const startNewCodexSession = async (id: number) => {
+      setSession('codex', 'codex-b91e');
+      working.add('codex');
+      syncActivity();
+      if (!(await typePrompt('codex', '/new', id))) return false;
+      if (!(await wait(320, id))) return false;
+      setSession('codex', 'codex-d44a');
+      working.delete('codex');
+      syncActivity();
+      live.textContent = 'Codex started a new provider session with slash new.';
+      return true;
+    };
+
+    const clearProviderSessions = async (id: number) => {
+      stage.classList.add('is-loop-clearing');
+      working.add('claude');
+      working.add('codex');
+      syncActivity();
+      const cleared = await Promise.all([
+        typePrompt('claude', '/clear', id),
+        typePrompt('codex', '/new', id),
+      ]);
+      if (!cleared.every(Boolean)) return false;
+      if (!(await wait(320, id))) return false;
+      logs.claude.replaceChildren();
+      logs.codex.replaceChildren();
+      composers.claude.textContent = '';
+      composers.codex.textContent = '';
+      scrolls.claude.scrollTop = 0;
+      scrolls.codex.scrollTop = 0;
+      working.clear();
+      syncActivity();
+      live.textContent = 'Claude Code and Codex cleared their active conversations.';
+      return true;
+    };
+
+    const resetAll = () => {
+      logs.claude.replaceChildren();
+      logs.codex.replaceChildren();
+      composers.claude.textContent = '';
+      composers.codex.textContent = '';
+      recordedTurns.length = 0;
+      renderHistory();
+      currentSession.claude = '';
+      currentSession.codex = '';
+      working.clear();
+      lastActive = 'claude';
+      syncActivity();
+    };
+
+    const play = async (id: number) => {
+      resetAll();
+      stage.classList.remove('is-history-clearing');
+      if (!(await wait(420, id))) return;
+      stage.classList.remove('is-loop-clearing');
+
+      // The two original sessions establish overlapping spans.
+      await Promise.all([
+        runTurn(TURNS[0], id),
+        runTurn(TURNS[1], id, 140),
+      ]);
+      if (id !== runId || paused) return;
+      if (!(await wait(220, id))) return;
+
+      await Promise.all([
+        runTurn(TURNS[2], id),
+        runTurn(TURNS[3], id, 140),
+      ]);
+      if (id !== runId || paused) return;
+      if (!(await wait(220, id))) return;
+
+      // Codex starts a new session early; the old session's span ends here.
+      if (!(await startNewCodexSession(id))) return;
+      if (!(await wait(240, id))) return;
+
+      if (!(await runTurn(TURNS[4], id))) return;
+      if (!(await wait(180, id))) return;
+      if (!(await runTurn(TURNS[5], id))) return;
+      if (!(await wait(180, id))) return;
+
+      // Claude resumes while the new Codex session continues; packing is recalculated.
+      await Promise.all([runTurn(TURNS[6], id), runTurn(TURNS[7], id, 140)]);
+      if (id !== runId || paused) return;
+
+      live.textContent = 'History settled with 8 turns across 3 sessions packed into 2 lanes.';
+      if (!(await wait(1800, id))) return;
+      if (!(await clearProviderSessions(id))) return;
+      if (!(await wait(220, id))) return;
+      if (!(await fadeHistory(id))) return;
+      resetAll();
+      clearHistoryResetAnimations();
+      if (!(await wait(180, id))) return;
+      if (!(await wait(420, id))) return;
+      if (id === runId && !paused) start();
+    };
+
+    const renderStatic = () => {
+      resetAll();
+      TURNS.forEach((turn) => landTurn(turn.history));
+      const claudeLast = TURNS[6];
+      const codexLast = TURNS[7];
+      setSession('claude', claudeLast.history.session);
+      renderLine('claude', { kind: 'prompt', text: claudeLast.history.prompt });
+      claudeLast.events.forEach((event) => renderLine('claude', { kind: 'tool', label: event.label, out: event.output }));
+      renderLine('claude', { kind: 'assistant', text: claudeLast.assistant });
+      setSession('codex', codexLast.history.session);
+      renderLine('codex', { kind: 'prompt', text: codexLast.history.prompt });
+      codexLast.events.forEach((event) => renderLine('codex', { kind: 'group', label: event.label, items: [event.output] }));
+      renderLine('codex', { kind: 'assistant', text: codexLast.assistant });
+      live.textContent = 'Static summary with 8 turns across 3 sessions packed into 2 lanes.';
+    };
+
+    const start = () => {
+      clearTimers();
+      runId += 1;
+      if (reduceMotion.matches) renderStatic();
+      else void play(runId);
+    };
+
+    const setPaused = (value: boolean) => {
+      if (paused === value) return;
+      paused = value;
+      toggleBtn.setAttribute('aria-pressed', String(paused));
+      toggleBtn.setAttribute('aria-label', paused ? 'Resume animation' : 'Pause animation');
+      toggleBtn.title = paused ? 'Resume' : 'Pause';
+      pauseIcon.hidden = paused;
+      playIcon.hidden = !paused;
+      if (paused) pauseTimers();
+      else if (inView && !reduceMotion.matches) resumeTimers();
+    };
+
+    toggleBtn.addEventListener('click', () => setPaused(!paused));
+    replayBtn.addEventListener('click', () => {
+      paused = false;
+      toggleBtn.setAttribute('aria-pressed', 'false');
+      toggleBtn.setAttribute('aria-label', 'Pause animation');
+      toggleBtn.title = 'Pause';
+      pauseIcon.hidden = false;
+      playIcon.hidden = true;
+      stage.classList.remove('is-history-clearing');
+      stage.classList.remove('is-loop-clearing');
+      clearHistoryResetAnimations();
+      start();
+    });
+
+    const observer = new IntersectionObserver(([entry]) => {
+      const wasInView = inView;
+      inView = entry.isIntersecting && entry.intersectionRatio >= 0.25;
+      if (inView && !wasInView && !paused) start();
+      if (!inView) {
+        runId += 1;
+        clearTimers();
+        clearHistoryResetAnimations();
+      }
+    }, { threshold: [0, 0.25, 1] });
+    observer.observe(stage);
+
+    const onMotionChange = () => start();
+    reduceMotion.addEventListener('change', onMotionChange);
+    start();
+
+    window.addEventListener('pagehide', () => {
+      clearTimers();
+      clearHistoryResetAnimations();
+      observer.disconnect();
+      reduceMotion.removeEventListener('change', onMotionChange);
+    }, { once: true });
+  }
+</script>
+
+<style is:global>
+  .agent-history-lab {
+    --ah-bg: #100f0d;
+    --ah-panel: #0c0b09;
+    --ah-panel-soft: #12100e;
+    --ah-line: rgba(236, 227, 212, 0.11);
+    --ah-text: #ece3d4;
+    --ah-muted: #999389;
+    --ah-faint: #68635b;
+    --ah-accent: #ff4f00;
+    --ah-claude: #ca7c5e;
+    --ah-success: #55b792;
+    width: 100%;
+    scroll-margin-top: 82px;
+    background: transparent;
+    color: var(--ah-text);
+  }
+
+  .agent-history-lab .ah-page {
+    display: grid;
+    min-height: 0;
+    padding: 68px 28px 96px;
+    place-items: center;
+  }
+
+  .agent-history-lab .ah-stage {
+    display: flex;
+    width: min(100%, 1080px);
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .agent-history-lab .ah-head {
+    max-width: 670px;
+    margin: 0 auto 32px;
+    text-align: center;
+  }
+  .agent-history-lab .ah-head h2 {
+    margin: 0;
+    font-size: clamp(34px, 4vw, 54px);
+    font-weight: 650;
+    letter-spacing: -0.045em;
+    line-height: 1;
+    text-wrap: balance;
+  }
+  .agent-history-lab .ah-head p {
+    max-width: 60ch;
+    margin: 18px auto 0;
+    color: var(--ah-muted);
+    font-size: 15.5px;
+    line-height: 1.6;
+    text-wrap: pretty;
+  }
+
+  .agent-history-lab .ah-sessions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+
+  .agent-history-lab .ah-surface {
+    position: relative;
+    display: flex;
+    min-width: 0;
+    height: 316px;
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid var(--ah-line);
+    border-radius: 11px;
+    background: var(--ah-panel);
+    opacity: 1;
+    transition: border-color 320ms ease, box-shadow 320ms ease;
+  }
+  .agent-history-lab .ah-surface--claude.is-working {
+    border-color: rgba(202, 124, 94, 0.52);
+    box-shadow: 0 16px 44px -32px rgba(202, 124, 94, 0.7);
+  }
+  .agent-history-lab .ah-surface--codex.is-working {
+    border-color: rgba(236, 227, 212, 0.36);
+    box-shadow: 0 16px 44px -32px rgba(236, 227, 212, 0.4);
+  }
+  .agent-history-lab .ah-surface::after {
+    position: absolute;
+    z-index: 5;
+    top: 0;
+    right: 0;
+    left: 0;
+    height: 2px;
+    background: var(--ah-surface-color, var(--ah-text));
+    content: '';
+    opacity: 0;
+    transform: scaleX(0.3);
+    transition: opacity 260ms ease, transform 340ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .agent-history-lab .ah-surface--claude { --ah-surface-color: var(--ah-claude); }
+  .agent-history-lab .ah-surface.is-working::after { opacity: 0.9; transform: scaleX(1); }
+
+  .agent-history-lab .ah-window-bar {
+    display: flex;
+    align-items: center;
+    min-height: 34px;
+    padding: 0 11px;
+    border-bottom: 1px solid var(--ah-line);
+    background: var(--ah-panel-soft);
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--ah-faint);
+  }
+  .agent-history-lab .ah-traffic { display: flex; gap: 5px; }
+  .agent-history-lab .ah-traffic i {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: rgba(236, 227, 212, 0.16);
+    transition: background-color 180ms ease, box-shadow 180ms ease;
+  }
+  .agent-history-lab .ah-surface.is-working .ah-traffic i:nth-child(1) {
+    background: #ff5f57;
+    box-shadow: 0 0 8px rgba(255, 95, 87, 0.42);
+  }
+  .agent-history-lab .ah-surface.is-working .ah-traffic i:nth-child(2) {
+    background: #febc2e;
+    box-shadow: 0 0 8px rgba(254, 188, 46, 0.34);
+  }
+  .agent-history-lab .ah-surface.is-working .ah-traffic i:nth-child(3) {
+    background: #28c840;
+    box-shadow: 0 0 8px rgba(40, 200, 64, 0.34);
+  }
+
+  .agent-history-lab .ah-terminal-body {
+    display: flex;
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .agent-history-lab .ah-terminal-body--claude { padding: 0 14px 11px; }
+
+  .agent-history-lab .ah-scroll {
+    min-height: 0;
+    flex: 1;
+    overflow: hidden;
+    scrollbar-width: none;
+  }
+  .agent-history-lab .ah-scroll::-webkit-scrollbar { display: none; }
+  .agent-history-lab .ah-scroll--claude {
+    margin-inline: -14px;
+    padding: 12px 14px 0;
+  }
+  .agent-history-lab .ah-scroll--codex { padding: 8px 14px; }
+
+  .agent-history-lab .ah-claude-ui {
+    display: block;
+    width: 100%;
+    height: auto;
+    user-select: none;
+  }
+  .agent-history-lab .ah-claude-welcome { position: relative; }
+  .agent-history-lab .ah-claude-welcome-model {
+    position: absolute;
+    top: 70%;
+    left: 1.5%;
+    display: grid;
+    width: 49%;
+    height: 14%;
+    place-items: center;
+    background: var(--ah-panel);
+    font-family: var(--mono);
+    font-size: clamp(8px, 1vw, 10.5px);
+    color: var(--ah-muted);
+    white-space: nowrap;
+  }
+
+  .agent-history-lab .ah-log {
+    display: grid;
+    gap: 6px;
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1.42;
+    color: var(--ah-muted);
+  }
+  .agent-history-lab .ah-log--claude { padding-top: 12px; }
+  .agent-history-lab .ah-line { animation: ah-rise 220ms ease both; }
+  @keyframes ah-rise {
+    from { opacity: 0; transform: translateY(3px); }
+    to { opacity: 1; transform: none; }
+  }
+
+  .agent-history-lab .ah-line--prompt,
+  .agent-history-lab .ah-tool-head,
+  .agent-history-lab .ah-line--assistant,
+  .agent-history-lab .ah-group-head {
+    display: grid;
+    grid-template-columns: 12px minmax(0, 1fr);
+    gap: 6px;
+    color: var(--ah-text);
+  }
+  .agent-history-lab .ah-line--prompt {
+    padding-block: 1px;
+    background: rgba(255, 255, 255, 0.1);
+  }
+  .agent-history-lab .ah-line--claude .ah-line-mark { color: var(--ah-claude); }
+  .agent-history-lab .ah-line--codex .ah-line-mark { color: var(--ah-text); }
+  .agent-history-lab .ah-line-text,
+  .agent-history-lab .ah-tool-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .agent-history-lab .ah-tool-status,
+  .agent-history-lab .ah-assistant-status {
+    align-self: center;
+    justify-self: center;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--ah-success);
+  }
+  .agent-history-lab .ah-assistant-status { background: currentColor; }
+  .agent-history-lab .ah-line--assistant-claude .ah-assistant-status { color: var(--ah-claude); }
+  .agent-history-lab .ah-tool-out,
+  .agent-history-lab .ah-group-item {
+    display: grid;
+    grid-template-columns: 12px minmax(0, 1fr);
+    gap: 6px;
+    padding-left: 18px;
+    color: var(--ah-muted);
+  }
+  .agent-history-lab .ah-branch { color: var(--ah-faint); }
+  .agent-history-lab .ah-line--working {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--ah-text);
+  }
+  .agent-history-lab .ah-working-dot { animation: ah-pulse 1s ease-in-out infinite; }
+  @keyframes ah-pulse { 50% { opacity: 0.28; } }
+
+  .agent-history-lab .ah-divider { height: 1px; flex: none; background: var(--ah-muted); }
+  .agent-history-lab .ah-composer {
+    display: flex;
+    min-height: 30px;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--ah-text);
+  }
+  .agent-history-lab .ah-composer--claude { padding: 7px 0 8px; }
+  .agent-history-lab .ah-composer--codex { padding: 7px 14px; border-top: 1px solid var(--ah-line); }
+  .agent-history-lab .ah-mark--claude { color: var(--ah-muted); }
+  .agent-history-lab .ah-mark--codex { color: var(--ah-text); font-size: 15px; }
+  .agent-history-lab .ah-composer-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .agent-history-lab .ah-caret {
+    width: 7px;
+    height: 13px;
+    flex: none;
+    background: var(--ah-text);
+    opacity: 0;
+    animation: ah-blink 1s steps(1) infinite;
+  }
+  .agent-history-lab .is-working .ah-caret { opacity: 1; }
+  @keyframes ah-blink { 50% { opacity: 0; } }
+  .agent-history-lab .ah-shortcuts {
+    padding-top: 9px;
+    font-family: var(--mono);
+    font-size: 10px;
+    line-height: 1;
+    color: var(--ah-muted);
+  }
+
+  .agent-history-lab .ah-codex-card {
+    margin: 3px 0 10px;
+    padding: 9px 11px;
+    border: 1px solid var(--ah-line);
+    border-radius: 7px;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    line-height: 1.55;
+    color: var(--ah-text);
+  }
+  .agent-history-lab .ah-codex-prompt { font-weight: 600; }
+  .agent-history-lab .ah-dim { color: var(--ah-faint); }
+  .agent-history-lab .ah-codex-footer {
+    display: flex;
+    gap: 6px;
+    padding: 7px 14px;
+    border-top: 1px solid var(--ah-line);
+    background: var(--ah-panel-soft);
+    font-family: var(--mono);
+    font-size: 9.5px;
+    color: var(--ah-muted);
+  }
+
+  .agent-history-lab .ah-mobile-ident { display: none; }
+
+  .agent-history-lab .ah-history {
+    --lane-count: 2;
+    overflow: hidden;
+    border: 1px solid var(--ah-line);
+    border-radius: 11px;
+    background: var(--ah-panel);
+  }
+  .agent-history-lab .ah-history-head {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    min-height: 38px;
+    padding: 0 14px;
+    border-bottom: 1px solid var(--ah-line);
+    background: var(--ah-panel-soft);
+  }
+  .agent-history-lab .ah-traffic--history i { background: rgba(236, 227, 212, 0.12); }
+
+  .agent-history-lab .ah-graph-summary {
+    padding: 9px 14px 3px;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--ah-text);
+  }
+  .agent-history-lab .ah-graph-summary span { color: var(--ah-muted); }
+
+  .agent-history-lab .ah-history-scroll {
+    position: relative;
+    height: 224px;
+    overflow: hidden;
+    padding: 8px 14px 10px;
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1.32;
+  }
+  .agent-history-lab .ah-history-scroll::after {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    height: 22px;
+    background: linear-gradient(to bottom, transparent, var(--ah-panel));
+    content: '';
+    pointer-events: none;
+  }
+  .agent-history-lab .ah-history-empty { display: none; }
+  .agent-history-lab .ah-history-rows { display: flex; flex-direction: column; }
+  .agent-history-lab .ah-history-row {
+    padding: 3px 0 4px;
+    border-bottom: 1px solid rgba(236, 227, 212, 0.035);
+  }
+  .agent-history-lab .ah-history-row.is-fresh {
+    animation: ah-log-land 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+  @keyframes ah-log-land {
+    from { opacity: 0; transform: translateY(-10px); }
+    to { opacity: 1; transform: none; }
+  }
+  .agent-history-lab .ah-graph-line {
+    display: grid;
+    grid-template-columns: repeat(var(--lane-count), 18px) minmax(0, 1fr);
+    min-width: 0;
+  }
+  .agent-history-lab .ah-lane-token {
+    display: block;
+    text-align: center;
+    font-weight: 700;
+    text-shadow: 0 0 12px currentColor;
+  }
+  .agent-history-lab .ah-record-main {
+    display: flex;
+    min-width: 0;
+    align-items: baseline;
+    gap: 8px;
+    white-space: nowrap;
+  }
+  .agent-history-lab .ah-hash { color: var(--ah-faint); }
+  .agent-history-lab .ah-time { color: var(--ah-muted); }
+  .agent-history-lab .ah-record-session { font-weight: 600; }
+  .agent-history-lab .ah-turn-number { color: var(--ah-text); font-weight: 600; }
+  .agent-history-lab .ah-result { color: #87afff; }
+  .agent-history-lab .ah-complete,
+  .agent-history-lab .ah-changes,
+  .agent-history-lab .ah-tools { color: var(--ah-faint); }
+  .agent-history-lab .ah-graph-line--prompt p {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--ah-muted);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 9.5px;
+    line-height: 1.25;
+  }
+  .agent-history-lab .ah-graph-line--prompt p span { color: var(--ah-faint); }
+
+  .agent-history-lab .ah-controls { display: flex; justify-content: center; gap: 8px; }
+  .agent-history-lab .ah-controls button {
+    display: grid;
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    place-items: center;
+    border: 1px solid var(--ah-line);
+    border-radius: 7px;
+    background: var(--ah-panel);
+    color: var(--ah-text);
+    font-family: Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1;
+    transition: border-color 160ms ease, background 160ms ease, transform 120ms ease;
+  }
+  .agent-history-lab .ah-controls button [hidden] { display: none; }
+  .agent-history-lab .ah-replay-icon { display: block; width: 18px; height: 18px; }
+  .agent-history-lab .ah-controls button:hover { border-color: rgba(236, 227, 212, 0.3); }
+  .agent-history-lab .ah-controls button:active { transform: scale(0.95); }
+  .agent-history-lab .ah-controls button:focus-visible { outline: 2px solid var(--ah-accent); outline-offset: 2px; }
+  .agent-history-lab .ah-sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  @media (max-width: 760px) {
+    .agent-history-lab .ah-page { padding: 84px 20px 92px; }
+    .agent-history-lab .ah-stage { gap: 13px; }
+    .agent-history-lab .ah-head { margin-bottom: 26px; }
+    .agent-history-lab .ah-head h2 { font-size: clamp(32px, 8vw, 44px); }
+    .agent-history-lab .ah-head p { font-size: 15px; }
+    .agent-history-lab .ah-sessions {
+      grid-template-columns: 1fr;
+      gap: 7px;
+    }
+    .agent-history-lab .ah-surface { height: 200px; border-radius: 9px; opacity: 1; }
+    .agent-history-lab .ah-window-bar { padding: 0 8px; }
+    .agent-history-lab .ah-traffic i { width: 5px; height: 5px; gap: 3px; }
+    .agent-history-lab .ah-terminal-body--claude { padding-inline: 9px; }
+    .agent-history-lab .ah-scroll--claude { margin-inline: -9px; padding: 9px 9px 0; }
+    .agent-history-lab .ah-scroll--codex { padding: 7px 9px; }
+    .agent-history-lab .ah-log { font-size: 8.5px; gap: 4px; }
+    .agent-history-lab .ah-log--claude { padding-top: 8px; }
+    .agent-history-lab .ah-codex-card { margin: 1px 0 8px; padding: 6px 7px; font-size: 8px; }
+    .agent-history-lab .ah-composer { font-size: 9px; }
+    .agent-history-lab .ah-composer--codex { padding-inline: 9px; }
+    .agent-history-lab .ah-codex-footer { padding: 5px 9px; font-size: 7.5px; }
+    .agent-history-lab .ah-history-scroll { height: 226px; padding-inline: 9px; font-size: 10px; }
+    .agent-history-lab .ah-history-head { padding-inline: 10px; font-size: 9px; }
+    .agent-history-lab .ah-graph-summary { padding-inline: 10px; font-size: 9.5px; }
+    .agent-history-lab .ah-graph-line { grid-template-columns: repeat(var(--lane-count), 15px) minmax(0, 1fr); }
+    .agent-history-lab .ah-graph-line--prompt p { font-size: 8.75px; }
+    .agent-history-lab .ah-hash,
+    .agent-history-lab .ah-complete,
+    .agent-history-lab .ah-changes,
+    .agent-history-lab .ah-tools { display: none; }
+    .agent-history-lab .ah-record-main { gap: 5px; }
+  }
+
+  @media (max-width: 420px) {
+    .agent-history-lab .ah-page { padding: 72px 16px 80px; }
+    .agent-history-lab .ah-head h2 { font-size: 32px; }
+    .agent-history-lab .ah-surface { height: 196px; }
+    .agent-history-lab .ah-result { display: none; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .agent-history-lab *,
+    .agent-history-lab *::before,
+    .agent-history-lab *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      scroll-behavior: auto !important;
+      transition-duration: 0.01ms !important;
+    }
+    .agent-history-lab .ah-caret { opacity: 0; }
+  }
+</style>
