@@ -369,7 +369,7 @@ const capabilities = [
     font-size: 12.5px;
   }
   .terminal-home-theme .install-command > span { color: var(--accent); font-weight: 700; }
-  .terminal-home-theme .install-command code { overflow: hidden; color: var(--fg); text-overflow: ellipsis; white-space: nowrap; }
+  .terminal-home-theme .install-command code { min-width: 0; overflow: hidden; color: var(--fg); text-overflow: ellipsis; white-space: nowrap; }
   .terminal-home-theme .docs-link { color: var(--muted); font-size: 13px; font-weight: 600; white-space: nowrap; }
   .terminal-home-theme .docs-link:hover { color: var(--fg); transform: translateX(2px); }
 
@@ -531,7 +531,12 @@ const capabilities = [
     .terminal-home-theme .workflow-section,
     .terminal-home-theme .commands-section { padding-top: 84px; padding-bottom: 88px; }
     .terminal-home-theme .final-cta { padding: 92px 0 86px; }
-    .terminal-home-theme .install-command-large { font-size: 12px; }
+    .terminal-home-theme .install-command-large {
+      gap: 7px;
+      padding: 9px 8px 9px 12px;
+      font-size: clamp(10.5px, 3.4vw, 12px);
+    }
+    .terminal-home-theme .install-command-large code { flex: 1; }
     .terminal-home-theme .footer-row { grid-template-columns: 1fr; justify-items: start; }
     .terminal-home-theme .footer-row > span { text-align: left; }
     .terminal-home-theme .footer-row > a { justify-self: start; }

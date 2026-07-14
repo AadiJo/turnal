@@ -101,6 +101,11 @@ import { workflowScenes } from '../data/terminalHome';
       scroller.scrollTop = scroller.scrollHeight;
     };
 
+    const terminalLineHeight = () => {
+      const lineHeight = Number.parseFloat(window.getComputedStyle(output).lineHeight);
+      return Number.isFinite(lineHeight) ? lineHeight : 16.5;
+    };
+
     const resetTerminal = () => {
       output.replaceChildren();
       composer.textContent = '';
@@ -111,7 +116,8 @@ import { workflowScenes } from '../data/terminalHome';
     };
 
     const updatePagerStatus = (totalLines: number, scrollTop: number) => {
-      const visibleLines = Math.max(1, Math.floor((scroller.clientHeight - 40) / 16.5));
+      const lineHeight = terminalLineHeight();
+      const visibleLines = Math.max(1, Math.floor((scroller.clientHeight - 40) / lineHeight));
       const maxScroll = Math.max(1, scroller.scrollHeight - scroller.clientHeight);
       const progress = Math.min(1, Math.max(0, scrollTop / maxScroll));
       const firstLine = 1 + Math.round(Math.max(0, totalLines - visibleLines) * progress);
@@ -193,7 +199,7 @@ import { workflowScenes } from '../data/terminalHome';
         if (!(await wait(650, id))) return;
 
         const maxScroll = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-        const lineHeight = 16.5;
+        const lineHeight = terminalLineHeight();
         const lineCount = Math.max(1, Math.ceil(maxScroll / lineHeight));
 
         for (let line = 1; line <= lineCount; line += 1) {
@@ -578,22 +584,13 @@ import { workflowScenes } from '../data/terminalHome';
 
   @media (max-width: 600px) {
     .turnal-workflow { gap: 22px; }
-    .tw-stage { min-height: 390px; }
-    .tw-positioner {
-      top: 14px;
-      right: 14px;
-      bottom: 58px;
-      left: 14px;
-      width: auto;
-      height: auto;
-      transform: none;
-      will-change: auto;
-    }
+    .tw-stage { min-height: clamp(278px, calc(74.4vw + 40px), 488px); }
     .tw-dots { bottom: 14px; }
     .tw-copy { padding-inline: 2px; }
     .tw-copy h3 { font-size: 25px; }
     .tw-scenes { grid-template-columns: 1fr; }
-    .tw-output { font-size: 10px; }
+    .tw-output,
+    .tw-composer { font-size: 6px; }
   }
 
   @media (prefers-reduced-motion: reduce) {

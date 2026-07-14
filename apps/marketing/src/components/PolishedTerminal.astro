@@ -196,9 +196,17 @@ const {
 
   @media (max-width: 700px) {
     .pt-rec { display: none; }
-    [data-size='hero'] .pt-body { height: 420px; padding: 17px 16px 24px; }
-    [data-size='panel'] .pt-body { height: 420px; padding: 17px 16px 24px; }
-    .pt-body { font-size: 10.5px; }
+    [data-size='hero'] .pt-body {
+      height: clamp(268px, 84vw, 590px);
+      padding: 17px 16px 24px;
+      font-size: clamp(2.75px, calc((100vw - 74px) / 89), 10.5px);
+    }
+    [data-size='panel'] .pt-body {
+      height: 420px;
+      padding: 17px clamp(10px, 3vw, 16px) 24px;
+      font-size: clamp(5.75px, 1.82vw, 10.5px);
+    }
+    [data-size='compact'] .pt-body { font-size: 10.5px; }
   }
 
   @media (prefers-reduced-motion: reduce) {
