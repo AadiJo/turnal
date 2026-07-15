@@ -147,6 +147,16 @@ func TestForkExecutesIsolatedAttemptAndCreatesReusableCase(t *testing.T) {
 	if err != nil || !exists || string(resultData) != "forked\n" {
 		t.Fatalf("fork result checkpoint = %q %t %v", resultData, exists, err)
 	}
+	selectionOutput := runRootStdout(t, "select", projection.Cases[0].ID.String(), projection.Cases[0].AttemptLinks[0].AttemptID.String())
+	if !strings.Contains(selectionOutput, "selected attempt") {
+		t.Fatalf("selection output = %s", selectionOutput)
+	}
+	comparisonOutput := runRootStdout(t, "compare", projection.Cases[0].ID.String(), "--patch", projection.Cases[0].AttemptLinks[0].AttemptID.String())
+	for _, want := range []string{"[selected]", "changes: 1 files, +1 -1", "+forked"} {
+		if !strings.Contains(comparisonOutput, want) {
+			t.Fatalf("comparison output missing %q:\n%s", want, comparisonOutput)
+		}
+	}
 }
 
 func TestPrepareForkExecutionCommandReplaysCapturedInstructionForBareCodex(t *testing.T) {

@@ -104,6 +104,41 @@ func TestExecuteRecordsFailedAndInfrastructureAttempts(t *testing.T) {
 	}
 }
 
+func TestCompareUsesImmutableCaseBaseAndIncludesRequestedPatch(t *testing.T) {
+	repo, definition := experimentCase(t)
+	writeResult := func(content string) Result {
+		result, err := Execute(context.Background(), repo, Request{Case: definition, Command: []string{"runner"}, Runner: runnerFunc(func(_ context.Context, root string, _ []string, _ []string) (int, error) {
+			return 0, os.WriteFile(filepath.Join(root, "app.txt"), []byte(content), 0o644)
+		})})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	first := writeResult("first\n")
+	second := writeResult("second\nwith another line\n")
+	if _, err := cases.SelectAttempt(repo, definition.ID, second.AttemptID); err != nil {
+		t.Fatal(err)
+	}
+	comparison, err := Compare(repo, definition.ID, first.AttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(comparison.Attempts) != 2 || comparison.BaseCommit != definition.Readiness.Base.CommitSHA {
+		t.Fatalf("comparison = %#v", comparison)
+	}
+	byID := make(map[primitives.AttemptID]AttemptComparison)
+	for _, attempt := range comparison.Attempts {
+		byID[attempt.AttemptID] = attempt
+	}
+	if byID[first.AttemptID].Patch == "" || !strings.Contains(byID[first.AttemptID].Patch, "+first") {
+		t.Fatalf("first patch = %q", byID[first.AttemptID].Patch)
+	}
+	if !byID[second.AttemptID].Selected || byID[second.AttemptID].Additions != 2 || byID[second.AttemptID].Deletions != 1 {
+		t.Fatalf("second comparison = %#v", byID[second.AttemptID])
+	}
+}
+
 func TestExecRunnerScrubsInheritedGitEnvironment(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh required")
