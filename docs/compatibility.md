@@ -2,6 +2,10 @@
 
 Turnal supports the Go version declared in `go.mod` and the prebuilt npm platforms listed by the release build. CI executes tests on current Ubuntu, macOS, and Windows runners and builds the CLI on each.
 
+Turnal's supported platforms are Linux, macOS, and Windows on x64 and arm64. Isolated `turnal fork` execution requires the process-containment primitives on those operating systems: process groups on Linux and macOS, and Job Objects on Windows. On any other platform targeted by a source build, `turnal fork TARGET -- COMMAND` fails closed with an explicit `fork process containment is unsupported` error instead of running an uncontained child. The read-only `turnal fork TARGET --dry-run` readiness check remains available.
+
+Repository verification uses process groups on Unix platforms and Job Objects on Windows. On other targets it falls back to best-effort single-process termination without descendant containment.
+
 Metadata readers remain backward compatible with v1 global raw references (`adapter:line`). New writes use v2 per-session references (`v2:session:adapter:sequence`). Checkpoints created before permission manifests were introduced restore Git's basic `0644`/`0755` modes; newer checkpoints restore the captured POSIX permission bits exactly on platforms that support them.
 
 Agent hook formats are external integration points and may change with Claude Code or Codex releases. `turnal status` checks project hook files offline, while `turnal status --probe-agent-capture` also asks Codex app-server which Turnal hooks it discovered and whether it will execute them. The probe performs no agent turn, sends no prompt, changes no workspace files, and never changes provider project or hook trust.

@@ -42,7 +42,7 @@ Turnal does not initialize a Git repository for your project. It works in both G
 npm install -g @aadijo/turnal
 ```
 
-The npm package ships prebuilt binaries for macOS, Linux, and Windows on x64 and arm64. Go is only needed when installing from source or using an unsupported npm platform.
+Turnal is supported on Linux, macOS, and Windows on x64 and arm64; the npm package ships prebuilt binaries for each. Go is only needed when installing from source or using an unsupported npm platform. Isolated `turnal fork` execution is available only on those three platforms. On any other target it fails closed with an explicit error instead of running a child without process containment.
 
 From source:
 

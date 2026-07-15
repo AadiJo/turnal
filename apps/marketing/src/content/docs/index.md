@@ -19,7 +19,7 @@ description: Production documentation for Turnal, including local agent history,
 
 ## Installation
 
-Install Turnal globally with npm. The package selects a prebuilt binary for macOS, Linux, or Windows on x64 and arm64. On an unsupported platform it can fall back to a local Go build.
+Install Turnal globally with npm. The package selects a prebuilt binary for macOS, Linux, or Windows on x64 and arm64. On an unsupported platform it can fall back to a local Go build. Isolated `turnal fork` execution requires Linux, macOS, or Windows; elsewhere it fails closed rather than running an uncontained child.
 
 ```sh
 npm install -g @aadijo/turnal
@@ -305,6 +305,8 @@ turnal fork claude-7f2a:4 -- sh -c 'my-runner "$TURNAL_FORK_INSTRUCTION"'
 ```
 
 Turnal creates or reuses a Case, materializes its pre-turn checkpoint into an owner-only temporary directory, and runs the child there. The source workspace is never the child's working directory, `.git/` and `.turnal/` are excluded, and inherited `GIT_*` variables are removed. The wrapper records pre/post checkpoints, command status, and results from the verifier contract frozen into the Case. The directory is removed by default; `--keep` preserves it.
+
+Fork execution is supported on Linux, macOS, and Windows. Other source-build targets can inspect readiness with `--dry-run`, but execution fails before starting the requested command when whole-process-tree containment is unavailable.
 
 Experimental cases turn that readiness report into an immutable record. A case preserves the source turn, task revision, starting checkpoint, repository verifier contract, known limitations, and links to any existing wrapper attempts associated with the source turn.
 
@@ -764,8 +766,8 @@ Inspect or resolve a rollback that was interrupted after its journal was written
 
 ```text
 turnal recovery status
-turnal recovery resume
-turnal recovery restore-safety
+turnal recovery resume --yes
+turnal recovery restore-safety --yes
 ```
 
 `resume` reapplies the recorded target and finalizes the rollback. `restore-safety` abandons that target and restores the safety checkpoint captured before rollback began.
