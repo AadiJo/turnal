@@ -206,7 +206,7 @@ func TestInstallCheckpointRefsAtomic(t *testing.T) {
 	}
 }
 
-func TestWorkspaceLockIsReentrantInProcess(t *testing.T) {
+func TestWorkspaceLockExcludesConcurrentGoroutines(t *testing.T) {
 	requireGit(t)
 
 	root := workspaceRoot(t)
@@ -214,15 +214,41 @@ func TestWorkspaceLockIsReentrantInProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	writeFile(t, root, "app.txt", "content\n")
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- repo.WithWorkspaceLock("first", func() error {
+			close(firstEntered)
+			<-releaseFirst
+			return nil
+		})
+	}()
+	<-firstEntered
 
-	sessionID, _ := primitives.ParseSessionID("demo")
-	turnID, _ := primitives.NewTurnID(1)
-	if err := repo.WithWorkspaceLock("test", func() error {
-		_, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
-		return err
-	}); err != nil {
-		t.Fatalf("CreateCheckpoint under existing workspace lock: %v", err)
+	secondStarted := make(chan struct{})
+	secondEntered := make(chan struct{})
+	secondDone := make(chan error, 1)
+	go func() {
+		close(secondStarted)
+		secondDone <- repo.WithWorkspaceLock("second", func() error {
+			close(secondEntered)
+			return nil
+		})
+	}()
+	<-secondStarted
+	select {
+	case <-secondEntered:
+		close(releaseFirst)
+		t.Fatal("second goroutine entered while the first held the workspace lock")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first workspace lock: %v", err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatalf("second workspace lock: %v", err)
 	}
 }
 

@@ -97,13 +97,13 @@ func Apply(repo *checkpoint.Repo, request ApplyRequest) (ApplyResult, error) {
 		rollbackRequest := rollbackengine.Request{Resolved: &resolved, DryRun: request.DryRun, ExpectedWorkspaceTree: basePlan.WorkspaceTree}
 		if !request.DryRun {
 			if definition.Selection == nil || definition.Selection.AttemptID != attemptID {
-				if _, err := cases.SelectAttempt(repo, definition.ID, attemptID); err != nil {
+				if _, err := cases.SelectAttemptLocked(repo, definition.ID, attemptID); err != nil {
 					return fmt.Errorf("record applied attempt selection: %w", err)
 				}
 			}
 			rollbackRequest.Application = &rollbackengine.ApplicationMetadata{CaseID: definition.ID, AttemptID: attemptID, PostCommit: postCommit}
 		}
-		rollbackResult, err := rollbackengine.New(repo).Run(rollbackRequest)
+		rollbackResult, err := rollbackengine.New(repo).RunLocked(rollbackRequest)
 		if err != nil {
 			return err
 		}

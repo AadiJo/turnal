@@ -284,7 +284,7 @@ func (engine Engine) ResumeRecovery() error {
 					return fmt.Errorf("resume workspace-git restore: %w", err)
 				}
 			} else {
-				if err := engine.Repo.RestoreCommit(target.Commit); err != nil {
+				if err := engine.Repo.RestoreCommitLocked(target.Commit); err != nil {
 					return fmt.Errorf("resume checkpoint restore: %w", err)
 				}
 			}
@@ -351,7 +351,7 @@ func (engine Engine) RestoreSafety() error {
 			if refCommit != commit {
 				return fmt.Errorf("rollback safety ref points to %s, journal records %s", refCommit, commit)
 			}
-			if err := engine.Repo.RestoreCommit(commit); err != nil {
+			if err := engine.Repo.RestoreCommitLocked(commit); err != nil {
 				return fmt.Errorf("restore checkpoint safety snapshot: %w", err)
 			}
 		}
@@ -450,6 +450,21 @@ func (engine Engine) Run(request Request) (Result, error) {
 	return engine.runCheckpoint(request)
 }
 
+// RunLocked executes a rollback while the caller holds the workspace lock as
+// part of a larger atomic operation.
+func (engine Engine) RunLocked(request Request) (Result, error) {
+	if engine.Repo == nil {
+		return Result{}, fmt.Errorf("rollback repo is required")
+	}
+	if request.WorkspaceGit {
+		if request.Resolved != nil && request.Resolved.Manual {
+			return Result{}, fmt.Errorf("workspace-git rollback is unavailable for manual checkpoints because turnal save does not capture the user's Git HEAD or index")
+		}
+		return engine.runWorkspaceGitUnlocked(request)
+	}
+	return engine.runCheckpointUnlocked(request)
+}
+
 func (engine Engine) runCheckpoint(request Request) (Result, error) {
 	if engine.Repo == nil {
 		return Result{}, fmt.Errorf("rollback repo is required")
@@ -508,7 +523,7 @@ func (engine Engine) runCheckpointUnlocked(request Request) (Result, error) {
 	}
 
 	safetyRef := safetyRef(target, time.Now().UTC())
-	safety, err := engine.Repo.CreateSnapshotRef(safetyRef, fmt.Sprintf("turnal rollback safety %s", target.selector()))
+	safety, err := engine.Repo.CreateSnapshotRefLocked(safetyRef, fmt.Sprintf("turnal rollback safety %s", target.selector()))
 	if err != nil {
 		return result, err
 	}
@@ -530,7 +545,7 @@ func (engine Engine) runCheckpointUnlocked(request Request) (Result, error) {
 	if err := writeJournal(JournalPath(engine.Repo), journal); err != nil {
 		return result, engine.safetyError("write rollback journal", safety, err)
 	}
-	if err := engine.Repo.RestoreCommit(target.Commit); err != nil {
+	if err := engine.Repo.RestoreCommitLocked(target.Commit); err != nil {
 		return result, engine.safetyError("restore checkpoint", safety, err)
 	}
 
@@ -615,7 +630,7 @@ func (engine Engine) runWorkspaceGitUnlocked(request Request) (Result, error) {
 		return result, fmt.Errorf("write rollback journal: %w", err)
 	}
 
-	safety, err := engine.Repo.CreateSnapshotRef(safetyRef(target, now), fmt.Sprintf("turnal rollback safety %s", target.Target))
+	safety, err := engine.Repo.CreateSnapshotRefLocked(safetyRef(target, now), fmt.Sprintf("turnal rollback safety %s", target.Target))
 	if err != nil {
 		return result, err
 	}
@@ -626,7 +641,7 @@ func (engine Engine) runWorkspaceGitUnlocked(request Request) (Result, error) {
 		return result, engine.safetyError("capture workspace git safety state", safety, err)
 	}
 	gitSafetyRef := gitSafetyRef(target, now)
-	gitSafety, err := gitsync.SavePrivate(engine.Repo, gitSafetyRef, currentCapture, fmt.Sprintf("turnal workspace git rollback safety %s", target.Target))
+	gitSafety, err := gitsync.SavePrivateLocked(engine.Repo, gitSafetyRef, currentCapture, fmt.Sprintf("turnal workspace git rollback safety %s", target.Target))
 	if err != nil {
 		return result, engine.safetyError("save workspace git safety state", safety, err)
 	}

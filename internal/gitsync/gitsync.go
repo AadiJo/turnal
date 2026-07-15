@@ -66,6 +66,16 @@ func Save(repo *checkpoint.Repo, ref primitives.GitSyncRef, capture Capture, mes
 }
 
 func SavePrivate(repo *checkpoint.Repo, ref string, capture Capture, message string) (checkpoint.Snapshot, error) {
+	return savePrivate(repo, ref, capture, message, false)
+}
+
+// SavePrivateLocked records a private capture while the caller holds the
+// workspace lock as part of a larger atomic operation.
+func SavePrivateLocked(repo *checkpoint.Repo, ref string, capture Capture, message string) (checkpoint.Snapshot, error) {
+	return savePrivate(repo, ref, capture, message, true)
+}
+
+func savePrivate(repo *checkpoint.Repo, ref string, capture Capture, message string, locked bool) (checkpoint.Snapshot, error) {
 	if repo == nil {
 		return checkpoint.Snapshot{}, fmt.Errorf("git-sync repo is required")
 	}
@@ -113,6 +123,9 @@ func SavePrivate(repo *checkpoint.Repo, ref string, capture Capture, message str
 	}
 	if message == "" {
 		message = "turnal git-sync state"
+	}
+	if locked {
+		return repo.CreateSyntheticSnapshotRefLocked(ref, message, entries)
 	}
 	return repo.CreateSyntheticSnapshotRef(ref, message, entries)
 }

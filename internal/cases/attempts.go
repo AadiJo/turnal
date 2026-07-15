@@ -166,32 +166,40 @@ func SelectAttempt(repo *checkpoint.Repo, caseID primitives.CaseID, attemptID pr
 	}
 	var selected Case
 	err := repo.WithWorkspaceLock("select case attempt", func() error {
-		projection, err := Rebuild(repo)
-		if err != nil {
-			return err
-		}
-		definition, link, err := projectionAttempt(projection, caseID, attemptID)
-		if err != nil {
-			return err
-		}
-		if err := validateCaseRepoScope(repo, definition); err != nil {
-			return err
-		}
-		if link.Result == nil || link.Result.PostRef == "" || link.Result.PostCommit == "" {
-			return fmt.Errorf("attempt %s has no completed result", attemptID)
-		}
-		payload := caseAttemptSelectPayload{CaseID: caseID, Scope: definition.Scope, AttemptID: attemptID, Source: definition.Source}
-		if _, err := appendRecord(repo, definition.Source, caseAdapter(definition), primitives.EventTypeCaseAttemptSelect, "", payload); err != nil {
-			return err
-		}
-		updated, err := Rebuild(repo)
-		if err != nil {
-			return err
-		}
-		selected, _ = updated.Case(caseID)
-		return nil
+		var err error
+		selected, err = SelectAttemptLocked(repo, caseID, attemptID)
+		return err
 	})
 	return selected, err
+}
+
+// SelectAttemptLocked records a selection while the caller holds the workspace
+// lock as part of a larger atomic operation.
+func SelectAttemptLocked(repo *checkpoint.Repo, caseID primitives.CaseID, attemptID primitives.AttemptID) (Case, error) {
+	projection, err := Rebuild(repo)
+	if err != nil {
+		return Case{}, err
+	}
+	definition, link, err := projectionAttempt(projection, caseID, attemptID)
+	if err != nil {
+		return Case{}, err
+	}
+	if err := validateCaseRepoScope(repo, definition); err != nil {
+		return Case{}, err
+	}
+	if link.Result == nil || link.Result.PostRef == "" || link.Result.PostCommit == "" {
+		return Case{}, fmt.Errorf("attempt %s has no completed result", attemptID)
+	}
+	payload := caseAttemptSelectPayload{CaseID: caseID, Scope: definition.Scope, AttemptID: attemptID, Source: definition.Source}
+	if _, err := appendRecord(repo, definition.Source, caseAdapter(definition), primitives.EventTypeCaseAttemptSelect, "", payload); err != nil {
+		return Case{}, err
+	}
+	updated, err := Rebuild(repo)
+	if err != nil {
+		return Case{}, err
+	}
+	selected, _ := updated.Case(caseID)
+	return selected, nil
 }
 
 // ReconcileAbandonedAttempts terminalizes Case links whose durable Run has

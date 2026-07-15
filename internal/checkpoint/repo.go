@@ -439,6 +439,12 @@ func (repo *Repo) CreateCheckpoint(sessionID primitives.SessionID, turnID primit
 	return checkpoint, err
 }
 
+// CreateCheckpointLocked captures a checkpoint while the caller holds the
+// workspace lock.
+func (repo *Repo) CreateCheckpointLocked(sessionID primitives.SessionID, turnID primitives.TurnID, phase primitives.CheckpointPhase) (Checkpoint, error) {
+	return repo.createCheckpoint(sessionID, turnID, phase)
+}
+
 // CreateManualCheckpoint captures the current workspace without assigning the
 // checkpoint to an agent session or turn.
 func (repo *Repo) CreateManualCheckpoint() (Checkpoint, error) {
@@ -605,6 +611,12 @@ func (repo *Repo) CreateSnapshotRef(ref string, message string) (Snapshot, error
 	return snapshot, err
 }
 
+// CreateSnapshotRefLocked creates a snapshot while the caller holds the
+// workspace lock. It exists for compound operations that must remain atomic.
+func (repo *Repo) CreateSnapshotRefLocked(ref string, message string) (Snapshot, error) {
+	return repo.createSnapshotRef(ref, message)
+}
+
 func (repo *Repo) createSnapshotRef(ref string, message string) (Snapshot, error) {
 	ref, err := repo.validatePrivateRef(ref)
 	if err != nil {
@@ -632,6 +644,12 @@ func (repo *Repo) CreateSyntheticSnapshotRef(ref string, message string, entries
 		return err
 	})
 	return snapshot, err
+}
+
+// CreateSyntheticSnapshotRefLocked creates a synthetic snapshot while the
+// caller holds the workspace lock.
+func (repo *Repo) CreateSyntheticSnapshotRefLocked(ref string, message string, entries []SyntheticTreeEntry) (Snapshot, error) {
+	return repo.createSyntheticSnapshotRef(ref, message, entries)
 }
 
 func (repo *Repo) createSyntheticSnapshotRef(ref string, message string, entries []SyntheticTreeEntry) (Snapshot, error) {
@@ -1185,6 +1203,16 @@ func (repo *Repo) DeleteCheckpointRef(ref primitives.CheckpointRef) error {
 	return repo.DeletePrivateRef(parsedRef.String())
 }
 
+// DeleteCheckpointRefLocked deletes a checkpoint ref while the caller holds
+// the workspace lock.
+func (repo *Repo) DeleteCheckpointRefLocked(ref primitives.CheckpointRef) error {
+	parsedRef, err := primitives.ParseCheckpointRef(ref.String())
+	if err != nil {
+		return err
+	}
+	return repo.DeletePrivateRefLocked(parsedRef.String())
+}
+
 func (repo *Repo) ListPrivateRefs(prefix string) ([]string, error) {
 	prefix, err := repo.validatePrivateRef(prefix)
 	if err != nil {
@@ -1227,6 +1255,17 @@ func (repo *Repo) DeletePrivateRef(ref string) error {
 	})
 }
 
+// DeletePrivateRefLocked deletes a private ref while the caller holds the
+// workspace lock.
+func (repo *Repo) DeletePrivateRefLocked(ref string) error {
+	parsedRef, err := repo.validatePrivateRef(ref)
+	if err != nil {
+		return err
+	}
+	_, err = runHiddenGit(repo, "", "update-ref", "-d", parsedRef)
+	return err
+}
+
 func (repo *Repo) RunHiddenGitGC() error {
 	return repo.WithWorkspaceLock("garbage collect hidden repository", func() error {
 		if _, err := repo.pruneModeManifests(); err != nil {
@@ -1252,6 +1291,12 @@ func (repo *Repo) PruneModeManifests() ([]string, error) {
 		return err
 	})
 	return removed, err
+}
+
+// PruneModeManifestsLocked prunes sidecars while the caller holds the
+// workspace lock.
+func (repo *Repo) PruneModeManifestsLocked() ([]string, error) {
+	return repo.pruneModeManifests()
 }
 
 func (repo *Repo) pruneModeManifests() ([]string, error) {
@@ -1412,6 +1457,12 @@ func (repo *Repo) RestoreCommit(commit primitives.CommitSHA) error {
 	return repo.WithWorkspaceLock("restore checkpoint", func() error {
 		return repo.restoreCommit(commit)
 	})
+}
+
+// RestoreCommitLocked restores a checkpoint while the caller holds the
+// workspace lock.
+func (repo *Repo) RestoreCommitLocked(commit primitives.CommitSHA) error {
+	return repo.restoreCommit(commit)
 }
 
 // PreflightRestoreCommit verifies every target object and the optional mode
