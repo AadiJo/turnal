@@ -307,6 +307,24 @@ func rollbackJournalOwnerRepo(repo *checkpoint.Repo, path string, journal rollba
 	if err != nil {
 		return nil, fmt.Errorf("workspace root: %w", err)
 	}
+	worktrees, err := repo.ListWorktrees()
+	if err != nil {
+		return nil, fmt.Errorf("list registered worktrees: %w", err)
+	}
+	registered := false
+	for _, worktree := range worktrees {
+		if worktree.WorktreeID != worktreeID {
+			continue
+		}
+		registered = true
+		if filepath.Clean(worktree.Root) != filepath.Clean(workspaceRoot.String()) {
+			return nil, fmt.Errorf("workspace root does not match registered worktree %s", worktreeID)
+		}
+		break
+	}
+	if !registered {
+		return nil, fmt.Errorf("worktree identity %s is not registered", worktreeID)
+	}
 	expectedPath := filepath.Join(repo.TmpDir, "rollback-journal-"+worktreeID.String()+".json")
 	if filepath.Clean(path) != filepath.Clean(expectedPath) {
 		return nil, fmt.Errorf("journal path does not match worktree identity %s", worktreeID)

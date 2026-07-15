@@ -97,21 +97,31 @@ func TestDropSessionRejectsInconsistentRollbackJournal(t *testing.T) {
 	}
 
 	tests := []struct {
-		name   string
-		mutate func(*rollbackengine.Journal)
+		name     string
+		expected string
+		mutate   func(*rollbackengine.Journal)
 	}{
 		{
-			name: "manual flag cannot hide a session checkpoint",
+			name:     "manual flag cannot hide a session checkpoint",
+			expected: "rollback journal is invalid",
 			mutate: func(journal *rollbackengine.Journal) {
 				journal.Manual = true
 			},
 		},
 		{
-			name: "target must identify the checkpoint ref",
+			name:     "target must identify the checkpoint ref",
+			expected: "rollback journal is invalid",
 			mutate: func(journal *rollbackengine.Journal) {
 				otherSession := sessionID(t, "other")
 				otherTarget, _ := primitives.NewTargetRef(otherSession, turnID, primitives.CheckpointPhasePre)
 				journal.Target = otherTarget.String()
+			},
+		},
+		{
+			name:     "workspace root must match the registered worktree",
+			expected: "rollback journal ownership is invalid",
+			mutate: func(journal *rollbackengine.Journal) {
+				journal.WorkspaceRoot = t.TempDir()
 			},
 		},
 	}
@@ -126,8 +136,8 @@ func TestDropSessionRejectsInconsistentRollbackJournal(t *testing.T) {
 			if writeErr := os.WriteFile(rollbackengine.JournalPath(repo), data, 0o600); writeErr != nil {
 				t.Fatalf("write rollback journal: %v", writeErr)
 			}
-			if _, dropErr := DropSession(repo, demoSession, false); dropErr == nil || !strings.Contains(dropErr.Error(), "rollback journal is invalid") {
-				t.Fatalf("DropSession error = %v, want invalid rollback journal", dropErr)
+			if _, dropErr := DropSession(repo, demoSession, false); dropErr == nil || !strings.Contains(dropErr.Error(), test.expected) {
+				t.Fatalf("DropSession error = %v, want %q", dropErr, test.expected)
 			}
 			if _, refErr := repo.CheckpointCommit(created.Ref); refErr != nil {
 				t.Fatalf("protected checkpoint was deleted: %v", refErr)
