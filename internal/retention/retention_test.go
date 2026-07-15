@@ -103,6 +103,44 @@ func TestDropSessionInterruptionLeavesCheckpointRefsIntact(t *testing.T) {
 	}
 }
 
+func TestDropSessionRejectsActiveTurnUntilFinish(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	writeFile(t, root, "app.txt", "before\n")
+	session := sessionID(t, "active-turn")
+	turnID, _ := primitives.NewTurnID(1)
+	gitSync := false
+	recorder := turnevents.Recorder{Log: repo.EventLog(), Manager: turns.NewManager(repo), Adapter: primitives.AdapterCodex}
+	recorder.Manager.GitSyncEnabled = &gitSync
+	started, err := recorder.Start(session, turnID)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := DropSession(repo, session, false); err == nil || !strings.Contains(err.Error(), "while turn 1 is active") {
+		t.Fatalf("DropSession active turn error = %v", err)
+	}
+	if got, err := repo.CheckpointCommit(started.Pre.Ref); err != nil || got != started.Pre.Commit {
+		t.Fatalf("active pre-checkpoint = %s, %v; want %s", got, err, started.Pre.Commit)
+	}
+	active, err := turns.ListActive(repo, session)
+	if err != nil || len(active) != 1 || active[0].TurnID != turnID {
+		t.Fatalf("active turns after rejected drop = %#v, %v", active, err)
+	}
+	if _, err := recorder.Finish(session, turnID); err != nil {
+		t.Fatalf("Finish after rejected drop: %v", err)
+	}
+	if _, err := DropSession(repo, session, false); err != nil {
+		t.Fatalf("DropSession after finish: %v", err)
+	}
+	if _, err := repo.CheckpointCommit(started.Pre.Ref); err == nil {
+		t.Fatal("finished session pre-checkpoint remains after drop")
+	}
+}
+
 func TestDropSessionRejectsInconsistentRollbackJournal(t *testing.T) {
 	requireGit(t)
 	root := workspaceRoot(t)

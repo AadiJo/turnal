@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
@@ -38,9 +39,11 @@ type FinishResult struct {
 }
 
 type ActiveTurn struct {
+	SessionID primitives.SessionID
 	TurnID    primitives.TurnID
 	PreRef    primitives.CheckpointRef
 	PreCommit primitives.CommitSHA
+	Path      string
 }
 
 type activeTurnState struct {
@@ -301,9 +304,11 @@ func (manager Manager) Active(sessionID primitives.SessionID) (ActiveTurn, bool,
 		return ActiveTurn{}, false, nil
 	}
 	return ActiveTurn{
+		SessionID: sessionID,
 		TurnID:    active.TurnID,
 		PreRef:    active.PreRef,
 		PreCommit: active.PreCommit,
+		Path:      manager.activeStatePath(sessionID),
 	}, true, nil
 }
 
@@ -377,6 +382,10 @@ func (manager Manager) readActive(sessionID primitives.SessionID) (*parsedActive
 		return nil, fmt.Errorf("read active turn state: %w", err)
 	}
 
+	return parseActiveTurnState(path, data, sessionID)
+}
+
+func parseActiveTurnState(path string, data []byte, sessionID primitives.SessionID) (*parsedActiveTurnState, error) {
 	var state activeTurnState
 	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, fmt.Errorf("active turn state invariant failed: malformed JSON in %s: %w", path, err)
@@ -422,6 +431,64 @@ func (manager Manager) readActive(sessionID primitives.SessionID) (*parsedActive
 		PreRef:    preRef,
 		PreCommit: preCommit,
 	}, nil
+}
+
+// ListActive returns every active turn state for a session across the linked
+// worktrees sharing this Turnal store.
+func ListActive(repo *checkpoint.Repo, sessionID primitives.SessionID) ([]ActiveTurn, error) {
+	if repo == nil {
+		return nil, fmt.Errorf("list active turns requires checkpoint repo")
+	}
+	sessionID, err := primitives.ParseSessionID(sessionID.String())
+	if err != nil {
+		return nil, err
+	}
+	dir := filepath.Join(repo.TmpDir, "turns")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read active turn state directory: %w", err)
+	}
+	var active []ActiveTurn
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		info, err := os.Lstat(path)
+		if err != nil {
+			return nil, fmt.Errorf("inspect active turn state %s: %w", path, err)
+		}
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("active turn state invariant failed: regular files only: %s", path)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read active turn state %s: %w", path, err)
+		}
+		var envelope struct {
+			SessionID string `json:"session_id"`
+		}
+		if err := json.Unmarshal(data, &envelope); err != nil {
+			return nil, fmt.Errorf("active turn state invariant failed: malformed JSON in %s: %w", path, err)
+		}
+		stateSessionID, err := primitives.ParseSessionID(envelope.SessionID)
+		if err != nil {
+			return nil, fmt.Errorf("active turn state invariant failed in %s: %w", path, err)
+		}
+		if stateSessionID != sessionID {
+			continue
+		}
+		state, err := parseActiveTurnState(path, data, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		active = append(active, ActiveTurn{SessionID: sessionID, TurnID: state.TurnID, PreRef: state.PreRef, PreCommit: state.PreCommit, Path: path})
+	}
+	sort.Slice(active, func(i, j int) bool { return active[i].Path < active[j].Path })
+	return active, nil
 }
 
 func (manager Manager) writeActive(sessionID primitives.SessionID, turnID primitives.TurnID, pre checkpoint.Checkpoint) error {

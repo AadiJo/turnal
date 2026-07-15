@@ -16,6 +16,7 @@ import (
 	"github.com/AadiJo/turnal/internal/manualcheckpoints"
 	"github.com/AadiJo/turnal/internal/primitives"
 	rollbackengine "github.com/AadiJo/turnal/internal/rollback"
+	"github.com/AadiJo/turnal/internal/turns"
 )
 
 type Result struct {
@@ -130,6 +131,13 @@ func planDropSession(repo *checkpoint.Repo, sessionID primitives.SessionID, dryR
 	sessionID, err := primitives.ParseSessionID(sessionID.String())
 	if err != nil {
 		return Result{}, err
+	}
+	activeTurns, err := turns.ListActive(repo, sessionID)
+	if err != nil {
+		return Result{}, fmt.Errorf("inspect active turns before session drop: %w", err)
+	}
+	if len(activeTurns) > 0 {
+		return Result{}, fmt.Errorf("cannot drop session %s while turn %s is active at %s; finish or recover the turn first", sessionID, activeTurns[0].TurnID, activeTurns[0].Path)
 	}
 	if err := ensureNoActiveRollbackForSession(repo, sessionID); err != nil {
 		return Result{}, err
