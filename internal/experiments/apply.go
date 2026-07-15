@@ -45,6 +45,9 @@ func Apply(repo *checkpoint.Repo, request ApplyRequest) (ApplyResult, error) {
 		if !ok {
 			return fmt.Errorf("case %s does not exist in this Turnal store", request.CaseID)
 		}
+		if definition.Scope.RepoID != repo.RepoID || definition.Scope.StoreID != repo.StoreID || definition.Scope.WorktreeID != repo.WorktreeID {
+			return fmt.Errorf("case %s belongs to a different repository, store, or worktree", definition.ID)
+		}
 		attemptID := request.AttemptID
 		if attemptID == "" {
 			if definition.Selection == nil {

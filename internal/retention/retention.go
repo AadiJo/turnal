@@ -199,6 +199,18 @@ func ensureSessionNotCaseReferenced(repo *checkpoint.Repo, sessionID primitives.
 		return fmt.Errorf("inspect case references before session drop: %w", err)
 	}
 	for _, definition := range projection.Cases {
+		task, ok := projection.Task(definition.TaskID)
+		if !ok {
+			return fmt.Errorf("cannot validate retention for case %s because task %s is missing", definition.ID, definition.TaskID)
+		}
+		if task.Created.SessionID == sessionID {
+			return fmt.Errorf("cannot drop session %s because active case %s requires task %s creation history", sessionID, definition.ID, task.ID)
+		}
+		for _, revision := range task.Revisions {
+			if revision.Created.SessionID == sessionID {
+				return fmt.Errorf("cannot drop session %s because active case %s requires task %s revision %d history", sessionID, definition.ID, task.ID, revision.Number)
+			}
+		}
 		if definition.Source.SessionID == sessionID {
 			return fmt.Errorf("cannot drop session %s because case %s preserves it as the immutable source; case deletion is required before removing referenced history", sessionID, definition.ID)
 		}

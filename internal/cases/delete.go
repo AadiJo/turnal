@@ -23,6 +23,9 @@ func Delete(repo *checkpoint.Repo, caseID primitives.CaseID) (Case, error) {
 		if !ok {
 			return fmt.Errorf("case %s does not exist in this Turnal store", caseID)
 		}
+		if err := validateCaseRepoScope(repo, definition); err != nil {
+			return err
+		}
 		payload := caseDeletePayload{CaseID: caseID, Scope: definition.Scope, Source: definition.Source}
 		if _, err := appendRecord(repo, definition.Source, caseAdapter(definition), primitives.EventTypeCaseDelete, fmt.Sprintf("case:%s:delete", caseID), payload); err != nil {
 			return err

@@ -53,6 +53,9 @@ func LinkAttempt(repo *checkpoint.Repo, request LinkAttemptRequest) (AttemptLink
 		if !ok {
 			return fmt.Errorf("case %s does not exist in this Turnal store", request.CaseID)
 		}
+		if err := validateCaseRepoScope(repo, definition); err != nil {
+			return err
+		}
 		for _, existing := range definition.AttemptLinks {
 			if existing.AttemptID == request.AttemptID {
 				linked = existing
@@ -106,6 +109,9 @@ func RecordAttemptResult(repo *checkpoint.Repo, request RecordAttemptResultReque
 		}
 		definition, link, err := projectionAttempt(projection, request.CaseID, request.AttemptID)
 		if err != nil {
+			return err
+		}
+		if err := validateCaseRepoScope(repo, definition); err != nil {
 			return err
 		}
 		if link.RunID != request.RunID {
@@ -168,6 +174,9 @@ func SelectAttempt(repo *checkpoint.Repo, caseID primitives.CaseID, attemptID pr
 		if err != nil {
 			return err
 		}
+		if err := validateCaseRepoScope(repo, definition); err != nil {
+			return err
+		}
 		if link.Result == nil || link.Result.PostRef == "" || link.Result.PostCommit == "" {
 			return fmt.Errorf("attempt %s has no completed result", attemptID)
 		}
@@ -196,6 +205,9 @@ func ReconcileAbandonedAttempts(repo *checkpoint.Repo) error {
 		return err
 	}
 	for _, definition := range projection.Cases {
+		if definition.Scope.WorktreeID != repo.WorktreeID {
+			continue
+		}
 		for _, link := range definition.AttemptLinks {
 			if link.Result != nil {
 				continue
@@ -244,6 +256,9 @@ func RecordApply(repo *checkpoint.Repo, request RecordApplyRequest) (AttemptAppl
 		}
 		definition, link, err := projectionAttempt(projection, request.CaseID, request.AttemptID)
 		if err != nil {
+			return err
+		}
+		if err := validateCaseRepoScope(repo, definition); err != nil {
 			return err
 		}
 		if definition.Selection == nil || definition.Selection.AttemptID != request.AttemptID {
@@ -298,4 +313,11 @@ func caseAdapter(definition Case) primitives.AdapterName {
 		return definition.Readiness.Source.Adapters[0]
 	}
 	return primitives.AdapterCodex
+}
+
+func validateCaseRepoScope(repo *checkpoint.Repo, definition Case) error {
+	if definition.Scope.RepoID != repo.RepoID || definition.Scope.StoreID != repo.StoreID || definition.Scope.WorktreeID != repo.WorktreeID {
+		return fmt.Errorf("case %s belongs to a different repository, store, or worktree", definition.ID)
+	}
+	return nil
 }
