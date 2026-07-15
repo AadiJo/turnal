@@ -817,7 +817,11 @@ func (log Log) readPath(sessionID primitives.SessionID, path string, expectedStr
 			return nil, fmt.Errorf("event log invariant failed for session %s line %d: empty event line", sessionID, lineNumber)
 		}
 
-		event, err := parseEventLine(line)
+		// Detach each record from the buffer populated by os.ReadFile before
+		// decoding it. Besides giving parsers immutable ownership, this avoids a
+		// Go 1.26 race-instrumentation false positive across ReadFile and JSON
+		// scanning of slices backed by the same allocation.
+		event, err := parseEventLine(append([]byte(nil), line...))
 		if err != nil {
 			return nil, fmt.Errorf("event log invariant failed for session %s line %d: %w", sessionID, lineNumber, err)
 		}
@@ -1169,11 +1173,36 @@ func compactPayload(payload json.RawMessage) (json.RawMessage, error) {
 	if len(payload) == 0 {
 		return json.RawMessage(`{}`), nil
 	}
-	var buf bytes.Buffer
-	if err := json.Compact(&buf, payload); err != nil {
-		return nil, fmt.Errorf("payload must be valid JSON: %w", err)
+	if !json.Valid(payload) {
+		return nil, fmt.Errorf("payload must be valid JSON")
 	}
-	return append(json.RawMessage(nil), buf.Bytes()...), nil
+	compacted := make(json.RawMessage, 0, len(payload))
+	inString := false
+	escaped := false
+	for _, value := range payload {
+		if inString {
+			compacted = append(compacted, value)
+			switch {
+			case escaped:
+				escaped = false
+			case value == '\\':
+				escaped = true
+			case value == '"':
+				inString = false
+			}
+			continue
+		}
+		switch value {
+		case '"':
+			inString = true
+			compacted = append(compacted, value)
+		case ' ', '\t', '\r', '\n':
+			// JSON whitespace is insignificant outside string literals.
+		default:
+			compacted = append(compacted, value)
+		}
+	}
+	return compacted, nil
 }
 
 func appendLengthPrefixed(input []byte, value string) []byte {

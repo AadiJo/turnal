@@ -68,6 +68,21 @@ func TestAppendReadAndVerifyHashChain(t *testing.T) {
 	}
 }
 
+func TestCompactPayloadPreservesStringBytes(t *testing.T) {
+	payload := json.RawMessage(" { \n \"text\" : \" spaces \\\" and \\\\ tabs\\t stay \" , \"number\" : 1.00e+2 } \r\n")
+	compacted, err := compactPayload(payload)
+	if err != nil {
+		t.Fatalf("compactPayload: %v", err)
+	}
+	want := `{"text":" spaces \" and \\ tabs\t stay ","number":1.00e+2}`
+	if string(compacted) != want {
+		t.Fatalf("compacted payload = %q, want %q", compacted, want)
+	}
+	if _, err := compactPayload(json.RawMessage(`{"broken":`)); err == nil {
+		t.Fatal("compactPayload accepted malformed JSON")
+	}
+}
+
 func TestReadPreservesStreamSequenceAcrossClockRegression(t *testing.T) {
 	log := Open(t.TempDir())
 	sessionID := sessionID(t, "clock-regression")
