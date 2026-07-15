@@ -27,8 +27,15 @@ type Result struct {
 }
 
 func DropSession(repo *checkpoint.Repo, sessionID primitives.SessionID, dryRun bool) (Result, error) {
+	return dropSession(repo, sessionID, dryRun, removeRetentionPath)
+}
+
+func dropSession(repo *checkpoint.Repo, sessionID primitives.SessionID, dryRun bool, removePath func(string) error) (Result, error) {
 	if repo == nil {
 		return Result{}, fmt.Errorf("retention repo is required")
+	}
+	if removePath == nil {
+		return Result{}, fmt.Errorf("retention path remover is required")
 	}
 	unlockSession, err := adapters.AcquireSessionLock(repo, sessionID)
 	if err != nil {
@@ -46,14 +53,17 @@ func DropSession(repo *checkpoint.Repo, sessionID primitives.SessionID, dryRun b
 		if err != nil {
 			return err
 		}
+		// Remove durable records first. If this phase is interrupted, any refs
+		// left behind are harmless orphans; deleting refs first would leave
+		// surviving events pointing at missing durable workspace state.
+		for _, path := range result.DeletedFiles {
+			if err := removePath(path); err != nil {
+				return fmt.Errorf("remove %s: %w", path, err)
+			}
+		}
 		for _, ref := range result.DeletedRefs {
 			if err := repo.DeletePrivateRefLocked(ref); err != nil {
 				return err
-			}
-		}
-		for _, path := range result.DeletedFiles {
-			if err := removeRetentionPath(path); err != nil {
-				return fmt.Errorf("remove %s: %w", path, err)
 			}
 		}
 		if _, err := repo.PruneModeManifestsLocked(); err != nil {

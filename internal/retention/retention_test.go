@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -66,6 +67,39 @@ func TestDropSessionDeletesEventLogAndPrivateRefs(t *testing.T) {
 	}
 	if len(sessions) != 0 {
 		t.Fatalf("sessions after drop = %#v, want none", sessions)
+	}
+}
+
+func TestDropSessionInterruptionLeavesCheckpointRefsIntact(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	session := sessionID(t, "interrupted")
+	turnID, _ := primitives.NewTurnID(1)
+	writeFile(t, root, "app.txt", "content\n")
+	created, err := repo.CreateCheckpoint(session, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("CreateCheckpoint: %v", err)
+	}
+	appendCheckpointEvent(t, repo, session, turnID, created)
+	removals := 0
+	_, err = dropSession(repo, session, false, func(path string) error {
+		removals++
+		if removals == 1 {
+			return removeRetentionPath(path)
+		}
+		return errors.New("injected durable record removal failure")
+	})
+	if err == nil || !strings.Contains(err.Error(), "injected durable record removal failure") {
+		t.Fatalf("DropSession error = %v, want injected removal failure", err)
+	}
+	for _, ref := range []primitives.CheckpointRef{created.Ref, created.CanonicalRef} {
+		if got, refErr := repo.CheckpointCommit(ref); refErr != nil || got != created.Commit {
+			t.Fatalf("checkpoint ref %s after interrupted deletion = %s, %v; want %s", ref, got, refErr, created.Commit)
+		}
 	}
 }
 
