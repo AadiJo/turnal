@@ -91,7 +91,16 @@ func Apply(repo *checkpoint.Repo, request ApplyRequest) (ApplyResult, error) {
 			return err
 		}
 		resolved := rollbackengine.ResolvedTarget{Target: target, CheckpointRef: link.Result.PostRef, Commit: postCommit, SessionID: link.Execution.SessionID, TurnID: link.Execution.TurnID, Phase: primitives.CheckpointPhasePost}
-		rollbackResult, err := rollbackengine.New(repo).Run(rollbackengine.Request{Resolved: &resolved, DryRun: request.DryRun, ExpectedWorkspaceTree: basePlan.WorkspaceTree})
+		rollbackRequest := rollbackengine.Request{Resolved: &resolved, DryRun: request.DryRun, ExpectedWorkspaceTree: basePlan.WorkspaceTree}
+		if !request.DryRun {
+			if definition.Selection == nil || definition.Selection.AttemptID != attemptID {
+				if _, err := cases.SelectAttempt(repo, definition.ID, attemptID); err != nil {
+					return fmt.Errorf("record applied attempt selection: %w", err)
+				}
+			}
+			rollbackRequest.Application = &rollbackengine.ApplicationMetadata{CaseID: definition.ID, AttemptID: attemptID, PostCommit: postCommit}
+		}
+		rollbackResult, err := rollbackengine.New(repo).Run(rollbackRequest)
 		if err != nil {
 			return err
 		}
@@ -103,14 +112,6 @@ func Apply(repo *checkpoint.Repo, request ApplyRequest) (ApplyResult, error) {
 			return fmt.Errorf("apply invariant failed: rollback completed without a safety checkpoint")
 		}
 		result.SafetyRef, result.SafetyCommit = rollbackResult.Safety.Ref, rollbackResult.Safety.Commit
-		if definition.Selection == nil || definition.Selection.AttemptID != attemptID {
-			if _, err := cases.SelectAttempt(repo, definition.ID, attemptID); err != nil {
-				return fmt.Errorf("record applied attempt selection: %w", err)
-			}
-		}
-		if _, err := cases.RecordApply(repo, cases.RecordApplyRequest{CaseID: definition.ID, AttemptID: attemptID, PostCommit: postCommit, SafetyRef: result.SafetyRef, SafetyCommit: result.SafetyCommit, Changes: len(result.Changes)}); err != nil {
-			return fmt.Errorf("record case attempt application: %w", err)
-		}
 		return nil
 	})
 	return result, err

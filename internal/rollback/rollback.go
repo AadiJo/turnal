@@ -36,6 +36,13 @@ type Request struct {
 	DryRun                bool
 	WorkspaceGit          bool
 	ExpectedWorkspaceTree string
+	Application           *ApplicationMetadata
+}
+
+type ApplicationMetadata struct {
+	CaseID     primitives.CaseID    `json:"case_id"`
+	AttemptID  primitives.AttemptID `json:"attempt_id"`
+	PostCommit primitives.CommitSHA `json:"post_commit"`
 }
 
 type ResolvedTarget struct {
@@ -69,18 +76,19 @@ type ChangeSummary struct {
 }
 
 type EventPayload struct {
-	Turn               uint64        `json:"turn,omitempty"`
-	Phase              string        `json:"phase,omitempty"`
-	Mode               string        `json:"mode,omitempty"`
-	Target             string        `json:"target"`
-	Ref                string        `json:"ref"`
-	CommitSHA          string        `json:"commit_sha"`
-	SafetyRef          string        `json:"safety_ref"`
-	SafetyCommitSHA    string        `json:"safety_commit_sha"`
-	GitSyncRef         string        `json:"git_sync_ref,omitempty"`
-	GitSafetyRef       string        `json:"git_safety_ref,omitempty"`
-	GitSafetyCommitSHA string        `json:"git_safety_commit_sha,omitempty"`
-	ChangeSummary      ChangeSummary `json:"change_summary"`
+	Turn               uint64               `json:"turn,omitempty"`
+	Phase              string               `json:"phase,omitempty"`
+	Mode               string               `json:"mode,omitempty"`
+	Target             string               `json:"target"`
+	Ref                string               `json:"ref"`
+	CommitSHA          string               `json:"commit_sha"`
+	SafetyRef          string               `json:"safety_ref"`
+	SafetyCommitSHA    string               `json:"safety_commit_sha"`
+	GitSyncRef         string               `json:"git_sync_ref,omitempty"`
+	GitSafetyRef       string               `json:"git_safety_ref,omitempty"`
+	GitSafetyCommitSHA string               `json:"git_safety_commit_sha,omitempty"`
+	ChangeSummary      ChangeSummary        `json:"change_summary"`
+	CaseApplication    *ApplicationMetadata `json:"case_application,omitempty"`
 }
 
 type Journal struct {
@@ -102,6 +110,7 @@ type Journal struct {
 	EventSourceID      string                     `json:"event_source_id"`
 	Changes            []checkpoint.RestoreChange `json:"changes"`
 	GitChanges         *WorkspaceGitChanges       `json:"git_changes,omitempty"`
+	CaseApplication    *ApplicationMetadata       `json:"case_application,omitempty"`
 }
 
 type WorkspaceGitChanges struct {
@@ -427,6 +436,9 @@ func (engine Engine) runCheckpointUnlocked(request Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	if err := validateApplicationMetadata(request.Application, target); err != nil {
+		return Result{}, err
+	}
 	plan, err := engine.Repo.PlanRestoreCommit(target.Commit)
 	if err != nil {
 		return Result{}, err
@@ -452,6 +464,7 @@ func (engine Engine) runCheckpointUnlocked(request Request) (Result, error) {
 		TargetCommitSHA: target.Commit.String(),
 		Manual:          target.Manual,
 		Changes:         plan.Changes,
+		CaseApplication: cloneApplicationMetadata(request.Application),
 	}
 	if err := writeJournal(JournalPath(engine.Repo), journal); err != nil {
 		return result, fmt.Errorf("write rollback journal: %w", err)
@@ -489,7 +502,7 @@ func (engine Engine) runCheckpointUnlocked(request Request) (Result, error) {
 		return result, engine.safetyError("write rollback journal", safety, err)
 	}
 
-	event, err := appendRollbackEvent(engine.Repo, target, safety, plan, eventSourceID)
+	event, err := appendRollbackEvent(engine.Repo, target, safety, plan, eventSourceID, request.Application)
 	if err != nil {
 		return result, engine.safetyError("append rollback event", safety, err)
 	}
@@ -661,7 +674,7 @@ func (engine Engine) finalizeRestoredJournal(path string, journal Journal) error
 		return fmt.Errorf("finalize restored rollback journal: %w", err)
 	}
 	if !exists {
-		if _, err := appendRollbackEvent(engine.Repo, target, safety, plan, eventSourceID); err != nil {
+		if _, err := appendRollbackEvent(engine.Repo, target, safety, plan, eventSourceID, journal.CaseApplication); err != nil {
 			return SafetyError{
 				Op:          "finalize restored rollback journal",
 				Err:         err,
@@ -715,7 +728,7 @@ func (engine Engine) finalizeRestoredWorkspaceGitJournal(path string, journal Jo
 	return nil
 }
 
-func appendRollbackEvent(repo *checkpoint.Repo, target ResolvedTarget, safety checkpoint.Snapshot, plan checkpoint.RestorePlan, sourceID string) (eventlog.Event, error) {
+func appendRollbackEvent(repo *checkpoint.Repo, target ResolvedTarget, safety checkpoint.Snapshot, plan checkpoint.RestorePlan, sourceID string, application *ApplicationMetadata) (eventlog.Event, error) {
 	payload, err := json.Marshal(EventPayload{
 		Turn:            target.TurnID.Uint64(),
 		Phase:           target.Phase.String(),
@@ -726,6 +739,7 @@ func appendRollbackEvent(repo *checkpoint.Repo, target ResolvedTarget, safety ch
 		SafetyRef:       safety.Ref,
 		SafetyCommitSHA: safety.Commit.String(),
 		ChangeSummary:   summarizeChanges(plan.Changes),
+		CaseApplication: cloneApplicationMetadata(application),
 	})
 	if err != nil {
 		return eventlog.Event{}, fmt.Errorf("marshal rollback event: %w", err)
@@ -873,6 +887,9 @@ func journalRollback(repo *checkpoint.Repo, journal Journal) (ResolvedTarget, ch
 			SessionID: targetRef.SessionID(), TurnID: targetRef.TurnID(), Phase: phase,
 		}
 	}
+	if err := validateApplicationMetadata(journal.CaseApplication, target); err != nil {
+		return ResolvedTarget{}, checkpoint.Snapshot{}, checkpoint.RestorePlan{}, "", fmt.Errorf("rollback journal Case application invariant failed: %w", err)
+	}
 	safety := checkpoint.Snapshot{Ref: journal.SafetyRef, Commit: safetyCommit}
 	plan := checkpoint.RestorePlan{TargetCommit: commit, Changes: journal.Changes}
 	eventSourceID := journal.EventSourceID
@@ -880,6 +897,33 @@ func journalRollback(repo *checkpoint.Repo, journal Journal) (ResolvedTarget, ch
 		eventSourceID = rollbackEventSourceID(target, safety)
 	}
 	return target, safety, plan, eventSourceID, nil
+}
+
+func validateApplicationMetadata(application *ApplicationMetadata, target ResolvedTarget) error {
+	if application == nil {
+		return nil
+	}
+	if target.Manual {
+		return fmt.Errorf("Case application metadata is not valid for manual checkpoints")
+	}
+	if _, err := primitives.ParseCaseID(application.CaseID.String()); err != nil {
+		return fmt.Errorf("Case application id: %w", err)
+	}
+	if _, err := primitives.ParseAttemptID(application.AttemptID.String()); err != nil {
+		return fmt.Errorf("Case application attempt id: %w", err)
+	}
+	if application.PostCommit != target.Commit {
+		return fmt.Errorf("Case application post commit %s does not match rollback target %s", application.PostCommit, target.Commit)
+	}
+	return nil
+}
+
+func cloneApplicationMetadata(application *ApplicationMetadata) *ApplicationMetadata {
+	if application == nil {
+		return nil
+	}
+	copy := *application
+	return &copy
 }
 
 func journalWorkspaceGitRollback(repo *checkpoint.Repo, journal Journal) (ResolvedTarget, checkpoint.Snapshot, checkpoint.Snapshot, string, workspacegit.RestorePlan, string, error) {

@@ -12,6 +12,7 @@ import (
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/fork"
 	"github.com/AadiJo/turnal/internal/primitives"
+	rollbackengine "github.com/AadiJo/turnal/internal/rollback"
 	"github.com/AadiJo/turnal/internal/runs"
 	verifierengine "github.com/AadiJo/turnal/internal/verifier"
 )
@@ -99,6 +100,7 @@ func project(streams []eventlog.DurableStream, expected Scope, attempts map[prim
 	var resultEvents []eventlog.Event
 	var selectionEvents []eventlog.Event
 	var applicationEvents []eventlog.Event
+	var rollbackEvents []eventlog.Event
 
 	for _, stream := range streams {
 		for _, event := range stream.Events {
@@ -146,6 +148,8 @@ func project(streams []eventlog.DurableStream, expected Scope, attempts map[prim
 				selectionEvents = append(selectionEvents, event)
 			case primitives.EventTypeCaseAttemptApply:
 				applicationEvents = append(applicationEvents, event)
+			case primitives.EventTypeRollback:
+				rollbackEvents = append(rollbackEvents, event)
 			}
 		}
 	}
@@ -307,6 +311,36 @@ func project(streams []eventlog.DurableStream, expected Scope, attempts map[prim
 			return Projection{}, relationshipError(event, err)
 		}
 		definition.Applications = append(definition.Applications, AttemptApplication{AttemptID: payload.AttemptID, PostCommit: payload.PostCommit, SafetyRef: payload.SafetyRef, SafetyCommit: payload.SafetyCommit, Changes: payload.Changes, Applied: provenance(event)})
+	}
+
+	for _, event := range rollbackEvents {
+		var payload rollbackengine.EventPayload
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			return Projection{}, relationshipError(event, fmt.Errorf("decode rollback event: %w", err))
+		}
+		if payload.CaseApplication == nil || deletedCases[payload.CaseApplication.CaseID] {
+			continue
+		}
+		definition, link, err := linkedAttempt(casesByID, payload.CaseApplication.CaseID, payload.CaseApplication.AttemptID)
+		if err != nil {
+			return Projection{}, relationshipError(event, err)
+		}
+		if event.RepoID != definition.Scope.RepoID || event.WorktreeID != definition.Scope.WorktreeID || event.SessionID != link.Execution.SessionID || event.TurnID == nil || *event.TurnID != link.Execution.TurnID {
+			return Projection{}, relationshipError(event, fmt.Errorf("Case application rollback event does not match attempt execution scope"))
+		}
+		postCommit, err := primitives.ParseCommitSHA(payload.CommitSHA)
+		if err != nil || postCommit != payload.CaseApplication.PostCommit {
+			return Projection{}, relationshipError(event, fmt.Errorf("Case application rollback target does not match recorded post commit"))
+		}
+		safetyCommit, err := primitives.ParseCommitSHA(payload.SafetyCommitSHA)
+		if err != nil {
+			return Projection{}, relationshipError(event, fmt.Errorf("Case application rollback safety commit: %w", err))
+		}
+		application := caseAttemptApplyPayload{CaseID: definition.ID, Scope: definition.Scope, AttemptID: link.AttemptID, Source: definition.Source, PostCommit: postCommit, SafetyRef: payload.SafetyRef, SafetyCommit: safetyCommit, Changes: payload.ChangeSummary.Total}
+		if err := validateAttemptApplyPayload(application, *definition, *link); err != nil {
+			return Projection{}, relationshipError(event, err)
+		}
+		definition.Applications = append(definition.Applications, AttemptApplication{AttemptID: application.AttemptID, PostCommit: application.PostCommit, SafetyRef: application.SafetyRef, SafetyCommit: application.SafetyCommit, Changes: application.Changes, Applied: provenance(event)})
 	}
 
 	result := Projection{Version: JSONVersion, Tasks: make([]Task, 0, len(tasks)), Cases: make([]Case, 0, len(casesByID))}

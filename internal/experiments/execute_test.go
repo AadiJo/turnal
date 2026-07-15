@@ -16,6 +16,7 @@ import (
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/primitives"
+	rollbackengine "github.com/AadiJo/turnal/internal/rollback"
 	"github.com/AadiJo/turnal/internal/runs"
 	"github.com/AadiJo/turnal/internal/turnevents"
 	"github.com/AadiJo/turnal/internal/turns"
@@ -210,6 +211,63 @@ func TestApplyRejectsDivergedWorkspaceBeforeCreatingSafetyState(t *testing.T) {
 	updated, _ := projection.Case(definition.ID)
 	if updated.Selection != nil || len(updated.Applications) != 0 {
 		t.Fatalf("rejected apply wrote case decisions: %#v %#v", updated.Selection, updated.Applications)
+	}
+}
+
+func TestApplyRecoveryFinalizesCaseApplicationFromRollbackJournal(t *testing.T) {
+	repo, definition := experimentCase(t)
+	result, err := Execute(context.Background(), repo, Request{Case: definition, Command: []string{"runner"}, Runner: runnerFunc(func(_ context.Context, root string, _ []string, _ []string) (int, error) {
+		return 0, os.WriteFile(filepath.Join(root, "app.txt"), []byte("recovered application\n"), 0o644)
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected, err := cases.SelectAttempt(repo, definition.ID, result.AttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := selected.AttemptLinks[0]
+	plan, err := repo.PlanRestoreCommit(result.PostCommit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	safety, err := repo.CreateSnapshotRef("refs/agent-vcs/rollback-safety/test/apply-recovery", "apply recovery safety")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RestoreCommit(result.PostCommit); err != nil {
+		t.Fatal(err)
+	}
+	target, err := primitives.NewTargetRef(link.Execution.SessionID, link.Execution.TurnID, primitives.CheckpointPhasePost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal := rollbackengine.Journal{
+		Version: 1, State: "restored", RestorePhase: "restored", Mode: primitives.RollbackModeCheckpoint.String(),
+		Target: target.String(), CheckpointRef: result.PostRef.String(), TargetCommitSHA: result.PostCommit.String(),
+		SafetyRef: safety.Ref, SafetyCommitSHA: safety.Commit.String(), Changes: plan.Changes,
+		CaseApplication: &rollbackengine.ApplicationMetadata{CaseID: definition.ID, AttemptID: result.AttemptID, PostCommit: result.PostCommit},
+	}
+	encoded, err := json.Marshal(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rollbackengine.JournalPath(repo), encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := rollbackengine.New(repo).ResumeRecovery(); err != nil {
+		t.Fatalf("ResumeRecovery: %v", err)
+	}
+	if _, err := os.Stat(rollbackengine.JournalPath(repo)); !os.IsNotExist(err) {
+		t.Fatalf("rollback journal remains after finalization: %v", err)
+	}
+	projection, err := cases.Rebuild(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := projection.Case(definition.ID)
+	if len(updated.Applications) != 1 || updated.Applications[0].AttemptID != result.AttemptID || updated.Applications[0].SafetyRef != safety.Ref {
+		t.Fatalf("recovered application = %#v", updated.Applications)
 	}
 }
 
