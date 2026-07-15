@@ -2,19 +2,31 @@ package retention
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/AadiJo/turnal/internal/adapters"
+	caseengine "github.com/AadiJo/turnal/internal/cases"
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
+	experimentengine "github.com/AadiJo/turnal/internal/experiments"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/turnevents"
+	"github.com/AadiJo/turnal/internal/turns"
 )
+
+type retentionRunner func(context.Context, string, []string, []string) (int, error)
+
+func (runner retentionRunner) Run(ctx context.Context, root string, command, environment []string) (int, error) {
+	return runner(ctx, root, command, environment)
+}
 
 func TestDropSessionDeletesEventLogAndPrivateRefs(t *testing.T) {
 	requireGit(t)
@@ -110,6 +122,53 @@ func TestDropSessionRedactsRawPayloadAndInvalidatesIndex(t *testing.T) {
 	}
 	if _, err := os.Stat(v2Dir); !os.IsNotExist(err) {
 		t.Fatalf("v2 session raw dir stat error = %v, want removed", err)
+	}
+}
+
+func TestDropSessionRefusesCaseSourceAndAttemptExecutionHistory(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, root, "app.txt", "before\n")
+	source := sessionID(t, "case-source")
+	turnID, _ := primitives.NewTurnID(1)
+	if _, err := repo.EventLog().Append(eventlog.AppendInput{SessionID: source, Type: primitives.EventTypeSessionStart, Adapter: primitives.AdapterCodex, Payload: json.RawMessage(`{"provider_session_id":"source"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	gitSync := false
+	recorder := turnevents.Recorder{Log: repo.EventLog(), Manager: turns.NewManager(repo), Adapter: primitives.AdapterCodex}
+	recorder.Manager.GitSyncEnabled = &gitSync
+	if _, err := recorder.Start(source, turnID); err != nil {
+		t.Fatal(err)
+	}
+	prompt, _ := json.Marshal(map[string]string{"text": "Fix it"})
+	if _, err := repo.EventLog().Append(eventlog.AppendInput{SessionID: source, TurnID: &turnID, Type: primitives.EventTypePromptUser, Adapter: primitives.AdapterCodex, Payload: prompt}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recorder.Finish(source, turnID); err != nil {
+		t.Fatal(err)
+	}
+	created, err := caseengine.Create(repo, caseengine.CreateRequest{SessionID: source, TurnID: turnID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := experimentengine.Execute(context.Background(), repo, experimentengine.Request{Case: created.Case, Command: []string{"runner"}, Runner: retentionRunner(func(context.Context, string, []string, []string) (int, error) { return 0, nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, protected := range []primitives.SessionID{source, result.SessionID} {
+		if _, err := DropSession(repo, protected, false); err == nil || !strings.Contains(err.Error(), "cannot drop session") || !strings.Contains(err.Error(), created.Case.ID.String()) {
+			t.Fatalf("drop protected session %s error = %v", protected, err)
+		}
+	}
+	if _, err := repo.CheckpointCommit(created.Case.Readiness.Base.Ref); err != nil {
+		t.Fatalf("protected base ref was removed: %v", err)
+	}
+	if _, err := repo.CheckpointCommit(result.PostRef); err != nil {
+		t.Fatalf("protected attempt ref was removed: %v", err)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/AadiJo/turnal/internal/adapters"
+	caseengine "github.com/AadiJo/turnal/internal/cases"
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/index"
@@ -123,6 +124,9 @@ func planDropSession(repo *checkpoint.Repo, sessionID primitives.SessionID, dryR
 	if err := ensureNoActiveRollbackForSession(repo, sessionID); err != nil {
 		return Result{}, err
 	}
+	if err := ensureSessionNotCaseReferenced(repo, sessionID); err != nil {
+		return Result{}, err
+	}
 	refPrefixes := []string{
 		fmt.Sprintf("%s/%s/turn", primitives.CheckpointRefsPrefix(), sessionID),
 		fmt.Sprintf("%s/%s/turn", primitives.GitSyncRefsPrefix(), sessionID),
@@ -187,6 +191,24 @@ func planDropSession(repo *checkpoint.Repo, sessionID primitives.SessionID, dryR
 	}
 	sort.Strings(result.RedactedFiles)
 	return result, nil
+}
+
+func ensureSessionNotCaseReferenced(repo *checkpoint.Repo, sessionID primitives.SessionID) error {
+	projection, err := caseengine.Rebuild(repo)
+	if err != nil {
+		return fmt.Errorf("inspect case references before session drop: %w", err)
+	}
+	for _, definition := range projection.Cases {
+		if definition.Source.SessionID == sessionID {
+			return fmt.Errorf("cannot drop session %s because case %s preserves it as the immutable source; case deletion is required before removing referenced history", sessionID, definition.ID)
+		}
+		for _, attempt := range definition.AttemptLinks {
+			if attempt.Execution.SessionID == sessionID {
+				return fmt.Errorf("cannot drop session %s because case %s attempt %s preserves its result checkpoints; case deletion is required before removing referenced history", sessionID, definition.ID, attempt.AttemptID)
+			}
+		}
+	}
+	return nil
 }
 
 func sessionFiles(repo *checkpoint.Repo, sessionID primitives.SessionID) ([]string, []string) {
