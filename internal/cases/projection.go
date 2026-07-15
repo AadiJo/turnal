@@ -41,7 +41,48 @@ func Rebuild(repo *checkpoint.Repo) (Projection, error) {
 			}
 		}
 	}
-	return project(streams, Scope{RepoID: repo.RepoID, StoreID: repo.StoreID, WorktreeID: repo.WorktreeID}, attempts)
+	projection, err := project(streams, Scope{RepoID: repo.RepoID, StoreID: repo.StoreID, WorktreeID: repo.WorktreeID}, attempts)
+	if err != nil {
+		return Projection{}, err
+	}
+	if err := validateProjectionRefs(repo, projection); err != nil {
+		return Projection{}, err
+	}
+	return projection, nil
+}
+
+func validateProjectionRefs(repo *checkpoint.Repo, projection Projection) error {
+	for _, definition := range projection.Cases {
+		base, err := repo.CheckpointCommit(definition.Readiness.Base.Ref)
+		if err != nil {
+			return fmt.Errorf("case %s base ref integrity failed: %w", definition.ID, err)
+		}
+		if base != definition.Readiness.Base.CommitSHA {
+			return fmt.Errorf("case %s base ref integrity failed: %s points to %s, recorded %s", definition.ID, definition.Readiness.Base.Ref, base, definition.Readiness.Base.CommitSHA)
+		}
+		for _, attempt := range definition.AttemptLinks {
+			if attempt.Result == nil {
+				continue
+			}
+			post, err := repo.CheckpointCommit(attempt.Result.PostRef)
+			if err != nil {
+				return fmt.Errorf("case %s attempt %s result ref integrity failed: %w", definition.ID, attempt.AttemptID, err)
+			}
+			if post != attempt.Result.PostCommit {
+				return fmt.Errorf("case %s attempt %s result ref integrity failed: %s points to %s, recorded %s", definition.ID, attempt.AttemptID, attempt.Result.PostRef, post, attempt.Result.PostCommit)
+			}
+		}
+		for _, application := range definition.Applications {
+			safety, err := repo.RefCommit(application.SafetyRef)
+			if err != nil {
+				return fmt.Errorf("case %s application safety ref integrity failed: %w", definition.ID, err)
+			}
+			if safety != application.SafetyCommit {
+				return fmt.Errorf("case %s application safety ref integrity failed: %s points to %s, recorded %s", definition.ID, application.SafetyRef, safety, application.SafetyCommit)
+			}
+		}
+	}
+	return nil
 }
 
 func project(streams []eventlog.DurableStream, expected Scope, attempts map[primitives.AttemptID]attemptRecord) (Projection, error) {

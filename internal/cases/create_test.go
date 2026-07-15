@@ -194,6 +194,52 @@ func TestAttemptLifecycleRecordsExecutionResultSelectionAndApply(t *testing.T) {
 	}
 }
 
+func TestRebuildRejectsMovedAttemptResultRef(t *testing.T) {
+	repo, root := caseRepo(t)
+	sourceSession, sourceTurn := recordCaseTurn(t, repo, root, "integrity-source", "Fix it", false)
+	created, err := Create(repo, CreateRequest{SessionID: sourceSession, TurnID: sourceTurn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID, _ := primitives.NewRunID()
+	executionSession, _ := primitives.ParseSessionID("integrity-execution")
+	release, err := runs.Begin(repo, runID, executionSession, []string{"runner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if err := runs.LinkCapture(repo, runID, runs.CaptureWrapper, executionSession, primitives.AdapterCodex); err != nil {
+		t.Fatal(err)
+	}
+	gitSync := false
+	recorder := turnevents.Recorder{Log: repo.EventLog(), Manager: turns.NewManager(repo), Adapter: primitives.AdapterCodex}
+	recorder.Manager.GitSyncEnabled = &gitSync
+	started, err := recorder.Start(executionSession, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attemptID, err := runs.EnsureWrapperAttempt(repo, runID, executionSession, started.TurnID, primitives.AdapterCodex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LinkAttempt(repo, LinkAttemptRequest{CaseID: created.Case.ID, RunID: runID, AttemptID: attemptID}); err != nil {
+		t.Fatal(err)
+	}
+	finished, err := recorder.Finish(executionSession, started.TurnID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RecordAttemptResult(repo, RecordAttemptResultRequest{CaseID: created.Case.ID, RunID: runID, AttemptID: attemptID, PostRef: finished.Post.Ref, PostCommit: finished.Post.Commit, Status: AttemptStatusSucceeded}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.CreateSyntheticSnapshotRef(finished.Post.Ref.String(), "move result ref", []checkpoint.SyntheticTreeEntry{{Path: "tampered.txt", Mode: primitives.GitFileModeRegular, Content: []byte("tampered\n")}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Rebuild(repo); err == nil || !strings.Contains(err.Error(), "result ref integrity failed") {
+		t.Fatalf("Rebuild moved result error = %v", err)
+	}
+}
+
 func TestCreateRejectsCheckpointRefMismatchBeforeWritingTask(t *testing.T) {
 	repo, root := caseRepo(t)
 	sessionID, turnID := recordCaseTurn(t, repo, root, "source", "Fix it", false)
