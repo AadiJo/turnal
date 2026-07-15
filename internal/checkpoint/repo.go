@@ -450,35 +450,40 @@ func (repo *Repo) CreateCheckpointLocked(sessionID primitives.SessionID, turnID 
 func (repo *Repo) CreateManualCheckpoint() (Checkpoint, error) {
 	var created Checkpoint
 	err := repo.WithWorkspaceLock("create manual checkpoint", func() error {
-		checkpointID, err := primitives.NewCheckpointID()
-		if err != nil {
-			return err
-		}
-		ref, err := primitives.NewManualCheckpointRef(repo.WorktreeID, checkpointID)
-		if err != nil {
-			return err
-		}
-		canonicalRef, err := primitives.NewCheckpointIDRef(checkpointID)
-		if err != nil {
-			return err
-		}
-		commit, err := repo.createSnapshotCommit(fmt.Sprintf("turnal manual checkpoint %s", checkpointID))
-		if err != nil {
-			return err
-		}
-		if err := repo.installCheckpointRefsAtomic(canonicalRef, ref, commit); err != nil {
-			return err
-		}
-		created = Checkpoint{
-			ID:           checkpointID,
-			Ref:          ref,
-			CanonicalRef: canonicalRef,
-			Commit:       commit,
-			WorktreeID:   repo.WorktreeID,
-		}
-		return nil
+		var err error
+		created, err = repo.createManualCheckpoint()
+		return err
 	})
 	return created, err
+}
+
+// CreateManualCheckpointLocked captures a manual checkpoint while the caller
+// holds the workspace lock.
+func (repo *Repo) CreateManualCheckpointLocked() (Checkpoint, error) {
+	return repo.createManualCheckpoint()
+}
+
+func (repo *Repo) createManualCheckpoint() (Checkpoint, error) {
+	checkpointID, err := primitives.NewCheckpointID()
+	if err != nil {
+		return Checkpoint{}, err
+	}
+	ref, err := primitives.NewManualCheckpointRef(repo.WorktreeID, checkpointID)
+	if err != nil {
+		return Checkpoint{}, err
+	}
+	canonicalRef, err := primitives.NewCheckpointIDRef(checkpointID)
+	if err != nil {
+		return Checkpoint{}, err
+	}
+	commit, err := repo.createSnapshotCommit(fmt.Sprintf("turnal manual checkpoint %s", checkpointID))
+	if err != nil {
+		return Checkpoint{}, err
+	}
+	if err := repo.installCheckpointRefsAtomic(canonicalRef, ref, commit); err != nil {
+		return Checkpoint{}, err
+	}
+	return Checkpoint{ID: checkpointID, Ref: ref, CanonicalRef: canonicalRef, Commit: commit, WorktreeID: repo.WorktreeID}, nil
 }
 
 func (repo *Repo) installCheckpointRefsAtomic(canonicalRef, friendlyRef primitives.CheckpointRef, commit primitives.CommitSHA) error {

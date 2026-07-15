@@ -41,7 +41,7 @@ func saveCmd() *cobra.Command {
 				} else if pending {
 					return fmt.Errorf("cannot save while rollback recovery is pending; run turnal recovery status")
 				}
-				created, err = repo.CreateManualCheckpoint()
+				created, err = repo.CreateManualCheckpointLocked()
 				if err != nil {
 					return err
 				}
