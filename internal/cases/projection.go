@@ -329,6 +329,9 @@ func project(streams []eventlog.DurableStream, expected Scope, attempts map[prim
 		if payload.CaseApplication == nil || deletedCases[payload.CaseApplication.CaseID] {
 			continue
 		}
+		if _, exists := casesByID[payload.CaseApplication.CaseID]; !exists {
+			continue
+		}
 		definition, link, err := linkedAttempt(casesByID, payload.CaseApplication.CaseID, payload.CaseApplication.AttemptID)
 		if err != nil {
 			return Projection{}, relationshipError(event, err)

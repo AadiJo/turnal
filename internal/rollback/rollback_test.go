@@ -20,6 +20,14 @@ import (
 	"github.com/AadiJo/turnal/internal/workspacegit"
 )
 
+func writeOwnedJournal(repo *checkpoint.Repo, journal Journal) error {
+	journal.RepoID = repo.RepoID
+	journal.StoreID = repo.StoreID
+	journal.WorktreeID = repo.WorktreeID
+	journal.WorkspaceRoot = repo.WorkspaceRoot.String()
+	return writeJournal(JournalPath(repo), journal)
+}
+
 func TestResolveTargetDefaultsToPost(t *testing.T) {
 	requireGit(t)
 
@@ -85,7 +93,7 @@ func TestRestoreSafetyRecoversPreRollbackWorkspace(t *testing.T) {
 		CheckpointRef: target.Ref.String(), TargetCommitSHA: target.Commit.String(),
 		Mode: primitives.RollbackModeCheckpoint.String(), SafetyRef: safety.Ref, SafetyCommitSHA: safety.Commit.String(),
 	}
-	if err := writeJournal(JournalPath(repo), journal); err != nil {
+	if err := writeOwnedJournal(repo, journal); err != nil {
 		t.Fatalf("write journal: %v", err)
 	}
 	writeFile(t, root, "app.txt", "partially restored\n")
@@ -135,7 +143,7 @@ func TestResumeRecoveryReappliesTargetAndFinalizes(t *testing.T) {
 		Mode: primitives.RollbackModeCheckpoint.String(), SafetyRef: safety.Ref, SafetyCommitSHA: safety.Commit.String(),
 		EventSourceID: rollbackEventSourceID(resolved, safety),
 	}
-	if err := writeJournal(JournalPath(repo), journal); err != nil {
+	if err := writeOwnedJournal(repo, journal); err != nil {
 		t.Fatalf("write journal: %v", err)
 	}
 	writeFile(t, root, "app.txt", "ambiguous partial state\n")
@@ -199,7 +207,7 @@ func TestManualRollbackRecoveryPhasesFinalizeIdempotently(t *testing.T) {
 				Mode: primitives.RollbackModeCheckpoint.String(), SafetyRef: safety.Ref, SafetyCommitSHA: safety.Commit.String(),
 				EventSourceID: sourceID,
 			}
-			if err := writeJournal(JournalPath(repo), journal); err != nil {
+			if err := writeOwnedJournal(repo, journal); err != nil {
 				t.Fatalf("writeJournal: %v", err)
 			}
 
@@ -218,7 +226,7 @@ func TestManualRollbackRecoveryPhasesFinalizeIdempotently(t *testing.T) {
 			}
 
 			journal.State, journal.RestorePhase = "restored", "restored"
-			if err := writeJournal(JournalPath(repo), journal); err != nil {
+			if err := writeOwnedJournal(repo, journal); err != nil {
 				t.Fatalf("write restored journal again: %v", err)
 			}
 			if err := New(repo).ResumeRecovery(); err != nil {
@@ -253,7 +261,7 @@ func TestManualRollbackRestoreSafety(t *testing.T) {
 		Target: created.Commit.String(), CheckpointRef: created.Ref.String(), TargetCommitSHA: created.Commit.String(),
 		Mode: primitives.RollbackModeCheckpoint.String(), SafetyRef: safety.Ref, SafetyCommitSHA: safety.Commit.String(),
 	}
-	if err := writeJournal(JournalPath(repo), journal); err != nil {
+	if err := writeOwnedJournal(repo, journal); err != nil {
 		t.Fatalf("writeJournal: %v", err)
 	}
 	writeFile(t, root, "app.txt", "partial\n")
@@ -290,7 +298,7 @@ func TestManualRollbackRecoveryRejectsMalformedJournal(t *testing.T) {
 		Target: strings.Repeat("0", len(created.Commit.String())), CheckpointRef: created.Ref.String(), TargetCommitSHA: created.Commit.String(),
 		Mode: primitives.RollbackModeCheckpoint.String(), SafetyRef: safety.Ref, SafetyCommitSHA: safety.Commit.String(),
 	}
-	if err := writeJournal(JournalPath(repo), journal); err != nil {
+	if err := writeOwnedJournal(repo, journal); err != nil {
 		t.Fatalf("writeJournal: %v", err)
 	}
 	if err := New(repo).ResumeRecovery(); err == nil || !strings.Contains(err.Error(), "manual target invariant failed") {
@@ -328,7 +336,7 @@ func TestManualRollbackRecoveryRejectsRefCommitMismatchBeforeMutation(t *testing
 		Target: checkpointB.Commit.String(), CheckpointRef: checkpointA.Ref.String(), TargetCommitSHA: checkpointB.Commit.String(),
 		Mode: primitives.RollbackModeCheckpoint.String(), SafetyRef: safety.Ref, SafetyCommitSHA: safety.Commit.String(),
 	}
-	if err := writeJournal(JournalPath(repo), journal); err != nil {
+	if err := writeOwnedJournal(repo, journal); err != nil {
 		t.Fatalf("writeJournal: %v", err)
 	}
 
@@ -398,7 +406,7 @@ func TestRunFinalizesRestoredJournal(t *testing.T) {
 			Action: checkpoint.RestoreActionModified,
 		}},
 	}
-	if err := writeJournal(JournalPath(repo), journal); err != nil {
+	if err := writeOwnedJournal(repo, journal); err != nil {
 		t.Fatalf("writeJournal: %v", err)
 	}
 
@@ -416,7 +424,7 @@ func TestRunFinalizesRestoredJournal(t *testing.T) {
 		t.Fatalf("rollback events with source id = %d, want 1", got)
 	}
 
-	if err := writeJournal(JournalPath(repo), journal); err != nil {
+	if err := writeOwnedJournal(repo, journal); err != nil {
 		t.Fatalf("writeJournal second time: %v", err)
 	}
 	if _, err := New(repo).Run(Request{Target: targetRef, DryRun: true}); err != nil {
@@ -427,7 +435,7 @@ func TestRunFinalizesRestoredJournal(t *testing.T) {
 	}
 
 	journal.EventSourceID = "missing-source-id"
-	if err := writeJournal(JournalPath(repo), journal); err != nil {
+	if err := writeOwnedJournal(repo, journal); err != nil {
 		t.Fatalf("writeJournal with missing source id: %v", err)
 	}
 	if _, err := New(repo).Run(Request{Target: targetRef, DryRun: true}); err != nil {
@@ -522,7 +530,7 @@ func TestRunFinalizesRestoredWorkspaceGitJournalWithChangeSummary(t *testing.T) 
 		EventSourceID:      sourceID,
 		GitChanges:         workspaceGitChangesFromPlan(gitPlan),
 	}
-	if err := writeJournal(JournalPath(repo), journal); err != nil {
+	if err := writeOwnedJournal(repo, journal); err != nil {
 		t.Fatalf("writeJournal: %v", err)
 	}
 
@@ -576,7 +584,7 @@ func TestRunClearsPreRestoreJournal(t *testing.T) {
 			Action: checkpoint.RestoreActionModified,
 		}},
 	}
-	if err := writeJournal(JournalPath(repo), journal); err != nil {
+	if err := writeOwnedJournal(repo, journal); err != nil {
 		t.Fatalf("writeJournal intent: %v", err)
 	}
 	result, err := New(repo).Run(Request{Target: targetRef, DryRun: true})
@@ -594,7 +602,7 @@ func TestRunClearsPreRestoreJournal(t *testing.T) {
 	journal.RestorePhase = "planned"
 	journal.SafetyRef = "refs/agent-vcs/rollback-safety/demo/turn/000001/pre/example"
 	journal.SafetyCommitSHA = resolved.Commit.String()
-	if err := writeJournal(JournalPath(repo), journal); err != nil {
+	if err := writeOwnedJournal(repo, journal); err != nil {
 		t.Fatalf("writeJournal planned: %v", err)
 	}
 	_, err = New(repo).Run(Request{Target: targetRef, DryRun: true})

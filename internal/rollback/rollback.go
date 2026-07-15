@@ -909,6 +909,13 @@ func journalRollback(repo *checkpoint.Repo, journal Journal) (ResolvedTarget, ch
 	if journal.SafetyRef == "" {
 		return ResolvedTarget{}, checkpoint.Snapshot{}, checkpoint.RestorePlan{}, "", fmt.Errorf("rollback journal safety ref invariant failed: must not be empty")
 	}
+	safetyRefCommit, err := repo.RefCommit(journal.SafetyRef)
+	if err != nil {
+		return ResolvedTarget{}, checkpoint.Snapshot{}, checkpoint.RestorePlan{}, "", fmt.Errorf("rollback journal safety ref invariant failed: %w", err)
+	}
+	if safetyRefCommit != safetyCommit {
+		return ResolvedTarget{}, checkpoint.Snapshot{}, checkpoint.RestorePlan{}, "", fmt.Errorf("rollback journal safety ref invariant failed: %s points to %s, recorded %s", journal.SafetyRef, safetyRefCommit, safetyCommit)
+	}
 
 	var target ResolvedTarget
 	if journal.Manual {
@@ -952,8 +959,11 @@ func journalRollback(repo *checkpoint.Repo, journal Journal) (ResolvedTarget, ch
 }
 
 func validateJournalOwner(repo *checkpoint.Repo, journal Journal) error {
-	if journal.RepoID == "" && journal.StoreID == "" && journal.WorktreeID == "" && journal.WorkspaceRoot == "" {
-		return nil
+	if journal.Version != 1 {
+		return fmt.Errorf("rollback journal owner invariant failed: unsupported version %d", journal.Version)
+	}
+	if journal.RepoID == "" || journal.StoreID == "" || journal.WorktreeID == "" || journal.WorkspaceRoot == "" {
+		return fmt.Errorf("rollback journal owner invariant failed: complete repository, store, worktree, and workspace identity is required")
 	}
 	if journal.RepoID != repo.RepoID || journal.StoreID != repo.StoreID || journal.WorktreeID != repo.WorktreeID || filepath.Clean(journal.WorkspaceRoot) != filepath.Clean(repo.WorkspaceRoot.String()) {
 		return fmt.Errorf("rollback journal owner invariant failed: repository, store, worktree, or workspace mismatch")
@@ -999,6 +1009,13 @@ func journalWorkspaceGitRollback(repo *checkpoint.Repo, journal Journal) (Resolv
 	}
 	if journal.GitSafetyRef == "" {
 		return ResolvedTarget{}, checkpoint.Snapshot{}, checkpoint.Snapshot{}, "", workspacegit.RestorePlan{}, "", fmt.Errorf("rollback journal git safety ref invariant failed: must not be empty")
+	}
+	gitSafetyRefCommit, err := repo.RefCommit(journal.GitSafetyRef)
+	if err != nil {
+		return ResolvedTarget{}, checkpoint.Snapshot{}, checkpoint.Snapshot{}, "", workspacegit.RestorePlan{}, "", fmt.Errorf("rollback journal workspace-Git safety ref invariant failed: %w", err)
+	}
+	if gitSafetyRefCommit != gitSafetyCommit {
+		return ResolvedTarget{}, checkpoint.Snapshot{}, checkpoint.Snapshot{}, "", workspacegit.RestorePlan{}, "", fmt.Errorf("rollback journal workspace-Git safety ref invariant failed: %s points to %s, recorded %s", journal.GitSafetyRef, gitSafetyRefCommit, gitSafetyCommit)
 	}
 	gitSyncRef := strings.TrimSpace(journal.GitSyncRef)
 	if gitSyncRef == "" || (gitSyncRef != "refs/agent-vcs" && !strings.HasPrefix(gitSyncRef, "refs/agent-vcs/")) {

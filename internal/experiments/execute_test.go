@@ -264,6 +264,7 @@ func TestApplyRecoveryFinalizesCaseApplicationFromRollbackJournal(t *testing.T) 
 		Target: target.String(), CheckpointRef: result.PostRef.String(), TargetCommitSHA: result.PostCommit.String(),
 		SafetyRef: safety.Ref, SafetyCommitSHA: safety.Commit.String(), Changes: plan.Changes,
 		CaseApplication: &rollbackengine.ApplicationMetadata{CaseID: definition.ID, AttemptID: result.AttemptID, PostCommit: result.PostCommit},
+		RepoID:          repo.RepoID, StoreID: repo.StoreID, WorktreeID: repo.WorktreeID, WorkspaceRoot: repo.WorkspaceRoot.String(),
 	}
 	encoded, err := json.Marshal(journal)
 	if err != nil {
