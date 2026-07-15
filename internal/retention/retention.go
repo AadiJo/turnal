@@ -47,7 +47,7 @@ func DropSession(repo *checkpoint.Repo, sessionID primitives.SessionID, dryRun b
 			return err
 		}
 		for _, ref := range result.DeletedRefs {
-			if err := repo.DeletePrivateRef(ref); err != nil {
+			if err := repo.DeletePrivateRefLocked(ref); err != nil {
 				return err
 			}
 		}
@@ -56,7 +56,7 @@ func DropSession(repo *checkpoint.Repo, sessionID primitives.SessionID, dryRun b
 				return fmt.Errorf("remove %s: %w", path, err)
 			}
 		}
-		if _, err := repo.PruneModeManifests(); err != nil {
+		if _, err := repo.PruneModeManifestsLocked(); err != nil {
 			return err
 		}
 		if err := index.Invalidate(repo.MetadataDir); err != nil {
@@ -93,7 +93,7 @@ func PruneOrphanRefs(repo *checkpoint.Repo, dryRun bool) (Result, error) {
 			return nil
 		}
 		for _, ref := range result.DeletedRefs {
-			if err := repo.DeletePrivateRef(ref); err != nil {
+			if err := repo.DeletePrivateRefLocked(ref); err != nil {
 				return err
 			}
 		}
@@ -217,6 +217,26 @@ func ensureSessionNotCaseReferenced(repo *checkpoint.Repo, sessionID primitives.
 		for _, attempt := range definition.AttemptLinks {
 			if attempt.Execution.SessionID == sessionID {
 				return fmt.Errorf("cannot drop session %s because case %s attempt %s preserves its result checkpoints; case deletion is required before removing referenced history", sessionID, definition.ID, attempt.AttemptID)
+			}
+		}
+	}
+	for _, definition := range projection.TombstonedCases {
+		// If this session owns the tombstoned Case creation, dropping it removes
+		// the relationship itself. Otherwise the surviving Case record still
+		// needs the shared Task creation and revision history to rebuild.
+		if definition.Created.SessionID == sessionID {
+			continue
+		}
+		task, ok := projection.Task(definition.TaskID)
+		if !ok {
+			return fmt.Errorf("cannot validate retention for tombstoned case %s because task %s is missing", definition.ID, definition.TaskID)
+		}
+		if task.Created.SessionID == sessionID {
+			return fmt.Errorf("cannot drop session %s because tombstoned case %s still references task %s creation history; drop the case's own session first", sessionID, definition.ID, task.ID)
+		}
+		for _, revision := range task.Revisions {
+			if revision.Number <= definition.TaskRevision && revision.Created.SessionID == sessionID {
+				return fmt.Errorf("cannot drop session %s because tombstoned case %s still references task %s revision %d history; drop the case's own session first", sessionID, definition.ID, task.ID, revision.Number)
 			}
 		}
 	}

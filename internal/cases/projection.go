@@ -357,12 +357,13 @@ func project(streams []eventlog.DurableStream, expected Scope, attempts map[prim
 		definition.Applications = append(definition.Applications, AttemptApplication{AttemptID: application.AttemptID, PostCommit: application.PostCommit, SafetyRef: application.SafetyRef, SafetyCommit: application.SafetyCommit, Changes: application.Changes, Applied: provenance(event)})
 	}
 
-	result := Projection{Version: JSONVersion, Tasks: make([]Task, 0, len(tasks)), Cases: make([]Case, 0, len(casesByID))}
+	result := Projection{Version: JSONVersion, Tasks: make([]Task, 0, len(tasks)), Cases: make([]Case, 0, len(casesByID)), TombstonedCases: make([]Case, 0)}
 	for _, task := range tasks {
 		result.Tasks = append(result.Tasks, *task)
 	}
 	for _, definition := range casesByID {
 		if deletedCases[definition.ID] {
+			result.TombstonedCases = append(result.TombstonedCases, *definition)
 			continue
 		}
 		sort.Slice(definition.AttemptLinks, func(i, j int) bool {
@@ -372,6 +373,7 @@ func project(streams []eventlog.DurableStream, expected Scope, attempts map[prim
 	}
 	sort.Slice(result.Tasks, func(i, j int) bool { return result.Tasks[i].ID < result.Tasks[j].ID })
 	sort.Slice(result.Cases, func(i, j int) bool { return result.Cases[i].ID < result.Cases[j].ID })
+	sort.Slice(result.TombstonedCases, func(i, j int) bool { return result.TombstonedCases[i].ID < result.TombstonedCases[j].ID })
 	return result, nil
 }
 

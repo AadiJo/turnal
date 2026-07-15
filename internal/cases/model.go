@@ -113,9 +113,10 @@ type Case struct {
 }
 
 type Projection struct {
-	Version int    `json:"version"`
-	Tasks   []Task `json:"tasks"`
-	Cases   []Case `json:"cases"`
+	Version         int    `json:"version"`
+	Tasks           []Task `json:"tasks"`
+	Cases           []Case `json:"cases"`
+	TombstonedCases []Case `json:"-"`
 }
 
 func (projection Projection) Task(id primitives.TaskID) (Task, bool) {

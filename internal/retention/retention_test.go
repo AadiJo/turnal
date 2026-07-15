@@ -266,6 +266,56 @@ func TestDropSessionRefusesCaseSourceAndAttemptExecutionHistory(t *testing.T) {
 	}
 }
 
+func TestDropSessionPreservesTombstonedSiblingTaskDependencies(t *testing.T) {
+	requireGit(t)
+	for _, order := range []string{"task-first", "sibling-first"} {
+		t.Run(order, func(t *testing.T) {
+			root := workspaceRoot(t)
+			repo, err := checkpoint.Init(root)
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			writeFile(t, root, "app.txt", "before\n")
+			taskSession := sessionID(t, "task-source")
+			siblingSession := sessionID(t, "sibling-source")
+			taskTurn := recordCaseSource(t, repo, taskSession, "Fix the shared task")
+			first, err := caseengine.Create(repo, caseengine.CreateRequest{SessionID: taskSession, TurnID: taskTurn})
+			if err != nil {
+				t.Fatalf("Create first Case: %v", err)
+			}
+			siblingTurn := recordCaseSource(t, repo, siblingSession, "Fix the shared task")
+			second, err := caseengine.Create(repo, caseengine.CreateRequest{SessionID: siblingSession, TurnID: siblingTurn, TaskID: first.Task.ID})
+			if err != nil {
+				t.Fatalf("Create sibling Case: %v", err)
+			}
+			for _, caseID := range []primitives.CaseID{first.Case.ID, second.Case.ID} {
+				if _, err := caseengine.Delete(repo, caseID); err != nil {
+					t.Fatalf("Delete Case %s: %v", caseID, err)
+				}
+			}
+
+			if order == "task-first" {
+				if _, err := DropSession(repo, taskSession, false); err == nil || !strings.Contains(err.Error(), "tombstoned case") || !strings.Contains(err.Error(), second.Case.ID.String()) {
+					t.Fatalf("task-first DropSession error = %v, want surviving sibling dependency", err)
+				}
+			}
+			if _, err := DropSession(repo, siblingSession, false); err != nil {
+				t.Fatalf("drop sibling session: %v", err)
+			}
+			if _, err := DropSession(repo, taskSession, false); err != nil {
+				t.Fatalf("drop task session after sibling: %v", err)
+			}
+			projection, err := caseengine.Rebuild(repo)
+			if err != nil {
+				t.Fatalf("Rebuild after ordered deletion: %v", err)
+			}
+			if len(projection.Cases) != 0 || len(projection.TombstonedCases) != 0 {
+				t.Fatalf("Case history remains after both sessions were dropped: active=%#v tombstoned=%#v", projection.Cases, projection.TombstonedCases)
+			}
+		})
+	}
+}
+
 func TestDropSessionSerializesWithHookCapture(t *testing.T) {
 	requireGit(t)
 	root := workspaceRoot(t)
@@ -422,6 +472,29 @@ func appendCheckpointEvent(t *testing.T, repo *checkpoint.Repo, sessionID primit
 	}); err != nil {
 		t.Fatalf("Append checkpoint event: %v", err)
 	}
+}
+
+func recordCaseSource(t *testing.T, repo *checkpoint.Repo, source primitives.SessionID, instruction string) primitives.TurnID {
+	t.Helper()
+	turnID, _ := primitives.NewTurnID(1)
+	startPayload, _ := json.Marshal(map[string]string{"provider_session_id": source.String()})
+	if _, err := repo.EventLog().Append(eventlog.AppendInput{SessionID: source, Type: primitives.EventTypeSessionStart, Adapter: primitives.AdapterCodex, Payload: startPayload}); err != nil {
+		t.Fatalf("append session start: %v", err)
+	}
+	gitSync := false
+	recorder := turnevents.Recorder{Log: repo.EventLog(), Manager: turns.NewManager(repo), Adapter: primitives.AdapterCodex}
+	recorder.Manager.GitSyncEnabled = &gitSync
+	if _, err := recorder.Start(source, turnID); err != nil {
+		t.Fatalf("start source turn: %v", err)
+	}
+	prompt, _ := json.Marshal(map[string]string{"text": instruction})
+	if _, err := repo.EventLog().Append(eventlog.AppendInput{SessionID: source, TurnID: &turnID, Type: primitives.EventTypePromptUser, Adapter: primitives.AdapterCodex, Payload: prompt}); err != nil {
+		t.Fatalf("append source prompt: %v", err)
+	}
+	if _, err := recorder.Finish(source, turnID); err != nil {
+		t.Fatalf("finish source turn: %v", err)
+	}
+	return turnID
 }
 
 func requireGit(t *testing.T) {
