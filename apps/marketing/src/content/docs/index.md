@@ -103,7 +103,7 @@ A normal turn has a before-and-after boundary. The prompt hook records context a
 - Paths matching `secrets.snapshot_deny_globs`
 - Excluded files already present during restore
 
-> **Turnal Git is not your project Git.** Normal checkpoints and checkpoint-mode rollback do not write your project repository's `HEAD`, index, branches, or refs. Initialization can run `git init` when no workspace repository exists because `bootstrap.init_workspace_git` defaults to true. Full workspace-Git capture is a separate, opt-in mode.
+> **Turnal Git is not your project Git.** Turnal works in Git and non-Git directories without initializing a project repository. Normal checkpoints and checkpoint-mode rollback do not write the project's `HEAD`, index, branches, or refs. Full workspace-Git capture is a separate, opt-in mode and requires an existing Git worktree.
 
 ---
 
@@ -392,7 +392,6 @@ bypass_hook_trust = false
 command = "turnal"
 
 [bootstrap]
-init_workspace_git = true
 update_gitignore = true
 
 [git_sync]
@@ -424,7 +423,6 @@ snapshot_deny_globs = [
 | `run.quiet` | boolean | `false` | Suppress Turnal wrapper status messages. |
 | `run.bypass_hook_trust` | boolean | `false` | Pass Codex the dangerous hook-trust bypass flag. |
 | `hooks.command` | string | `"turnal"` | Executable prefix written into Claude Code and Codex hooks. |
-| `bootstrap.init_workspace_git` | boolean | `true` | Run `git init` when the workspace is not already inside Git. |
 | `bootstrap.update_gitignore` | boolean | `true` | Ensure `.turnal/` appears in the workspace `.gitignore`. |
 | `git_sync.enabled` | boolean | `false` | Capture `HEAD`, index, tracked patches, and untracked files alongside future checkpoints. |
 | `rollback.mode` | enum | `"checkpoint"` | Default rollback engine: checkpoint or workspace-git. |
