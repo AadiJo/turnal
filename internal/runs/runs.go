@@ -2,6 +2,7 @@ package runs
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 
@@ -22,6 +23,19 @@ const (
 	StatusFailed     = "failed"
 	StatusIncomplete = "incomplete"
 )
+
+type NotFoundError struct {
+	RunID primitives.RunID
+}
+
+func (err NotFoundError) Error() string {
+	return fmt.Sprintf("run %s does not exist in this Turnal store", err.RunID)
+}
+
+func IsNotFound(err error) bool {
+	var notFound NotFoundError
+	return errors.As(err, &notFound)
+}
 
 type startPayload struct {
 	RunID      primitives.RunID      `json:"run_id"`
@@ -395,7 +409,7 @@ func Read(repo *checkpoint.Repo, runID primitives.RunID) (Projection, error) {
 		result.OwnerPID, result.OwnerStart = payload.OwnerPID, payload.OwnerStart
 	}
 	if result.ID == "" {
-		return Projection{}, fmt.Errorf("run %s does not exist in this Turnal store", runID)
+		return Projection{}, NotFoundError{RunID: runID}
 	}
 	seenCaptures := map[string]bool{}
 	seenAttempts := map[string]bool{}

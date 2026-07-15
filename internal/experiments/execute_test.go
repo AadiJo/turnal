@@ -435,6 +435,52 @@ func TestRecoverAbandonedRemovesUnlinkedManagedWorkspace(t *testing.T) {
 	}
 }
 
+func TestRecoverPreservesManagedWorkspaceWhenRunHistoryIsUnreadable(t *testing.T) {
+	repo, _ := experimentCase(t)
+	runID, _ := primitives.NewRunID()
+	workspace, err := createManagedForkWorkspace(repo, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(workspace) })
+	originalRead := readManagedWorkspaceRun
+	readManagedWorkspaceRun = func(*checkpoint.Repo, primitives.RunID) (runs.Projection, error) {
+		return runs.Projection{}, errors.New("corrupt run history")
+	}
+	defer func() { readManagedWorkspaceRun = originalRead }()
+	if err := removeOrphanedManagedWorkspaces(repo, map[string]bool{}); err == nil || !strings.Contains(err.Error(), "corrupt run history") {
+		t.Fatalf("cleanup error = %v, want run history invariant failure", err)
+	}
+	if _, err := os.Stat(workspace); err != nil {
+		t.Fatalf("workspace removed without proving run was inactive: %v", err)
+	}
+}
+
+func TestRecoverPreservesManagedWorkspaceForLiveRun(t *testing.T) {
+	repo, _ := experimentCase(t)
+	runID, _ := primitives.NewRunID()
+	session, err := forkSessionID(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := runs.Begin(repo, runID, session, []string{"runner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	workspace, err := createManagedForkWorkspace(repo, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(workspace) })
+	if err := removeOrphanedManagedWorkspaces(repo, map[string]bool{}); err != nil {
+		t.Fatalf("cleanup live run workspace: %v", err)
+	}
+	if _, err := os.Stat(workspace); err != nil {
+		t.Fatalf("live run workspace was removed: %v", err)
+	}
+}
+
 func TestRecoverRemovesTerminalNonKeptWorkspace(t *testing.T) {
 	repo, definition := experimentCase(t)
 	result, err := Execute(context.Background(), repo, Request{Case: definition, Command: []string{"runner"}, Runner: runnerFunc(func(context.Context, string, []string, []string) (int, error) { return 0, nil })})

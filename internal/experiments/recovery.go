@@ -13,6 +13,7 @@ import (
 )
 
 var removeManagedWorkspace = os.RemoveAll
+var readManagedWorkspaceRun = runs.Read
 
 func RecoverAbandoned(repo *checkpoint.Repo) error {
 	if repo == nil {
@@ -103,8 +104,15 @@ func removeOrphanedManagedWorkspaces(repo *checkpoint.Repo, referenced map[strin
 				}
 				_ = os.Remove(marker)
 			}
-			run, readErr := runs.Read(repo, runID)
-			remove = readErr != nil || run.Status != runs.StatusRunning
+			run, readErr := readManagedWorkspaceRun(repo, runID)
+			if readErr != nil {
+				if !runs.IsNotFound(readErr) {
+					return fmt.Errorf("managed workspace run invariant failed for %s: %w", path, readErr)
+				}
+				remove = true
+			} else {
+				remove = run.Status != runs.StatusRunning
+			}
 		}
 		if remove {
 			if err := removeManagedWorkspace(path); err != nil {
