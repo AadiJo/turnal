@@ -18,6 +18,7 @@ import (
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	experimentengine "github.com/AadiJo/turnal/internal/experiments"
 	"github.com/AadiJo/turnal/internal/primitives"
+	rollbackengine "github.com/AadiJo/turnal/internal/rollback"
 	"github.com/AadiJo/turnal/internal/turnevents"
 	"github.com/AadiJo/turnal/internal/turns"
 )
@@ -65,6 +66,73 @@ func TestDropSessionDeletesEventLogAndPrivateRefs(t *testing.T) {
 	}
 	if len(sessions) != 0 {
 		t.Fatalf("sessions after drop = %#v, want none", sessions)
+	}
+}
+
+func TestDropSessionRejectsInconsistentRollbackJournal(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	demoSession := sessionID(t, "demo")
+	turnID, _ := primitives.NewTurnID(1)
+	writeFile(t, root, "app.txt", "content\n")
+	created, err := repo.CreateCheckpoint(demoSession, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("CreateCheckpoint: %v", err)
+	}
+	appendCheckpointEvent(t, repo, demoSession, turnID, created)
+	safety, err := repo.CreateSnapshotRef("refs/agent-vcs/rollback-safety/retention-test", "retention test safety")
+	if err != nil {
+		t.Fatalf("CreateSnapshotRef: %v", err)
+	}
+	target, _ := primitives.NewTargetRef(demoSession, turnID, primitives.CheckpointPhasePre)
+	base := rollbackengine.Journal{
+		Version: 1, State: "planned", RestorePhase: "planned",
+		Target: target.String(), CheckpointRef: created.Ref.String(), TargetCommitSHA: created.Commit.String(),
+		Mode: primitives.RollbackModeCheckpoint.String(), SafetyRef: safety.Ref, SafetyCommitSHA: safety.Commit.String(),
+		RepoID: repo.RepoID, StoreID: repo.StoreID, WorktreeID: repo.WorktreeID, WorkspaceRoot: repo.WorkspaceRoot.String(),
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*rollbackengine.Journal)
+	}{
+		{
+			name: "manual flag cannot hide a session checkpoint",
+			mutate: func(journal *rollbackengine.Journal) {
+				journal.Manual = true
+			},
+		},
+		{
+			name: "target must identify the checkpoint ref",
+			mutate: func(journal *rollbackengine.Journal) {
+				otherSession := sessionID(t, "other")
+				otherTarget, _ := primitives.NewTargetRef(otherSession, turnID, primitives.CheckpointPhasePre)
+				journal.Target = otherTarget.String()
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			journal := base
+			test.mutate(&journal)
+			data, marshalErr := json.Marshal(journal)
+			if marshalErr != nil {
+				t.Fatalf("Marshal journal: %v", marshalErr)
+			}
+			if writeErr := os.WriteFile(rollbackengine.JournalPath(repo), data, 0o600); writeErr != nil {
+				t.Fatalf("write rollback journal: %v", writeErr)
+			}
+			if _, dropErr := DropSession(repo, demoSession, false); dropErr == nil || !strings.Contains(dropErr.Error(), "rollback journal is invalid") {
+				t.Fatalf("DropSession error = %v, want invalid rollback journal", dropErr)
+			}
+			if _, refErr := repo.CheckpointCommit(created.Ref); refErr != nil {
+				t.Fatalf("protected checkpoint was deleted: %v", refErr)
+			}
+		})
 	}
 }
 

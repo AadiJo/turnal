@@ -920,7 +920,7 @@ func journalRollback(repo *checkpoint.Repo, journal Journal) (ResolvedTarget, ch
 	var target ResolvedTarget
 	if journal.Manual {
 		parts, partsErr := ref.Parts()
-		if partsErr != nil || !parts.Manual {
+		if partsErr != nil || !parts.Manual || parts.WorktreeID != journal.WorktreeID {
 			return ResolvedTarget{}, checkpoint.Snapshot{}, checkpoint.RestorePlan{}, "", fmt.Errorf("rollback journal manual checkpoint ref invariant failed: %s", ref)
 		}
 		selector, selectorErr := primitives.ParseCommitSHA(journal.Target)
@@ -945,6 +945,10 @@ func journalRollback(repo *checkpoint.Repo, journal Journal) (ResolvedTarget, ch
 			Target: targetRef, CheckpointRef: ref, Commit: commit,
 			SessionID: targetRef.SessionID(), TurnID: targetRef.TurnID(), Phase: phase,
 		}
+		parts, partsErr := ref.Parts()
+		if partsErr != nil || parts.Manual || parts.Canonical || parts.SessionID != target.SessionID || parts.TurnID != target.TurnID || parts.Phase != target.Phase || (parts.Scoped && parts.WorktreeID != journal.WorktreeID) {
+			return ResolvedTarget{}, checkpoint.Snapshot{}, checkpoint.RestorePlan{}, "", fmt.Errorf("rollback journal target/checkpoint ref invariant failed: target %s does not identify %s", targetRef, ref)
+		}
 	}
 	if err := validateApplicationMetadata(journal.CaseApplication, target); err != nil {
 		return ResolvedTarget{}, checkpoint.Snapshot{}, checkpoint.RestorePlan{}, "", fmt.Errorf("rollback journal Case application invariant failed: %w", err)
@@ -956,6 +960,26 @@ func journalRollback(repo *checkpoint.Repo, journal Journal) (ResolvedTarget, ch
 		eventSourceID = rollbackEventSourceID(target, safety)
 	}
 	return target, safety, plan, eventSourceID, nil
+}
+
+// ValidateJournal checks that a pending journal is internally consistent and
+// still points at every private ref recovery will need. Callers inspecting a
+// journal owned by another linked worktree must provide a Repo carrying that
+// journal's validated worktree and workspace identities.
+func ValidateJournal(repo *checkpoint.Repo, journal Journal) (ResolvedTarget, error) {
+	switch journal.Mode {
+	case primitives.RollbackModeCheckpoint.String():
+		target, _, _, _, err := journalRollback(repo, journal)
+		return target, err
+	case primitives.RollbackModeWorkspaceGit.String():
+		if journal.Manual {
+			return ResolvedTarget{}, fmt.Errorf("rollback journal mode invariant failed: manual checkpoints cannot use workspace-git mode")
+		}
+		target, _, _, _, _, _, err := journalWorkspaceGitRollback(repo, journal)
+		return target, err
+	default:
+		return ResolvedTarget{}, fmt.Errorf("rollback journal mode invariant failed: unsupported mode %q", journal.Mode)
+	}
 }
 
 func validateJournalOwner(repo *checkpoint.Repo, journal Journal) error {

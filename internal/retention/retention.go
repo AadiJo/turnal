@@ -271,18 +271,50 @@ func ensureNoActiveRollbackForSession(repo *checkpoint.Repo, sessionID primitive
 		if err := json.Unmarshal(data, &journal); err != nil {
 			return fmt.Errorf("cannot drop session while rollback journal is unreadable at %s: %w", path, err)
 		}
-		if journal.Manual {
+		ownerRepo, err := rollbackJournalOwnerRepo(repo, path, journal)
+		if err != nil {
+			return fmt.Errorf("cannot drop session while rollback journal ownership is invalid at %s: %w", path, err)
+		}
+		target, err := rollbackengine.ValidateJournal(ownerRepo, journal)
+		if err != nil {
+			return fmt.Errorf("cannot drop session while rollback journal is invalid at %s: %w", path, err)
+		}
+		if target.Manual {
 			continue
 		}
-		target, err := primitives.ParseTargetRef(journal.Target)
-		if err != nil {
-			return fmt.Errorf("cannot drop session while rollback journal target is invalid at %s: %w", path, err)
-		}
-		if target.SessionID() == sessionID {
+		if target.SessionID == sessionID {
 			return fmt.Errorf("cannot drop session %s while rollback recovery is pending in %s", sessionID, path)
 		}
 	}
 	return nil
+}
+
+func rollbackJournalOwnerRepo(repo *checkpoint.Repo, path string, journal rollbackengine.Journal) (*checkpoint.Repo, error) {
+	if repo == nil {
+		return nil, fmt.Errorf("repository is required")
+	}
+	if journal.RepoID == "" || journal.StoreID == "" || journal.WorktreeID == "" || journal.WorkspaceRoot == "" {
+		return nil, fmt.Errorf("complete repository, store, worktree, and workspace identity is required")
+	}
+	if journal.RepoID != repo.RepoID || journal.StoreID != repo.StoreID {
+		return nil, fmt.Errorf("repository or store identity mismatch")
+	}
+	worktreeID, err := primitives.ParseWorktreeID(journal.WorktreeID.String())
+	if err != nil {
+		return nil, fmt.Errorf("worktree identity: %w", err)
+	}
+	workspaceRoot, err := primitives.ParseWorkspaceRoot(journal.WorkspaceRoot)
+	if err != nil {
+		return nil, fmt.Errorf("workspace root: %w", err)
+	}
+	expectedPath := filepath.Join(repo.TmpDir, "rollback-journal-"+worktreeID.String()+".json")
+	if filepath.Clean(path) != filepath.Clean(expectedPath) {
+		return nil, fmt.Errorf("journal path does not match worktree identity %s", worktreeID)
+	}
+	ownerRepo := *repo
+	ownerRepo.WorktreeID = worktreeID
+	ownerRepo.WorkspaceRoot = workspaceRoot
+	return &ownerRepo, nil
 }
 
 func replaySessionFiles(repo *checkpoint.Repo, sessionID primitives.SessionID) ([]string, []string) {
