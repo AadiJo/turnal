@@ -188,6 +188,23 @@ func TestApplyPreviewsThenRestoresSelectedAttemptWithSafetyCheckpoint(t *testing
 	if len(updated.Applications) != 1 || updated.Applications[0].AttemptID != result.AttemptID {
 		t.Fatalf("applications = %#v", updated.Applications)
 	}
+	second, err := Execute(context.Background(), repo, Request{Case: definition, Command: []string{"runner"}, Runner: runnerFunc(func(_ context.Context, root string, _ []string, _ []string) (int, error) {
+		return 0, os.WriteFile(filepath.Join(root, "app.txt"), []byte("second result\n"), 0o644)
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cases.SelectAttempt(repo, definition.ID, second.AttemptID); err != nil {
+		t.Fatal(err)
+	}
+	projection, err = cases.Rebuild(repo)
+	if err != nil {
+		t.Fatalf("Rebuild after reselection: %v", err)
+	}
+	updated, _ = projection.Case(definition.ID)
+	if updated.Selection == nil || updated.Selection.AttemptID != second.AttemptID || len(updated.Applications) != 1 || updated.Applications[0].AttemptID != result.AttemptID {
+		t.Fatalf("reselected Case history = selection %#v applications %#v", updated.Selection, updated.Applications)
+	}
 }
 
 func TestApplyRejectsDivergedWorkspaceBeforeCreatingSafetyState(t *testing.T) {

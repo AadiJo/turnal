@@ -233,6 +233,9 @@ func RecordApply(repo *checkpoint.Repo, request RecordApplyRequest) (AttemptAppl
 		if err != nil {
 			return err
 		}
+		if definition.Selection == nil || definition.Selection.AttemptID != request.AttemptID {
+			return fmt.Errorf("attempt %s must be selected before it can be applied", request.AttemptID)
+		}
 		payload := caseAttemptApplyPayload{CaseID: request.CaseID, Scope: definition.Scope, AttemptID: request.AttemptID, Source: definition.Source, PostCommit: request.PostCommit, SafetyRef: request.SafetyRef, SafetyCommit: request.SafetyCommit, Changes: request.Changes}
 		if err := validateAttemptApplyPayload(payload, definition, link); err != nil {
 			return err

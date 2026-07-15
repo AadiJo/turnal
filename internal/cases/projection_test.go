@@ -126,6 +126,24 @@ func TestProjectAllowsSameObservableInstructionFromAnotherAdapter(t *testing.T) 
 	}
 }
 
+func TestValidateAttemptResultRejectsForeignScopedCheckpoint(t *testing.T) {
+	fixture := projectionFixture(t)
+	foreignWorktree, _ := primitives.ParseWorktreeID("wt_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+	ref, err := primitives.ParseCheckpointRef("refs/agent-vcs/checkpoints/by-worktree/" + foreignWorktree.String() + "/" + fixture.source.StreamID.String() + "/" + fixture.source.SessionID.String() + "/turn/" + fixture.source.TurnID.RefSegment() + "/post")
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit, _ := primitives.ParseCommitSHA("1111111111111111111111111111111111111111")
+	runID, _ := primitives.ParseRunID("run_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	attemptID, _ := primitives.ParseAttemptID("attempt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	payload := caseAttemptResultPayload{CaseID: fixture.caseID, Scope: fixture.scope, RunID: runID, AttemptID: attemptID, Source: fixture.source, PostRef: &ref, PostCommit: &commit, Status: AttemptStatusSucceeded}
+	definition := Case{ID: fixture.caseID, Scope: fixture.scope, Source: fixture.source}
+	link := AttemptLink{AttemptID: attemptID, RunID: runID, Execution: fixture.source}
+	if err := validateAttemptResultPayload(payload, definition, link); err == nil || !strings.Contains(err.Error(), "does not match execution checkpoint") {
+		t.Fatalf("foreign scoped result error = %v", err)
+	}
+}
+
 func TestProjectPreservesRevisionHistoryAndAllAttemptLinks(t *testing.T) {
 	fixture := projectionFixture(t)
 	revised := fork.Instruction{Status: fork.InstructionAvailable, Text: "Fix it without changing the API", Adapter: primitives.AdapterCodex}

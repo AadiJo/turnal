@@ -101,6 +101,7 @@ func project(streams []eventlog.DurableStream, expected Scope, attempts map[prim
 	var selectionEvents []eventlog.Event
 	var applicationEvents []eventlog.Event
 	var rollbackEvents []eventlog.Event
+	selectedAttempts := make(map[primitives.CaseID]map[primitives.AttemptID]bool)
 
 	for _, stream := range streams {
 		for _, event := range stream.Events {
@@ -290,6 +291,10 @@ func project(streams []eventlog.DurableStream, expected Scope, attempts map[prim
 			return Projection{}, relationshipError(event, fmt.Errorf("attempt %s cannot be selected before it has a result", payload.AttemptID))
 		}
 		definition.Selection = &AttemptSelection{AttemptID: payload.AttemptID, Selected: provenance(event)}
+		if selectedAttempts[payload.CaseID] == nil {
+			selectedAttempts[payload.CaseID] = make(map[primitives.AttemptID]bool)
+		}
+		selectedAttempts[payload.CaseID][payload.AttemptID] = true
 	}
 
 	for _, event := range applicationEvents {
@@ -306,6 +311,9 @@ func project(streams []eventlog.DurableStream, expected Scope, attempts map[prim
 		}
 		if err := validateCaseMutationEnvelope(event, payload.Scope, payload.Source, *definition); err != nil {
 			return Projection{}, err
+		}
+		if !selectedAttempts[payload.CaseID][payload.AttemptID] {
+			return Projection{}, relationshipError(event, fmt.Errorf("attempt %s was applied without ever being selected", payload.AttemptID))
 		}
 		if err := validateAttemptApplyPayload(payload, *definition, *link); err != nil {
 			return Projection{}, relationshipError(event, err)
@@ -337,6 +345,9 @@ func project(streams []eventlog.DurableStream, expected Scope, attempts map[prim
 			return Projection{}, relationshipError(event, fmt.Errorf("Case application rollback safety commit: %w", err))
 		}
 		application := caseAttemptApplyPayload{CaseID: definition.ID, Scope: definition.Scope, AttemptID: link.AttemptID, Source: definition.Source, PostCommit: postCommit, SafetyRef: payload.SafetyRef, SafetyCommit: safetyCommit, Changes: payload.ChangeSummary.Total}
+		if !selectedAttempts[definition.ID][link.AttemptID] {
+			return Projection{}, relationshipError(event, fmt.Errorf("attempt %s was applied without ever being selected", link.AttemptID))
+		}
 		if err := validateAttemptApplyPayload(application, *definition, *link); err != nil {
 			return Projection{}, relationshipError(event, err)
 		}
@@ -524,7 +535,7 @@ func validateAttemptResultPayload(payload caseAttemptResultPayload, definition C
 	if err != nil {
 		return fmt.Errorf("attempt result ref: %w", err)
 	}
-	if !parts.HasPhase || parts.SessionID != link.Execution.SessionID || parts.TurnID != link.Execution.TurnID || parts.Phase != primitives.CheckpointPhasePost {
+	if !parts.HasPhase || parts.SessionID != link.Execution.SessionID || parts.TurnID != link.Execution.TurnID || parts.Phase != primitives.CheckpointPhasePost || (parts.Scoped && (parts.WorktreeID != definition.Scope.WorktreeID || parts.StreamID != link.Execution.StreamID)) {
 		return fmt.Errorf("attempt result ref does not match execution checkpoint")
 	}
 	if payload.Status == AttemptStatusSucceeded && payload.ExitCode != nil && *payload.ExitCode != 0 {
@@ -544,9 +555,6 @@ func validateAttemptResultPayload(payload caseAttemptResultPayload, definition C
 func validateAttemptApplyPayload(payload caseAttemptApplyPayload, definition Case, link AttemptLink) error {
 	if payload.Scope != definition.Scope || payload.Source != definition.Source {
 		return fmt.Errorf("case mutation does not match immutable case scope or source")
-	}
-	if definition.Selection == nil || definition.Selection.AttemptID != payload.AttemptID {
-		return fmt.Errorf("attempt %s was applied without being selected", payload.AttemptID)
 	}
 	if link.Result == nil || link.Result.PostCommit != payload.PostCommit {
 		return fmt.Errorf("applied commit does not match attempt %s result", payload.AttemptID)
