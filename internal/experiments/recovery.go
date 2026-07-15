@@ -31,10 +31,10 @@ func RecoverAbandoned(repo *checkpoint.Repo) error {
 	referenced := make(map[string]bool)
 	for _, definition := range projection.Cases {
 		for _, link := range definition.AttemptLinks {
-			if link.Workspace != "" {
+			if link.Workspace != "" && (link.Keep || link.Result == nil) {
 				referenced[filepath.Clean(link.Workspace)] = true
 			}
-			if link.Result == nil || link.Result.Status != cases.AttemptStatusIncomplete {
+			if link.Result == nil {
 				continue
 			}
 			if link.Workspace != "" && !link.Keep {
@@ -91,6 +91,13 @@ func removeOrphanedManagedWorkspaces(repo *checkpoint.Repo, referenced map[strin
 			if parseErr != nil {
 				continue
 			}
+			marker := keepMarkerPath(repo, runID)
+			if _, markerErr := os.Stat(marker); markerErr == nil {
+				if _, workspaceErr := os.Stat(path); workspaceErr == nil {
+					continue
+				}
+				_ = os.Remove(marker)
+			}
 			run, readErr := runs.Read(repo, runID)
 			remove = readErr != nil || run.Status != runs.StatusRunning
 		}
@@ -99,6 +106,19 @@ func removeOrphanedManagedWorkspaces(repo *checkpoint.Repo, referenced map[strin
 				return fmt.Errorf("remove orphaned managed workspace %s: %w", path, err)
 			}
 		}
+	}
+	return nil
+}
+
+func keepMarkerPath(repo *checkpoint.Repo, runID primitives.RunID) string {
+	path, _ := managedForkWorkspacePath(repo, runID)
+	return filepath.Join(filepath.Dir(path), ".keep-"+runID.String())
+}
+
+func persistKeepMarker(repo *checkpoint.Repo, runID primitives.RunID) error {
+	path := keepMarkerPath(repo, runID)
+	if err := os.WriteFile(path, []byte("kept by turnal fork --keep\n"), 0o600); err != nil {
+		return fmt.Errorf("persist kept fork workspace ownership: %w", err)
 	}
 	return nil
 }

@@ -154,7 +154,7 @@ func Execute(ctx context.Context, repo *checkpoint.Repo, request Request) (resul
 	if err != nil {
 		return Result{}, err
 	}
-	result = Result{CaseID: definition.ID, RunID: runID, SessionID: sessionID, BaseRef: definition.Readiness.Base.Ref, BaseCommit: baseCommit, WorkspaceKept: request.Keep}
+	result = Result{CaseID: definition.ID, RunID: runID, SessionID: sessionID, BaseRef: definition.Readiness.Base.Ref, BaseCommit: baseCommit}
 	unlockSession, err := adapters.AcquireSessionLock(repo, sessionID)
 	if err != nil {
 		return result, err
@@ -189,11 +189,11 @@ func Execute(ctx context.Context, repo *checkpoint.Repo, request Request) (resul
 		}
 		if err := removeManagedWorkspace(root); err != nil {
 			resultErr = errors.Join(resultErr, fmt.Errorf("remove isolated fork workspace: %w", err))
+			if _, statErr := os.Stat(root); statErr == nil {
+				result.Workspace, result.WorkspaceKept = root, true
+			}
 		}
 	}()
-	if request.Keep {
-		result.Workspace = root
-	}
 	if err := repo.MaterializeCommit(baseCommit, root, checkpoint.MaterializeOptions{ApplyCurrentSecretDenyGlobs: true}); err != nil {
 		return result, fmt.Errorf("materialize case base: %w", err)
 	}
@@ -226,6 +226,13 @@ func Execute(ctx context.Context, repo *checkpoint.Repo, request Request) (resul
 	result.AttemptID = attemptID
 	if _, err := cases.LinkAttempt(repo, cases.LinkAttemptRequest{CaseID: definition.ID, RunID: runID, AttemptID: attemptID, Command: request.Command, Workspace: root, Keep: request.Keep}); err != nil {
 		return result, err
+	}
+	if request.Keep {
+		if err := persistKeepMarker(repo, runID); err != nil {
+			return result, err
+		}
+		cleanup = false
+		result.Workspace, result.WorkspaceKept = root, true
 	}
 
 	environment := []string{
@@ -279,9 +286,6 @@ func Execute(ctx context.Context, repo *checkpoint.Repo, request Request) (resul
 		return result, err
 	}
 	runOpen = false
-	if request.Keep {
-		cleanup = false
-	}
 	if commandErr != nil {
 		return result, commandErr
 	}

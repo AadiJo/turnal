@@ -434,6 +434,46 @@ func TestRecoverAbandonedRemovesUnlinkedManagedWorkspace(t *testing.T) {
 	}
 }
 
+func TestRecoverRemovesTerminalNonKeptWorkspace(t *testing.T) {
+	repo, definition := experimentCase(t)
+	result, err := Execute(context.Background(), repo, Request{Case: definition, Command: []string{"runner"}, Runner: runnerFunc(func(context.Context, string, []string, []string) (int, error) { return 0, nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := createManagedForkWorkspace(repo, result.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RecoverAbandoned(repo); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(workspace); !os.IsNotExist(err) {
+		t.Fatalf("terminal non-kept workspace remains: %v", err)
+	}
+}
+
+func TestDeletedCasePreservesExplicitlyKeptWorkspace(t *testing.T) {
+	repo, definition := experimentCase(t)
+	result, err := Execute(context.Background(), repo, Request{Case: definition, Command: []string{"runner"}, Keep: true, Runner: runnerFunc(func(context.Context, string, []string, []string) (int, error) { return 0, nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.WorkspaceKept || result.Workspace == "" {
+		t.Fatalf("kept result = %#v", result)
+	}
+	marker := keepMarkerPath(repo, result.RunID)
+	t.Cleanup(func() { _ = os.RemoveAll(result.Workspace); _ = os.Remove(marker) })
+	if _, err := cases.Delete(repo, definition.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecoverAbandoned(repo); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(result.Workspace); err != nil {
+		t.Fatalf("kept workspace removed after Case deletion: %v", err)
+	}
+}
+
 func TestVerificationCleanupFailureTerminalizesAttempt(t *testing.T) {
 	verifierConfig := fmt.Sprintf("version = 1\n[[verify]]\nname = \"pass\"\ncommand = %q\nargs = [\"-test.run=^TestForkVerifierHelper$\"]\ntimeout = \"10s\"\n", os.Args[0])
 	repo, definition := experimentCaseWithConfig(t, verifierConfig)
