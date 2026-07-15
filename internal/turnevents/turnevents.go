@@ -319,7 +319,7 @@ func recoverCheckpointJournal(log eventlog.Log, repo *checkpoint.Repo, journal c
 		return err
 	}
 	if journal.Phase == primitives.CheckpointPhasePost {
-		if err := turns.NewManager(repo).ClearActiveForRecovery(journal.SessionID); err != nil {
+		if err := turns.NewManager(repo).ClearActiveForRecovery(journal.SessionID, journal.TurnID); err != nil {
 			return fmt.Errorf("clear recovered active turn state: %w", err)
 		}
 	}

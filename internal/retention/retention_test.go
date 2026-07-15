@@ -20,6 +20,7 @@ import (
 	experimentengine "github.com/AadiJo/turnal/internal/experiments"
 	"github.com/AadiJo/turnal/internal/primitives"
 	rollbackengine "github.com/AadiJo/turnal/internal/rollback"
+	"github.com/AadiJo/turnal/internal/runs"
 	"github.com/AadiJo/turnal/internal/turnevents"
 	"github.com/AadiJo/turnal/internal/turns"
 )
@@ -138,6 +139,70 @@ func TestDropSessionRejectsActiveTurnUntilFinish(t *testing.T) {
 	}
 	if _, err := repo.CheckpointCommit(started.Pre.Ref); err == nil {
 		t.Fatal("finished session pre-checkpoint remains after drop")
+	}
+}
+
+func TestRecoveredAbandonedForkClearsActiveTurnBeforeSessionDrop(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	writeFile(t, root, "app.txt", "before\n")
+	source := sessionID(t, "recovery-source")
+	sourceTurn := recordCaseSource(t, repo, source, "Recover the abandoned fork")
+	created, err := caseengine.Create(repo, caseengine.CreateRequest{SessionID: source, TurnID: sourceTurn})
+	if err != nil {
+		t.Fatalf("Create Case: %v", err)
+	}
+	runID, err := primitives.NewRunID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution, err := primitives.ParseSessionID("fork-" + strings.TrimPrefix(runID.String(), "run_"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := runs.Begin(repo, runID, execution, []string{"runner"})
+	if err != nil {
+		t.Fatalf("Begin run: %v", err)
+	}
+	if err := runs.LinkCapture(repo, runID, runs.CaptureWrapper, execution, primitives.AdapterCodex); err != nil {
+		release()
+		t.Fatal(err)
+	}
+	gitSync := false
+	recorder := turnevents.Recorder{Log: repo.EventLog(), Manager: turns.NewManager(repo), Adapter: primitives.AdapterCodex}
+	recorder.Manager.GitSyncEnabled = &gitSync
+	started, err := recorder.Start(execution, 1)
+	if err != nil {
+		release()
+		t.Fatalf("Start fork turn: %v", err)
+	}
+	attemptID, err := runs.EnsureWrapperAttempt(repo, runID, execution, started.TurnID, primitives.AdapterCodex)
+	if err != nil {
+		release()
+		t.Fatal(err)
+	}
+	if _, err := caseengine.LinkAttempt(repo, caseengine.LinkAttemptRequest{CaseID: created.Case.ID, RunID: runID, AttemptID: attemptID, Command: []string{"runner"}}); err != nil {
+		release()
+		t.Fatal(err)
+	}
+	release()
+
+	if err := experimentengine.RecoverAbandoned(repo); err != nil {
+		t.Fatalf("RecoverAbandoned: %v", err)
+	}
+	active, err := turns.ListActive(repo, execution)
+	if err != nil || len(active) != 0 {
+		t.Fatalf("active fork turns after recovery = %#v, %v", active, err)
+	}
+	if _, err := caseengine.Delete(repo, created.Case.ID); err != nil {
+		t.Fatalf("Delete Case: %v", err)
+	}
+	if _, err := DropSession(repo, execution, false); err != nil {
+		t.Fatalf("Drop recovered fork session: %v", err)
 	}
 }
 

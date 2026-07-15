@@ -6,6 +6,7 @@ import (
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/AadiJo/turnal/internal/runs"
+	"github.com/AadiJo/turnal/internal/turns"
 	"github.com/AadiJo/turnal/internal/verifier"
 )
 
@@ -226,6 +227,9 @@ func ReconcileAbandonedAttempts(repo *checkpoint.Repo) error {
 			}
 			if run.Status == runs.StatusRunning {
 				continue
+			}
+			if err := turns.NewManager(repo).ClearActiveForRecovery(link.Execution.SessionID, link.Execution.TurnID); err != nil {
+				return fmt.Errorf("clear abandoned Case attempt %s active turn: %w", link.AttemptID, err)
 			}
 			message := "attempt abandoned before its result checkpoint was captured"
 			if run.Error != "" {

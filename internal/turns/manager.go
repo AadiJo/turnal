@@ -368,8 +368,30 @@ func (manager Manager) activeStatePath(sessionID primitives.SessionID) string {
 	return filepath.Join(manager.Repo.TmpDir, "turns", name)
 }
 
-func (manager Manager) ClearActiveForRecovery(sessionID primitives.SessionID) error {
-	return manager.clearActive(sessionID)
+func (manager Manager) ClearActiveForRecovery(sessionID primitives.SessionID, expectedTurnID primitives.TurnID) error {
+	if err := manager.validate(); err != nil {
+		return err
+	}
+	return manager.Repo.WithWorkspaceLock("clear recovered active turn", func() error {
+		active, err := manager.readActive(sessionID)
+		if err != nil {
+			return err
+		}
+		if active == nil {
+			return nil
+		}
+		if active.TurnID != expectedTurnID {
+			return fmt.Errorf("active turn recovery invariant failed for session %s: active turn %s does not match terminal turn %s", sessionID, active.TurnID, expectedTurnID)
+		}
+		commit, err := manager.Repo.CheckpointCommit(active.PreRef)
+		if err != nil {
+			return fmt.Errorf("active turn recovery invariant failed for session %s turn %s: resolve pre-checkpoint: %w", sessionID, expectedTurnID, err)
+		}
+		if commit != active.PreCommit {
+			return fmt.Errorf("active turn recovery invariant failed for session %s turn %s: pre ref %s points to %s, state records %s", sessionID, expectedTurnID, active.PreRef, commit, active.PreCommit)
+		}
+		return manager.clearActive(sessionID)
+	})
 }
 
 func (manager Manager) readActive(sessionID primitives.SessionID) (*parsedActiveTurnState, error) {
