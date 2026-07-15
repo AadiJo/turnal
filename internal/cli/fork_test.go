@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -175,6 +176,34 @@ func TestForkExecutesIsolatedAttemptAndCreatesReusableCase(t *testing.T) {
 	data, _ = os.ReadFile(filepath.Join(root.String(), "app.txt"))
 	if string(data) != "forked\n" {
 		t.Fatalf("applied workspace = %q", data)
+	}
+}
+
+func TestForkExecutionJSONRemainsValidWhenChildWritesStdout(t *testing.T) {
+	root, sessionID, _ := createForkReadyTurn(t, "Fix the parser", true)
+	t.Chdir(root.String())
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh required")
+	}
+
+	cmd := NewRootCmd()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"fork", sessionID.String() + ":1", "--json", "--", "sh", "-c", "printf noisy"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("fork JSON execution: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	var document forkExecutionJSON
+	if err := json.Unmarshal(stdout.Bytes(), &document); err != nil {
+		t.Fatalf("decode fork JSON: %v\n%s", err, stdout.String())
+	}
+	if document.Result.Status != caseengine.AttemptStatusSucceeded {
+		t.Fatalf("fork JSON result = %#v", document.Result)
+	}
+	if stderr.String() != "noisy" {
+		t.Fatalf("child stdout = %q, want stderr routing", stderr.String())
 	}
 }
 

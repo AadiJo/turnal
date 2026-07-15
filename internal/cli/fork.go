@@ -58,9 +58,13 @@ func forkCmd() *cobra.Command {
 			}
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
+			childStdout := cmd.OutOrStdout()
+			if jsonOutput {
+				childStdout = cmd.ErrOrStderr()
+			}
 			result, executeErr := experimentengine.Execute(ctx, repo, experimentengine.Request{
 				Case: definition, Command: command, Keep: keep,
-				Runner: experimentengine.ExecRunner{Stdin: os.Stdin, Stdout: cmd.OutOrStdout(), Stderr: cmd.ErrOrStderr()},
+				Runner: experimentengine.ExecRunner{Stdin: os.Stdin, Stdout: childStdout, Stderr: cmd.ErrOrStderr()},
 			})
 			if jsonOutput {
 				encoder := json.NewEncoder(cmd.OutOrStdout())
