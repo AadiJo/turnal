@@ -5,17 +5,51 @@ package experiments
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
-	"slices"
-	"strings"
+	"strconv"
 	"sync"
 	"syscall"
 
 	"golang.org/x/sys/unix"
 )
 
+const darwinForkGateArgument = "__turnal_internal_fork_gate_7d69d1be__"
+
 var killDarwinForkProcessGroup = syscall.Kill
+
+func init() {
+	if len(os.Args) < 5 || os.Args[1] != darwinForkGateArgument {
+		return
+	}
+	gateFD, err := strconv.Atoi(os.Args[2])
+	if err != nil || gateFD < 3 {
+		fmt.Fprintln(os.Stderr, "turnal: invalid internal fork gate")
+		os.Exit(127)
+	}
+	gate := os.NewFile(uintptr(gateFD), "turnal-fork-gate")
+	if gate == nil {
+		fmt.Fprintln(os.Stderr, "turnal: open internal fork gate")
+		os.Exit(127)
+	}
+	_, readErr := gate.Read(make([]byte, 1))
+	closeErr := gate.Close()
+	if readErr != nil && !errors.Is(readErr, io.EOF) {
+		fmt.Fprintf(os.Stderr, "turnal: wait for internal fork gate: %v\n", readErr)
+		os.Exit(127)
+	}
+	if closeErr != nil {
+		fmt.Fprintf(os.Stderr, "turnal: close internal fork gate: %v\n", closeErr)
+		os.Exit(127)
+	}
+	originalPath := os.Args[3]
+	originalArgs := append([]string{os.Args[4]}, os.Args[5:]...)
+	if err := syscall.Exec(originalPath, originalArgs, os.Environ()); err != nil {
+		fmt.Fprintf(os.Stderr, "turnal: execute gated fork command: %v\n", err)
+		os.Exit(127)
+	}
+}
 
 type darwinForkProcessController struct {
 	cmd           *exec.Cmd
@@ -34,74 +68,20 @@ func newForkProcessController(cmd *exec.Cmd) (forkProcessController, error) {
 	if err != nil {
 		return nil, err
 	}
+	helperPath, err := os.Executable()
+	if err != nil {
+		_ = gateRead.Close()
+		_ = gateWrite.Close()
+		return nil, fmt.Errorf("resolve fork gate helper: %w", err)
+	}
 	gateFD := 3 + len(cmd.ExtraFiles)
 	originalPath := cmd.Path
 	originalArgs := append([]string(nil), cmd.Args...)
-	cleanEnvironment, bashEnvironment := isolateDarwinBashEnvironment(cmd.Env)
-	gateScript := fmt.Sprintf(`
-set +e
-IFS= read -r _ <&%d || :
-exec %d<&-
-bash_env_set=$1
-bash_env_value=$2
-env_set=$3
-env_value=$4
-shellopts_set=$5
-shellopts_value=$6
-bashopts_set=$7
-bashopts_value=$8
-shift 8
-original_argv0=$1
-original_path=$2
-shift 2
-original_args=("$@")
-if [[ $bash_env_set == 1 ]]; then export BASH_ENV=$bash_env_value; else unset BASH_ENV; fi
-if [[ $env_set == 1 ]]; then export ENV=$env_value; else unset ENV; fi
-if [[ $shellopts_set == 1 ]]; then
-  IFS=: read -r -a saved_shellopts <<< "$shellopts_value"
-  for option in "${saved_shellopts[@]}"; do set -o "$option" 2>/dev/null || :; done
-  export SHELLOPTS
-fi
-if [[ $bashopts_set == 1 ]]; then
-  IFS=: read -r -a saved_bashopts <<< "$bashopts_value"
-  for option in "${saved_bashopts[@]}"; do shopt -s "$option" 2>/dev/null || :; done
-  export BASHOPTS
-fi
-exec -a "$original_argv0" "$original_path" "${original_args[@]}"
-`, gateFD, gateFD)
-	cmd.Path = "/bin/bash"
-	cmd.Args = append([]string{"bash", "--noprofile", "--norc", "-c", gateScript, "turnal-fork-gate"}, bashEnvironment...)
-	cmd.Args = append(cmd.Args, originalArgs[0], originalPath)
-	cmd.Args = append(cmd.Args, originalArgs[1:]...)
-	cmd.Env = cleanEnvironment
+	cmd.Path = helperPath
+	cmd.Args = append([]string{helperPath, darwinForkGateArgument, strconv.Itoa(gateFD), originalPath, originalArgs[0]}, originalArgs[1:]...)
 	cmd.ExtraFiles = append(cmd.ExtraFiles, gateRead)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	return &darwinForkProcessController{cmd: cmd, gateRead: gateRead, gateWrite: gateWrite, queue: -1}, nil
-}
-
-func isolateDarwinBashEnvironment(environment []string) ([]string, []string) {
-	names := []string{"BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS"}
-	clean := make([]string, 0, len(environment))
-	values := make(map[string]string, len(names))
-	present := make(map[string]bool, len(names))
-	for _, entry := range environment {
-		name, value, found := strings.Cut(entry, "=")
-		if !found || !slices.Contains(names, name) {
-			clean = append(clean, entry)
-			continue
-		}
-		values[name] = value
-		present[name] = true
-	}
-	arguments := make([]string, 0, len(names)*2)
-	for _, name := range names {
-		if present[name] {
-			arguments = append(arguments, "1", values[name])
-		} else {
-			arguments = append(arguments, "0", "")
-		}
-	}
-	return clean, arguments
 }
 
 func (controller *darwinForkProcessController) AfterStart() error {

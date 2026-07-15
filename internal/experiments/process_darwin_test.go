@@ -3,9 +3,11 @@
 package experiments
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -69,6 +71,28 @@ func TestDarwinForkGateDefersBashStartupEnvironment(t *testing.T) {
 	target, err := os.ReadFile(filepath.Join(root, "target.txt"))
 	if err != nil || string(target) != "target" {
 		t.Fatalf("target output = %q, %v", target, err)
+	}
+}
+
+func TestDarwinForkGatePreservesShellOptionEnvironmentForNonBashTarget(t *testing.T) {
+	const shellOptions = "braceexpand:hashall:interactive-comments:noexec"
+	const bashOptions = "checkwinsize:cmdhist:complete_fullquote:extquote"
+	environment := append(os.Environ(), "SHELLOPTS="+shellOptions, "BASHOPTS="+bashOptions)
+	var output bytes.Buffer
+	runner := ExecRunner{Env: environment, Stdout: &output}
+	code, err := runner.Run(context.Background(), t.TempDir(), []string{"/usr/bin/env"}, nil)
+	if err != nil || code != 0 {
+		t.Fatalf("Run = %d, %v", code, err)
+	}
+	variables := make(map[string]string)
+	for line := range strings.SplitSeq(output.String(), "\n") {
+		name, value, found := strings.Cut(line, "=")
+		if found {
+			variables[name] = value
+		}
+	}
+	if variables["SHELLOPTS"] != shellOptions || variables["BASHOPTS"] != bashOptions {
+		t.Fatalf("shell option environment = SHELLOPTS=%q BASHOPTS=%q", variables["SHELLOPTS"], variables["BASHOPTS"])
 	}
 }
 
