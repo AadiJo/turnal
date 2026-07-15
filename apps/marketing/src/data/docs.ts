@@ -44,6 +44,14 @@ export const docsNav: DocsNavGroup[] = [
     ],
   },
   {
+    label: 'Evidence',
+    items: [
+      { id: 'verification', label: 'Verification' },
+      { id: 'reproducibility-and-cases', label: 'Reproducibility and cases' },
+      { id: 'vs-code', label: 'VS Code' },
+    ],
+  },
+  {
     label: 'Operate',
     items: [
       { id: 'git-worktrees', label: 'Git worktrees' },

@@ -5,12 +5,12 @@
  * every aggregate view exercises both supported adapters.
  *
  * Token classes map 1:1 to the CLI's ANSI colors:
- *   t-b   38;5;111  periwinkle — labels, session ids, tool names
- *   t-g   38;5;220  gold       — counts and values
- *   t-ok  38;5;48   green      — complete / post / additions
- *   t-gr  38;5;120  light green— session tags and graph rails
- *   t-del 38;5;203  red        — deletions
- *   t-dim 2m        dim        — secondary metadata
+ *   t-b   38;5;111  periwinkle: labels, session ids, tool names
+ *   t-g   38;5;220  gold: counts and values
+ *   t-ok  38;5;48   green: complete / post / additions
+ *   t-gr  38;5;120  light green: session tags and graph rails
+ *   t-del 38;5;203  red: deletions
+ *   t-dim 2m        dim: secondary metadata
  */
 
 export interface Demo {

@@ -4,10 +4,10 @@
 
 <section id="agent-history" class="agent-history-lab" aria-labelledby="agent-history-title">
   <div class="ah-page">
-    <div class="ah-stage" aria-label="Claude Code and Codex sessions recording into one Turnal history" data-stage>
+    <div class="ah-stage" aria-label="Claude Code and Codex sessions flowing into one Turnal history" data-stage>
       <header class="ah-head">
-        <h2 id="agent-history-title">Every session, in one history.</h2>
-        <p>Claude Code and Codex can work in sequence or in parallel. Turnal keeps every completed turn in one interleaved record.</p>
+        <h2 id="agent-history-title">Every agent session, one history.</h2>
+        <p>Claude Code and Codex can work in sequence or in parallel. Turnal keeps each completed turn, including its prompt, tools, and checkpoints, in one interleaved timeline.</p>
       </header>
 
       <div class="ah-sessions" data-sessions data-active="claude">
@@ -564,7 +564,7 @@
       recordedTurns.push(turn);
       renderHistory(turn.order);
       const session = getSession(turn.session);
-      live.textContent = `${session.id}, turn ${turn.turn}, recorded at ${turn.time}.`;
+      live.textContent = `${session.id}, turn ${turn.turn}, added at ${turn.time}.`;
     };
 
     const runTurn = async (surfaceTurn: SurfaceTurn, id: number, startDelay = 0) => {

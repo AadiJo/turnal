@@ -3,8 +3,8 @@
 
 export const product = {
   name: 'Turnal',
-  tagline: 'A flight recorder for your AI coding agent.',
-  sub: 'Turnal records every run your agent takes — the prompt, the tool calls, the files it touched — as hidden Git checkpoints beside your repo. Understand what happened, search it months later, and roll back any run safely. Local-first. Zero config.',
+  tagline: 'A local flight recorder for AI coding agents.',
+  sub: 'Turnal pairs Claude Code and Codex activity with local events and hidden Git checkpoints. Search what happened, trace a line to its prompt, verify an earlier state, and roll back with a safety checkpoint first.',
   install: 'npm install -g @aadijo/turnal',
   init: 'turnal init',
   agents: ['Claude Code', 'Codex'],
@@ -22,13 +22,13 @@ export const features: Feature[] = [
   {
     k: 'record',
     title: 'Automatic checkpoints',
-    body: 'A pre- and post-checkpoint on every agent run, committed to a hidden Git repo. Your real history and working tree stay untouched.',
+    body: 'A hidden pre- and post-checkpoint for every completed agent turn. Normal capture stays separate from your project Git history.',
     demo: 'log',
   },
   {
     k: 'read',
     title: 'Readable transcripts',
-    body: 'Replay any session as a transcript — the prompt, the agent’s reply, and each tool call in order. No log spelunking.',
+    body: 'Read exposed prompts, responses, and tool activity in turn order, with explicit redaction markers when your storage policy removes content.',
     demo: 'transcript',
   },
   {
@@ -40,19 +40,19 @@ export const features: Feature[] = [
   {
     k: 'search',
     title: 'Search every session',
-    body: 'Full-text search across every prompt, reply, and tool call your agents have ever run — scoped to a session or across all of them.',
+    body: 'Full-text search across indexed prompts, replies, tools, paths, and events, scoped to one session or across attached worktrees.',
     demo: 'search',
   },
   {
     k: 'rollback',
     title: 'Safe rollback',
-    body: 'Restore the workspace to any checkpoint. Turnal snapshots your current state first, so an undo is never destructive.',
+    body: 'Preview a restore, then return to a checkpoint after Turnal saves the current captured workspace as a safety point.',
     demo: 'rollback',
   },
   {
     k: 'local',
     title: 'Local-first',
-    body: 'Recording data lives in .turnal/ on your machine — append-only events, a hidden Git store, and a disposable SQLite index. Turnal does not upload it.',
+    body: 'Turnal data lives in .turnal/ on your machine: append-only events, a hidden Git store, and a disposable SQLite index. Turnal does not upload it.',
     demo: 'diff',
   },
 ];
@@ -72,11 +72,11 @@ export const steps: Step[] = [
   {
     n: '02',
     title: 'Code as usual',
-    body: 'Your agent works normally. Turnal captures each run in the background — prompt, tools, and file changes.',
+    body: 'Your agent works normally. Turnal captures each turn in the background, including the context exposed by its hooks and the resulting file changes.',
   },
   {
     n: '03',
     title: 'Recall & recover',
-    body: 'Later, log, blame, search, or diff any run — and roll back safely if a change went sideways.',
+    body: 'Later, search, diff, blame, verify, or replay a saved state. Preview a rollback when you need to recover.',
   },
 ];

@@ -1,7 +1,7 @@
 ---
 // Two-column comparison: what a Git commit preserves versus what a Turnal
 // agent turn preserves. Every claim maps to real behavior described in
-// content.ts / terminalHome — no invented capabilities.
+// content.ts / terminalHome. No invented capabilities.
 import Logo from './Logo.astro';
 
 type Level = 'full' | 'partial' | 'none';
@@ -17,12 +17,12 @@ interface Row {
 
 const rows: Row[] = [
   {
-    label: 'Files & bytes',
-    detail: 'The exact contents of every tracked file at that moment.',
+    label: 'Captured files & bytes',
+    detail: 'Byte-exact contents and executable bits for the captured workspace surface.',
     git: 'full',
     gitNote: 'Full tree',
     turnal: 'full',
-    turnalNote: 'Full tree',
+    turnalNote: 'Captured tree',
   },
   {
     label: 'Branch & commit context',
@@ -33,44 +33,44 @@ const rows: Row[] = [
     turnalNote: 'Repo + worktree identity',
   },
   {
-    label: 'Prompt & assistant reasoning',
-    detail: 'The instruction that started the run and how the agent responded.',
+    label: 'Prompt & assistant response',
+    detail: 'The instruction and response when the agent integration exposes them.',
     git: 'none',
     gitNote: 'Not captured',
     turnal: 'full',
-    turnalNote: 'Recorded verbatim',
+    turnalNote: 'Captured or marked redacted',
   },
   {
     label: 'Tool activity',
-    detail: 'Every command, file read, and edit the agent ran in order.',
+    detail: 'Ordered tool activity exposed by the agent integration.',
     git: 'none',
     gitNote: 'Not captured',
     turnal: 'full',
-    turnalNote: 'Ordered event log',
+    turnalNote: 'Append-only event trail',
   },
   {
     label: 'Before / after diff',
-    detail: 'What actually changed, scoped to a single run.',
+    detail: 'What actually changed, scoped to a single agent turn.',
     git: 'partial',
     gitNote: 'Between commits',
     turnal: 'full',
     turnalNote: 'Per-turn checkpoints',
   },
   {
-    label: 'Attribution to the responsible run',
-    detail: 'Which run or prompt is behind a given line.',
+    label: 'Attribution to the responsible turn',
+    detail: 'Which agent turn and prompt are behind a given line.',
     git: 'partial',
     gitNote: 'Author + hash only',
     turnal: 'full',
     turnalNote: 'Prompt-aware blame',
   },
   {
-    label: 'Safe, reversible rollback',
-    detail: 'Getting back without losing the state you were in.',
+    label: 'Safety-first rollback',
+    detail: 'Previewing a restore and preserving the current captured state first.',
     git: 'partial',
-    gitNote: 'reset — destructive',
+    gitNote: 'Manual reset or revert',
     turnal: 'full',
-    turnalNote: 'Saves an exit first',
+    turnalNote: 'Safety checkpoint first',
   },
 ];
 
@@ -84,7 +84,7 @@ const levelLabel: Record<Level, string> = {
 <div class="snapshot-compare">
   <div class="sc-grid" role="table" aria-label="What a Git commit preserves compared with an agent turn">
     <div class="sc-head" role="row">
-      <div class="sc-corner" role="columnheader"><span class="sc-sr">Record detail</span></div>
+      <div class="sc-corner" role="columnheader"><span class="sc-sr">Turn detail</span></div>
       <div class="sc-col-head sc-col-git" role="columnheader">
         <span class="sc-mark sc-mark-git" aria-hidden="true"><img src="/brands/git.svg" alt="" width="17" height="17" /></span>
         <span class="sc-col-name">Git commit</span>

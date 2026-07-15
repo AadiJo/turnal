@@ -187,58 +187,6 @@ const rollbackLines = [
   `  ref: ${muted('refs/agent-vcs/rollback-safety/claude-a13f/turn/000004/pre/1783629131200000000-a4c9e2f18b7d')}`,
 ];
 
-const statusLines = [
-  `${label('workspace:')} /Users/aadijo/Dev/relay-api`,
-  `${label('metadata:')}  /Users/aadijo/Dev/relay-api/.turnal`,
-  `${label('repo id:')}   ${muted('repo_4f8c61a90bd1')}`,
-  `${label('store id:')}  ${muted('store_89af312e4c77')}`,
-  `${label('worktree:')}  ${muted('wt_1d994d3024c8')}`,
-  `${label('attached:')}  false`,
-  `${label('hidden git:')} /Users/aadijo/Dev/relay-api/.turnal/git`,
-  `${label('git-sync:')}   false`,
-  `${label('rollback:')}   checkpoint`,
-  `${label('hooks:')}      ${success('ok')}`,
-  `${label('state:')}      ${success('ok')}`,
-];
-
-const showLines = [
-  `${label('session')} claude-a13f ${label('turn')} 4`,
-  `${label('adapter:')} claude-code`,
-  `${label('started:')} ${muted('2026-07-11T14:42:08.206Z')}`,
-  `${label('finished:')} ${muted('2026-07-11T14:48:22.319Z')}`,
-  `${label('complete:')} ${success('true')}`,
-  `${label('pre:')}  ${hash('e4b611c27fa0')} ${muted('refs/agent-vcs/checkpoints/claude-a13f/turn/000004/pre')}`,
-  `${label('post:')} ${hash('59a91d6d715f')} ${muted('refs/agent-vcs/checkpoints/claude-a13f/turn/000004/post')}`,
-  '',
-  `${label('turn events:')}`,
-  `${muted('[48]')} prompt ${muted('time=2026-07-11T14:42:08.206Z')}`,
-  `     Return success for an event another worker already completed.`,
-  `${muted('[49]')} tool Read ${muted('src/webhooks/stripe.ts')}`,
-  `${muted('[50]')} tool Edit ${muted('src/webhooks/stripe.ts')}`,
-  `${muted('[51]')} tool Bash ${muted('npm test -- stripe')}`,
-  `${muted('[52]')} assistant ${muted('Completed transactional duplicate handling and verification.')}`,
-];
-
-const diffLines = [
-  `${muted('diff --git a/src/webhooks/stripe.ts b/src/webhooks/stripe.ts')}`,
-  `${muted('index 64c0e18..a9fd3c2 100644')}`,
-  `${danger('--- a/src/webhooks/stripe.ts')}`,
-  `${success('+++ b/src/webhooks/stripe.ts')}`,
-  `${action('@@ -41,11 +41,19 @@ export async function handleStripeEvent(req, res) {')}`,
-  `   const event = verifyStripeEvent(req)`,
-  `${danger('-  if (await claims.exists(event.id)) return res.sendStatus(200)')}`,
-  `${danger('-  await fulfill(event)')}`,
-  `${danger('-  await claims.create(event.id)')}`,
-  `${success('+  const claimed = await db.transaction(async (tx) => {')}`,
-  `${success('+    const inserted = await claims.acquire(tx, event.id)')}`,
-  `${success('+    if (!inserted) return false')}`,
-  `${success('+    await fulfill(tx, event)')}`,
-  `${success('+    return true')}`,
-  `${success('+  })')}`,
-  `${success('+  if (!claimed) metrics.duplicate(event.id)')}`,
-  `   return res.sendStatus(200)`,
-];
-
 const replayLines = [
   `${label('replay worktree:')} /Users/aadijo/.turnal/replays/claude-a13f-turn-000003-post`,
   `${label('state:')} claude-a13f turn 3 ${success('post')}`,
@@ -252,27 +200,93 @@ const replayLines = [
   `  turnal replay stop`,
 ];
 
+const verifyLines = [
+  `${label('target:')} claude-a13f:4:post`,
+  `${label('state:')}  ${hash('59a91d6d715f3b86d32824e589a9fe30d73b2f1a')}`,
+  `${label('checks:')} ${success('3 passed')}, 0 failed, 0 timed out, 0 could not start, 0 infrastructure errors`,
+  '',
+  `${success('PASS')}    unit-tests                  ${muted('2.84s')}`,
+  `${success('PASS')}    typecheck                   ${muted('1.19s')}`,
+  `${success('PASS')}    lint                        ${muted('684ms')}`,
+  '',
+  `${label('limitations:')}`,
+  `  - Checks ran in the current toolchain against an isolated checkpoint worktree.`,
+];
+
+const saveLines = [
+  `${success('Saved checkpoint')} ${hash('e8924b927c11')}`,
+  `  ${label('hash:')} e8924b927c11e987d304372ff3bb8e57b93a5d42`,
+  `  ${label('message:')} "tests passing before webhook refactor"`,
+  `  ${label('rollback:')} turnal rollback --to e8924b927c11e987d304372ff3bb8e57b93a5d42`,
+];
+
+const forkLines = [
+  `${label('fork readiness:')} ${warning('needs_context')}`,
+  `${label('target:')}         claude-a13f:turn:4:pre`,
+  `${label('fidelity:')}       L1`,
+  `${label('source turn:')}    claude-a13f:4 ${success('(complete)')}`,
+  `${label('model:')}          claude-opus-4-8`,
+  `${label('base:')}           refs/agent-vcs/checkpoints/claude-a13f/turn/000004/pre`,
+  `${label('captured files:')} 184`,
+  `${label('instruction:')}    ${success('available')}`,
+  `  Return success for an event another worker already completed.`,
+  `${label('conditions:')}`,
+  `  workspace files  ${success('exact')}                    184 captured files`,
+  `  conversation     ${warning('not_recorded')}             prior context must be supplied`,
+  `  toolchain        ${warning('not_recorded')}             use the current environment`,
+  `  secrets          ${warning('reauthorization_required')} secret values are never replayed`,
+  `  network          ${warning('live')}                     external services may differ`,
+  `  evaluators       ${success('configured')}               3 repository checks`,
+];
+
+const caseLines = [
+  `${success('created task')} task_0123456789abcdef0123456789abcdef`,
+  `${success('created case')} case_fedcba9876543210fedcba9876543210`,
+  `${label('task:')}           task_0123456789abcdef0123456789abcdef revision 1`,
+  `${label('source turn:')}    claude-a13f:4`,
+  `${label('base commit:')}    ${hash('e4b611c27fa0')}`,
+  `${label('instruction:')}    ${success('available')}`,
+  `${label('readiness:')}      ${warning('needs_context')}`,
+  `${label('fidelity:')}       L1`,
+  `${label('verifiers:')}      unit-tests, typecheck, lint`,
+  `${label('attempts:')}       none linked`,
+];
+
 export const commandPanels: CommandPanel[] = [
   {
-    id: 'status',
-    label: 'turnal status',
-    command: 'turnal status',
-    description: 'Verify store identity, worktree binding, hooks, rollback mode, and local state before relying on the recorder.',
-    output: statusLines.join('\n'),
+    id: 'blame',
+    label: 'turnal blame',
+    command: 'turnal blame src/webhooks/stripe.ts:24 --verbose',
+    description: 'Trace the line under investigation to the completed turn, prompt, tools, and checkpoint that produced it.',
+    output: blameLines.join('\n'),
   },
   {
-    id: 'show',
-    label: 'turnal show',
-    command: 'turnal show claude-a13f:4',
-    description: 'Open one turn with its checkpoint ids, timestamps, normalized events, tools, and assistant result.',
-    output: showLines.join('\n'),
+    id: 'verify',
+    label: 'turnal verify',
+    command: 'turnal verify claude-a13f:4:post',
+    description: 'Run repository-defined checks against the live workspace or an isolated historical checkpoint.',
+    output: verifyLines.join('\n'),
   },
   {
-    id: 'diff',
-    label: 'turnal diff',
-    command: 'turnal diff claude-a13f:3',
-    description: 'Compare the hidden pre and post checkpoints for a turn without checking either state into your workspace.',
-    output: diffLines.join('\n'),
+    id: 'save',
+    label: 'turnal save',
+    command: 'turnal save "tests passing before webhook refactor"',
+    description: 'Name an explicit rollback point in hidden Git without adding a commit to your project history.',
+    output: saveLines.join('\n'),
+  },
+  {
+    id: 'fork',
+    label: 'turnal fork --dry-run',
+    command: 'turnal fork claude-a13f:4 --dry-run',
+    description: 'Inspect which inputs a faithful rerun would have and which context must still be supplied.',
+    output: forkLines.join('\n'),
+  },
+  {
+    id: 'case',
+    label: 'turnal case create',
+    command: 'turnal case create claude-a13f:4',
+    description: 'Preserve a turn as an immutable experimental case with its starting state, task, verifiers, and limitations.',
+    output: caseLines.join('\n'),
   },
   {
     id: 'replay',
@@ -286,7 +300,7 @@ export const commandPanels: CommandPanel[] = [
 export const workflowScenes: WorkflowScene[] = [
   {
     id: 'init',
-    title: 'Set up the recorder',
+    title: 'Initialize Turnal',
     command: 'turnal init --agent all',
     output: initLines,
     durationMs: 6000,

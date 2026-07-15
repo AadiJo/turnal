@@ -36,8 +36,7 @@ import { workflowScenes } from '../data/terminalHome';
   </div>
 
   <div class="tw-copy">
-    <h3><span>From first run</span>to safe rollback</h3>
-    <p>Turnal captures the work in the background. Use the CLI when you need to inspect, trace, or recover it.</p>
+    <p>Turnal captures each turn in the background. Use the CLI when you need to inspect, trace, test, or restore what happened.</p>
     <div class="tw-scenes">
       {workflowScenes.map((scene, index) => (
         <div class="tw-scene-row" data-tw-scene-row>
@@ -526,10 +525,8 @@ import { workflowScenes } from '../data/terminalHome';
   .tw-dots button span { width: 5px; height: 5px; border-radius: 50%; background: rgba(236, 227, 212, 0.2); transition: background-color 140ms ease, transform 140ms ease; }
   .tw-dots button[aria-pressed='true'] span { background: rgba(236, 227, 212, 0.82); transform: scale(1.16); }
 
-  .tw-copy { min-width: 0; padding: 22px 12px 12px 8px; }
-  .tw-copy h3 { margin: 0; color: #ece3d4; font-size: 30px; font-weight: 600; letter-spacing: -0.035em; line-height: 1.03; }
-  .tw-copy h3 span { display: block; color: rgba(236, 227, 212, 0.5); }
-  .tw-copy > p { max-width: 34ch; margin-top: 14px; color: rgba(236, 227, 212, 0.56); font-size: 14px; line-height: 1.55; }
+  .tw-copy { min-width: 0; padding: 48px 12px 12px 8px; }
+  .tw-copy > p { max-width: 34ch; margin-top: 0; color: rgba(236, 227, 212, 0.56); font-size: 14px; line-height: 1.55; }
   .tw-scenes { margin-top: 28px; }
   .tw-scene-row { position: relative; padding-left: 17px; border-bottom: 1px solid rgba(236, 227, 212, 0.1); }
   .tw-scene-progress {
@@ -587,7 +584,6 @@ import { workflowScenes } from '../data/terminalHome';
     .tw-stage { min-height: clamp(278px, calc(74.4vw + 40px), 488px); }
     .tw-dots { bottom: 14px; }
     .tw-copy { padding-inline: 2px; }
-    .tw-copy h3 { font-size: 25px; }
     .tw-scenes { grid-template-columns: 1fr; }
     .tw-output,
     .tw-composer { font-size: 6px; }

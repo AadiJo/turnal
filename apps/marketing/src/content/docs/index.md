@@ -1,11 +1,11 @@
 ---
-title: Turnal documentation — record, inspect, and recover agent work
-description: Production documentation for Turnal, including installation, agent integrations, history, search, replay, rollback, configuration, privacy, and the public CLI.
+title: Turnal documentation | Record, verify, and recover agent work
+description: Production documentation for Turnal, including local agent history, verification, reproducibility analysis, replay, rollback, and the public CLI.
 ---
 
 <h1 id="overview">Record the work.<br>Keep the reason.</h1>
 
-<p class="docs-lead">Turnal is a local flight recorder for Claude Code and Codex. It captures each agent turn as an append-only event trail and a pair of hidden Git checkpoints, so you can reconstruct what happened, find the prompt behind a line, or safely return to an earlier state.</p>
+<p class="docs-lead">Turnal is a local flight recorder for Claude Code and Codex. It captures each agent turn as an append-only event trail and a pair of hidden Git checkpoints, so you can reconstruct what happened, find the prompt behind a line, test an earlier state, or safely return to it.</p>
 
 [Start in five minutes](#quickstart) · [Understand the model](#mental-model)
 
@@ -255,6 +255,75 @@ Replay navigation commands are `prev`, `next`, `goto`, `show`, `diff`, `list`, `
 
 ---
 
+## Verification
+
+`turnal verify` runs repository-defined checks against the live workspace or an isolated historical checkpoint. Historical verification materializes the captured state in a temporary worktree, runs the same commands there, and leaves the source workspace untouched.
+
+```toml
+[[verify]]
+name = "unit-tests"
+command = "go"
+args = ["test", "./..."]
+timeout = "2m"
+
+[[verify]]
+name = "race-detector"
+command = "go"
+args = ["test", "-race", "./..."]
+timeout = "5m"
+```
+
+```sh
+# Check the current workspace.
+turnal verify
+
+# Check the exact captured state after turn 4.
+turnal verify claude-7f2a:4:post
+```
+
+Verifier definitions must come from the workspace `.turnal/config.toml`; user-level configuration cannot silently add repository commands. Historical files are fixed by the checkpoint, but commands still use the current machine's toolchain, credentials, network, and external services. Human output summarizes every check, while `--json` emits the complete versioned report. A completed verification with failed checks exits with status 3.
+
+---
+
+## Reproducibility and cases
+
+Before attempting to rerun old work, `turnal fork --dry-run` reports what Turnal can reconstruct and what still depends on live context. The report covers the pre-turn workspace, instruction, recorded model and permissions, conversation context, toolchain, secrets, network, and configured evaluators.
+
+```sh
+turnal fork claude-7f2a:4 --dry-run
+turnal fork claude-7f2a:4 --dry-run --json
+```
+
+Fork execution is not implemented. This command is a read-only preflight report: it does not create files, launch an agent, or claim that a recorded turn is deterministic.
+
+Experimental cases turn that readiness report into an immutable record. A case preserves the source turn, task revision, starting checkpoint, repository verifier contract, known limitations, and links to any existing wrapper attempts associated with the source turn.
+
+```sh
+# The first case creates its task identity.
+turnal case create claude-7f2a:4
+
+# Inspect the immutable case or its evolving task identity.
+turnal case show case_...
+turnal task show task_...
+
+# Create a sibling case when the recorded instruction matches the task revision.
+turnal case create codex-b91e:2 --task task_...
+```
+
+Cases and tasks currently support creation and inspection. They do not execute agents or compare outcomes automatically, and their CLI is experimental.
+
+---
+
+## VS Code
+
+The first-party VS Code extension keeps Turnal's durable CLI model visible in the editor. It adds prompt-aware inline blame for the current line, session and recent-activity views, native single- and multi-file turn diffs, readable turn details, and rollback previews in VS Code's Changes editor.
+
+Editor rollback always performs a fresh dry run, warns about affected unsaved editors, and asks for confirmation before changing the workspace. It uses checkpoint mode and never moves the project's Git HEAD or index. Recording, verification, replay, search, retention, and configuration remain CLI workflows.
+
+[Read the extension guide on GitHub](https://github.com/AadiJo/turnal/tree/main/apps/vscode).
+
+---
+
 ## Git worktrees
 
 Linked Git worktrees can share the primary worktree's physical `.turnal` store. Turnal records a distinct worktree identity on every stream and uses a user-state registry to find the shared store again.
@@ -412,7 +481,7 @@ snapshot_deny_globs = [
 ]
 ```
 
-Transcript reads are limited to recognized Claude Code or Codex roots—such as `CLAUDE_CONFIG_DIR` and `CODEX_HOME`—reject `.git` paths, and enforce a 64 MiB file-size limit.
+Transcript reads are limited to recognized Claude Code or Codex roots, such as `CLAUDE_CONFIG_DIR` and `CODEX_HOME`. They reject `.git` paths and enforce a 64 MiB file-size limit.
 
 ---
 
@@ -439,7 +508,7 @@ Destroy removes Turnal metadata and, when requested, Turnal-owned agent hook com
 
 ## Command reference
 
-These are Turnal's public commands. Hook, checkpoint, and turn-plumbing commands are internal and intentionally omitted.
+These are Turnal's primary public commands. Hook, checkpoint, and turn-plumbing commands are internal and intentionally omitted.
 
 ### `turnal init`
 
@@ -614,6 +683,60 @@ turnal replay next | prev | goto TARGET | diff | show | keep | stop | list
 | `replay remove [ID|PATH]` | Remove a selected replay session and its directory. |
 
 Stopping removes the managed directory unless `turnal replay keep` marked it to be preserved.
+
+### `turnal save`
+
+Create an explicit checkpoint of the current captured workspace without committing to the project's Git history.
+
+```text
+turnal save [MESSAGE] [--json]
+```
+
+The optional message is descriptive metadata. The command prints the hidden Git commit that can be passed to `turnal rollback --to`. Manual saves do not contain workspace-Git sync state, so they always use checkpoint-mode rollback.
+
+### `turnal verify`
+
+Run the repository verifier contract against the live workspace or an isolated historical checkpoint.
+
+```text
+turnal verify [SESSION:TURN:pre|post] [--json]
+```
+
+With no target, checks run in the live workspace. Historical verification requires an explicit phase and never changes the source workspace. Failed checks exit with status 3; launch or infrastructure errors remain distinct in the report.
+
+### `turnal fork`
+
+Inspect whether a recorded turn has enough captured context for a faithful rerun.
+
+```text
+turnal fork SESSION:TURN --dry-run [--json]
+```
+
+`--dry-run` is currently required because fork execution is not implemented. The report is read-only and distinguishes exact captured state from missing, live, or reauthorization-dependent context.
+
+### `turnal case` and `turnal task`
+
+Create and inspect experimental immutable cases derived from recorded turns.
+
+```text
+turnal case create SESSION:TURN [--task TASK_ID] [--json]
+turnal case show CASE_ID [--json]
+turnal task show TASK_ID [--json]
+```
+
+Creating a case without `--task` creates a task identity and its initial revision. `--task` creates a sibling case only when the recorded instruction matches the task's applicable revision. These commands preserve and inspect evidence; they do not launch an agent.
+
+### `turnal recovery`
+
+Inspect or resolve a rollback that was interrupted after its journal was written.
+
+```text
+turnal recovery status
+turnal recovery resume
+turnal recovery restore-safety
+```
+
+`resume` reapplies the recorded target and finalizes the rollback. `restore-safety` abandons that target and restores the safety checkpoint captured before rollback began.
 
 ### `turnal run`
 
