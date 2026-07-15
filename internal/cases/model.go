@@ -11,6 +11,13 @@ import (
 
 const JSONVersion = 1
 
+const (
+	AttemptStatusRunning    = "running"
+	AttemptStatusSucceeded  = "succeeded"
+	AttemptStatusFailed     = "failed"
+	AttemptStatusIncomplete = "incomplete"
+)
+
 type Scope struct {
 	RepoID     primitives.RepoID     `json:"repo_id"`
 	StoreID    primitives.StoreID    `json:"store_id"`
@@ -57,20 +64,48 @@ type AttemptLink struct {
 	AttemptID primitives.AttemptID `json:"attempt_id"`
 	RunID     primitives.RunID     `json:"run_id"`
 	Source    SourceTurn           `json:"source"`
+	Execution SourceTurn           `json:"execution"`
+	Command   []string             `json:"command,omitempty"`
+	Result    *AttemptResult       `json:"result,omitempty"`
 	Created   Provenance           `json:"created"`
 }
 
+type AttemptResult struct {
+	PostRef    primitives.CheckpointRef `json:"post_ref"`
+	PostCommit primitives.CommitSHA     `json:"post_commit"`
+	Status     string                   `json:"status"`
+	ExitCode   *int                     `json:"exit_code,omitempty"`
+	Error      string                   `json:"error,omitempty"`
+	Completed  Provenance               `json:"completed"`
+}
+
+type AttemptSelection struct {
+	AttemptID primitives.AttemptID `json:"attempt_id"`
+	Selected  Provenance           `json:"selected"`
+}
+
+type AttemptApplication struct {
+	AttemptID    primitives.AttemptID `json:"attempt_id"`
+	PostCommit   primitives.CommitSHA `json:"post_commit"`
+	SafetyRef    string               `json:"safety_ref"`
+	SafetyCommit primitives.CommitSHA `json:"safety_commit"`
+	Changes      int                  `json:"changes"`
+	Applied      Provenance           `json:"applied"`
+}
+
 type Case struct {
-	ID           primitives.CaseID `json:"case_id"`
-	TaskID       primitives.TaskID `json:"task_id"`
-	TaskRevision uint64            `json:"task_revision"`
-	Scope        Scope             `json:"scope"`
-	Source       SourceTurn        `json:"source"`
-	Readiness    fork.Report       `json:"fork_readiness"`
-	Verifiers    []Verifier        `json:"verifiers"`
-	Limitations  []string          `json:"limitations"`
-	AttemptLinks []AttemptLink     `json:"attempt_links"`
-	Created      Provenance        `json:"created"`
+	ID           primitives.CaseID    `json:"case_id"`
+	TaskID       primitives.TaskID    `json:"task_id"`
+	TaskRevision uint64               `json:"task_revision"`
+	Scope        Scope                `json:"scope"`
+	Source       SourceTurn           `json:"source"`
+	Readiness    fork.Report          `json:"fork_readiness"`
+	Verifiers    []Verifier           `json:"verifiers"`
+	Limitations  []string             `json:"limitations"`
+	AttemptLinks []AttemptLink        `json:"attempt_links"`
+	Selection    *AttemptSelection    `json:"selection,omitempty"`
+	Applications []AttemptApplication `json:"applications,omitempty"`
+	Created      Provenance           `json:"created"`
 }
 
 type Projection struct {

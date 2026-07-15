@@ -643,6 +643,27 @@ func TestProjectionWrapperOnlyAndFailedRun(t *testing.T) {
 	}
 }
 
+func TestEnsureWrapperAttemptUsesSupervisedCapture(t *testing.T) {
+	repo := testRepo(t)
+	runID, _ := primitives.NewRunID()
+	wrapper := session(t, "fork-wrapper")
+	beginTestRun(t, repo, runID, wrapper, []string{"runner"})
+	if err := LinkCapture(repo, runID, CaptureWrapper, wrapper, primitives.AdapterCodex); err != nil {
+		t.Fatal(err)
+	}
+	attemptID, err := EnsureWrapperAttempt(repo, runID, wrapper, 1, primitives.AdapterCodex)
+	if err != nil {
+		t.Fatalf("EnsureWrapperAttempt: %v", err)
+	}
+	projection, err := Read(repo, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projection.Attempts) != 1 || projection.Attempts[0].ID != attemptID || projection.Attempts[0].SessionID != wrapper {
+		t.Fatalf("wrapper attempt projection = %+v", projection.Attempts)
+	}
+}
+
 func TestRejectsFabricatedAndForeignRun(t *testing.T) {
 	repo := testRepo(t)
 	foreign := testRepo(t)

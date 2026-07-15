@@ -228,6 +228,9 @@ func TestEventType(t *testing.T) {
 		EventTypeTaskRevision,
 		EventTypeCaseCreate,
 		EventTypeCaseAttemptLink,
+		EventTypeCaseAttemptResult,
+		EventTypeCaseAttemptSelect,
+		EventTypeCaseAttemptApply,
 	} {
 		if _, err := ParseEventType(eventType.String()); err != nil {
 			t.Fatalf("ParseEventType(%q): %v", eventType, err)

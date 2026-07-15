@@ -185,6 +185,53 @@ type MaterializeOptions struct {
 	ApplyCurrentSecretDenyGlobs bool
 }
 
+// ForCaptureRoot returns a repository view that snapshots root into this
+// store while retaining the store's durable repository and worktree identity.
+// It deliberately does not attach root as a Turnal worktree. This is used for
+// short-lived, isolated execution directories whose files must become durable
+// hidden-Git checkpoints in the originating store.
+func (repo *Repo) ForCaptureRoot(root string) (*Repo, error) {
+	if repo == nil {
+		return nil, fmt.Errorf("capture root requires checkpoint repo")
+	}
+	if strings.TrimSpace(root) == "" {
+		return nil, fmt.Errorf("capture root is required")
+	}
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return nil, fmt.Errorf("resolve capture root: %w", err)
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return nil, fmt.Errorf("stat capture root: %w", err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("capture root is not a directory: %s", abs)
+	}
+	metadata, err := filepath.Abs(repo.MetadataDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve metadata dir: %w", err)
+	}
+	if pathWithin(abs, metadata) {
+		return nil, fmt.Errorf("capture root must be outside Turnal metadata: %s", metadata)
+	}
+	parsed, err := primitives.ParseWorkspaceRoot(abs)
+	if err != nil {
+		return nil, err
+	}
+	view := *repo
+	view.WorkspaceRoot = parsed
+	return &view, nil
+}
+
+func pathWithin(path, parent string) bool {
+	rel, err := filepath.Rel(parent, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
 func Init(root primitives.WorkspaceRoot) (*Repo, error) {
 	return InitAt(root, filepath.Join(root.String(), metadataDirName))
 }

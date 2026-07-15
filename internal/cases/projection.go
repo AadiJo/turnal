@@ -53,6 +53,9 @@ func project(streams []eventlog.DurableStream, expected Scope, attempts map[prim
 	casesByID := make(map[primitives.CaseID]*Case)
 	var caseEvents []eventlog.Event
 	var attemptEvents []eventlog.Event
+	var resultEvents []eventlog.Event
+	var selectionEvents []eventlog.Event
+	var applicationEvents []eventlog.Event
 
 	for _, stream := range streams {
 		for _, event := range stream.Events {
@@ -92,6 +95,12 @@ func project(streams []eventlog.DurableStream, expected Scope, attempts map[prim
 				caseEvents = append(caseEvents, event)
 			case primitives.EventTypeCaseAttemptLink:
 				attemptEvents = append(attemptEvents, event)
+			case primitives.EventTypeCaseAttemptResult:
+				resultEvents = append(resultEvents, event)
+			case primitives.EventTypeCaseAttemptSelect:
+				selectionEvents = append(selectionEvents, event)
+			case primitives.EventTypeCaseAttemptApply:
+				applicationEvents = append(applicationEvents, event)
 			}
 		}
 	}
@@ -155,8 +164,78 @@ func project(streams []eventlog.DurableStream, expected Scope, attempts map[prim
 		if seenLinks[key] {
 			return Projection{}, relationshipError(event, fmt.Errorf("attempt %s is linked to case %s more than once", payload.AttemptID, payload.CaseID))
 		}
-		definition.AttemptLinks = append(definition.AttemptLinks, AttemptLink{AttemptID: payload.AttemptID, RunID: payload.RunID, Source: payload.Source, Created: provenance(event)})
+		execution := payload.Source
+		if payload.Execution != nil {
+			execution = *payload.Execution
+		}
+		if execution.SessionID == "" {
+			execution = payload.Source
+		}
+		definition.AttemptLinks = append(definition.AttemptLinks, AttemptLink{AttemptID: payload.AttemptID, RunID: payload.RunID, Source: payload.Source, Execution: execution, Command: append([]string(nil), payload.Command...), Created: provenance(event)})
 		seenLinks[key] = true
+	}
+
+	for _, event := range resultEvents {
+		var payload caseAttemptResultPayload
+		if err := decodeRelationship(event, &payload); err != nil {
+			return Projection{}, err
+		}
+		definition, link, err := linkedAttempt(casesByID, payload.CaseID, payload.AttemptID)
+		if err != nil {
+			return Projection{}, relationshipError(event, err)
+		}
+		if link.Result != nil {
+			return Projection{}, relationshipError(event, fmt.Errorf("attempt %s has more than one result", payload.AttemptID))
+		}
+		if err := validateAttemptResult(event, payload, *definition, *link); err != nil {
+			return Projection{}, err
+		}
+		link.Result = &AttemptResult{PostRef: payload.PostRef, PostCommit: payload.PostCommit, Status: payload.Status, ExitCode: cloneInt(payload.ExitCode), Error: payload.Error, Completed: provenance(event)}
+	}
+
+	for _, event := range selectionEvents {
+		var payload caseAttemptSelectPayload
+		if err := decodeRelationship(event, &payload); err != nil {
+			return Projection{}, err
+		}
+		definition, link, err := linkedAttempt(casesByID, payload.CaseID, payload.AttemptID)
+		if err != nil {
+			return Projection{}, relationshipError(event, err)
+		}
+		if err := validateCaseMutationEnvelope(event, payload.Scope, payload.Source, *definition); err != nil {
+			return Projection{}, err
+		}
+		if link.Result == nil {
+			return Projection{}, relationshipError(event, fmt.Errorf("attempt %s cannot be selected before it has a result", payload.AttemptID))
+		}
+		definition.Selection = &AttemptSelection{AttemptID: payload.AttemptID, Selected: provenance(event)}
+	}
+
+	for _, event := range applicationEvents {
+		var payload caseAttemptApplyPayload
+		if err := decodeRelationship(event, &payload); err != nil {
+			return Projection{}, err
+		}
+		definition, link, err := linkedAttempt(casesByID, payload.CaseID, payload.AttemptID)
+		if err != nil {
+			return Projection{}, relationshipError(event, err)
+		}
+		if err := validateCaseMutationEnvelope(event, payload.Scope, payload.Source, *definition); err != nil {
+			return Projection{}, err
+		}
+		if definition.Selection == nil || definition.Selection.AttemptID != payload.AttemptID {
+			return Projection{}, relationshipError(event, fmt.Errorf("attempt %s was applied without being selected", payload.AttemptID))
+		}
+		if link.Result == nil || link.Result.PostCommit != payload.PostCommit {
+			return Projection{}, relationshipError(event, fmt.Errorf("applied commit does not match attempt %s result", payload.AttemptID))
+		}
+		if _, err := primitives.ParseCommitSHA(payload.SafetyCommit.String()); err != nil {
+			return Projection{}, relationshipError(event, fmt.Errorf("apply safety commit: %w", err))
+		}
+		if payload.SafetyRef == "" || payload.Changes < 0 {
+			return Projection{}, relationshipError(event, fmt.Errorf("attempt application is missing valid safety metadata"))
+		}
+		definition.Applications = append(definition.Applications, AttemptApplication{AttemptID: payload.AttemptID, PostCommit: payload.PostCommit, SafetyRef: payload.SafetyRef, SafetyCommit: payload.SafetyCommit, Changes: payload.Changes, Applied: provenance(event)})
 	}
 
 	result := Projection{Version: JSONVersion, Tasks: make([]Task, 0, len(tasks)), Cases: make([]Case, 0, len(casesByID))}
@@ -279,13 +358,80 @@ func validateAttemptLink(event eventlog.Event, payload caseAttemptLinkPayload, d
 	if payload.Scope != definition.Scope || payload.Scope != attempt.Scope {
 		return relationshipError(event, scopeMismatch("attempt", payload.AttemptID))
 	}
-	if payload.RunID != attempt.RunID || payload.Source != attempt.Source || payload.Source != definition.Source {
-		return relationshipError(event, fmt.Errorf("attempt %s does not belong to the case source turn", payload.AttemptID))
+	execution := payload.Source
+	if payload.Execution != nil {
+		execution = *payload.Execution
+	}
+	if execution.SessionID == "" {
+		execution = payload.Source
+	}
+	if err := validateSource(execution); err != nil {
+		return relationshipError(event, fmt.Errorf("attempt execution source: %w", err))
+	}
+	if payload.RunID != attempt.RunID || execution != attempt.Source || payload.Source != definition.Source {
+		return relationshipError(event, fmt.Errorf("attempt %s does not match its run execution or case source", payload.AttemptID))
 	}
 	if err := validateEnvelope(event, payload.Scope, payload.Source); err != nil {
 		return relationshipError(event, err)
 	}
 	return nil
+}
+
+func validateAttemptResult(event eventlog.Event, payload caseAttemptResultPayload, definition Case, link AttemptLink) error {
+	if payload.Scope != definition.Scope || payload.RunID != link.RunID || payload.Source != definition.Source {
+		return relationshipError(event, fmt.Errorf("attempt %s result does not match its case link", payload.AttemptID))
+	}
+	if err := validateEnvelope(event, payload.Scope, payload.Source); err != nil {
+		return relationshipError(event, err)
+	}
+	if payload.Status != AttemptStatusSucceeded && payload.Status != AttemptStatusFailed && payload.Status != AttemptStatusIncomplete {
+		return relationshipError(event, fmt.Errorf("invalid attempt result status %q", payload.Status))
+	}
+	if _, err := primitives.ParseCommitSHA(payload.PostCommit.String()); err != nil {
+		return relationshipError(event, fmt.Errorf("attempt result commit: %w", err))
+	}
+	parts, err := payload.PostRef.Parts()
+	if err != nil {
+		return relationshipError(event, fmt.Errorf("attempt result ref: %w", err))
+	}
+	if !parts.HasPhase || parts.SessionID != link.Execution.SessionID || parts.TurnID != link.Execution.TurnID || parts.Phase != primitives.CheckpointPhasePost {
+		return relationshipError(event, fmt.Errorf("attempt result ref does not match execution checkpoint"))
+	}
+	if payload.Status == AttemptStatusSucceeded && payload.ExitCode != nil && *payload.ExitCode != 0 {
+		return relationshipError(event, fmt.Errorf("successful attempt has nonzero exit code %d", *payload.ExitCode))
+	}
+	return nil
+}
+
+func validateCaseMutationEnvelope(event eventlog.Event, scope Scope, source SourceTurn, definition Case) error {
+	if scope != definition.Scope || source != definition.Source {
+		return relationshipError(event, fmt.Errorf("case mutation does not match immutable case scope or source"))
+	}
+	if err := validateEnvelope(event, scope, source); err != nil {
+		return relationshipError(event, err)
+	}
+	return nil
+}
+
+func linkedAttempt(casesByID map[primitives.CaseID]*Case, caseID primitives.CaseID, attemptID primitives.AttemptID) (*Case, *AttemptLink, error) {
+	definition, exists := casesByID[caseID]
+	if !exists {
+		return nil, nil, fmt.Errorf("attempt relationship references nonexistent case %s", caseID)
+	}
+	for index := range definition.AttemptLinks {
+		if definition.AttemptLinks[index].AttemptID == attemptID {
+			return definition, &definition.AttemptLinks[index], nil
+		}
+	}
+	return nil, nil, fmt.Errorf("attempt %s is not linked to case %s", attemptID, caseID)
+}
+
+func cloneInt(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
 }
 
 func validateInstruction(instruction fork.Instruction) error {

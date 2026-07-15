@@ -18,6 +18,7 @@ import (
 	"github.com/AadiJo/turnal/internal/fork"
 	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/AadiJo/turnal/internal/recall"
+	"github.com/AadiJo/turnal/internal/runs"
 	"github.com/AadiJo/turnal/internal/turnevents"
 	"github.com/AadiJo/turnal/internal/turns"
 )
@@ -122,6 +123,74 @@ func TestCreateFreezesVerifierContract(t *testing.T) {
 	frozen, ok := rebuilt.Case(created.Case.ID)
 	if !ok || !reflect.DeepEqual(frozen.Verifiers, created.Case.Verifiers) {
 		t.Fatalf("frozen verifiers changed: %#v", frozen.Verifiers)
+	}
+}
+
+func TestAttemptLifecycleRecordsExecutionResultSelectionAndApply(t *testing.T) {
+	repo, root := caseRepo(t)
+	sourceSession, sourceTurn := recordCaseTurn(t, repo, root, "case-source", "Fix it", false)
+	created, err := Create(repo, CreateRequest{SessionID: sourceSession, TurnID: sourceTurn})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runID, _ := primitives.NewRunID()
+	executionSession, _ := primitives.ParseSessionID("fork-execution")
+	release, err := runs.Begin(repo, runID, executionSession, []string{"runner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if err := runs.LinkCapture(repo, runID, runs.CaptureWrapper, executionSession, primitives.AdapterCodex); err != nil {
+		t.Fatal(err)
+	}
+	falseValue := false
+	recorder := turnevents.Recorder{Log: repo.EventLog(), Manager: turns.NewManager(repo), Adapter: primitives.AdapterCodex}
+	recorder.Manager.GitSyncEnabled = &falseValue
+	started, err := recorder.Start(executionSession, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attemptID, err := runs.EnsureWrapperAttempt(repo, runID, executionSession, started.TurnID, primitives.AdapterCodex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LinkAttempt(repo, LinkAttemptRequest{CaseID: created.Case.ID, RunID: runID, AttemptID: attemptID, Command: []string{"runner"}}); err != nil {
+		t.Fatal(err)
+	}
+	writeCaseFile(t, filepath.Join(root.String(), "app.txt"), "after\n")
+	finished, err := recorder.Finish(executionSession, started.TurnID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zero := 0
+	if _, err := RecordAttemptResult(repo, RecordAttemptResultRequest{CaseID: created.Case.ID, RunID: runID, AttemptID: attemptID, PostRef: finished.Post.Ref, PostCommit: finished.Post.Commit, Status: AttemptStatusSucceeded, ExitCode: &zero}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runs.Finish(repo, runID, executionSession, runs.StatusSucceeded, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SelectAttempt(repo, created.Case.ID, attemptID); err != nil {
+		t.Fatal(err)
+	}
+	safety, err := repo.CreateSnapshotRef("refs/agent-vcs/test/apply-safety", "safety")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RecordApply(repo, RecordApplyRequest{CaseID: created.Case.ID, AttemptID: attemptID, PostCommit: finished.Post.Commit, SafetyRef: safety.Ref, SafetyCommit: safety.Commit, Changes: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	projection, err := Rebuild(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition, _ := projection.Case(created.Case.ID)
+	if len(definition.AttemptLinks) != 1 || definition.AttemptLinks[0].Execution.SessionID != executionSession || definition.AttemptLinks[0].Result == nil || definition.AttemptLinks[0].Result.PostCommit != finished.Post.Commit {
+		t.Fatalf("attempt lifecycle = %#v", definition.AttemptLinks)
+	}
+	if definition.Selection == nil || definition.Selection.AttemptID != attemptID || len(definition.Applications) != 1 {
+		t.Fatalf("selection/applications = %#v %#v", definition.Selection, definition.Applications)
 	}
 }
 

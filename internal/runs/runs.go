@@ -41,10 +41,11 @@ type capturePayload struct {
 }
 
 type attemptPayload struct {
-	RunID     primitives.RunID     `json:"run_id"`
-	AttemptID primitives.AttemptID `json:"attempt_id"`
-	SessionID primitives.SessionID `json:"session_id"`
-	TurnID    primitives.TurnID    `json:"turn_id"`
+	RunID       primitives.RunID     `json:"run_id"`
+	AttemptID   primitives.AttemptID `json:"attempt_id"`
+	SessionID   primitives.SessionID `json:"session_id"`
+	TurnID      primitives.TurnID    `json:"turn_id"`
+	CaptureKind string               `json:"capture_kind,omitempty"`
 }
 
 type finishPayload struct {
@@ -234,6 +235,17 @@ func LinkCapture(repo *checkpoint.Repo, runID primitives.RunID, kind string, ses
 }
 
 func EnsureAttempt(repo *checkpoint.Repo, runID primitives.RunID, sessionID primitives.SessionID, turnID primitives.TurnID, adapter primitives.AdapterName) (primitives.AttemptID, error) {
+	return ensureAttempt(repo, runID, sessionID, turnID, adapter, CaptureProvider)
+}
+
+// EnsureWrapperAttempt records an attempt whose durable checkpoints are
+// produced by the supervising wrapper itself. It is intended for isolated
+// executions where provider hooks cannot safely discover the source workspace.
+func EnsureWrapperAttempt(repo *checkpoint.Repo, runID primitives.RunID, sessionID primitives.SessionID, turnID primitives.TurnID, adapter primitives.AdapterName) (primitives.AttemptID, error) {
+	return ensureAttempt(repo, runID, sessionID, turnID, adapter, CaptureWrapper)
+}
+
+func ensureAttempt(repo *checkpoint.Repo, runID primitives.RunID, sessionID primitives.SessionID, turnID primitives.TurnID, adapter primitives.AdapterName, captureKind string) (primitives.AttemptID, error) {
 	unlock, err := acquireRunMutation(repo, runID)
 	if err != nil {
 		return "", err
@@ -259,14 +271,14 @@ func EnsureAttempt(repo *checkpoint.Repo, runID primitives.RunID, sessionID prim
 	if err != nil {
 		return "", err
 	}
-	providerFound := false
+	captureFound := false
 	for _, capture := range projection.Captures {
-		if capture.Kind == CaptureProvider && capture.SessionID == sessionID && capture.Adapter == adapter && capture.Provenance.StreamID == streamID {
-			providerFound = true
+		if capture.Kind == captureKind && capture.SessionID == sessionID && capture.Adapter == adapter && capture.Provenance.StreamID == streamID {
+			captureFound = true
 		}
 	}
-	if !providerFound {
-		return "", fmt.Errorf("attempt requires a matching provider capture for session %s", sessionID)
+	if !captureFound {
+		return "", fmt.Errorf("attempt requires a matching %s capture for session %s", captureKind, sessionID)
 	}
 	for _, attempt := range projection.Attempts {
 		if attempt.SessionID == sessionID && attempt.TurnID == turnID {
@@ -280,7 +292,7 @@ func EnsureAttempt(repo *checkpoint.Repo, runID primitives.RunID, sessionID prim
 	err = appendOnce(repo.EventLog(), eventlog.AppendInput{
 		SessionID: sessionID, TurnID: &turnID, Type: primitives.EventTypeRunAttemptLink, Adapter: adapter,
 		SourceID: fmt.Sprintf("run:%s:attempt:%s:%s", runID, sessionID, turnID),
-		Payload:  mustJSON(attemptPayload{RunID: runID, AttemptID: attemptID, SessionID: sessionID, TurnID: turnID}),
+		Payload:  mustJSON(attemptPayload{RunID: runID, AttemptID: attemptID, SessionID: sessionID, TurnID: turnID, CaptureKind: captureKind}),
 	})
 	return attemptID, err
 }
@@ -388,7 +400,7 @@ func Read(repo *checkpoint.Repo, runID primitives.RunID) (Projection, error) {
 	seenCaptures := map[string]bool{}
 	seenAttempts := map[string]bool{}
 	seenAttemptIDs := map[primitives.AttemptID]string{}
-	providerCaptures := map[string]Capture{}
+	captures := map[string]Capture{}
 	for _, event := range claimed {
 		if event.Type == primitives.EventTypeRunStart {
 			continue
@@ -412,9 +424,7 @@ func Read(repo *checkpoint.Repo, runID primitives.RunID) (Projection, error) {
 			capture := Capture{Kind: payload.Kind, SessionID: payload.SessionID, Adapter: payload.Adapter, Provenance: provenance(event)}
 			result.Captures = append(result.Captures, capture)
 			seenCaptures[key] = true
-			if payload.Kind == CaptureProvider {
-				providerCaptures[payload.SessionID.String()+"\x00"+event.StreamID.String()] = capture
-			}
+			captures[payload.Kind+"\x00"+payload.SessionID.String()+"\x00"+event.StreamID.String()] = capture
 		case primitives.EventTypeRunFinish:
 			var payload finishPayload
 			if err := json.Unmarshal(event.Payload, &payload); err != nil {
@@ -441,7 +451,11 @@ func Read(repo *checkpoint.Repo, runID primitives.RunID) (Projection, error) {
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
 			return Projection{}, relationshipError(event, err)
 		}
-		capture, ok := providerCaptures[payload.SessionID.String()+"\x00"+event.StreamID.String()]
+		captureKind := payload.CaptureKind
+		if captureKind == "" {
+			captureKind = CaptureProvider
+		}
+		capture, ok := captures[captureKind+"\x00"+payload.SessionID.String()+"\x00"+event.StreamID.String()]
 		if err := validateAttemptEvent(event, result, payload, capture, ok); err != nil {
 			return Projection{}, err
 		}
@@ -604,8 +618,15 @@ func validateAttemptEvent(event eventlog.Event, run Projection, payload attemptP
 	if event.TurnID == nil || payload.SessionID != event.SessionID || payload.TurnID != *event.TurnID {
 		return relationshipError(event, fmt.Errorf("attempt payload does not match its event envelope"))
 	}
-	if !captureFound || capture.Adapter != event.Adapter {
-		return relationshipError(event, fmt.Errorf("attempt has no matching provider capture"))
+	captureKind := payload.CaptureKind
+	if captureKind == "" {
+		captureKind = CaptureProvider
+	}
+	if captureKind != CaptureProvider && captureKind != CaptureWrapper {
+		return relationshipError(event, fmt.Errorf("invalid attempt capture kind %q", captureKind))
+	}
+	if !captureFound || capture.Kind != captureKind || capture.Adapter != event.Adapter {
+		return relationshipError(event, fmt.Errorf("attempt has no matching %s capture", captureKind))
 	}
 	return nil
 }

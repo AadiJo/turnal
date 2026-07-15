@@ -46,6 +46,50 @@ func TestInitCreatesHiddenBareRepo(t *testing.T) {
 	}
 }
 
+func TestForCaptureRootSnapshotsIsolatedFilesIntoOriginStore(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root.String(), "live.txt"), []byte("live\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	isolated := t.TempDir()
+	if err := os.WriteFile(filepath.Join(isolated, "result.txt"), []byte("forked\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(isolated, ".turnal"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(isolated, ".turnal", "must-not-capture"), []byte("metadata\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	view, err := repo.ForCaptureRoot(isolated)
+	if err != nil {
+		t.Fatalf("ForCaptureRoot: %v", err)
+	}
+	snapshot, err := view.CreateSnapshotRef("refs/agent-vcs/test/isolated", "isolated")
+	if err != nil {
+		t.Fatalf("CreateSnapshotRef: %v", err)
+	}
+	entries, err := repo.ListCommitTree(snapshot.Commit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Path != "result.txt" {
+		t.Fatalf("captured entries = %#v", entries)
+	}
+	if _, err := os.Stat(filepath.Join(root.String(), "result.txt")); !os.IsNotExist(err) {
+		t.Fatalf("isolated capture changed source workspace: %v", err)
+	}
+	if _, err := repo.ForCaptureRoot(repo.MetadataDir); err == nil || !strings.Contains(err.Error(), "outside Turnal metadata") {
+		t.Fatalf("metadata capture root error = %v", err)
+	}
+}
+
 func TestOpenUpgradesLegacyMetadataPermissions(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX permission bits are not enforced on Windows")
