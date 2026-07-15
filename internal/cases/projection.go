@@ -93,6 +93,7 @@ func project(streams []eventlog.DurableStream, expected Scope, attempts map[prim
 	revisions := make(map[primitives.TaskID]map[uint64]TaskRevision)
 	casesByID := make(map[primitives.CaseID]*Case)
 	var caseEvents []eventlog.Event
+	var deletionEvents []eventlog.Event
 	var attemptEvents []eventlog.Event
 	var resultEvents []eventlog.Event
 	var selectionEvents []eventlog.Event
@@ -134,6 +135,8 @@ func project(streams []eventlog.DurableStream, expected Scope, attempts map[prim
 				revisions[payload.TaskID][payload.Revision] = TaskRevision{Number: payload.Revision, Scope: payload.Scope, Instruction: payload.Instruction, Source: payload.Source, Created: provenance(event)}
 			case primitives.EventTypeCaseCreate:
 				caseEvents = append(caseEvents, event)
+			case primitives.EventTypeCaseDelete:
+				deletionEvents = append(deletionEvents, event)
 			case primitives.EventTypeCaseAttemptLink:
 				attemptEvents = append(attemptEvents, event)
 			case primitives.EventTypeCaseAttemptResult:
@@ -183,12 +186,33 @@ func project(streams []eventlog.DurableStream, expected Scope, attempts map[prim
 		}
 		casesByID[payload.CaseID] = &Case{ID: payload.CaseID, TaskID: payload.TaskID, TaskRevision: payload.TaskRevision, Scope: payload.Scope, Source: payload.Source, Readiness: payload.Readiness, Verifiers: cloneVerifiers(payload.Verifiers), Limitations: append([]string(nil), payload.Limitations...), AttemptLinks: make([]AttemptLink, 0), Created: provenance(event)}
 	}
+	deletedCases := make(map[primitives.CaseID]bool)
+	for _, event := range deletionEvents {
+		var payload caseDeletePayload
+		if err := decodeRelationship(event, &payload); err != nil {
+			return Projection{}, err
+		}
+		definition, exists := casesByID[payload.CaseID]
+		if !exists {
+			return Projection{}, relationshipError(event, fmt.Errorf("case deletion references nonexistent case %s", payload.CaseID))
+		}
+		if deletedCases[payload.CaseID] {
+			return Projection{}, relationshipError(event, fmt.Errorf("case %s has more than one deletion record", payload.CaseID))
+		}
+		if err := validateCaseMutationEnvelope(event, payload.Scope, payload.Source, *definition); err != nil {
+			return Projection{}, err
+		}
+		deletedCases[payload.CaseID] = true
+	}
 
 	seenLinks := make(map[string]bool)
 	for _, event := range attemptEvents {
 		var payload caseAttemptLinkPayload
 		if err := decodeRelationship(event, &payload); err != nil {
 			return Projection{}, err
+		}
+		if deletedCases[payload.CaseID] {
+			continue
 		}
 		definition, exists := casesByID[payload.CaseID]
 		if !exists {
@@ -221,6 +245,9 @@ func project(streams []eventlog.DurableStream, expected Scope, attempts map[prim
 		if err := decodeRelationship(event, &payload); err != nil {
 			return Projection{}, err
 		}
+		if deletedCases[payload.CaseID] {
+			continue
+		}
 		definition, link, err := linkedAttempt(casesByID, payload.CaseID, payload.AttemptID)
 		if err != nil {
 			return Projection{}, relationshipError(event, err)
@@ -238,6 +265,9 @@ func project(streams []eventlog.DurableStream, expected Scope, attempts map[prim
 		var payload caseAttemptSelectPayload
 		if err := decodeRelationship(event, &payload); err != nil {
 			return Projection{}, err
+		}
+		if deletedCases[payload.CaseID] {
+			continue
 		}
 		definition, link, err := linkedAttempt(casesByID, payload.CaseID, payload.AttemptID)
 		if err != nil {
@@ -257,6 +287,9 @@ func project(streams []eventlog.DurableStream, expected Scope, attempts map[prim
 		if err := decodeRelationship(event, &payload); err != nil {
 			return Projection{}, err
 		}
+		if deletedCases[payload.CaseID] {
+			continue
+		}
 		definition, link, err := linkedAttempt(casesByID, payload.CaseID, payload.AttemptID)
 		if err != nil {
 			return Projection{}, relationshipError(event, err)
@@ -275,6 +308,9 @@ func project(streams []eventlog.DurableStream, expected Scope, attempts map[prim
 		result.Tasks = append(result.Tasks, *task)
 	}
 	for _, definition := range casesByID {
+		if deletedCases[definition.ID] {
+			continue
+		}
 		sort.Slice(definition.AttemptLinks, func(i, j int) bool {
 			return definition.AttemptLinks[i].AttemptID < definition.AttemptLinks[j].AttemptID
 		})

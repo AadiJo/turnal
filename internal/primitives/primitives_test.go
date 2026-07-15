@@ -227,6 +227,7 @@ func TestEventType(t *testing.T) {
 		EventTypeTaskCreate,
 		EventTypeTaskRevision,
 		EventTypeCaseCreate,
+		EventTypeCaseDelete,
 		EventTypeCaseAttemptLink,
 		EventTypeCaseAttemptResult,
 		EventTypeCaseAttemptSelect,

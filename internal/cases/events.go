@@ -35,6 +35,12 @@ type caseCreatePayload struct {
 	Limitations  []string          `json:"limitations"`
 }
 
+type caseDeletePayload struct {
+	CaseID primitives.CaseID `json:"case_id"`
+	Scope  Scope             `json:"scope"`
+	Source SourceTurn        `json:"source"`
+}
+
 type caseAttemptLinkPayload struct {
 	CaseID    primitives.CaseID    `json:"case_id"`
 	Scope     Scope                `json:"scope"`

@@ -27,6 +27,55 @@ func caseCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "case", Short: "Create and inspect immutable experimental cases"}
 	cmd.AddCommand(caseCreateCmd())
 	cmd.AddCommand(caseShowCmd())
+	cmd.AddCommand(caseDeleteCmd())
+	return cmd
+}
+
+func caseDeleteCmd() *cobra.Command {
+	var dryRun bool
+	var yes bool
+	cmd := &cobra.Command{
+		Use:          "delete <case-id>",
+		Aliases:      []string{"drop"},
+		Short:        "Tombstone a case so its retained sessions can be deleted",
+		Args:         cobra.ExactArgs(1),
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			caseID, err := primitives.ParseCaseID(args[0])
+			if err != nil {
+				return err
+			}
+			if !dryRun && !yes {
+				return fmt.Errorf("case deletion is irreversible; rerun with --yes or inspect with --dry-run")
+			}
+			if dryRun {
+				repo, err := openCheckpointRepoReadOnly()
+				if err != nil {
+					return err
+				}
+				projection, err := caseengine.Rebuild(repo)
+				if err != nil {
+					return err
+				}
+				if _, ok := projection.Case(caseID); !ok {
+					return fmt.Errorf("case %s does not exist in this Turnal store", caseID)
+				}
+				_, err = fmt.Fprintf(cmd.OutOrStdout(), "would delete case %s; its source and attempt sessions would become eligible for session drop\n", caseID)
+				return err
+			}
+			repo, err := openCheckpointRepo()
+			if err != nil {
+				return err
+			}
+			if _, err := caseengine.Delete(repo, caseID); err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "deleted case %s; use turnal session drop for its retained source and attempt sessions\n", caseID)
+			return err
+		},
+	}
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Check that the Case can be deleted without writing a tombstone")
+	cmd.Flags().BoolVar(&yes, "yes", false, "Confirm irreversible Case deletion")
 	return cmd
 }
 

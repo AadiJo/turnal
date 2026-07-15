@@ -78,3 +78,36 @@ func TestCaseCreateRejectsMalformedTaskID(t *testing.T) {
 		t.Fatalf("case create error = %v", err)
 	}
 }
+
+func TestCaseDeleteRequiresConfirmationAndSupportsDryRun(t *testing.T) {
+	root, sessionID, _ := createForkReadyTurn(t, "Fix the parser", true)
+	t.Chdir(root.String())
+	createdOutput := runRootStdout(t, "case", "create", sessionID.String()+":1", "--json")
+	var created caseCreateJSON
+	if err := json.Unmarshal([]byte(createdOutput), &created); err != nil {
+		t.Fatal(err)
+	}
+
+	dryRun := runRootStdout(t, "case", "delete", created.Case.ID.String(), "--dry-run")
+	if !strings.Contains(dryRun, "would delete case") {
+		t.Fatalf("case delete dry-run = %s", dryRun)
+	}
+	if shown := runRootStdout(t, "case", "show", created.Case.ID.String()); !strings.Contains(shown, created.Case.ID.String()) {
+		t.Fatalf("dry-run removed case: %s", shown)
+	}
+
+	unconfirmed := NewRootCmd()
+	unconfirmed.SetArgs([]string{"case", "delete", created.Case.ID.String()})
+	if err := unconfirmed.Execute(); err == nil || !strings.Contains(err.Error(), "--yes") {
+		t.Fatalf("unconfirmed delete error = %v", err)
+	}
+	deleted := runRootStdout(t, "case", "delete", created.Case.ID.String(), "--yes")
+	if !strings.Contains(deleted, "deleted case") {
+		t.Fatalf("case delete = %s", deleted)
+	}
+	missing := NewRootCmd()
+	missing.SetArgs([]string{"case", "show", created.Case.ID.String()})
+	if err := missing.Execute(); err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("show deleted case error = %v", err)
+	}
+}

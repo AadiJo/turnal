@@ -170,6 +170,22 @@ func TestDropSessionRefusesCaseSourceAndAttemptExecutionHistory(t *testing.T) {
 	if _, err := repo.CheckpointCommit(result.PostRef); err != nil {
 		t.Fatalf("protected attempt ref was removed: %v", err)
 	}
+	if _, err := caseengine.Delete(repo, created.Case.ID); err != nil {
+		t.Fatalf("Delete case: %v", err)
+	}
+	if _, err := DropSession(repo, result.SessionID, false); err != nil {
+		t.Fatalf("drop attempt session after Case deletion: %v", err)
+	}
+	if _, err := DropSession(repo, source, false); err != nil {
+		t.Fatalf("drop source session after Case deletion: %v", err)
+	}
+	projection, err := caseengine.Rebuild(repo)
+	if err != nil {
+		t.Fatalf("Rebuild after linked session deletion: %v", err)
+	}
+	if len(projection.Cases) != 0 {
+		t.Fatalf("deleted Case remains after dropping linked sessions: %#v", projection.Cases)
+	}
 }
 
 func TestDropSessionSerializesWithHookCapture(t *testing.T) {

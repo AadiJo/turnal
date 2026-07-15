@@ -147,6 +147,7 @@ const (
 	EventTypeTaskCreate        EventType = "task.create"
 	EventTypeTaskRevision      EventType = "task.revision.create"
 	EventTypeCaseCreate        EventType = "case.create"
+	EventTypeCaseDelete        EventType = "case.delete"
 	EventTypeCaseAttemptLink   EventType = "case.attempt.link"
 	EventTypeCaseAttemptResult EventType = "case.attempt.result"
 	EventTypeCaseAttemptSelect EventType = "case.attempt.select"
@@ -172,6 +173,7 @@ var validEventTypes = map[EventType]struct{}{
 	EventTypeTaskCreate:        {},
 	EventTypeTaskRevision:      {},
 	EventTypeCaseCreate:        {},
+	EventTypeCaseDelete:        {},
 	EventTypeCaseAttemptLink:   {},
 	EventTypeCaseAttemptResult: {},
 	EventTypeCaseAttemptSelect: {},
