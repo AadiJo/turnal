@@ -109,6 +109,9 @@ func Execute(ctx context.Context, repo *checkpoint.Repo, request Request) (resul
 	if request.Runner == nil {
 		request.Runner = ExecRunner{}
 	}
+	if err := RecoverAbandoned(repo); err != nil {
+		return Result{}, fmt.Errorf("recover abandoned fork attempts: %w", err)
+	}
 	definition, err := currentCase(repo, request.Case.ID)
 	if err != nil {
 		return Result{}, err
@@ -127,13 +130,17 @@ func Execute(ctx context.Context, repo *checkpoint.Repo, request Request) (resul
 		return Result{}, fmt.Errorf("case base checkpoint invariant failed: ref %s points to %s, case records %s", definition.Readiness.Base.Ref, baseCommit, definition.Readiness.Base.CommitSHA)
 	}
 
-	root, err := os.MkdirTemp("", "turnal-fork-*")
+	runID, err := primitives.NewRunID()
 	if err != nil {
-		return Result{}, fmt.Errorf("create isolated fork workspace: %w", err)
+		return Result{}, err
 	}
-	if err := os.Chmod(root, 0o700); err != nil {
-		_ = os.RemoveAll(root)
-		return Result{}, fmt.Errorf("secure isolated fork workspace: %w", err)
+	sessionID, err := forkSessionID(runID)
+	if err != nil {
+		return Result{}, err
+	}
+	root, err := createManagedForkWorkspace(repo, runID)
+	if err != nil {
+		return Result{}, err
 	}
 	cleanup := true
 	defer func() {
@@ -155,14 +162,6 @@ func Execute(ctx context.Context, repo *checkpoint.Repo, request Request) (resul
 		return Result{}, err
 	}
 
-	runID, err := primitives.NewRunID()
-	if err != nil {
-		return Result{}, err
-	}
-	sessionID, err := forkSessionID(runID)
-	if err != nil {
-		return Result{}, err
-	}
 	result = Result{CaseID: definition.ID, RunID: runID, SessionID: sessionID, BaseRef: definition.Readiness.Base.Ref, BaseCommit: baseCommit, Workspace: root, WorkspaceKept: request.Keep}
 	if !request.Keep {
 		result.Workspace = ""
@@ -210,7 +209,7 @@ func Execute(ctx context.Context, repo *checkpoint.Repo, request Request) (resul
 		return result, err
 	}
 	result.AttemptID = attemptID
-	if _, err := cases.LinkAttempt(repo, cases.LinkAttemptRequest{CaseID: definition.ID, RunID: runID, AttemptID: attemptID, Command: request.Command}); err != nil {
+	if _, err := cases.LinkAttempt(repo, cases.LinkAttemptRequest{CaseID: definition.ID, RunID: runID, AttemptID: attemptID, Command: request.Command, Workspace: root, Keep: request.Keep}); err != nil {
 		return result, err
 	}
 
@@ -286,14 +285,11 @@ func verifyAttempt(ctx context.Context, repo *checkpoint.Repo, definition cases.
 		}
 		definitions = append(definitions, config.Verifier{Name: snapshot.Name, Command: snapshot.Command, Args: append([]string(nil), snapshot.Args...), Timeout: timeout})
 	}
-	root, err := os.MkdirTemp("", "turnal-fork-verify-*")
+	root, err := createManagedVerificationWorkspace(repo, attemptID)
 	if err != nil {
-		return nil, fmt.Errorf("create attempt verification workspace: %w", err)
+		return nil, err
 	}
 	defer os.RemoveAll(root)
-	if err := os.Chmod(root, 0o700); err != nil {
-		return nil, fmt.Errorf("secure attempt verification workspace: %w", err)
-	}
 	if err := repo.MaterializeCommit(post.Commit, root, checkpoint.MaterializeOptions{ApplyCurrentSecretDenyGlobs: true}); err != nil {
 		return nil, fmt.Errorf("materialize attempt verification checkpoint: %w", err)
 	}

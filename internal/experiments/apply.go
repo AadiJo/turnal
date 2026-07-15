@@ -32,6 +32,9 @@ func Apply(repo *checkpoint.Repo, request ApplyRequest) (ApplyResult, error) {
 	if repo == nil {
 		return ApplyResult{}, fmt.Errorf("apply requires checkpoint repo")
 	}
+	if err := RecoverAbandoned(repo); err != nil {
+		return ApplyResult{}, fmt.Errorf("recover abandoned fork attempts: %w", err)
+	}
 	var result ApplyResult
 	err := repo.WithWorkspaceLock("apply case attempt", func() error {
 		projection, err := cases.Rebuild(repo)
@@ -59,7 +62,7 @@ func Apply(repo *checkpoint.Repo, request ApplyRequest) (ApplyResult, error) {
 		if link == nil {
 			return fmt.Errorf("attempt %s is not linked to case %s", attemptID, definition.ID)
 		}
-		if link.Result == nil {
+		if link.Result == nil || link.Result.PostRef == "" || link.Result.PostCommit == "" {
 			return fmt.Errorf("attempt %s has no completed result", attemptID)
 		}
 		baseCommit, err := repo.CheckpointCommit(definition.Readiness.Base.Ref)

@@ -16,6 +16,7 @@ import (
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/runs"
 	"github.com/AadiJo/turnal/internal/turnevents"
 	"github.com/AadiJo/turnal/internal/turns"
 )
@@ -266,6 +267,75 @@ func TestExecRunnerScrubsInheritedGitEnvironment(t *testing.T) {
 	}
 	if string(data) != "unset|unset|"+root {
 		t.Fatalf("child environment = %q", data)
+	}
+}
+
+func TestRecoverAbandonedTerminalizesAttemptAndRemovesManagedWorkspace(t *testing.T) {
+	repo, definition := experimentCase(t)
+	runID, err := primitives.NewRunID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID, err := forkSessionID(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := runs.Begin(repo, runID, sessionID, []string{"runner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runs.LinkCapture(repo, runID, runs.CaptureWrapper, sessionID, primitives.AdapterCodex); err != nil {
+		release()
+		t.Fatal(err)
+	}
+	gitSync := false
+	recorder := turnevents.Recorder{Log: repo.EventLog(), Manager: turns.NewManager(repo), Adapter: primitives.AdapterCodex}
+	recorder.Manager.GitSyncEnabled = &gitSync
+	started, err := recorder.Start(sessionID, 1)
+	if err != nil {
+		release()
+		t.Fatal(err)
+	}
+	attemptID, err := runs.EnsureWrapperAttempt(repo, runID, sessionID, started.TurnID, primitives.AdapterCodex)
+	if err != nil {
+		release()
+		t.Fatal(err)
+	}
+	workspace, err := createManagedForkWorkspace(repo, runID)
+	if err != nil {
+		release()
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "leaked.txt"), []byte("temporary\n"), 0o600); err != nil {
+		release()
+		t.Fatal(err)
+	}
+	if _, err := cases.LinkAttempt(repo, cases.LinkAttemptRequest{CaseID: definition.ID, RunID: runID, AttemptID: attemptID, Command: []string{"runner"}, Workspace: workspace}); err != nil {
+		release()
+		t.Fatal(err)
+	}
+	release()
+
+	if err := RecoverAbandoned(repo); err != nil {
+		t.Fatalf("RecoverAbandoned: %v", err)
+	}
+	if _, err := os.Stat(workspace); !os.IsNotExist(err) {
+		t.Fatalf("abandoned workspace remains: %v", err)
+	}
+	projection, err := cases.Rebuild(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := projection.Case(definition.ID)
+	if len(updated.AttemptLinks) != 1 || updated.AttemptLinks[0].Result == nil || updated.AttemptLinks[0].Result.Status != cases.AttemptStatusIncomplete || updated.AttemptLinks[0].Result.PostRef != "" {
+		t.Fatalf("recovered attempt = %#v", updated.AttemptLinks)
+	}
+	comparison, err := Compare(repo, definition.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(comparison.Attempts) != 1 || comparison.Attempts[0].Status != cases.AttemptStatusIncomplete || comparison.Attempts[0].PostRef != "" {
+		t.Fatalf("recovered comparison = %#v", comparison.Attempts)
 	}
 }
 

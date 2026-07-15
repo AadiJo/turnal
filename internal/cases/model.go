@@ -67,6 +67,8 @@ type AttemptLink struct {
 	Source    SourceTurn           `json:"source"`
 	Execution SourceTurn           `json:"execution"`
 	Command   []string             `json:"command,omitempty"`
+	Workspace string               `json:"workspace,omitempty"`
+	Keep      bool                 `json:"keep_workspace"`
 	Result    *AttemptResult       `json:"result,omitempty"`
 	Created   Provenance           `json:"created"`
 }

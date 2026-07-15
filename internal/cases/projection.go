@@ -3,6 +3,7 @@ package cases
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"time"
 
@@ -61,7 +62,7 @@ func validateProjectionRefs(repo *checkpoint.Repo, projection Projection) error 
 			return fmt.Errorf("case %s base ref integrity failed: %s points to %s, recorded %s", definition.ID, definition.Readiness.Base.Ref, base, definition.Readiness.Base.CommitSHA)
 		}
 		for _, attempt := range definition.AttemptLinks {
-			if attempt.Result == nil {
+			if attempt.Result == nil || attempt.Result.PostRef == "" {
 				continue
 			}
 			post, err := repo.CheckpointCommit(attempt.Result.PostRef)
@@ -236,7 +237,7 @@ func project(streams []eventlog.DurableStream, expected Scope, attempts map[prim
 		if execution.SessionID == "" {
 			execution = payload.Source
 		}
-		definition.AttemptLinks = append(definition.AttemptLinks, AttemptLink{AttemptID: payload.AttemptID, RunID: payload.RunID, Source: payload.Source, Execution: execution, Command: append([]string(nil), payload.Command...), Created: provenance(event)})
+		definition.AttemptLinks = append(definition.AttemptLinks, AttemptLink{AttemptID: payload.AttemptID, RunID: payload.RunID, Source: payload.Source, Execution: execution, Command: append([]string(nil), payload.Command...), Workspace: payload.Workspace, Keep: payload.Keep, Created: provenance(event)})
 		seenLinks[key] = true
 	}
 
@@ -258,7 +259,12 @@ func project(streams []eventlog.DurableStream, expected Scope, attempts map[prim
 		if err := validateAttemptResult(event, payload, *definition, *link); err != nil {
 			return Projection{}, err
 		}
-		link.Result = &AttemptResult{PostRef: payload.PostRef, PostCommit: payload.PostCommit, Status: payload.Status, ExitCode: cloneInt(payload.ExitCode), Error: payload.Error, Verification: payload.Verification, Completed: provenance(event)}
+		result := &AttemptResult{Status: payload.Status, ExitCode: cloneInt(payload.ExitCode), Error: payload.Error, Verification: payload.Verification, Completed: provenance(event)}
+		if payload.PostRef != nil {
+			result.PostRef = *payload.PostRef
+			result.PostCommit = *payload.PostCommit
+		}
+		link.Result = result
 	}
 
 	for _, event := range selectionEvents {
@@ -439,6 +445,12 @@ func validateAttemptLink(event eventlog.Event, payload caseAttemptLinkPayload, d
 	if payload.RunID != attempt.RunID || execution != attempt.Source || payload.Source != definition.Source {
 		return relationshipError(event, fmt.Errorf("attempt %s does not match its run execution or case source", payload.AttemptID))
 	}
+	if payload.Workspace != "" && (!filepath.IsAbs(payload.Workspace) || filepath.Clean(payload.Workspace) != payload.Workspace) {
+		return relationshipError(event, fmt.Errorf("attempt %s workspace must be a clean absolute path", payload.AttemptID))
+	}
+	if payload.Keep && payload.Workspace == "" {
+		return relationshipError(event, fmt.Errorf("attempt %s cannot keep an unrecorded workspace", payload.AttemptID))
+	}
 	if err := validateEnvelope(event, payload.Scope, payload.Source); err != nil {
 		return relationshipError(event, err)
 	}
@@ -461,6 +473,15 @@ func validateAttemptResultPayload(payload caseAttemptResultPayload, definition C
 	}
 	if payload.Status != AttemptStatusSucceeded && payload.Status != AttemptStatusFailed && payload.Status != AttemptStatusIncomplete {
 		return fmt.Errorf("invalid attempt result status %q", payload.Status)
+	}
+	if payload.PostRef == nil || payload.PostCommit == nil {
+		if payload.PostRef != nil || payload.PostCommit != nil {
+			return fmt.Errorf("attempt result checkpoint ref and commit must both be present or absent")
+		}
+		if payload.Status != AttemptStatusIncomplete || payload.ExitCode != nil || payload.Verification != nil {
+			return fmt.Errorf("only an incomplete attempt without exit or verification data may omit its result checkpoint")
+		}
+		return nil
 	}
 	if _, err := primitives.ParseCommitSHA(payload.PostCommit.String()); err != nil {
 		return fmt.Errorf("attempt result commit: %w", err)

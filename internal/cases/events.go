@@ -49,20 +49,22 @@ type caseAttemptLinkPayload struct {
 	Source    SourceTurn           `json:"source"`
 	Execution *SourceTurn          `json:"execution,omitempty"`
 	Command   []string             `json:"command,omitempty"`
+	Workspace string               `json:"workspace,omitempty"`
+	Keep      bool                 `json:"keep_workspace"`
 }
 
 type caseAttemptResultPayload struct {
-	CaseID       primitives.CaseID        `json:"case_id"`
-	Scope        Scope                    `json:"scope"`
-	RunID        primitives.RunID         `json:"run_id"`
-	AttemptID    primitives.AttemptID     `json:"attempt_id"`
-	Source       SourceTurn               `json:"source"`
-	PostRef      primitives.CheckpointRef `json:"post_ref"`
-	PostCommit   primitives.CommitSHA     `json:"post_commit"`
-	Status       string                   `json:"status"`
-	ExitCode     *int                     `json:"exit_code,omitempty"`
-	Error        string                   `json:"error,omitempty"`
-	Verification *verifier.Report         `json:"verification,omitempty"`
+	CaseID       primitives.CaseID         `json:"case_id"`
+	Scope        Scope                     `json:"scope"`
+	RunID        primitives.RunID          `json:"run_id"`
+	AttemptID    primitives.AttemptID      `json:"attempt_id"`
+	Source       SourceTurn                `json:"source"`
+	PostRef      *primitives.CheckpointRef `json:"post_ref,omitempty"`
+	PostCommit   *primitives.CommitSHA     `json:"post_commit,omitempty"`
+	Status       string                    `json:"status"`
+	ExitCode     *int                      `json:"exit_code,omitempty"`
+	Error        string                    `json:"error,omitempty"`
+	Verification *verifier.Report          `json:"verification,omitempty"`
 }
 
 type caseAttemptSelectPayload struct {

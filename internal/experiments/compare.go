@@ -48,6 +48,9 @@ func Compare(repo *checkpoint.Repo, caseID primitives.CaseID, patchAttempt primi
 	if repo == nil {
 		return Comparison{}, fmt.Errorf("compare requires checkpoint repo")
 	}
+	if err := RecoverAbandoned(repo); err != nil {
+		return Comparison{}, fmt.Errorf("recover abandoned fork attempts: %w", err)
+	}
 	projection, err := cases.Rebuild(repo)
 	if err != nil {
 		return Comparison{}, err
@@ -77,6 +80,10 @@ func Compare(repo *checkpoint.Repo, caseID primitives.CaseID, patchAttempt primi
 				attempt.VerificationOutcome = link.Result.Verification.Summary.Outcome
 				attempt.ChecksPassed = link.Result.Verification.Summary.Passed
 				attempt.ChecksFailed = link.Result.Verification.Summary.Failed + link.Result.Verification.Summary.TimedOut + link.Result.Verification.Summary.LaunchError + link.Result.Verification.Summary.InfrastructureErrors
+			}
+			if link.Result.PostRef == "" {
+				comparison.Attempts = append(comparison.Attempts, attempt)
+				continue
 			}
 			commit, err := repo.CheckpointCommit(link.Result.PostRef)
 			if err != nil {

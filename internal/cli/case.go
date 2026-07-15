@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	caseengine "github.com/AadiJo/turnal/internal/cases"
+	experimentengine "github.com/AadiJo/turnal/internal/experiments"
 	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/spf13/cobra"
 )
@@ -67,6 +68,9 @@ func caseDeleteCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := experimentengine.RecoverAbandoned(repo); err != nil {
+				return fmt.Errorf("recover abandoned fork attempts: %w", err)
+			}
 			if _, err := caseengine.Delete(repo, caseID); err != nil {
 				return err
 			}
@@ -103,6 +107,9 @@ func caseCreateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := experimentengine.RecoverAbandoned(repo); err != nil {
+				return fmt.Errorf("recover abandoned fork attempts: %w", err)
+			}
 			created, err := caseengine.Create(repo, caseengine.CreateRequest{SessionID: sessionID, TurnID: turnID, TaskID: taskID})
 			if err != nil {
 				return err
@@ -138,9 +145,12 @@ func caseShowCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			repo, err := openCheckpointRepoReadOnly()
+			repo, err := openCheckpointRepo()
 			if err != nil {
 				return err
+			}
+			if err := experimentengine.RecoverAbandoned(repo); err != nil {
+				return fmt.Errorf("recover abandoned fork attempts: %w", err)
 			}
 			projection, err := caseengine.Rebuild(repo)
 			if err != nil {

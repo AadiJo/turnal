@@ -14,6 +14,8 @@ type LinkAttemptRequest struct {
 	RunID     primitives.RunID
 	AttemptID primitives.AttemptID
 	Command   []string
+	Workspace string
+	Keep      bool
 }
 
 type RecordAttemptResultRequest struct {
@@ -72,7 +74,7 @@ func LinkAttempt(repo *checkpoint.Repo, request LinkAttemptRequest) (AttemptLink
 			return fmt.Errorf("attempt %s does not belong to run %s", request.AttemptID, request.RunID)
 		}
 		scope := Scope{RepoID: repo.RepoID, StoreID: repo.StoreID, WorktreeID: repo.WorktreeID}
-		payload := caseAttemptLinkPayload{CaseID: definition.ID, Scope: scope, RunID: request.RunID, AttemptID: request.AttemptID, Source: definition.Source, Execution: &execution, Command: append([]string(nil), request.Command...)}
+		payload := caseAttemptLinkPayload{CaseID: definition.ID, Scope: scope, RunID: request.RunID, AttemptID: request.AttemptID, Source: definition.Source, Execution: &execution, Command: append([]string(nil), request.Command...), Workspace: request.Workspace, Keep: request.Keep}
 		if _, err := appendRecord(repo, definition.Source, caseAdapter(definition), primitives.EventTypeCaseAttemptLink, fmt.Sprintf("case:%s:attempt:%s", definition.ID, request.AttemptID), payload); err != nil {
 			return err
 		}
@@ -116,16 +118,24 @@ func RecordAttemptResult(repo *checkpoint.Repo, request RecordAttemptResultReque
 			result = *link.Result
 			return nil
 		}
-		payload := caseAttemptResultPayload{CaseID: definition.ID, Scope: definition.Scope, RunID: request.RunID, AttemptID: request.AttemptID, Source: definition.Source, PostRef: request.PostRef, PostCommit: request.PostCommit, Status: request.Status, ExitCode: cloneInt(request.ExitCode), Error: request.Error, Verification: request.Verification}
+		payload := caseAttemptResultPayload{CaseID: definition.ID, Scope: definition.Scope, RunID: request.RunID, AttemptID: request.AttemptID, Source: definition.Source, Status: request.Status, ExitCode: cloneInt(request.ExitCode), Error: request.Error, Verification: request.Verification}
+		if request.PostRef != "" || request.PostCommit != "" {
+			postRef := request.PostRef
+			postCommit := request.PostCommit
+			payload.PostRef = &postRef
+			payload.PostCommit = &postCommit
+		}
 		if err := validateAttemptResultPayload(payload, definition, link); err != nil {
 			return err
 		}
-		commit, err := repo.CheckpointCommit(request.PostRef)
-		if err != nil {
-			return fmt.Errorf("resolve attempt post checkpoint: %w", err)
-		}
-		if commit != request.PostCommit {
-			return fmt.Errorf("attempt post ref %s points to %s, result records %s", request.PostRef, commit, request.PostCommit)
+		if request.PostRef != "" {
+			commit, err := repo.CheckpointCommit(request.PostRef)
+			if err != nil {
+				return fmt.Errorf("resolve attempt post checkpoint: %w", err)
+			}
+			if commit != request.PostCommit {
+				return fmt.Errorf("attempt post ref %s points to %s, result records %s", request.PostRef, commit, request.PostCommit)
+			}
 		}
 		if _, err := appendRecord(repo, definition.Source, caseAdapter(definition), primitives.EventTypeCaseAttemptResult, fmt.Sprintf("case:%s:attempt:%s:result", definition.ID, request.AttemptID), payload); err != nil {
 			return err
@@ -158,7 +168,7 @@ func SelectAttempt(repo *checkpoint.Repo, caseID primitives.CaseID, attemptID pr
 		if err != nil {
 			return err
 		}
-		if link.Result == nil {
+		if link.Result == nil || link.Result.PostRef == "" || link.Result.PostCommit == "" {
 			return fmt.Errorf("attempt %s has no completed result", attemptID)
 		}
 		payload := caseAttemptSelectPayload{CaseID: caseID, Scope: definition.Scope, AttemptID: attemptID, Source: definition.Source}
@@ -173,6 +183,40 @@ func SelectAttempt(repo *checkpoint.Repo, caseID primitives.CaseID, attemptID pr
 		return nil
 	})
 	return selected, err
+}
+
+// ReconcileAbandonedAttempts terminalizes Case links whose durable Run has
+// already been recovered as incomplete.
+func ReconcileAbandonedAttempts(repo *checkpoint.Repo) error {
+	if repo == nil {
+		return nil
+	}
+	projection, err := Rebuild(repo)
+	if err != nil {
+		return err
+	}
+	for _, definition := range projection.Cases {
+		for _, link := range definition.AttemptLinks {
+			if link.Result != nil {
+				continue
+			}
+			run, err := runs.Read(repo, link.RunID)
+			if err != nil {
+				return fmt.Errorf("inspect Case attempt %s run during recovery: %w", link.AttemptID, err)
+			}
+			if run.Status == runs.StatusRunning {
+				continue
+			}
+			message := "attempt abandoned before its result checkpoint was captured"
+			if run.Error != "" {
+				message += ": " + run.Error
+			}
+			if _, err := RecordAttemptResult(repo, RecordAttemptResultRequest{CaseID: definition.ID, RunID: link.RunID, AttemptID: link.AttemptID, Status: AttemptStatusIncomplete, Error: message}); err != nil {
+				return fmt.Errorf("terminalize abandoned Case attempt %s: %w", link.AttemptID, err)
+			}
+		}
+	}
+	return nil
 }
 
 func RecordApply(repo *checkpoint.Repo, request RecordApplyRequest) (AttemptApplication, error) {

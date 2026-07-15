@@ -32,7 +32,7 @@ func compareCmd() *cobra.Command {
 					return err
 				}
 			}
-			repo, err := openCheckpointRepoReadOnly()
+			repo, err := openCheckpointRepo()
 			if err != nil {
 				return err
 			}
@@ -72,6 +72,9 @@ func selectCmd() *cobra.Command {
 			repo, err := openCheckpointRepo()
 			if err != nil {
 				return err
+			}
+			if err := experimentengine.RecoverAbandoned(repo); err != nil {
+				return fmt.Errorf("recover abandoned fork attempts: %w", err)
 			}
 			definition, err := caseengine.SelectAttempt(repo, caseID, attemptID)
 			if err != nil {
