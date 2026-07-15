@@ -180,9 +180,23 @@ func writeCase(writer io.Writer, definition caseengine.Case) error {
 			return err
 		}
 		for _, link := range definition.AttemptLinks {
-			if _, err := fmt.Fprintf(writer, "  - %s (run %s)\n", link.AttemptID, link.RunID); err != nil {
+			status := caseengine.AttemptStatusRunning
+			if link.Result != nil {
+				status = link.Result.Status
+			}
+			if _, err := fmt.Fprintf(writer, "  - %s (run %s, %s)\n", link.AttemptID, link.RunID, status); err != nil {
 				return err
 			}
+			if link.Result != nil && link.Result.Verification != nil {
+				if _, err := fmt.Fprintf(writer, "    verification: %s\n", link.Result.Verification.Summary.Outcome); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if definition.Selection != nil {
+		if _, err := fmt.Fprintf(writer, "selected:       %s\n", definition.Selection.AttemptID); err != nil {
+			return err
 		}
 	}
 	if len(definition.Limitations) > 0 {

@@ -190,7 +190,7 @@ func project(streams []eventlog.DurableStream, expected Scope, attempts map[prim
 		if err := validateAttemptResult(event, payload, *definition, *link); err != nil {
 			return Projection{}, err
 		}
-		link.Result = &AttemptResult{PostRef: payload.PostRef, PostCommit: payload.PostCommit, Status: payload.Status, ExitCode: cloneInt(payload.ExitCode), Error: payload.Error, Completed: provenance(event)}
+		link.Result = &AttemptResult{PostRef: payload.PostRef, PostCommit: payload.PostCommit, Status: payload.Status, ExitCode: cloneInt(payload.ExitCode), Error: payload.Error, Verification: payload.Verification, Completed: provenance(event)}
 	}
 
 	for _, event := range selectionEvents {
@@ -399,6 +399,14 @@ func validateAttemptResult(event eventlog.Event, payload caseAttemptResultPayloa
 	}
 	if payload.Status == AttemptStatusSucceeded && payload.ExitCode != nil && *payload.ExitCode != 0 {
 		return relationshipError(event, fmt.Errorf("successful attempt has nonzero exit code %d", *payload.ExitCode))
+	}
+	if payload.Verification != nil {
+		if payload.Verification.SchemaVersion != verifierengine.SchemaVersion {
+			return relationshipError(event, fmt.Errorf("unsupported verification schema version %d", payload.Verification.SchemaVersion))
+		}
+		if payload.Verification.Target.Commit != payload.PostCommit.String() {
+			return relationshipError(event, fmt.Errorf("verification target does not match attempt result commit"))
+		}
 	}
 	return nil
 }

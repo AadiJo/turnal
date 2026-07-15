@@ -112,6 +112,11 @@ func writeComparison(writer io.Writer, comparison experimentengine.Comparison) e
 		if _, err := fmt.Fprintln(writer); err != nil {
 			return err
 		}
+		if attempt.VerificationOutcome != "" {
+			if _, err := fmt.Fprintf(writer, "  verification: %s (%d passed, %d failed)\n", attempt.VerificationOutcome, attempt.ChecksPassed, attempt.ChecksFailed); err != nil {
+				return err
+			}
+		}
 		for _, file := range attempt.Files {
 			if file.Binary {
 				if _, err := fmt.Fprintf(writer, "    binary  %s\n", file.Path); err != nil {

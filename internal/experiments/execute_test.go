@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -210,6 +211,43 @@ func TestApplyRejectsDivergedWorkspaceBeforeCreatingSafetyState(t *testing.T) {
 	}
 }
 
+func TestExecuteRunsFrozenCaseVerifiersAgainstPostCheckpoint(t *testing.T) {
+	t.Setenv("TURNAL_FORK_VERIFY_EXPECT", "verified result\n")
+	verifierConfig := fmt.Sprintf("version = 1\n[[verify]]\nname = \"result-content\"\ncommand = %q\nargs = [\"-test.run=^TestForkVerifierHelper$\"]\ntimeout = \"10s\"\n", os.Args[0])
+	repo, definition := experimentCaseWithConfig(t, verifierConfig)
+	result, err := Execute(context.Background(), repo, Request{Case: definition, Command: []string{"runner"}, Runner: runnerFunc(func(_ context.Context, root string, _ []string, _ []string) (int, error) {
+		return 0, os.WriteFile(filepath.Join(root, "app.txt"), []byte("verified result\n"), 0o644)
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Verification == nil || !result.Verification.Successful() || result.Verification.Summary.Passed != 1 {
+		t.Fatalf("verification = %#v", result.Verification)
+	}
+	projection, err := cases.Rebuild(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := projection.Case(definition.ID)
+	if updated.AttemptLinks[0].Result.Verification == nil || updated.AttemptLinks[0].Result.Verification.Target.Commit != result.PostCommit.String() {
+		t.Fatalf("durable verification = %#v", updated.AttemptLinks[0].Result.Verification)
+	}
+}
+
+func TestForkVerifierHelper(t *testing.T) {
+	want := os.Getenv("TURNAL_FORK_VERIFY_EXPECT")
+	if want == "" {
+		return
+	}
+	data, err := os.ReadFile("app.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != want {
+		t.Fatalf("verified app.txt = %q, want %q", data, want)
+	}
+}
+
 func TestExecRunnerScrubsInheritedGitEnvironment(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh required")
@@ -231,6 +269,10 @@ func TestExecRunnerScrubsInheritedGitEnvironment(t *testing.T) {
 }
 
 func experimentCase(t *testing.T) (*checkpoint.Repo, cases.Case) {
+	return experimentCaseWithConfig(t, "")
+}
+
+func experimentCaseWithConfig(t *testing.T, workspaceConfig string) (*checkpoint.Repo, cases.Case) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git required")
@@ -239,6 +281,11 @@ func experimentCase(t *testing.T) (*checkpoint.Repo, cases.Case) {
 	repo, err := checkpoint.Init(root)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if workspaceConfig != "" {
+		if err := os.WriteFile(filepath.Join(repo.MetadataDir, "config.toml"), []byte(workspaceConfig), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := os.WriteFile(filepath.Join(root.String(), "app.txt"), []byte("before\n"), 0o644); err != nil {
 		t.Fatal(err)

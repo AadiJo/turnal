@@ -212,6 +212,11 @@ func writeForkExecution(writer io.Writer, result experimentengine.Result, caseCr
 			return err
 		}
 	}
+	if result.Verification != nil {
+		if _, err := fmt.Fprintf(writer, "verification:   %s (%d passed, %d failed)\n", result.Verification.Summary.Outcome, result.Verification.Summary.Passed, result.Verification.Summary.Failed+result.Verification.Summary.TimedOut+result.Verification.Summary.LaunchError+result.Verification.Summary.InfrastructureErrors); err != nil {
+			return err
+		}
+	}
 	if result.WorkspaceKept {
 		_, err := fmt.Fprintf(writer, "workspace:      %s (kept)\n", result.Workspace)
 		return err

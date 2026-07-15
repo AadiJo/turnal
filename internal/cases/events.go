@@ -3,6 +3,7 @@ package cases
 import (
 	"github.com/AadiJo/turnal/internal/fork"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/verifier"
 )
 
 type taskCreatePayload struct {
@@ -45,16 +46,17 @@ type caseAttemptLinkPayload struct {
 }
 
 type caseAttemptResultPayload struct {
-	CaseID     primitives.CaseID        `json:"case_id"`
-	Scope      Scope                    `json:"scope"`
-	RunID      primitives.RunID         `json:"run_id"`
-	AttemptID  primitives.AttemptID     `json:"attempt_id"`
-	Source     SourceTurn               `json:"source"`
-	PostRef    primitives.CheckpointRef `json:"post_ref"`
-	PostCommit primitives.CommitSHA     `json:"post_commit"`
-	Status     string                   `json:"status"`
-	ExitCode   *int                     `json:"exit_code,omitempty"`
-	Error      string                   `json:"error,omitempty"`
+	CaseID       primitives.CaseID        `json:"case_id"`
+	Scope        Scope                    `json:"scope"`
+	RunID        primitives.RunID         `json:"run_id"`
+	AttemptID    primitives.AttemptID     `json:"attempt_id"`
+	Source       SourceTurn               `json:"source"`
+	PostRef      primitives.CheckpointRef `json:"post_ref"`
+	PostCommit   primitives.CommitSHA     `json:"post_commit"`
+	Status       string                   `json:"status"`
+	ExitCode     *int                     `json:"exit_code,omitempty"`
+	Error        string                   `json:"error,omitempty"`
+	Verification *verifier.Report         `json:"verification,omitempty"`
 }
 
 type caseAttemptSelectPayload struct {

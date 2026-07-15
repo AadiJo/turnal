@@ -18,19 +18,22 @@ type FileStat struct {
 }
 
 type AttemptComparison struct {
-	AttemptID   primitives.AttemptID     `json:"attempt_id"`
-	RunID       primitives.RunID         `json:"run_id"`
-	Status      string                   `json:"status"`
-	ExitCode    *int                     `json:"exit_code,omitempty"`
-	PostRef     primitives.CheckpointRef `json:"post_ref,omitempty"`
-	PostCommit  primitives.CommitSHA     `json:"post_commit,omitempty"`
-	Selected    bool                     `json:"selected"`
-	Command     []string                 `json:"command,omitempty"`
-	Files       []FileStat               `json:"files,omitempty"`
-	Additions   int                      `json:"additions"`
-	Deletions   int                      `json:"deletions"`
-	BinaryFiles int                      `json:"binary_files"`
-	Patch       string                   `json:"patch,omitempty"`
+	AttemptID           primitives.AttemptID     `json:"attempt_id"`
+	RunID               primitives.RunID         `json:"run_id"`
+	Status              string                   `json:"status"`
+	ExitCode            *int                     `json:"exit_code,omitempty"`
+	PostRef             primitives.CheckpointRef `json:"post_ref,omitempty"`
+	PostCommit          primitives.CommitSHA     `json:"post_commit,omitempty"`
+	Selected            bool                     `json:"selected"`
+	Command             []string                 `json:"command,omitempty"`
+	Files               []FileStat               `json:"files,omitempty"`
+	Additions           int                      `json:"additions"`
+	Deletions           int                      `json:"deletions"`
+	BinaryFiles         int                      `json:"binary_files"`
+	VerificationOutcome string                   `json:"verification_outcome,omitempty"`
+	ChecksPassed        int                      `json:"checks_passed,omitempty"`
+	ChecksFailed        int                      `json:"checks_failed,omitempty"`
+	Patch               string                   `json:"patch,omitempty"`
 }
 
 type Comparison struct {
@@ -70,6 +73,11 @@ func Compare(repo *checkpoint.Repo, caseID primitives.CaseID, patchAttempt primi
 			attempt.ExitCode = cloneInt(link.Result.ExitCode)
 			attempt.PostRef = link.Result.PostRef
 			attempt.PostCommit = link.Result.PostCommit
+			if link.Result.Verification != nil {
+				attempt.VerificationOutcome = link.Result.Verification.Summary.Outcome
+				attempt.ChecksPassed = link.Result.Verification.Summary.Passed
+				attempt.ChecksFailed = link.Result.Verification.Summary.Failed + link.Result.Verification.Summary.TimedOut + link.Result.Verification.Summary.LaunchError + link.Result.Verification.Summary.InfrastructureErrors
+			}
 			commit, err := repo.CheckpointCommit(link.Result.PostRef)
 			if err != nil {
 				return Comparison{}, fmt.Errorf("resolve attempt %s result checkpoint: %w", link.AttemptID, err)

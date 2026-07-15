@@ -6,6 +6,7 @@ import (
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/AadiJo/turnal/internal/runs"
+	"github.com/AadiJo/turnal/internal/verifier"
 )
 
 type LinkAttemptRequest struct {
@@ -16,14 +17,15 @@ type LinkAttemptRequest struct {
 }
 
 type RecordAttemptResultRequest struct {
-	CaseID     primitives.CaseID
-	RunID      primitives.RunID
-	AttemptID  primitives.AttemptID
-	PostRef    primitives.CheckpointRef
-	PostCommit primitives.CommitSHA
-	Status     string
-	ExitCode   *int
-	Error      string
+	CaseID       primitives.CaseID
+	RunID        primitives.RunID
+	AttemptID    primitives.AttemptID
+	PostRef      primitives.CheckpointRef
+	PostCommit   primitives.CommitSHA
+	Status       string
+	ExitCode     *int
+	Error        string
+	Verification *verifier.Report
 }
 
 type RecordApplyRequest struct {
@@ -121,7 +123,7 @@ func RecordAttemptResult(repo *checkpoint.Repo, request RecordAttemptResultReque
 		if commit != request.PostCommit {
 			return fmt.Errorf("attempt post ref %s points to %s, result records %s", request.PostRef, commit, request.PostCommit)
 		}
-		payload := caseAttemptResultPayload{CaseID: definition.ID, Scope: definition.Scope, RunID: request.RunID, AttemptID: request.AttemptID, Source: definition.Source, PostRef: request.PostRef, PostCommit: request.PostCommit, Status: request.Status, ExitCode: cloneInt(request.ExitCode), Error: request.Error}
+		payload := caseAttemptResultPayload{CaseID: definition.ID, Scope: definition.Scope, RunID: request.RunID, AttemptID: request.AttemptID, Source: definition.Source, PostRef: request.PostRef, PostCommit: request.PostCommit, Status: request.Status, ExitCode: cloneInt(request.ExitCode), Error: request.Error, Verification: request.Verification}
 		if _, err := appendRecord(repo, definition.Source, caseAdapter(definition), primitives.EventTypeCaseAttemptResult, fmt.Sprintf("case:%s:attempt:%s:result", definition.ID, request.AttemptID), payload); err != nil {
 			return err
 		}

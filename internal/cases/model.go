@@ -7,6 +7,7 @@ import (
 
 	"github.com/AadiJo/turnal/internal/fork"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/verifier"
 )
 
 const JSONVersion = 1
@@ -71,12 +72,13 @@ type AttemptLink struct {
 }
 
 type AttemptResult struct {
-	PostRef    primitives.CheckpointRef `json:"post_ref"`
-	PostCommit primitives.CommitSHA     `json:"post_commit"`
-	Status     string                   `json:"status"`
-	ExitCode   *int                     `json:"exit_code,omitempty"`
-	Error      string                   `json:"error,omitempty"`
-	Completed  Provenance               `json:"completed"`
+	PostRef      primitives.CheckpointRef `json:"post_ref"`
+	PostCommit   primitives.CommitSHA     `json:"post_commit"`
+	Status       string                   `json:"status"`
+	ExitCode     *int                     `json:"exit_code,omitempty"`
+	Error        string                   `json:"error,omitempty"`
+	Verification *verifier.Report         `json:"verification,omitempty"`
+	Completed    Provenance               `json:"completed"`
 }
 
 type AttemptSelection struct {

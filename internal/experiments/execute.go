@@ -11,15 +11,18 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/AadiJo/turnal/internal/adapters"
 	"github.com/AadiJo/turnal/internal/cases"
 	"github.com/AadiJo/turnal/internal/checkpoint"
+	"github.com/AadiJo/turnal/internal/config"
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/AadiJo/turnal/internal/runs"
 	"github.com/AadiJo/turnal/internal/turnevents"
 	"github.com/AadiJo/turnal/internal/turns"
+	"github.com/AadiJo/turnal/internal/verifier"
 )
 
 const (
@@ -51,6 +54,7 @@ type Result struct {
 	Status        string                   `json:"status"`
 	ExitCode      *int                     `json:"exit_code,omitempty"`
 	Error         string                   `json:"error,omitempty"`
+	Verification  *verifier.Report         `json:"verification,omitempty"`
 	Workspace     string                   `json:"workspace,omitempty"`
 	WorkspaceKept bool                     `json:"workspace_kept"`
 }
@@ -234,8 +238,17 @@ func Execute(ctx context.Context, repo *checkpoint.Repo, request Request) (resul
 		return result, errors.Join(commandErr, fmt.Errorf("capture fork result checkpoint: %w", finishErr))
 	}
 	result.PostRef, result.PostCommit = finished.Post.Ref, finished.Post.Commit
+	verification, verificationErr := verifyAttempt(ctx, repo, definition, attemptID, finished.Post)
+	if verification != nil {
+		result.Verification = verification
+	}
+	if verificationErr != nil {
+		status = cases.AttemptStatusIncomplete
+		durableError = verificationErr.Error()
+		commandErr = errors.Join(commandErr, verificationErr)
+	}
 	result.Status, result.ExitCode, result.Error = status, cloneInt(durableExitCode), durableError
-	if _, err := cases.RecordAttemptResult(repo, cases.RecordAttemptResultRequest{CaseID: definition.ID, RunID: runID, AttemptID: attemptID, PostRef: finished.Post.Ref, PostCommit: finished.Post.Commit, Status: status, ExitCode: durableExitCode, Error: durableError}); err != nil {
+	if _, err := cases.RecordAttemptResult(repo, cases.RecordAttemptResultRequest{CaseID: definition.ID, RunID: runID, AttemptID: attemptID, PostRef: finished.Post.Ref, PostCommit: finished.Post.Commit, Status: status, ExitCode: durableExitCode, Error: durableError, Verification: verification}); err != nil {
 		return result, err
 	}
 	runStatus := runs.StatusSucceeded
@@ -255,6 +268,51 @@ func Execute(ctx context.Context, repo *checkpoint.Repo, request Request) (resul
 		return result, commandErr
 	}
 	return result, nil
+}
+
+func verifyAttempt(ctx context.Context, repo *checkpoint.Repo, definition cases.Case, attemptID primitives.AttemptID, post checkpoint.Checkpoint) (*verifier.Report, error) {
+	if len(definition.Verifiers) == 0 {
+		return nil, nil
+	}
+	definitions := make([]config.Verifier, 0, len(definition.Verifiers))
+	for _, snapshot := range definition.Verifiers {
+		timeout, err := time.ParseDuration(snapshot.Timeout)
+		if err != nil {
+			return nil, fmt.Errorf("case verifier %q timeout: %w", snapshot.Name, err)
+		}
+		definitions = append(definitions, config.Verifier{Name: snapshot.Name, Command: snapshot.Command, Args: append([]string(nil), snapshot.Args...), Timeout: timeout})
+	}
+	root, err := os.MkdirTemp("", "turnal-fork-verify-*")
+	if err != nil {
+		return nil, fmt.Errorf("create attempt verification workspace: %w", err)
+	}
+	defer os.RemoveAll(root)
+	if err := os.Chmod(root, 0o700); err != nil {
+		return nil, fmt.Errorf("secure attempt verification workspace: %w", err)
+	}
+	if err := repo.MaterializeCommit(post.Commit, root, checkpoint.MaterializeOptions{ApplyCurrentSecretDenyGlobs: true}); err != nil {
+		return nil, fmt.Errorf("materialize attempt verification checkpoint: %w", err)
+	}
+	parts, err := post.Ref.Parts()
+	if err != nil {
+		return nil, fmt.Errorf("parse attempt verification checkpoint ref: %w", err)
+	}
+	report, err := verifier.Run(ctx, verifier.Request{
+		Root: root,
+		Target: verifier.Target{
+			Kind: verifier.TargetCheckpoint, Display: attemptID.String(), WorktreeID: repo.WorktreeID.String(),
+			SessionID: parts.SessionID.String(), Turn: parts.TurnID.Uint64(), Phase: primitives.CheckpointPhasePost.String(),
+			CheckpointRef: post.Ref.String(), Commit: post.Commit.String(), Mutable: false, Reproducible: false,
+			Environment: "isolated historical checkpoint with the Case's frozen verifier contract",
+			Limitations: append([]string(nil), definition.Limitations...),
+		},
+		Verifiers:   definitions,
+		Environment: forkEnvironment(os.Environ(), root, nil),
+	})
+	if err != nil {
+		return &report, fmt.Errorf("verify attempt %s: %w", attemptID, err)
+	}
+	return &report, nil
 }
 
 func currentCase(repo *checkpoint.Repo, caseID primitives.CaseID) (cases.Case, error) {
@@ -297,7 +355,9 @@ func forkEnvironment(existing []string, root string, values []string) []string {
 			replacements[environmentKey(name)] = name + "=" + value
 		}
 	}
-	replacements[environmentKey(runs.EnvRunID)] = runs.EnvRunID + "=" + strings.TrimPrefix(replacements[environmentKey(EnvRunID)], EnvRunID+"=")
+	if forkRun, ok := replacements[environmentKey(EnvRunID)]; ok {
+		replacements[environmentKey(runs.EnvRunID)] = runs.EnvRunID + "=" + strings.TrimPrefix(forkRun, EnvRunID+"=")
+	}
 	replacements[environmentKey("PWD")] = "PWD=" + root
 	result := make([]string, 0, len(existing)+len(replacements))
 	for _, entry := range existing {
