@@ -46,6 +46,32 @@ func TestDarwinForkGateObservesFastExit(t *testing.T) {
 	}
 }
 
+func TestDarwinForkGateDefersBashStartupEnvironment(t *testing.T) {
+	root := t.TempDir()
+	hook := filepath.Join(root, "bash-env.sh")
+	if err := os.WriteFile(hook, []byte("printf x >> bash-env-runs.txt\nset -e\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	environment := append(os.Environ(),
+		"BASH_ENV="+hook,
+		"ENV="+hook,
+		"SHELLOPTS=braceexpand:errexit:hashall:interactive-comments",
+	)
+	runner := ExecRunner{Env: environment}
+	code, err := runner.Run(context.Background(), root, []string{"/bin/bash", "--noprofile", "--norc", "-c", `case $- in *e*) ;; *) exit 12;; esac; printf target > target.txt`}, nil)
+	if err != nil || code != 0 {
+		t.Fatalf("Run = %d, %v", code, err)
+	}
+	runs, err := os.ReadFile(filepath.Join(root, "bash-env-runs.txt"))
+	if err != nil || string(runs) != "x" {
+		t.Fatalf("BASH_ENV runs = %q, %v, want one target-process run", runs, err)
+	}
+	target, err := os.ReadFile(filepath.Join(root, "target.txt"))
+	if err != nil || string(target) != "target" {
+		t.Fatalf("target output = %q, %v", target, err)
+	}
+}
+
 func TestValidateDarwinForkExitRejectsRegistrationError(t *testing.T) {
 	_, err := validateDarwinForkExit(unix.Kevent_t{Flags: unix.EV_ERROR, Data: int64(unix.ESRCH)}, 42)
 	if err == nil {
