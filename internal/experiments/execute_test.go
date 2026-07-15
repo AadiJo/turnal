@@ -139,6 +139,77 @@ func TestCompareUsesImmutableCaseBaseAndIncludesRequestedPatch(t *testing.T) {
 	}
 }
 
+func TestApplyPreviewsThenRestoresSelectedAttemptWithSafetyCheckpoint(t *testing.T) {
+	repo, definition := experimentCase(t)
+	result, err := Execute(context.Background(), repo, Request{Case: definition, Command: []string{"runner"}, Runner: runnerFunc(func(_ context.Context, root string, _ []string, _ []string) (int, error) {
+		return 0, os.WriteFile(filepath.Join(root, "app.txt"), []byte("applied result\n"), 0o644)
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cases.SelectAttempt(repo, definition.ID, result.AttemptID); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := Apply(repo, ApplyRequest{CaseID: definition.ID, DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !preview.DryRun || len(preview.Changes) != 1 || preview.SafetyRef != "" {
+		t.Fatalf("preview = %#v", preview)
+	}
+	data, _ := os.ReadFile(filepath.Join(repo.WorkspaceRoot.String(), "app.txt"))
+	if string(data) != "before\n" {
+		t.Fatalf("dry-run changed workspace: %q", data)
+	}
+	applied, err := Apply(repo, ApplyRequest{CaseID: definition.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied.DryRun || applied.SafetyRef == "" || applied.SafetyCommit == "" {
+		t.Fatalf("applied result = %#v", applied)
+	}
+	data, _ = os.ReadFile(filepath.Join(repo.WorkspaceRoot.String(), "app.txt"))
+	if string(data) != "applied result\n" {
+		t.Fatalf("applied workspace = %q", data)
+	}
+	safetyData, exists, err := repo.CommitFileBytesIfExists(applied.SafetyCommit, "app.txt")
+	if err != nil || !exists || string(safetyData) != "before\n" {
+		t.Fatalf("apply safety = %q %t %v", safetyData, exists, err)
+	}
+	projection, err := cases.Rebuild(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := projection.Case(definition.ID)
+	if len(updated.Applications) != 1 || updated.Applications[0].AttemptID != result.AttemptID {
+		t.Fatalf("applications = %#v", updated.Applications)
+	}
+}
+
+func TestApplyRejectsDivergedWorkspaceBeforeCreatingSafetyState(t *testing.T) {
+	repo, definition := experimentCase(t)
+	result, err := Execute(context.Background(), repo, Request{Case: definition, Command: []string{"runner"}, Runner: runnerFunc(func(_ context.Context, root string, _ []string, _ []string) (int, error) {
+		return 0, os.WriteFile(filepath.Join(root, "app.txt"), []byte("candidate\n"), 0o644)
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo.WorkspaceRoot.String(), "app.txt"), []byte("unrelated live work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Apply(repo, ApplyRequest{CaseID: definition.ID, AttemptID: result.AttemptID}); err == nil || !strings.Contains(err.Error(), "exact-base only") {
+		t.Fatalf("diverged apply error = %v", err)
+	}
+	projection, err := cases.Rebuild(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := projection.Case(definition.ID)
+	if updated.Selection != nil || len(updated.Applications) != 0 {
+		t.Fatalf("rejected apply wrote case decisions: %#v %#v", updated.Selection, updated.Applications)
+	}
+}
+
 func TestExecRunnerScrubsInheritedGitEnvironment(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh required")

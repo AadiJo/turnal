@@ -157,6 +157,25 @@ func TestForkExecutesIsolatedAttemptAndCreatesReusableCase(t *testing.T) {
 			t.Fatalf("comparison output missing %q:\n%s", want, comparisonOutput)
 		}
 	}
+	if err := repo.RestoreCommit(projection.Cases[0].Readiness.Base.CommitSHA); err != nil {
+		t.Fatal(err)
+	}
+	previewOutput := runRootStdout(t, "apply", projection.Cases[0].ID.String(), "--dry-run")
+	if !strings.Contains(previewOutput, "apply preview") || !strings.Contains(previewOutput, "changes: 1") {
+		t.Fatalf("apply preview = %s", previewOutput)
+	}
+	data, _ = os.ReadFile(filepath.Join(root.String(), "app.txt"))
+	if string(data) != "before\n" {
+		t.Fatalf("apply preview changed workspace: %q", data)
+	}
+	applyOutput := runRootStdout(t, "apply", projection.Cases[0].ID.String())
+	if !strings.Contains(applyOutput, "applied:") || !strings.Contains(applyOutput, "safety ref:") {
+		t.Fatalf("apply output = %s", applyOutput)
+	}
+	data, _ = os.ReadFile(filepath.Join(root.String(), "app.txt"))
+	if string(data) != "forked\n" {
+		t.Fatalf("applied workspace = %q", data)
+	}
 }
 
 func TestPrepareForkExecutionCommandReplaysCapturedInstructionForBareCodex(t *testing.T) {

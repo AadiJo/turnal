@@ -49,6 +49,7 @@ func NewRootCmd() *cobra.Command {
 	rootCmd.AddCommand(forkCmd())
 	rootCmd.AddCommand(compareCmd())
 	rootCmd.AddCommand(selectCmd())
+	rootCmd.AddCommand(applyCmd())
 	rootCmd.AddCommand(caseCmd())
 	rootCmd.AddCommand(taskCmd())
 	rootCmd.AddCommand(verifyCmd())
