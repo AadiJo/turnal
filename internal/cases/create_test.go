@@ -21,6 +21,7 @@ import (
 	"github.com/AadiJo/turnal/internal/runs"
 	"github.com/AadiJo/turnal/internal/turnevents"
 	"github.com/AadiJo/turnal/internal/turns"
+	"github.com/AadiJo/turnal/internal/verifier"
 )
 
 func TestCreateNewTaskAndSiblingCaseFromRecordedTurns(t *testing.T) {
@@ -164,6 +165,23 @@ func TestAttemptLifecycleRecordsExecutionResultSelectionAndApply(t *testing.T) {
 		t.Fatal(err)
 	}
 	zero := 0
+	beforeInvalidResults := durableCaseEventCount(t, repo)
+	invalidResults := []RecordAttemptResultRequest{
+		{CaseID: created.Case.ID, RunID: runID, AttemptID: attemptID, PostRef: finished.Post.Ref, PostCommit: finished.Post.Commit, Status: "unknown"},
+		{CaseID: created.Case.ID, RunID: runID, AttemptID: attemptID, PostRef: created.Case.Readiness.Base.Ref, PostCommit: created.Case.Readiness.Base.CommitSHA, Status: AttemptStatusSucceeded},
+		{CaseID: created.Case.ID, RunID: runID, AttemptID: attemptID, PostRef: finished.Post.Ref, PostCommit: finished.Post.Commit, Status: AttemptStatusSucceeded, Verification: &verifier.Report{SchemaVersion: 999, Target: verifier.Target{Commit: finished.Post.Commit.String()}}},
+	}
+	for _, invalid := range invalidResults {
+		if _, err := RecordAttemptResult(repo, invalid); err == nil {
+			t.Fatalf("RecordAttemptResult accepted invalid request %#v", invalid)
+		}
+		if got := durableCaseEventCount(t, repo); got != beforeInvalidResults {
+			t.Fatalf("invalid result appended an event: before=%d after=%d", beforeInvalidResults, got)
+		}
+		if _, err := Rebuild(repo); err != nil {
+			t.Fatalf("invalid result poisoned projection: %v", err)
+		}
+	}
 	if _, err := RecordAttemptResult(repo, RecordAttemptResultRequest{CaseID: created.Case.ID, RunID: runID, AttemptID: attemptID, PostRef: finished.Post.Ref, PostCommit: finished.Post.Commit, Status: AttemptStatusSucceeded, ExitCode: &zero}); err != nil {
 		t.Fatal(err)
 	}
@@ -176,6 +194,16 @@ func TestAttemptLifecycleRecordsExecutionResultSelectionAndApply(t *testing.T) {
 	safety, err := repo.CreateSnapshotRef("refs/agent-vcs/test/apply-safety", "safety")
 	if err != nil {
 		t.Fatal(err)
+	}
+	beforeInvalidApply := durableCaseEventCount(t, repo)
+	if _, err := RecordApply(repo, RecordApplyRequest{CaseID: created.Case.ID, AttemptID: attemptID, PostCommit: finished.Post.Commit, SafetyRef: safety.Ref, SafetyCommit: created.Case.Readiness.Base.CommitSHA, Changes: 1}); err == nil {
+		t.Fatal("RecordApply accepted mismatched safety ref metadata")
+	}
+	if got := durableCaseEventCount(t, repo); got != beforeInvalidApply {
+		t.Fatalf("invalid apply appended an event: before=%d after=%d", beforeInvalidApply, got)
+	}
+	if _, err := Rebuild(repo); err != nil {
+		t.Fatalf("invalid apply poisoned projection: %v", err)
 	}
 	if _, err := RecordApply(repo, RecordApplyRequest{CaseID: created.Case.ID, AttemptID: attemptID, PostCommit: finished.Post.Commit, SafetyRef: safety.Ref, SafetyCommit: safety.Commit, Changes: 1}); err != nil {
 		t.Fatal(err)
@@ -192,6 +220,19 @@ func TestAttemptLifecycleRecordsExecutionResultSelectionAndApply(t *testing.T) {
 	if definition.Selection == nil || definition.Selection.AttemptID != attemptID || len(definition.Applications) != 1 {
 		t.Fatalf("selection/applications = %#v %#v", definition.Selection, definition.Applications)
 	}
+}
+
+func durableCaseEventCount(t *testing.T, repo *checkpoint.Repo) int {
+	t.Helper()
+	streams, err := eventlog.ListDurableStreams(repo.MetadataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	total := 0
+	for _, stream := range streams {
+		total += len(stream.Events)
+	}
+	return total
 }
 
 func TestRebuildRejectsMovedAttemptResultRef(t *testing.T) {

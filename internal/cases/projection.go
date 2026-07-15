@@ -264,17 +264,8 @@ func project(streams []eventlog.DurableStream, expected Scope, attempts map[prim
 		if err := validateCaseMutationEnvelope(event, payload.Scope, payload.Source, *definition); err != nil {
 			return Projection{}, err
 		}
-		if definition.Selection == nil || definition.Selection.AttemptID != payload.AttemptID {
-			return Projection{}, relationshipError(event, fmt.Errorf("attempt %s was applied without being selected", payload.AttemptID))
-		}
-		if link.Result == nil || link.Result.PostCommit != payload.PostCommit {
-			return Projection{}, relationshipError(event, fmt.Errorf("applied commit does not match attempt %s result", payload.AttemptID))
-		}
-		if _, err := primitives.ParseCommitSHA(payload.SafetyCommit.String()); err != nil {
-			return Projection{}, relationshipError(event, fmt.Errorf("apply safety commit: %w", err))
-		}
-		if payload.SafetyRef == "" || payload.Changes < 0 {
-			return Projection{}, relationshipError(event, fmt.Errorf("attempt application is missing valid safety metadata"))
+		if err := validateAttemptApplyPayload(payload, *definition, *link); err != nil {
+			return Projection{}, relationshipError(event, err)
 		}
 		definition.Applications = append(definition.Applications, AttemptApplication{AttemptID: payload.AttemptID, PostCommit: payload.PostCommit, SafetyRef: payload.SafetyRef, SafetyCommit: payload.SafetyCommit, Changes: payload.Changes, Applied: provenance(event)})
 	}
@@ -419,35 +410,61 @@ func validateAttemptLink(event eventlog.Event, payload caseAttemptLinkPayload, d
 }
 
 func validateAttemptResult(event eventlog.Event, payload caseAttemptResultPayload, definition Case, link AttemptLink) error {
-	if payload.Scope != definition.Scope || payload.RunID != link.RunID || payload.Source != definition.Source {
-		return relationshipError(event, fmt.Errorf("attempt %s result does not match its case link", payload.AttemptID))
-	}
 	if err := validateEnvelope(event, payload.Scope, payload.Source); err != nil {
 		return relationshipError(event, err)
 	}
+	if err := validateAttemptResultPayload(payload, definition, link); err != nil {
+		return relationshipError(event, err)
+	}
+	return nil
+}
+
+func validateAttemptResultPayload(payload caseAttemptResultPayload, definition Case, link AttemptLink) error {
+	if payload.Scope != definition.Scope || payload.RunID != link.RunID || payload.Source != definition.Source {
+		return fmt.Errorf("attempt %s result does not match its case link", payload.AttemptID)
+	}
 	if payload.Status != AttemptStatusSucceeded && payload.Status != AttemptStatusFailed && payload.Status != AttemptStatusIncomplete {
-		return relationshipError(event, fmt.Errorf("invalid attempt result status %q", payload.Status))
+		return fmt.Errorf("invalid attempt result status %q", payload.Status)
 	}
 	if _, err := primitives.ParseCommitSHA(payload.PostCommit.String()); err != nil {
-		return relationshipError(event, fmt.Errorf("attempt result commit: %w", err))
+		return fmt.Errorf("attempt result commit: %w", err)
 	}
 	parts, err := payload.PostRef.Parts()
 	if err != nil {
-		return relationshipError(event, fmt.Errorf("attempt result ref: %w", err))
+		return fmt.Errorf("attempt result ref: %w", err)
 	}
 	if !parts.HasPhase || parts.SessionID != link.Execution.SessionID || parts.TurnID != link.Execution.TurnID || parts.Phase != primitives.CheckpointPhasePost {
-		return relationshipError(event, fmt.Errorf("attempt result ref does not match execution checkpoint"))
+		return fmt.Errorf("attempt result ref does not match execution checkpoint")
 	}
 	if payload.Status == AttemptStatusSucceeded && payload.ExitCode != nil && *payload.ExitCode != 0 {
-		return relationshipError(event, fmt.Errorf("successful attempt has nonzero exit code %d", *payload.ExitCode))
+		return fmt.Errorf("successful attempt has nonzero exit code %d", *payload.ExitCode)
 	}
 	if payload.Verification != nil {
 		if payload.Verification.SchemaVersion != verifierengine.SchemaVersion {
-			return relationshipError(event, fmt.Errorf("unsupported verification schema version %d", payload.Verification.SchemaVersion))
+			return fmt.Errorf("unsupported verification schema version %d", payload.Verification.SchemaVersion)
 		}
 		if payload.Verification.Target.Commit != payload.PostCommit.String() {
-			return relationshipError(event, fmt.Errorf("verification target does not match attempt result commit"))
+			return fmt.Errorf("verification target does not match attempt result commit")
 		}
+	}
+	return nil
+}
+
+func validateAttemptApplyPayload(payload caseAttemptApplyPayload, definition Case, link AttemptLink) error {
+	if payload.Scope != definition.Scope || payload.Source != definition.Source {
+		return fmt.Errorf("case mutation does not match immutable case scope or source")
+	}
+	if definition.Selection == nil || definition.Selection.AttemptID != payload.AttemptID {
+		return fmt.Errorf("attempt %s was applied without being selected", payload.AttemptID)
+	}
+	if link.Result == nil || link.Result.PostCommit != payload.PostCommit {
+		return fmt.Errorf("applied commit does not match attempt %s result", payload.AttemptID)
+	}
+	if _, err := primitives.ParseCommitSHA(payload.SafetyCommit.String()); err != nil {
+		return fmt.Errorf("apply safety commit: %w", err)
+	}
+	if payload.SafetyRef == "" || payload.Changes < 0 {
+		return fmt.Errorf("attempt application is missing valid safety metadata")
 	}
 	return nil
 }

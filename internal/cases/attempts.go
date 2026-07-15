@@ -116,6 +116,10 @@ func RecordAttemptResult(repo *checkpoint.Repo, request RecordAttemptResultReque
 			result = *link.Result
 			return nil
 		}
+		payload := caseAttemptResultPayload{CaseID: definition.ID, Scope: definition.Scope, RunID: request.RunID, AttemptID: request.AttemptID, Source: definition.Source, PostRef: request.PostRef, PostCommit: request.PostCommit, Status: request.Status, ExitCode: cloneInt(request.ExitCode), Error: request.Error, Verification: request.Verification}
+		if err := validateAttemptResultPayload(payload, definition, link); err != nil {
+			return err
+		}
 		commit, err := repo.CheckpointCommit(request.PostRef)
 		if err != nil {
 			return fmt.Errorf("resolve attempt post checkpoint: %w", err)
@@ -123,7 +127,6 @@ func RecordAttemptResult(repo *checkpoint.Repo, request RecordAttemptResultReque
 		if commit != request.PostCommit {
 			return fmt.Errorf("attempt post ref %s points to %s, result records %s", request.PostRef, commit, request.PostCommit)
 		}
-		payload := caseAttemptResultPayload{CaseID: definition.ID, Scope: definition.Scope, RunID: request.RunID, AttemptID: request.AttemptID, Source: definition.Source, PostRef: request.PostRef, PostCommit: request.PostCommit, Status: request.Status, ExitCode: cloneInt(request.ExitCode), Error: request.Error, Verification: request.Verification}
 		if _, err := appendRecord(repo, definition.Source, caseAdapter(definition), primitives.EventTypeCaseAttemptResult, fmt.Sprintf("case:%s:attempt:%s:result", definition.ID, request.AttemptID), payload); err != nil {
 			return err
 		}
@@ -186,13 +189,17 @@ func RecordApply(repo *checkpoint.Repo, request RecordApplyRequest) (AttemptAppl
 		if err != nil {
 			return err
 		}
-		if definition.Selection == nil || definition.Selection.AttemptID != request.AttemptID {
-			return fmt.Errorf("attempt %s must be selected before it can be applied", request.AttemptID)
-		}
-		if link.Result == nil || link.Result.PostCommit != request.PostCommit {
-			return fmt.Errorf("attempt %s result does not match applied commit", request.AttemptID)
-		}
 		payload := caseAttemptApplyPayload{CaseID: request.CaseID, Scope: definition.Scope, AttemptID: request.AttemptID, Source: definition.Source, PostCommit: request.PostCommit, SafetyRef: request.SafetyRef, SafetyCommit: request.SafetyCommit, Changes: request.Changes}
+		if err := validateAttemptApplyPayload(payload, definition, link); err != nil {
+			return err
+		}
+		safetyCommit, err := repo.RefCommit(request.SafetyRef)
+		if err != nil {
+			return fmt.Errorf("resolve attempt application safety ref: %w", err)
+		}
+		if safetyCommit != request.SafetyCommit {
+			return fmt.Errorf("attempt application safety ref %s points to %s, application records %s", request.SafetyRef, safetyCommit, request.SafetyCommit)
+		}
 		if _, err := appendRecord(repo, definition.Source, caseAdapter(definition), primitives.EventTypeCaseAttemptApply, "", payload); err != nil {
 			return err
 		}
