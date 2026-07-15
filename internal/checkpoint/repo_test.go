@@ -252,6 +252,42 @@ func TestWorkspaceLockExcludesConcurrentGoroutines(t *testing.T) {
 	}
 }
 
+func TestWorkspaceLockTimesOutOnInProcessContention(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	repo.LockTimeout = 50 * time.Millisecond
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- repo.WithWorkspaceLock("holder", func() error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	<-entered
+	started := time.Now()
+	err = repo.WithWorkspaceLock("contender", func() error {
+		t.Fatal("contender entered while workspace lock was held")
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "workspace lock busy") {
+		t.Fatalf("contender error = %v, want workspace lock busy", err)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("in-process lock timeout took %s, want bounded wait", elapsed)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("holder lock: %v", err)
+	}
+}
+
 func TestCreateCheckpointSnapshotsWorktreeAndExcludesMetadata(t *testing.T) {
 	requireGit(t)
 

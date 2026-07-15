@@ -20,7 +20,7 @@ var workspaceLocks = struct {
 }
 
 type workspaceLock struct {
-	gate  sync.Mutex
+	gate  chan struct{}
 	users int
 }
 
@@ -52,38 +52,56 @@ func (repo *Repo) acquireWorkspaceLock(operation string) (func(), error) {
 	workspaceLocks.Lock()
 	held, ok := workspaceLocks.held[lockDir]
 	if !ok {
-		held = &workspaceLock{}
+		held = &workspaceLock{gate: make(chan struct{}, 1)}
+		held.gate <- struct{}{}
 		workspaceLocks.held[lockDir] = held
 	}
 	held.users++
 	workspaceLocks.Unlock()
-	held.gate.Lock()
-
 	timeout := repo.LockTimeout
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	lock, err := filelock.Acquire(lockDir, timeout)
-	if err != nil {
-		held.gate.Unlock()
+	deadline := time.Now().Add(timeout)
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-held.gate:
+	case <-timer.C:
 		releaseWorkspaceLockEntry(lockDir, held)
-		if errors.Is(err, filelock.ErrBusy) {
-			err = fmt.Errorf("workspace lock busy: %s", repo.MetadataDir)
-		}
-		if operation == "" {
-			return nil, err
-		}
-		return nil, fmt.Errorf("%s: %w", operation, err)
+		return nil, workspaceLockError(repo, operation, filelock.ErrBusy)
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		held.gate <- struct{}{}
+		releaseWorkspaceLockEntry(lockDir, held)
+		return nil, workspaceLockError(repo, operation, filelock.ErrBusy)
+	}
+	lock, err := filelock.Acquire(lockDir, remaining)
+	if err != nil {
+		held.gate <- struct{}{}
+		releaseWorkspaceLockEntry(lockDir, held)
+		return nil, workspaceLockError(repo, operation, err)
 	}
 
 	var once sync.Once
 	return func() {
 		once.Do(func() {
 			_ = lock.Release()
-			held.gate.Unlock()
+			held.gate <- struct{}{}
 			releaseWorkspaceLockEntry(lockDir, held)
 		})
 	}, nil
+}
+
+func workspaceLockError(repo *Repo, operation string, err error) error {
+	if errors.Is(err, filelock.ErrBusy) {
+		err = fmt.Errorf("workspace lock busy: %s", repo.MetadataDir)
+	}
+	if operation == "" {
+		return err
+	}
+	return fmt.Errorf("%s: %w", operation, err)
 }
 
 func releaseWorkspaceLockEntry(lockDir string, held *workspaceLock) {
