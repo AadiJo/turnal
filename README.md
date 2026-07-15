@@ -59,12 +59,15 @@ The first-party VS Code extension is under [`apps/vscode`](apps/vscode). It prov
 From the root of the project you want to record:
 
 ```sh
-turnal init
+turnal init --agent all
 turnal status
 turnal status --probe-agent-capture
 ```
 
-`turnal init` creates a `.turnal/` store, adds `.turnal/` to `.gitignore`, and configures hooks according to the `--agent` selection. The default `auto` mode detects Claude Code and Codex, falling back to configuring both when neither is discoverable. Initialization does not change your existing `.git/`.
+`turnal init --agent all` creates a `.turnal/` store, adds `.turnal/` to `.gitignore`, and configures hooks for all supported agents. Initialization does not change your existing `.git/`.
+
+> [!IMPORTANT]
+> **Trust the workspace hooks before using your agent.** For Codex, launch the Codex CLI in this workspace first and approve the Turnal hooks there before using Codex through another surface, such as the desktop app; those surfaces may not show the hook-trust prompt. For Claude Code, trust the workspace when prompted—no separate hook approval is needed.
 
 Normal status is offline. The explicit capture probe starts Codex app-server only long enough to call `hooks/list`; it does not start a thread or turn, invoke a model, modify workspace files, or change provider trust or configuration. Codex may still update its own local cache and runtime state while app-server starts. The probe also explains the Claude Agent SDK limitation that only the host knows whether it loads project settings.
 

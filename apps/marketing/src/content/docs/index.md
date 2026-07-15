@@ -44,18 +44,20 @@ Turnal preserves the installed release channel during upgrades. Use `turnal upgr
 
 ## Quickstart
 
-Initialize Turnal at the directory you consider the workspace root. Auto mode detects installed Claude Code and Codex configurations; when neither is detectable, it prepares both integrations.
+Initialize Turnal at the directory you consider the workspace root. The `--agent all` selection prepares every supported agent integration.
 
 ```sh
 npm install -g @aadijo/turnal
 cd path/to/your/project
-turnal init
+turnal init --agent all
 turnal status
 
 # Use Claude Code or Codex normally, then inspect the recording.
 turnal sessions
 turnal log --transcript
 ```
+
+> **Trust the workspace hooks before using your agent.** For Codex, launch the Codex CLI in this workspace first and approve the Turnal hooks there before using Codex through another surface, such as the desktop app; those surfaces may not show the hook-trust prompt. For Claude Code, trust the workspace when prompted—no separate hook approval is needed.
 
 1. **Initialize storage.** Turnal creates or attaches `.turnal/`, ensures workspace Git exists by default, and adds the store to `.gitignore`.
 2. **Install agent hooks.** Existing non-Turnal hooks are preserved. Invalid supported config files are moved aside with a `.backup` suffix before replacement.
