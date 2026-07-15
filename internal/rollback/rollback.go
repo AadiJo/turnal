@@ -112,6 +112,10 @@ type Journal struct {
 	Changes            []checkpoint.RestoreChange `json:"changes"`
 	GitChanges         *WorkspaceGitChanges       `json:"git_changes,omitempty"`
 	CaseApplication    *ApplicationMetadata       `json:"case_application,omitempty"`
+	RepoID             primitives.RepoID          `json:"repo_id,omitempty"`
+	StoreID            primitives.StoreID         `json:"store_id,omitempty"`
+	WorktreeID         primitives.WorktreeID      `json:"worktree_id,omitempty"`
+	WorkspaceRoot      string                     `json:"workspace_root,omitempty"`
 }
 
 type WorkspaceGitChanges struct {
@@ -163,12 +167,28 @@ func New(repo *checkpoint.Repo) Engine {
 }
 
 func JournalPath(repo *checkpoint.Repo) string {
+	return filepath.Join(repo.TmpDir, "rollback-journal-"+repo.WorktreeID.String()+".json")
+}
+
+func legacyJournalPath(repo *checkpoint.Repo) string {
 	return filepath.Join(repo.TmpDir, journalFileName)
+}
+
+func rejectLegacyJournal(repo *checkpoint.Repo) error {
+	if _, err := os.Stat(legacyJournalPath(repo)); err == nil {
+		return fmt.Errorf("legacy unscoped rollback journal requires manual inspection at %s; refusing to guess its worktree owner", legacyJournalPath(repo))
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 func InspectJournal(repo *checkpoint.Repo) []string {
 	if repo == nil {
 		return nil
+	}
+	if err := rejectLegacyJournal(repo); err != nil {
+		return []string{err.Error()}
 	}
 	path := JournalPath(repo)
 	journal, ok, err := readJournal(path)
@@ -194,6 +214,9 @@ func RecoveryStatus(repo *checkpoint.Repo) (Journal, bool, error) {
 	if repo == nil {
 		return Journal{}, false, fmt.Errorf("recovery repo is required")
 	}
+	if err := rejectLegacyJournal(repo); err != nil {
+		return Journal{}, false, err
+	}
 	return readJournal(JournalPath(repo))
 }
 
@@ -204,6 +227,9 @@ func (engine Engine) ResumeRecovery() error {
 	if engine.Repo == nil {
 		return fmt.Errorf("recovery repo is required")
 	}
+	if err := rejectLegacyJournal(engine.Repo); err != nil {
+		return err
+	}
 	return engine.Repo.WithWorkspaceLock("resume rollback recovery", func() error {
 		path := JournalPath(engine.Repo)
 		journal, ok, err := readJournal(path)
@@ -212,6 +238,9 @@ func (engine Engine) ResumeRecovery() error {
 		}
 		if !ok {
 			return fmt.Errorf("no rollback recovery journal exists")
+		}
+		if err := validateJournalOwner(engine.Repo, journal); err != nil {
+			return err
 		}
 		switch journal.phase() {
 		case "intent":
@@ -281,6 +310,9 @@ func (engine Engine) RestoreSafety() error {
 	if engine.Repo == nil {
 		return fmt.Errorf("recovery repo is required")
 	}
+	if err := rejectLegacyJournal(engine.Repo); err != nil {
+		return err
+	}
 	return engine.Repo.WithWorkspaceLock("restore rollback safety", func() error {
 		path := JournalPath(engine.Repo)
 		journal, ok, err := readJournal(path)
@@ -289,6 +321,9 @@ func (engine Engine) RestoreSafety() error {
 		}
 		if !ok {
 			return fmt.Errorf("no rollback recovery journal exists")
+		}
+		if err := validateJournalOwner(engine.Repo, journal); err != nil {
+			return err
 		}
 		if journal.SafetyRef == "" || journal.SafetyCommitSHA == "" {
 			return fmt.Errorf("rollback journal has no safety snapshot; target restore had not started")
@@ -466,6 +501,7 @@ func (engine Engine) runCheckpointUnlocked(request Request) (Result, error) {
 		Manual:          target.Manual,
 		Changes:         plan.Changes,
 		CaseApplication: cloneApplicationMetadata(request.Application),
+		RepoID:          engine.Repo.RepoID, StoreID: engine.Repo.StoreID, WorktreeID: engine.Repo.WorktreeID, WorkspaceRoot: engine.Repo.WorkspaceRoot.String(),
 	}
 	if err := writeJournal(JournalPath(engine.Repo), journal); err != nil {
 		return result, fmt.Errorf("write rollback journal: %w", err)
@@ -573,6 +609,7 @@ func (engine Engine) runWorkspaceGitUnlocked(request Request) (Result, error) {
 		TargetCommitSHA: target.Commit.String(),
 		GitSyncRef:      gitSyncRef,
 		GitChanges:      workspaceGitChangesFromPlan(gitPlan),
+		RepoID:          engine.Repo.RepoID, StoreID: engine.Repo.StoreID, WorktreeID: engine.Repo.WorktreeID, WorkspaceRoot: engine.Repo.WorkspaceRoot.String(),
 	}
 	if err := writeJournal(JournalPath(engine.Repo), journal); err != nil {
 		return result, fmt.Errorf("write rollback journal: %w", err)
@@ -635,6 +672,9 @@ func (engine Engine) runWorkspaceGitUnlocked(request Request) (Result, error) {
 }
 
 func (engine Engine) ensureNoActiveJournal() error {
+	if err := rejectLegacyJournal(engine.Repo); err != nil {
+		return err
+	}
 	path := JournalPath(engine.Repo)
 	journal, ok, err := readJournal(path)
 	if err != nil {
@@ -844,6 +884,9 @@ func journalRollback(repo *checkpoint.Repo, journal Journal) (ResolvedTarget, ch
 	if repo == nil {
 		return ResolvedTarget{}, checkpoint.Snapshot{}, checkpoint.RestorePlan{}, "", fmt.Errorf("rollback journal repo invariant failed: repo is required")
 	}
+	if err := validateJournalOwner(repo, journal); err != nil {
+		return ResolvedTarget{}, checkpoint.Snapshot{}, checkpoint.RestorePlan{}, "", err
+	}
 	ref, err := primitives.ParseCheckpointRef(journal.CheckpointRef)
 	if err != nil {
 		return ResolvedTarget{}, checkpoint.Snapshot{}, checkpoint.RestorePlan{}, "", fmt.Errorf("rollback journal checkpoint ref invariant failed: %w", err)
@@ -906,6 +949,16 @@ func journalRollback(repo *checkpoint.Repo, journal Journal) (ResolvedTarget, ch
 		eventSourceID = rollbackEventSourceID(target, safety)
 	}
 	return target, safety, plan, eventSourceID, nil
+}
+
+func validateJournalOwner(repo *checkpoint.Repo, journal Journal) error {
+	if journal.RepoID == "" && journal.StoreID == "" && journal.WorktreeID == "" && journal.WorkspaceRoot == "" {
+		return nil
+	}
+	if journal.RepoID != repo.RepoID || journal.StoreID != repo.StoreID || journal.WorktreeID != repo.WorktreeID || filepath.Clean(journal.WorkspaceRoot) != filepath.Clean(repo.WorkspaceRoot.String()) {
+		return fmt.Errorf("rollback journal owner invariant failed: repository, store, worktree, or workspace mismatch")
+	}
+	return nil
 }
 
 func validateApplicationMetadata(application *ApplicationMetadata, target ResolvedTarget) error {
