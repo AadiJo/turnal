@@ -120,6 +120,24 @@ func TestDarwinForkGateUsesSanitizedBootstrapEnvironment(t *testing.T) {
 	}
 }
 
+func TestDarwinForkGateReportsHelperFailure(t *testing.T) {
+	statusRead, statusWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller := &darwinForkProcessController{statusRead: statusRead}
+	if _, err := statusWrite.WriteString("execute gated fork command: no such file"); err != nil {
+		t.Fatal(err)
+	}
+	if err := statusWrite.Close(); err != nil {
+		t.Fatal(err)
+	}
+	err = controller.readHelperStatus()
+	if err == nil || !strings.Contains(err.Error(), "execute gated fork command") {
+		t.Fatalf("helper status error = %v", err)
+	}
+}
+
 func TestValidateDarwinForkExitRejectsRegistrationError(t *testing.T) {
 	_, err := validateDarwinForkExit(unix.Kevent_t{Flags: unix.EV_ERROR, Data: int64(unix.ESRCH)}, 42)
 	if err == nil {

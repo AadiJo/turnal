@@ -21,7 +21,7 @@ const darwinForkGateArgument = "__turnal_internal_fork_gate_7d69d1be__"
 var killDarwinForkProcessGroup = syscall.Kill
 
 func init() {
-	if len(os.Args) < 6 || os.Args[1] != darwinForkGateArgument {
+	if len(os.Args) < 7 || os.Args[1] != darwinForkGateArgument {
 		return
 	}
 	gateFD, err := strconv.Atoi(os.Args[2])
@@ -34,43 +34,57 @@ func init() {
 		fmt.Fprintln(os.Stderr, "turnal: invalid internal fork environment")
 		os.Exit(127)
 	}
+	statusFD, statusErr := strconv.Atoi(os.Args[4])
+	if statusErr != nil || statusFD < 3 || statusFD == gateFD || statusFD == environmentFD {
+		fmt.Fprintln(os.Stderr, "turnal: invalid internal fork status")
+		os.Exit(127)
+	}
+	statusFile := os.NewFile(uintptr(statusFD), "turnal-fork-status")
+	if statusFile == nil {
+		fmt.Fprintln(os.Stderr, "turnal: open internal fork status")
+		os.Exit(127)
+	}
+	if _, err := unix.FcntlInt(uintptr(statusFD), unix.F_SETFD, unix.FD_CLOEXEC); err != nil {
+		failDarwinForkGate(statusFile, "mark internal fork status close-on-exec: %v", err)
+	}
 	environmentFile := os.NewFile(uintptr(environmentFD), "turnal-fork-environment")
 	if environmentFile == nil {
-		fmt.Fprintln(os.Stderr, "turnal: open internal fork environment")
-		os.Exit(127)
+		failDarwinForkGate(statusFile, "open internal fork environment")
 	}
 	environmentBytes, readEnvironmentErr := io.ReadAll(environmentFile)
 	closeEnvironmentErr := environmentFile.Close()
 	if readEnvironmentErr != nil || closeEnvironmentErr != nil {
-		fmt.Fprintf(os.Stderr, "turnal: read internal fork environment: %v\n", errors.Join(readEnvironmentErr, closeEnvironmentErr))
-		os.Exit(127)
+		failDarwinForkGate(statusFile, "read internal fork environment: %v", errors.Join(readEnvironmentErr, closeEnvironmentErr))
 	}
 	targetEnvironment, err := decodeDarwinForkEnvironment(environmentBytes)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "turnal: decode internal fork environment: %v\n", err)
-		os.Exit(127)
+		failDarwinForkGate(statusFile, "decode internal fork environment: %v", err)
 	}
 	gate := os.NewFile(uintptr(gateFD), "turnal-fork-gate")
 	if gate == nil {
-		fmt.Fprintln(os.Stderr, "turnal: open internal fork gate")
-		os.Exit(127)
+		failDarwinForkGate(statusFile, "open internal fork gate")
 	}
 	_, readErr := gate.Read(make([]byte, 1))
 	closeErr := gate.Close()
 	if readErr != nil && !errors.Is(readErr, io.EOF) {
-		fmt.Fprintf(os.Stderr, "turnal: wait for internal fork gate: %v\n", readErr)
-		os.Exit(127)
+		failDarwinForkGate(statusFile, "wait for internal fork gate: %v", readErr)
 	}
 	if closeErr != nil {
-		fmt.Fprintf(os.Stderr, "turnal: close internal fork gate: %v\n", closeErr)
-		os.Exit(127)
+		failDarwinForkGate(statusFile, "close internal fork gate: %v", closeErr)
 	}
-	originalPath := os.Args[4]
-	originalArgs := append([]string{os.Args[5]}, os.Args[6:]...)
+	originalPath := os.Args[5]
+	originalArgs := append([]string{os.Args[6]}, os.Args[7:]...)
 	if err := syscall.Exec(originalPath, originalArgs, targetEnvironment); err != nil {
-		fmt.Fprintf(os.Stderr, "turnal: execute gated fork command: %v\n", err)
-		os.Exit(127)
+		failDarwinForkGate(statusFile, "execute gated fork command: %v", err)
 	}
+}
+
+func failDarwinForkGate(status *os.File, format string, arguments ...any) {
+	message := fmt.Sprintf(format, arguments...)
+	_, _ = io.WriteString(status, message)
+	_ = status.Close()
+	fmt.Fprintf(os.Stderr, "turnal: %s\n", message)
+	os.Exit(127)
 }
 
 type darwinForkProcessController struct {
@@ -79,6 +93,8 @@ type darwinForkProcessController struct {
 	gateWrite         *os.File
 	environmentRead   *os.File
 	environmentWrite  *os.File
+	statusRead        *os.File
+	statusWrite       *os.File
 	targetEnvironment []byte
 	queue             int
 	immediateExit     bool
@@ -99,12 +115,22 @@ func newForkProcessController(cmd *exec.Cmd) (forkProcessController, error) {
 		_ = gateWrite.Close()
 		return nil, err
 	}
+	statusRead, statusWrite, err := os.Pipe()
+	if err != nil {
+		_ = gateRead.Close()
+		_ = gateWrite.Close()
+		_ = environmentRead.Close()
+		_ = environmentWrite.Close()
+		return nil, err
+	}
 	helperPath, err := os.Executable()
 	if err != nil {
 		_ = gateRead.Close()
 		_ = gateWrite.Close()
 		_ = environmentRead.Close()
 		_ = environmentWrite.Close()
+		_ = statusRead.Close()
+		_ = statusWrite.Close()
 		return nil, fmt.Errorf("resolve fork gate helper: %w", err)
 	}
 	targetEnvironment, err := encodeDarwinForkEnvironment(cmd.Env)
@@ -113,20 +139,24 @@ func newForkProcessController(cmd *exec.Cmd) (forkProcessController, error) {
 		_ = gateWrite.Close()
 		_ = environmentRead.Close()
 		_ = environmentWrite.Close()
+		_ = statusRead.Close()
+		_ = statusWrite.Close()
 		return nil, err
 	}
 	gateFD := 3 + len(cmd.ExtraFiles)
 	environmentFD := gateFD + 1
+	statusFD := environmentFD + 1
 	originalPath := cmd.Path
 	originalArgs := append([]string(nil), cmd.Args...)
 	cmd.Path = helperPath
-	cmd.Args = append([]string{helperPath, darwinForkGateArgument, strconv.Itoa(gateFD), strconv.Itoa(environmentFD), originalPath, originalArgs[0]}, originalArgs[1:]...)
+	cmd.Args = append([]string{helperPath, darwinForkGateArgument, strconv.Itoa(gateFD), strconv.Itoa(environmentFD), strconv.Itoa(statusFD), originalPath, originalArgs[0]}, originalArgs[1:]...)
 	cmd.Env = []string{}
-	cmd.ExtraFiles = append(cmd.ExtraFiles, gateRead, environmentRead)
+	cmd.ExtraFiles = append(cmd.ExtraFiles, gateRead, environmentRead, statusWrite)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	return &darwinForkProcessController{
 		cmd: cmd, gateRead: gateRead, gateWrite: gateWrite,
 		environmentRead: environmentRead, environmentWrite: environmentWrite,
+		statusRead: statusRead, statusWrite: statusWrite,
 		targetEnvironment: targetEnvironment, queue: -1,
 	}, nil
 }
@@ -195,6 +225,10 @@ func (controller *darwinForkProcessController) AfterStart() error {
 		return fmt.Errorf("close parent fork environment reader: %w", err)
 	}
 	controller.environmentRead = nil
+	if err := controller.statusWrite.Close(); err != nil {
+		return fmt.Errorf("close parent fork status writer: %w", err)
+	}
+	controller.statusWrite = nil
 	queue, err := unix.Kqueue()
 	if err != nil {
 		return err
@@ -221,32 +255,48 @@ func (controller *darwinForkProcessController) AfterStart() error {
 }
 
 func (controller *darwinForkProcessController) WaitMain() error {
-	if controller.immediateExit {
-		return nil
+	if !controller.immediateExit {
+		if controller.queue < 0 || controller.cmd.Process == nil {
+			return fmt.Errorf("fork process exit observation is not initialized")
+		}
+		events := make([]unix.Kevent_t, 1)
+		for {
+			count, err := unix.Kevent(controller.queue, nil, events, nil)
+			if errors.Is(err, syscall.EINTR) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if count != 1 {
+				continue
+			}
+			exited, err := validateDarwinForkExit(events[0], controller.cmd.Process.Pid)
+			if err != nil {
+				return err
+			}
+			if exited {
+				break
+			}
+		}
 	}
-	if controller.queue < 0 || controller.cmd.Process == nil {
-		return fmt.Errorf("fork process exit observation is not initialized")
+	return controller.readHelperStatus()
+}
+
+func (controller *darwinForkProcessController) readHelperStatus() error {
+	if controller.statusRead == nil {
+		return fmt.Errorf("fork helper status pipe is not available")
 	}
-	events := make([]unix.Kevent_t, 1)
-	for {
-		count, err := unix.Kevent(controller.queue, nil, events, nil)
-		if errors.Is(err, syscall.EINTR) {
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		if count != 1 {
-			continue
-		}
-		exited, err := validateDarwinForkExit(events[0], controller.cmd.Process.Pid)
-		if err != nil {
-			return err
-		}
-		if exited {
-			return nil
-		}
+	status, readErr := io.ReadAll(controller.statusRead)
+	closeErr := controller.statusRead.Close()
+	controller.statusRead = nil
+	if readErr != nil || closeErr != nil {
+		return fmt.Errorf("read fork helper status: %w", errors.Join(readErr, closeErr))
 	}
+	if len(status) > 0 {
+		return fmt.Errorf("fork helper failed before command execution: %s", status)
+	}
+	return nil
 }
 
 func (controller *darwinForkProcessController) Cancel() error {
@@ -271,6 +321,14 @@ func (controller *darwinForkProcessController) Close() error {
 		if controller.environmentWrite != nil {
 			controller.closeErr = errors.Join(controller.closeErr, controller.environmentWrite.Close())
 			controller.environmentWrite = nil
+		}
+		if controller.statusRead != nil {
+			controller.closeErr = errors.Join(controller.closeErr, controller.statusRead.Close())
+			controller.statusRead = nil
+		}
+		if controller.statusWrite != nil {
+			controller.closeErr = errors.Join(controller.closeErr, controller.statusWrite.Close())
+			controller.statusWrite = nil
 		}
 		controller.targetEnvironment = nil
 		if controller.queue >= 0 {
