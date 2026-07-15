@@ -258,26 +258,29 @@ func sessionFiles(repo *checkpoint.Repo, sessionID primitives.SessionID) ([]stri
 }
 
 func ensureNoActiveRollbackForSession(repo *checkpoint.Repo, sessionID primitives.SessionID) error {
-	path := rollbackengine.JournalPath(repo)
-	data, err := os.ReadFile(path)
+	paths, err := allRollbackJournalPaths(repo)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
+		return err
+	}
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read rollback journal before session drop: %w", err)
 		}
-		return fmt.Errorf("read rollback journal before session drop: %w", err)
-	}
-	var journal struct {
-		Target string `json:"target"`
-	}
-	if err := json.Unmarshal(data, &journal); err != nil {
-		return fmt.Errorf("cannot drop session while rollback journal is unreadable at %s: %w", path, err)
-	}
-	target, err := primitives.ParseTargetRef(journal.Target)
-	if err != nil {
-		return fmt.Errorf("cannot drop session while rollback journal target is invalid at %s: %w", path, err)
-	}
-	if target.SessionID() == sessionID {
-		return fmt.Errorf("cannot drop session %s while rollback recovery is pending; run turnal recovery status", sessionID)
+		var journal rollbackengine.Journal
+		if err := json.Unmarshal(data, &journal); err != nil {
+			return fmt.Errorf("cannot drop session while rollback journal is unreadable at %s: %w", path, err)
+		}
+		if journal.Manual {
+			continue
+		}
+		target, err := primitives.ParseTargetRef(journal.Target)
+		if err != nil {
+			return fmt.Errorf("cannot drop session while rollback journal target is invalid at %s: %w", path, err)
+		}
+		if target.SessionID() == sessionID {
+			return fmt.Errorf("cannot drop session %s while rollback recovery is pending in %s", sessionID, path)
+		}
 	}
 	return nil
 }
@@ -393,7 +396,9 @@ func referencedPrivateRefs(repo *checkpoint.Repo) (map[string]struct{}, error) {
 		}
 	}
 	collectActiveTurnRefs(repo, referenced)
-	collectRollbackJournalRefs(repo, referenced)
+	if err := collectRollbackJournalRefs(repo, referenced); err != nil {
+		return nil, err
+	}
 	collectImportManifestRefs(repo, referenced)
 
 	infos, err := repo.ListAllCheckpointRefInfos()
@@ -446,12 +451,47 @@ func collectImportManifestRefs(repo *checkpoint.Repo, referenced map[string]stru
 	}
 }
 
-func collectRollbackJournalRefs(repo *checkpoint.Repo, referenced map[string]struct{}) {
-	data, err := os.ReadFile(rollbackengine.JournalPath(repo))
+func collectRollbackJournalRefs(repo *checkpoint.Repo, referenced map[string]struct{}) error {
+	paths, err := allRollbackJournalPaths(repo)
 	if err != nil {
-		return
+		return err
 	}
-	collectPrivateRefs(referenced, json.RawMessage(data))
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read rollback journal during retention scan: %w", err)
+		}
+		var journal rollbackengine.Journal
+		if err := json.Unmarshal(data, &journal); err != nil {
+			return fmt.Errorf("parse rollback journal during retention scan at %s: %w", path, err)
+		}
+		collectPrivateRefs(referenced, json.RawMessage(data))
+	}
+	return nil
+}
+
+func allRollbackJournalPaths(repo *checkpoint.Repo) ([]string, error) {
+	paths, err := filepath.Glob(filepath.Join(repo.TmpDir, "rollback-journal-*.json"))
+	if err != nil {
+		return nil, err
+	}
+	legacy := filepath.Join(repo.TmpDir, "rollback-journal.json")
+	if _, err := os.Lstat(legacy); err == nil {
+		paths = append(paths, legacy)
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+	for _, path := range paths {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return nil, err
+		}
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("rollback journal path invariant failed: regular files only: %s", path)
+		}
+	}
+	sort.Strings(paths)
+	return paths, nil
 }
 
 func collectActiveTurnRefs(repo *checkpoint.Repo, referenced map[string]struct{}) {
