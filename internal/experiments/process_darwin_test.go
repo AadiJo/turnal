@@ -6,7 +6,9 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -93,6 +95,28 @@ func TestDarwinForkGatePreservesShellOptionEnvironmentForNonBashTarget(t *testin
 	}
 	if variables["SHELLOPTS"] != shellOptions || variables["BASHOPTS"] != bashOptions {
 		t.Fatalf("shell option environment = SHELLOPTS=%q BASHOPTS=%q", variables["SHELLOPTS"], variables["BASHOPTS"])
+	}
+}
+
+func TestDarwinForkGateUsesSanitizedBootstrapEnvironment(t *testing.T) {
+	command := exec.Command("/usr/bin/true")
+	command.Env = []string{"DYLD_INSERT_LIBRARIES=/tmp/injected.dylib", "KEY=first", "KEY=last", "SHELLOPTS=noexec"}
+	controller, err := newForkProcessController(command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer controller.Close()
+	if len(command.Env) != 0 {
+		t.Fatalf("helper bootstrap environment = %#v, want empty", command.Env)
+	}
+	darwinController := controller.(*darwinForkProcessController)
+	environment, err := decodeDarwinForkEnvironment(darwinController.targetEnvironment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"DYLD_INSERT_LIBRARIES=/tmp/injected.dylib", "KEY=last", "SHELLOPTS=noexec"}
+	if !slices.Equal(environment, want) {
+		t.Fatalf("target environment = %#v, want %#v", environment, want)
 	}
 }
 
