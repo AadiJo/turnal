@@ -58,6 +58,24 @@ func (controller *windowsForkProcessController) AfterStart() error {
 	}
 	return nil
 }
+func (controller *windowsForkProcessController) WaitMain() error {
+	if controller.cmd.Process == nil {
+		return fmt.Errorf("fork process has not started")
+	}
+	process, err := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(controller.cmd.Process.Pid))
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(process)
+	status, err := windows.WaitForSingleObject(process, windows.INFINITE)
+	if err != nil {
+		return err
+	}
+	if status != windows.WAIT_OBJECT_0 {
+		return fmt.Errorf("wait for fork process returned status %d", status)
+	}
+	return nil
+}
 func (controller *windowsForkProcessController) Cancel() error {
 	controller.mu.Lock()
 	defer controller.mu.Unlock()

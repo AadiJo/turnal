@@ -104,8 +104,21 @@ func (runner ExecRunner) Run(ctx context.Context, root string, command, environm
 		_ = child.Wait()
 		return -1, fmt.Errorf("contain fork process: %w", err)
 	}
+	waitMainErr := controller.WaitMain()
+	var closeErr error
+	if waitMainErr == nil {
+		// The leader is exited but deliberately unreaped, so its PID/process
+		// identity cannot be reused while containment terminates descendants.
+		closeErr = controller.Close()
+	} else if !errors.Is(waitMainErr, errForkWaitMainUnsupported) {
+		_ = controller.Cancel()
+	}
 	err = child.Wait()
-	closeErr := controller.Close()
+	if errors.Is(waitMainErr, errForkWaitMainUnsupported) {
+		closeErr = controller.Close()
+	} else if waitMainErr != nil && err == nil {
+		err = fmt.Errorf("wait for contained fork process: %w", waitMainErr)
+	}
 	if errors.Is(err, exec.ErrWaitDelay) {
 		// The main process exited successfully; Wait only had to close a pipe
 		// retained by a descendant, which the controller has now terminated.

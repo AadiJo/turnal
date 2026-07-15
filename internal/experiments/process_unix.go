@@ -1,9 +1,10 @@
-//go:build unix
+//go:build linux || darwin || dragonfly || freebsd || netbsd || openbsd
 
 package experiments
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"sync"
@@ -24,8 +25,14 @@ func newForkProcessController(cmd *exec.Cmd) (forkProcessController, error) {
 }
 
 func (controller *unixForkProcessController) AfterStart() error { return nil }
-func (controller *unixForkProcessController) Cancel() error     { return controller.terminate() }
-func (controller *unixForkProcessController) Close() error      { return controller.terminate() }
+func (controller *unixForkProcessController) WaitMain() error {
+	if controller.cmd.Process == nil {
+		return fmt.Errorf("fork process has not started")
+	}
+	return waitForForkProcessExit(controller.cmd.Process.Pid)
+}
+func (controller *unixForkProcessController) Cancel() error { return controller.terminate() }
+func (controller *unixForkProcessController) Close() error  { return controller.terminate() }
 
 func (controller *unixForkProcessController) terminate() error {
 	controller.once.Do(func() {

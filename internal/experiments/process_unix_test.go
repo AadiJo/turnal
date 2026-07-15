@@ -1,4 +1,4 @@
-//go:build unix
+//go:build linux || darwin || dragonfly || freebsd || netbsd || openbsd
 
 package experiments
 
@@ -56,6 +56,33 @@ func TestExecRunnerBoundsInheritedOutputPipeWait(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed > 2*time.Second {
 		t.Fatalf("Run waited %s for descendant-held output pipes", elapsed)
+	}
+}
+
+func TestExecRunnerClosesGroupBeforeLeaderReap(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh required")
+	}
+	originalKill := killForkProcessGroup
+	defer func() { killForkProcessGroup = originalKill }()
+	var checked atomic.Bool
+	killForkProcessGroup = func(target int, signal syscall.Signal) error {
+		pid := -target
+		if target >= 0 || signal != syscall.SIGKILL {
+			t.Fatalf("kill = (%d, %v), want a process group and SIGKILL", target, signal)
+		}
+		if err := syscall.Kill(pid, 0); err != nil {
+			t.Fatalf("fork leader %d was reaped before process-group cleanup: %v", pid, err)
+		}
+		checked.Store(true)
+		return originalKill(target, signal)
+	}
+	code, err := (ExecRunner{Env: []string{"PATH=" + os.Getenv("PATH")}}).Run(context.Background(), t.TempDir(), []string{"sh", "-c", "(sleep 30) &"}, nil)
+	if err != nil || code != 0 {
+		t.Fatalf("Run = %d, %v", code, err)
+	}
+	if !checked.Load() {
+		t.Fatal("process-group cleanup was not observed")
 	}
 }
 

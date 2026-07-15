@@ -10,6 +10,7 @@ func newForkProcessController(cmd *exec.Cmd) (forkProcessController, error) {
 	return &directForkProcessController{cmd: cmd}, nil
 }
 func (controller *directForkProcessController) AfterStart() error { return nil }
+func (controller *directForkProcessController) WaitMain() error   { return errForkWaitMainUnsupported }
 func (controller *directForkProcessController) Cancel() error {
 	if controller.cmd.Process == nil {
 		return nil
