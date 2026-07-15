@@ -4,12 +4,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/AadiJo/turnal/internal/cases"
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/AadiJo/turnal/internal/runs"
 )
+
+var removeManagedWorkspace = os.RemoveAll
 
 func RecoverAbandoned(repo *checkpoint.Repo) error {
 	if repo == nil {
@@ -25,9 +28,13 @@ func RecoverAbandoned(repo *checkpoint.Repo) error {
 	if err != nil {
 		return err
 	}
+	referenced := make(map[string]bool)
 	for _, definition := range projection.Cases {
 		for _, link := range definition.AttemptLinks {
-			if link.Result == nil || link.Result.Status != cases.AttemptStatusIncomplete || link.Result.PostRef != "" {
+			if link.Workspace != "" {
+				referenced[filepath.Clean(link.Workspace)] = true
+			}
+			if link.Result == nil || link.Result.Status != cases.AttemptStatusIncomplete {
 				continue
 			}
 			if link.Workspace != "" && !link.Keep {
@@ -38,7 +45,7 @@ func RecoverAbandoned(repo *checkpoint.Repo) error {
 				if filepath.Clean(link.Workspace) != expected {
 					return fmt.Errorf("abandoned fork workspace invariant failed for attempt %s: recorded %s, expected %s", link.AttemptID, link.Workspace, expected)
 				}
-				if err := os.RemoveAll(expected); err != nil {
+				if err := removeManagedWorkspace(expected); err != nil {
 					return fmt.Errorf("remove abandoned fork workspace for attempt %s: %w", link.AttemptID, err)
 				}
 			}
@@ -46,8 +53,50 @@ func RecoverAbandoned(repo *checkpoint.Repo) error {
 			if err != nil {
 				return err
 			}
-			if err := os.RemoveAll(verification); err != nil {
+			if err := removeManagedWorkspace(verification); err != nil {
 				return fmt.Errorf("remove abandoned verification workspace for attempt %s: %w", link.AttemptID, err)
+			}
+		}
+	}
+	if err := removeOrphanedManagedWorkspaces(repo, referenced); err != nil {
+		return err
+	}
+	return nil
+}
+
+func removeOrphanedManagedWorkspaces(repo *checkpoint.Repo, referenced map[string]bool) error {
+	probe, err := managedWorkspacePath(repo, "probe")
+	if err != nil {
+		return err
+	}
+	parent := filepath.Dir(probe)
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("scan managed fork workspaces: %w", err)
+	}
+	for _, entry := range entries {
+		path := filepath.Join(parent, entry.Name())
+		if referenced[path] {
+			continue
+		}
+		remove := false
+		switch {
+		case strings.HasPrefix(entry.Name(), "verify-attempt_"):
+			remove = true
+		case strings.HasPrefix(entry.Name(), "run-run_"):
+			runID, parseErr := primitives.ParseRunID(strings.TrimPrefix(entry.Name(), "run-"))
+			if parseErr != nil {
+				continue
+			}
+			run, readErr := runs.Read(repo, runID)
+			remove = readErr != nil || run.Status != runs.StatusRunning
+		}
+		if remove {
+			if err := removeManagedWorkspace(path); err != nil {
+				return fmt.Errorf("remove orphaned managed workspace %s: %w", path, err)
 			}
 		}
 	}

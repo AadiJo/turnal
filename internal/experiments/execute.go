@@ -85,7 +85,23 @@ func (runner ExecRunner) Run(ctx context.Context, root string, command, environm
 		baseEnvironment = os.Environ()
 	}
 	child.Env = forkEnvironment(baseEnvironment, root, environment)
-	err := child.Run()
+	controller, err := newForkProcessController(child)
+	if err != nil {
+		return -1, fmt.Errorf("prepare fork process containment: %w", err)
+	}
+	defer controller.Close()
+	if err := child.Start(); err != nil {
+		return -1, err
+	}
+	if err := controller.AfterStart(); err != nil {
+		_ = controller.Cancel()
+		_ = child.Wait()
+		return -1, fmt.Errorf("contain fork process: %w", err)
+	}
+	err = child.Wait()
+	if closeErr := controller.Close(); err == nil && closeErr != nil {
+		err = fmt.Errorf("terminate fork process descendants: %w", closeErr)
+	}
 	if err == nil {
 		return 0, nil
 	}
@@ -138,35 +154,7 @@ func Execute(ctx context.Context, repo *checkpoint.Repo, request Request) (resul
 	if err != nil {
 		return Result{}, err
 	}
-	root, err := createManagedForkWorkspace(repo, runID)
-	if err != nil {
-		return Result{}, err
-	}
-	cleanup := true
-	defer func() {
-		if !cleanup {
-			return
-		}
-		if err := os.RemoveAll(root); err != nil {
-			resultErr = errors.Join(resultErr, fmt.Errorf("remove isolated fork workspace: %w", err))
-		}
-	}()
-	if err := repo.MaterializeCommit(baseCommit, root, checkpoint.MaterializeOptions{ApplyCurrentSecretDenyGlobs: true}); err != nil {
-		return Result{}, fmt.Errorf("materialize case base: %w", err)
-	}
-	if err := validateExecutionSymlinks(root); err != nil {
-		return Result{}, fmt.Errorf("fork workspace isolation invariant failed: %w", err)
-	}
-	captureRepo, err := repo.ForCaptureRoot(root)
-	if err != nil {
-		return Result{}, err
-	}
-
-	result = Result{CaseID: definition.ID, RunID: runID, SessionID: sessionID, BaseRef: definition.Readiness.Base.Ref, BaseCommit: baseCommit, Workspace: root, WorkspaceKept: request.Keep}
-	if !request.Keep {
-		result.Workspace = ""
-	}
-
+	result = Result{CaseID: definition.ID, RunID: runID, SessionID: sessionID, BaseRef: definition.Readiness.Base.Ref, BaseCommit: baseCommit, WorkspaceKept: request.Keep}
 	unlockSession, err := adapters.AcquireSessionLock(repo, sessionID)
 	if err != nil {
 		return result, err
@@ -190,6 +178,33 @@ func Execute(ctx context.Context, repo *checkpoint.Repo, request Request) (resul
 			resultErr = errors.Join(resultErr, fmt.Errorf("finalize incomplete fork run %s: %w", runID, err))
 		}
 	}()
+	root, err := createManagedForkWorkspace(repo, runID)
+	if err != nil {
+		return result, err
+	}
+	cleanup := true
+	defer func() {
+		if !cleanup {
+			return
+		}
+		if err := removeManagedWorkspace(root); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("remove isolated fork workspace: %w", err))
+		}
+	}()
+	if request.Keep {
+		result.Workspace = root
+	}
+	if err := repo.MaterializeCommit(baseCommit, root, checkpoint.MaterializeOptions{ApplyCurrentSecretDenyGlobs: true}); err != nil {
+		return result, fmt.Errorf("materialize case base: %w", err)
+	}
+	if err := validateExecutionSymlinks(root); err != nil {
+		return result, fmt.Errorf("fork workspace isolation invariant failed: %w", err)
+	}
+	captureRepo, err := repo.ForCaptureRoot(root)
+	if err != nil {
+		return result, err
+	}
+
 	if err := runs.LinkCapture(repo, runID, runs.CaptureWrapper, sessionID, primitives.AdapterCodex); err != nil {
 		return result, err
 	}
@@ -273,7 +288,7 @@ func Execute(ctx context.Context, repo *checkpoint.Repo, request Request) (resul
 	return result, nil
 }
 
-func verifyAttempt(ctx context.Context, repo *checkpoint.Repo, definition cases.Case, attemptID primitives.AttemptID, post checkpoint.Checkpoint) (*verifier.Report, error) {
+func verifyAttempt(ctx context.Context, repo *checkpoint.Repo, definition cases.Case, attemptID primitives.AttemptID, post checkpoint.Checkpoint) (report *verifier.Report, resultErr error) {
 	if len(definition.Verifiers) == 0 {
 		return nil, nil
 	}
@@ -289,7 +304,11 @@ func verifyAttempt(ctx context.Context, repo *checkpoint.Repo, definition cases.
 	if err != nil {
 		return nil, err
 	}
-	defer os.RemoveAll(root)
+	defer func() {
+		if err := removeManagedWorkspace(root); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("remove attempt verification workspace: %w", err))
+		}
+	}()
 	if err := repo.MaterializeCommit(post.Commit, root, checkpoint.MaterializeOptions{ApplyCurrentSecretDenyGlobs: true}); err != nil {
 		return nil, fmt.Errorf("materialize attempt verification checkpoint: %w", err)
 	}
@@ -300,7 +319,7 @@ func verifyAttempt(ctx context.Context, repo *checkpoint.Repo, definition cases.
 	if err != nil {
 		return nil, fmt.Errorf("parse attempt verification checkpoint ref: %w", err)
 	}
-	report, err := verifier.Run(ctx, verifier.Request{
+	verificationReport, err := verifier.Run(ctx, verifier.Request{
 		Root: root,
 		Target: verifier.Target{
 			Kind: verifier.TargetCheckpoint, Display: attemptID.String(), WorktreeID: repo.WorktreeID.String(),
@@ -313,9 +332,9 @@ func verifyAttempt(ctx context.Context, repo *checkpoint.Repo, definition cases.
 		Environment: forkEnvironment(os.Environ(), root, nil),
 	})
 	if err != nil {
-		return &report, fmt.Errorf("verify attempt %s: %w", attemptID, err)
+		return &verificationReport, fmt.Errorf("verify attempt %s: %w", attemptID, err)
 	}
-	return &report, nil
+	return &verificationReport, nil
 }
 
 func validateExecutionSymlinks(root string) error {

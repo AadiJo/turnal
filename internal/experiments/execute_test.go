@@ -389,6 +389,11 @@ func TestRecoverAbandonedTerminalizesAttemptAndRemovesManagedWorkspace(t *testin
 		release()
 		t.Fatal(err)
 	}
+	finished, err := recorder.Finish(sessionID, started.TurnID)
+	if err != nil {
+		release()
+		t.Fatal(err)
+	}
 	release()
 
 	if err := RecoverAbandoned(repo); err != nil {
@@ -402,15 +407,47 @@ func TestRecoverAbandonedTerminalizesAttemptAndRemovesManagedWorkspace(t *testin
 		t.Fatal(err)
 	}
 	updated, _ := projection.Case(definition.ID)
-	if len(updated.AttemptLinks) != 1 || updated.AttemptLinks[0].Result == nil || updated.AttemptLinks[0].Result.Status != cases.AttemptStatusIncomplete || updated.AttemptLinks[0].Result.PostRef != "" {
+	if len(updated.AttemptLinks) != 1 || updated.AttemptLinks[0].Result == nil || updated.AttemptLinks[0].Result.Status != cases.AttemptStatusIncomplete || updated.AttemptLinks[0].Result.PostRef != finished.Post.Ref {
 		t.Fatalf("recovered attempt = %#v", updated.AttemptLinks)
 	}
 	comparison, err := Compare(repo, definition.ID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(comparison.Attempts) != 1 || comparison.Attempts[0].Status != cases.AttemptStatusIncomplete || comparison.Attempts[0].PostRef != "" {
+	if len(comparison.Attempts) != 1 || comparison.Attempts[0].Status != cases.AttemptStatusIncomplete || comparison.Attempts[0].PostRef != finished.Post.Ref {
 		t.Fatalf("recovered comparison = %#v", comparison.Attempts)
+	}
+}
+
+func TestRecoverAbandonedRemovesUnlinkedManagedWorkspace(t *testing.T) {
+	repo, _ := experimentCase(t)
+	runID, _ := primitives.NewRunID()
+	workspace, err := createManagedForkWorkspace(repo, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RecoverAbandoned(repo); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(workspace); !os.IsNotExist(err) {
+		t.Fatalf("unlinked managed workspace remains: %v", err)
+	}
+}
+
+func TestVerificationCleanupFailureTerminalizesAttempt(t *testing.T) {
+	verifierConfig := fmt.Sprintf("version = 1\n[[verify]]\nname = \"pass\"\ncommand = %q\nargs = [\"-test.run=^TestForkVerifierHelper$\"]\ntimeout = \"10s\"\n", os.Args[0])
+	repo, definition := experimentCaseWithConfig(t, verifierConfig)
+	originalRemove := removeManagedWorkspace
+	removeManagedWorkspace = func(path string) error {
+		if strings.HasPrefix(filepath.Base(path), "verify-") {
+			return errors.New("injected cleanup failure")
+		}
+		return os.RemoveAll(path)
+	}
+	defer func() { removeManagedWorkspace = originalRemove }()
+	result, err := Execute(context.Background(), repo, Request{Case: definition, Command: []string{"runner"}, Runner: runnerFunc(func(context.Context, string, []string, []string) (int, error) { return 0, nil })})
+	if err == nil || !strings.Contains(err.Error(), "injected cleanup failure") || result.Status != cases.AttemptStatusIncomplete {
+		t.Fatalf("cleanup failure result = %#v, %v", result, err)
 	}
 }
 

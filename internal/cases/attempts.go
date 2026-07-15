@@ -211,7 +211,20 @@ func ReconcileAbandonedAttempts(repo *checkpoint.Repo) error {
 			if run.Error != "" {
 				message += ": " + run.Error
 			}
-			if _, err := RecordAttemptResult(repo, RecordAttemptResultRequest{CaseID: definition.ID, RunID: link.RunID, AttemptID: link.AttemptID, Status: AttemptStatusIncomplete, Error: message}); err != nil {
+			request := RecordAttemptResultRequest{CaseID: definition.ID, RunID: link.RunID, AttemptID: link.AttemptID, Status: AttemptStatusIncomplete, Error: message}
+			infos, err := repo.ListAllCheckpointRefInfos()
+			if err != nil {
+				return fmt.Errorf("inspect attempt %s checkpoints during recovery: %w", link.AttemptID, err)
+			}
+			for _, info := range infos {
+				if info.SessionID == link.Execution.SessionID && info.TurnID == link.Execution.TurnID && info.Phase == primitives.CheckpointPhasePost && info.WorktreeID == definition.Scope.WorktreeID && (link.Execution.StreamID == "" || info.StreamID == link.Execution.StreamID) {
+					if request.PostCommit != "" && request.PostCommit != info.Commit {
+						return fmt.Errorf("attempt %s has conflicting post checkpoints during recovery", link.AttemptID)
+					}
+					request.PostRef, request.PostCommit = info.Ref, info.Commit
+				}
+			}
+			if _, err := RecordAttemptResult(repo, request); err != nil {
 				return fmt.Errorf("terminalize abandoned Case attempt %s: %w", link.AttemptID, err)
 			}
 		}
