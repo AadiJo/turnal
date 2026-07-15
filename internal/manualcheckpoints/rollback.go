@@ -77,7 +77,8 @@ func ParseRollbackEvent(event eventlog.Event) (Rollback, error) {
 		return Rollback{}, fmt.Errorf("workspace rollback event %s raw ref invariant failed", event.Seq)
 	}
 	wantSourceID := fmt.Sprintf("turnal:rollback:%s:%s:%s", mode, target, safetyCommit)
-	if event.SourceID != wantSourceID {
+	wantUniqueSourceID := fmt.Sprintf("turnal:rollback:%s:%s:%s:%s", mode, target, payload.SafetyRef, safetyCommit)
+	if event.SourceID != wantSourceID && event.SourceID != wantUniqueSourceID {
 		return Rollback{}, fmt.Errorf("workspace rollback event %s source invariant failed", event.Seq)
 	}
 	return Rollback{

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -669,7 +670,7 @@ func (engine Engine) finalizeRestoredJournal(path string, journal Journal) error
 	}
 
 	log := engine.Repo.EventLog()
-	exists, err := rollbackEventExists(log, target, safety, eventSourceID)
+	exists, err := rollbackEventExists(log, target, safety, eventSourceID, journal.CaseApplication)
 	if err != nil {
 		return fmt.Errorf("finalize restored rollback journal: %w", err)
 	}
@@ -702,7 +703,7 @@ func (engine Engine) finalizeRestoredWorkspaceGitJournal(path string, journal Jo
 	}
 
 	log := engine.Repo.EventLog()
-	exists, err := rollbackEventExists(log, target, safety, eventSourceID)
+	exists, err := rollbackEventExists(log, target, safety, eventSourceID, nil)
 	if err != nil {
 		return fmt.Errorf("finalize restored workspace-git rollback journal: %w", err)
 	}
@@ -799,17 +800,19 @@ func appendWorkspaceGitRollbackEvent(repo *checkpoint.Repo, target ResolvedTarge
 	})
 }
 
-func rollbackEventExists(log eventlog.Log, target ResolvedTarget, safety checkpoint.Snapshot, sourceID string) (bool, error) {
+func rollbackEventExists(log eventlog.Log, target ResolvedTarget, safety checkpoint.Snapshot, sourceID string, application *ApplicationMetadata) (bool, error) {
 	if target.Manual {
 		// Workspace events are idempotent by source id in AppendEvent. Recovery
 		// can safely append again and receive the existing durable event.
 		return false, nil
 	}
+	sourceExists := false
 	if sourceID != "" {
 		exists, err := log.ContainsSourceID(target.SessionID, sourceID)
-		if err != nil || exists {
-			return exists, err
+		if err != nil {
+			return false, err
 		}
+		sourceExists = exists
 	}
 
 	events, err := log.Read(target.SessionID)
@@ -824,9 +827,15 @@ func rollbackEventExists(log eventlog.Log, target ResolvedTarget, safety checkpo
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
 			continue
 		}
-		if payload.SafetyRef == safety.Ref && payload.SafetyCommitSHA == safety.Commit.String() {
+		if payload.Target == target.selector() && payload.Ref == target.CheckpointRef.String() && payload.CommitSHA == target.Commit.String() && payload.SafetyRef == safety.Ref && payload.SafetyCommitSHA == safety.Commit.String() && reflect.DeepEqual(payload.CaseApplication, application) {
 			return true, nil
 		}
+		if sourceID != "" && event.SourceID == sourceID {
+			return false, fmt.Errorf("rollback event source collision for %s: durable payload does not match journal", sourceID)
+		}
+	}
+	if sourceExists {
+		return false, fmt.Errorf("rollback event source collision for %s: durable event was not found", sourceID)
 	}
 	return false, nil
 }
@@ -999,7 +1008,7 @@ func rollbackEventSourceID(target ResolvedTarget, safety checkpoint.Snapshot) st
 }
 
 func rollbackEventSourceIDForMode(target ResolvedTarget, safety checkpoint.Snapshot, mode primitives.RollbackMode) string {
-	return fmt.Sprintf("turnal:rollback:%s:%s:%s", mode, target.selector(), safety.Commit)
+	return fmt.Sprintf("turnal:rollback:%s:%s:%s:%s", mode, target.selector(), safety.Ref, safety.Commit)
 }
 
 func readJournal(path string) (Journal, bool, error) {
