@@ -35,6 +35,11 @@ func RecoverAbandoned(repo *checkpoint.Repo) error {
 				referenced[filepath.Clean(link.Workspace)] = true
 			}
 			if link.Result == nil {
+				verification, err := managedVerificationWorkspacePath(repo, link.AttemptID)
+				if err != nil {
+					return err
+				}
+				referenced[verification] = true
 				continue
 			}
 			if link.Workspace != "" && !link.Keep {

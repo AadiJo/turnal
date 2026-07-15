@@ -26,6 +26,11 @@ func Delete(repo *checkpoint.Repo, caseID primitives.CaseID) (Case, error) {
 		if err := validateCaseRepoScope(repo, definition); err != nil {
 			return err
 		}
+		for _, link := range definition.AttemptLinks {
+			if link.Result == nil {
+				return fmt.Errorf("case %s cannot be deleted while attempt %s is still running", caseID, link.AttemptID)
+			}
+		}
 		payload := caseDeletePayload{CaseID: caseID, Scope: definition.Scope, Source: definition.Source}
 		if _, err := appendRecord(repo, definition.Source, caseAdapter(definition), primitives.EventTypeCaseDelete, fmt.Sprintf("case:%s:delete", caseID), payload); err != nil {
 			return err
