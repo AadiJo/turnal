@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -15,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	caseengine "github.com/AadiJo/turnal/internal/cases"
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	forkengine "github.com/AadiJo/turnal/internal/fork"
@@ -114,21 +114,53 @@ func TestForkDryRunJSONIsStructuredAndStable(t *testing.T) {
 	}
 }
 
-func TestForkRequiresDryRunUntilExecutionExists(t *testing.T) {
+func TestForkExecutesIsolatedAttemptAndCreatesReusableCase(t *testing.T) {
 	root, sessionID, _ := createForkReadyTurn(t, "Fix the parser", true)
 	t.Chdir(root.String())
-
-	cmd := NewRootCmd()
-	var output bytes.Buffer
-	cmd.SetOut(&output)
-	cmd.SetErr(&output)
-	cmd.SetArgs([]string{"fork", sessionID.String() + ":1"})
-	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("fork without --dry-run succeeded")
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh required")
 	}
-	if !strings.Contains(err.Error(), "fork execution is not implemented") {
-		t.Fatalf("fork error = %v", err)
+
+	output := runRootStdout(t, "fork", sessionID.String()+":1", "--", "sh", "-c", "printf 'forked\\n' > app.txt")
+	for _, want := range []string{"created case:", "attempt:", "status:         succeeded", "workspace:      removed; source workspace unchanged"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("fork output missing %q:\n%s", want, output)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(root.String(), "app.txt"))
+	if err != nil || string(data) != "after\n" {
+		t.Fatalf("source workspace = %q, %v", data, err)
+	}
+	repo, err := checkpoint.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err := caseengine.Rebuild(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projection.Cases) != 1 || len(projection.Cases[0].AttemptLinks) != 1 || projection.Cases[0].AttemptLinks[0].Result == nil {
+		t.Fatalf("fork case projection = %#v", projection.Cases)
+	}
+	result := projection.Cases[0].AttemptLinks[0].Result
+	resultData, exists, err := repo.CommitFileBytesIfExists(result.PostCommit, "app.txt")
+	if err != nil || !exists || string(resultData) != "forked\n" {
+		t.Fatalf("fork result checkpoint = %q %t %v", resultData, exists, err)
+	}
+}
+
+func TestPrepareForkExecutionCommandReplaysCapturedInstructionForBareCodex(t *testing.T) {
+	definition := caseengine.Case{Readiness: forkengine.Report{Instruction: forkengine.Instruction{Status: forkengine.InstructionAvailable, Text: "Fix it"}}}
+	prepared, err := prepareForkExecutionCommand([]string{"codex", "exec"}, definition, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(prepared, []string{"codex", "exec", "Fix it"}) {
+		t.Fatalf("prepared command = %#v", prepared)
+	}
+	explicit, err := prepareForkExecutionCommand([]string{"codex", "exec", "Use another prompt"}, definition, false)
+	if err != nil || !reflect.DeepEqual(explicit, []string{"codex", "exec", "Use another prompt"}) {
+		t.Fatalf("explicit command = %#v, %v", explicit, err)
 	}
 }
 
