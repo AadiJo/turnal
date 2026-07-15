@@ -34,6 +34,7 @@ const (
 	EnvBaseCommit     = "TURNAL_FORK_BASE_COMMIT"
 	EnvInstruction    = "TURNAL_FORK_INSTRUCTION"
 	forkPipeWaitDelay = 100 * time.Millisecond
+	forkCleanupDelay  = time.Second
 )
 
 type Request struct {
@@ -105,9 +106,8 @@ func (runner ExecRunner) Run(ctx context.Context, root string, command, environm
 		return -1, err
 	}
 	if err := controller.AfterStart(); err != nil {
-		_ = controller.Cancel()
-		_ = child.Wait()
-		return -1, fmt.Errorf("contain fork process: %w", err)
+		cleanupErr := cleanupFailedForkStart(child, controller)
+		return -1, errors.Join(fmt.Errorf("contain fork process: %w", err), cleanupErr)
 	}
 	waitMainErr := controller.WaitMain()
 	var controllerErr error
@@ -146,6 +146,31 @@ func (runner ExecRunner) Run(ctx context.Context, root string, command, environm
 		return exitError.ExitCode(), nil
 	}
 	return -1, waitErr
+}
+
+func cleanupFailedForkStart(child *exec.Cmd, controller forkProcessController) error {
+	var cleanupErr error
+	if err := controller.Cancel(); err != nil {
+		cleanupErr = errors.Join(cleanupErr, fmt.Errorf("cancel uncontained fork process: %w", err))
+		if child.Process != nil {
+			if killErr := child.Process.Kill(); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
+				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("kill uncontained fork process directly: %w", killErr))
+			}
+		}
+	}
+	if err := controller.Close(); err != nil {
+		cleanupErr = errors.Join(cleanupErr, fmt.Errorf("close failed fork containment: %w", err))
+	}
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- child.Wait() }()
+	timer := time.NewTimer(forkCleanupDelay)
+	defer timer.Stop()
+	select {
+	case <-waitDone:
+		return cleanupErr
+	case <-timer.C:
+		return errors.Join(cleanupErr, fmt.Errorf("reap uncontained fork process: cleanup exceeded %s", forkCleanupDelay))
+	}
 }
 
 func Execute(ctx context.Context, repo *checkpoint.Repo, request Request) (result Result, resultErr error) {

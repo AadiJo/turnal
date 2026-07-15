@@ -1,4 +1,4 @@
-//go:build aix || illumos || solaris
+//go:build aix || dragonfly || freebsd || illumos || netbsd || openbsd || solaris
 
 package experiments
 

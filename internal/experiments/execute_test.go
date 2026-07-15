@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AadiJo/turnal/internal/cases"
 	"github.com/AadiJo/turnal/internal/checkpoint"
@@ -29,13 +30,14 @@ func (run runnerFunc) Run(ctx context.Context, root string, command, environment
 }
 
 type fakeForkProcessController struct {
+	afterErr  error
 	waitErr   error
 	cancelErr error
 	closeErr  error
 	canceled  bool
 }
 
-func (controller *fakeForkProcessController) AfterStart() error { return nil }
+func (controller *fakeForkProcessController) AfterStart() error { return controller.afterErr }
 func (controller *fakeForkProcessController) WaitMain() error   { return controller.waitErr }
 func (controller *fakeForkProcessController) Cancel() error {
 	controller.canceled = true
@@ -396,6 +398,27 @@ func TestExecRunnerDoesNotStartWithoutProcessContainment(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "marker.txt")); !os.IsNotExist(err) {
 		t.Fatalf("command started without containment: %v", err)
+	}
+}
+
+func TestExecRunnerBoundsCleanupAfterContainmentStartFailure(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh required")
+	}
+	afterFailure := errors.New("containment start failed")
+	cancelFailure := errors.New("controller cancellation failed")
+	controller := &fakeForkProcessController{afterErr: afterFailure, cancelErr: cancelFailure}
+	runner := ExecRunner{Env: []string{"PATH=" + os.Getenv("PATH")}, controllerFactory: func(*exec.Cmd) (forkProcessController, error) {
+		return controller, nil
+	}}
+	started := time.Now()
+
+	code, err := runner.Run(context.Background(), t.TempDir(), []string{"sh", "-c", "sleep 30"}, nil)
+	if code != -1 || !errors.Is(err, afterFailure) || !errors.Is(err, cancelFailure) {
+		t.Fatalf("Run = %d, %v, want containment and cancellation failures", code, err)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("containment start cleanup took %s", elapsed)
 	}
 }
 
