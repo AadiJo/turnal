@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -265,6 +266,51 @@ func TestExecRunnerScrubsInheritedGitEnvironment(t *testing.T) {
 	}
 	if string(data) != "unset|unset|"+root {
 		t.Fatalf("child environment = %q", data)
+	}
+}
+
+func TestValidateExecutionSymlinksRejectsWorkspaceEscapes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires privileges on Windows")
+	}
+	parent := t.TempDir()
+	root := filepath.Join(parent, "workspace")
+	if err := os.MkdirAll(filepath.Join(root, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(parent, "outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Symlink(outside, filepath.Join(root, "absolute")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := validateExecutionSymlinks(root); err == nil || !strings.Contains(err.Error(), "absolute target") {
+		t.Fatalf("absolute symlink error = %v", err)
+	}
+	if err := os.Remove(filepath.Join(root, "absolute")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Symlink(filepath.Join("..", "..", "outside"), filepath.Join(root, "nested", "relative")); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateExecutionSymlinks(root); err == nil || !strings.Contains(err.Error(), "escapes the isolated workspace") {
+		t.Fatalf("relative symlink error = %v", err)
+	}
+	if err := os.Remove(filepath.Join(root, "nested", "relative")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(root, "target.txt"), []byte("safe\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("..", "target.txt"), filepath.Join(root, "nested", "safe")); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateExecutionSymlinks(root); err != nil {
+		t.Fatalf("safe in-root symlink rejected: %v", err)
 	}
 }
 

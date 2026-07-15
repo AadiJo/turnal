@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -145,6 +146,9 @@ func Execute(ctx context.Context, repo *checkpoint.Repo, request Request) (resul
 	}()
 	if err := repo.MaterializeCommit(baseCommit, root, checkpoint.MaterializeOptions{ApplyCurrentSecretDenyGlobs: true}); err != nil {
 		return Result{}, fmt.Errorf("materialize case base: %w", err)
+	}
+	if err := validateExecutionSymlinks(root); err != nil {
+		return Result{}, fmt.Errorf("fork workspace isolation invariant failed: %w", err)
 	}
 	captureRepo, err := repo.ForCaptureRoot(root)
 	if err != nil {
@@ -293,6 +297,9 @@ func verifyAttempt(ctx context.Context, repo *checkpoint.Repo, definition cases.
 	if err := repo.MaterializeCommit(post.Commit, root, checkpoint.MaterializeOptions{ApplyCurrentSecretDenyGlobs: true}); err != nil {
 		return nil, fmt.Errorf("materialize attempt verification checkpoint: %w", err)
 	}
+	if err := validateExecutionSymlinks(root); err != nil {
+		return nil, fmt.Errorf("verification workspace isolation invariant failed: %w", err)
+	}
 	parts, err := post.Ref.Parts()
 	if err != nil {
 		return nil, fmt.Errorf("parse attempt verification checkpoint ref: %w", err)
@@ -313,6 +320,37 @@ func verifyAttempt(ctx context.Context, repo *checkpoint.Repo, definition cases.
 		return &report, fmt.Errorf("verify attempt %s: %w", attemptID, err)
 	}
 	return &report, nil
+}
+
+func validateExecutionSymlinks(root string) error {
+	cleanRoot, err := filepath.Abs(root)
+	if err != nil {
+		return fmt.Errorf("resolve workspace root: %w", err)
+	}
+	return filepath.WalkDir(cleanRoot, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink == 0 {
+			return nil
+		}
+		target, err := os.Readlink(path)
+		if err != nil {
+			return fmt.Errorf("read symlink %s: %w", path, err)
+		}
+		if filepath.IsAbs(target) {
+			return fmt.Errorf("symlink %s has absolute target %q", path, target)
+		}
+		resolved := filepath.Clean(filepath.Join(filepath.Dir(path), target))
+		relative, err := filepath.Rel(cleanRoot, resolved)
+		if err != nil {
+			return fmt.Errorf("resolve symlink %s target %q: %w", path, target, err)
+		}
+		if relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+			return fmt.Errorf("symlink %s target %q escapes the isolated workspace", path, target)
+		}
+		return nil
+	})
 }
 
 func currentCase(repo *checkpoint.Repo, caseID primitives.CaseID) (cases.Case, error) {
