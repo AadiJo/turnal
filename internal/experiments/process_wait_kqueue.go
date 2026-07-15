@@ -4,6 +4,7 @@ package experiments
 
 import (
 	"errors"
+	"fmt"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -25,14 +26,24 @@ func waitForForkProcessExit(pid int) error {
 	events := make([]unix.Kevent_t, 1)
 	for {
 		count, err := unix.Kevent(queue, changes, events, nil)
-		changes = nil
 		if errors.Is(err, syscall.EINTR) {
 			continue
 		}
 		if err != nil {
 			return err
 		}
-		if count == 1 {
+		changes = nil
+		if count != 1 {
+			continue
+		}
+		event := events[0]
+		if event.Flags&unix.EV_ERROR != 0 {
+			if event.Data == 0 {
+				return fmt.Errorf("register fork process exit notification")
+			}
+			return syscall.Errno(event.Data)
+		}
+		if event.Ident == uint64(pid) && event.Filter == unix.EVFILT_PROC && event.Fflags&unix.NOTE_EXIT != 0 {
 			return nil
 		}
 	}

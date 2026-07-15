@@ -28,6 +28,21 @@ func (run runnerFunc) Run(ctx context.Context, root string, command, environment
 	return run(ctx, root, command, environment)
 }
 
+type fakeForkProcessController struct {
+	waitErr   error
+	cancelErr error
+	closeErr  error
+	canceled  bool
+}
+
+func (controller *fakeForkProcessController) AfterStart() error { return nil }
+func (controller *fakeForkProcessController) WaitMain() error   { return controller.waitErr }
+func (controller *fakeForkProcessController) Cancel() error {
+	controller.canceled = true
+	return controller.cancelErr
+}
+func (controller *fakeForkProcessController) Close() error { return controller.closeErr }
+
 func TestExecuteRunsFromCaseBaseAndCapturesDurableResult(t *testing.T) {
 	repo, definition := experimentCase(t)
 	sourcePath := filepath.Join(repo.WorkspaceRoot.String(), "app.txt")
@@ -343,6 +358,60 @@ func TestExecRunnerScrubsInheritedGitEnvironment(t *testing.T) {
 	}
 	if string(data) != "unset|unset|"+root {
 		t.Fatalf("child environment = %q", data)
+	}
+}
+
+func TestExecRunnerReportsContainmentWaitFailureOverNonzeroExit(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh required")
+	}
+	waitFailure := errors.New("wait observation failed")
+	controller := &fakeForkProcessController{waitErr: waitFailure}
+	runner := ExecRunner{Env: []string{"PATH=" + os.Getenv("PATH")}, controllerFactory: func(*exec.Cmd) (forkProcessController, error) {
+		return controller, nil
+	}}
+
+	code, err := runner.Run(context.Background(), t.TempDir(), []string{"sh", "-c", "exit 7"}, nil)
+	if code != -1 || !errors.Is(err, waitFailure) {
+		t.Fatalf("Run = %d, %v, want containment wait failure", code, err)
+	}
+	if !controller.canceled {
+		t.Fatal("containment wait failure did not cancel the child")
+	}
+}
+
+func TestExecRunnerDoesNotStartWithoutProcessContainment(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh required")
+	}
+	root := t.TempDir()
+	unsupported := errors.New("containment unavailable")
+	runner := ExecRunner{Env: []string{"PATH=" + os.Getenv("PATH")}, controllerFactory: func(*exec.Cmd) (forkProcessController, error) {
+		return nil, unsupported
+	}}
+
+	code, err := runner.Run(context.Background(), root, []string{"sh", "-c", "printf started > marker.txt"}, nil)
+	if code != -1 || !errors.Is(err, unsupported) {
+		t.Fatalf("Run = %d, %v, want containment preparation failure", code, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "marker.txt")); !os.IsNotExist(err) {
+		t.Fatalf("command started without containment: %v", err)
+	}
+}
+
+func TestExecRunnerReportsContainmentCloseFailureOverNonzeroExit(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh required")
+	}
+	closeFailure := errors.New("descendant cleanup failed")
+	controller := &fakeForkProcessController{closeErr: closeFailure}
+	runner := ExecRunner{Env: []string{"PATH=" + os.Getenv("PATH")}, controllerFactory: func(*exec.Cmd) (forkProcessController, error) {
+		return controller, nil
+	}}
+
+	code, err := runner.Run(context.Background(), t.TempDir(), []string{"sh", "-c", "exit 9"}, nil)
+	if code != -1 || !errors.Is(err, closeFailure) {
+		t.Fatalf("Run = %d, %v, want containment close failure", code, err)
 	}
 }
 

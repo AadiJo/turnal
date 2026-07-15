@@ -66,10 +66,11 @@ type Runner interface {
 }
 
 type ExecRunner struct {
-	Stdin  io.Reader
-	Stdout io.Writer
-	Stderr io.Writer
-	Env    []string
+	Stdin             io.Reader
+	Stdout            io.Writer
+	Stderr            io.Writer
+	Env               []string
+	controllerFactory func(*exec.Cmd) (forkProcessController, error)
 }
 
 func (runner ExecRunner) Run(ctx context.Context, root string, command, environment []string) (int, error) {
@@ -86,7 +87,11 @@ func (runner ExecRunner) Run(ctx context.Context, root string, command, environm
 		baseEnvironment = os.Environ()
 	}
 	child.Env = forkEnvironment(baseEnvironment, root, environment)
-	controller, err := newForkProcessController(child)
+	controllerFactory := runner.controllerFactory
+	if controllerFactory == nil {
+		controllerFactory = newForkProcessController
+	}
+	controller, err := controllerFactory(child)
 	if err != nil {
 		return -1, fmt.Errorf("prepare fork process containment: %w", err)
 	}
@@ -105,39 +110,42 @@ func (runner ExecRunner) Run(ctx context.Context, root string, command, environm
 		return -1, fmt.Errorf("contain fork process: %w", err)
 	}
 	waitMainErr := controller.WaitMain()
-	var closeErr error
+	var controllerErr error
 	if waitMainErr == nil {
 		// The leader is exited but deliberately unreaped, so its PID/process
 		// identity cannot be reused while containment terminates descendants.
-		closeErr = controller.Close()
-	} else if !errors.Is(waitMainErr, errForkWaitMainUnsupported) {
-		_ = controller.Cancel()
+		if closeErr := controller.Close(); closeErr != nil {
+			controllerErr = fmt.Errorf("terminate fork process descendants: %w", closeErr)
+		}
+	} else {
+		controllerErr = fmt.Errorf("wait for contained fork process: %w", waitMainErr)
+		if cancelErr := controller.Cancel(); cancelErr != nil {
+			controllerErr = errors.Join(controllerErr, fmt.Errorf("cancel fork process after containment failure: %w", cancelErr))
+		}
 	}
-	err = child.Wait()
-	if errors.Is(waitMainErr, errForkWaitMainUnsupported) {
-		closeErr = controller.Close()
-	} else if waitMainErr != nil && err == nil {
-		err = fmt.Errorf("wait for contained fork process: %w", waitMainErr)
-	}
-	if errors.Is(err, exec.ErrWaitDelay) {
+	waitErr := child.Wait()
+	if errors.Is(waitErr, exec.ErrWaitDelay) {
 		// The main process exited successfully; Wait only had to close a pipe
 		// retained by a descendant, which the controller has now terminated.
-		err = nil
+		waitErr = nil
 	}
-	if err == nil && closeErr != nil {
-		err = fmt.Errorf("terminate fork process descendants: %w", closeErr)
+	if controllerErr != nil {
+		if waitErr != nil {
+			controllerErr = errors.Join(controllerErr, fmt.Errorf("wait for fork command after containment failure: %w", waitErr))
+		}
+		return -1, controllerErr
 	}
-	if err == nil {
+	if waitErr == nil {
 		return 0, nil
 	}
 	if ctx.Err() != nil {
 		return -1, ctx.Err()
 	}
 	var exitError *exec.ExitError
-	if errors.As(err, &exitError) {
+	if errors.As(waitErr, &exitError) {
 		return exitError.ExitCode(), nil
 	}
-	return -1, err
+	return -1, waitErr
 }
 
 func Execute(ctx context.Context, repo *checkpoint.Repo, request Request) (result Result, resultErr error) {

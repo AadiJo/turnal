@@ -2,19 +2,12 @@
 
 package experiments
 
-import "os/exec"
+import (
+	"fmt"
+	"os/exec"
+	"runtime"
+)
 
-type directForkProcessController struct{ cmd *exec.Cmd }
-
-func newForkProcessController(cmd *exec.Cmd) (forkProcessController, error) {
-	return &directForkProcessController{cmd: cmd}, nil
+func newForkProcessController(_ *exec.Cmd) (forkProcessController, error) {
+	return nil, fmt.Errorf("fork process containment is unsupported on %s", runtime.GOOS)
 }
-func (controller *directForkProcessController) AfterStart() error { return nil }
-func (controller *directForkProcessController) WaitMain() error   { return errForkWaitMainUnsupported }
-func (controller *directForkProcessController) Cancel() error {
-	if controller.cmd.Process == nil {
-		return nil
-	}
-	return controller.cmd.Process.Kill()
-}
-func (controller *directForkProcessController) Close() error { return nil }
