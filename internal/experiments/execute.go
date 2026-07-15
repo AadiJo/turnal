@@ -27,12 +27,13 @@ import (
 )
 
 const (
-	EnvCaseID      = "TURNAL_FORK_CASE_ID"
-	EnvAttemptID   = "TURNAL_FORK_ATTEMPT_ID"
-	EnvRunID       = "TURNAL_FORK_RUN_ID"
-	EnvSource      = "TURNAL_FORK_SOURCE"
-	EnvBaseCommit  = "TURNAL_FORK_BASE_COMMIT"
-	EnvInstruction = "TURNAL_FORK_INSTRUCTION"
+	EnvCaseID         = "TURNAL_FORK_CASE_ID"
+	EnvAttemptID      = "TURNAL_FORK_ATTEMPT_ID"
+	EnvRunID          = "TURNAL_FORK_RUN_ID"
+	EnvSource         = "TURNAL_FORK_SOURCE"
+	EnvBaseCommit     = "TURNAL_FORK_BASE_COMMIT"
+	EnvInstruction    = "TURNAL_FORK_INSTRUCTION"
+	forkPipeWaitDelay = 100 * time.Millisecond
 )
 
 type Request struct {
@@ -89,6 +90,11 @@ func (runner ExecRunner) Run(ctx context.Context, root string, command, environm
 	if err != nil {
 		return -1, fmt.Errorf("prepare fork process containment: %w", err)
 	}
+	// CommandContext's default cancellation kills only the direct child. Route
+	// it through the platform containment controller, and bound the time Wait
+	// may spend on inherited output pipes after the main process exits.
+	child.Cancel = controller.Cancel
+	child.WaitDelay = forkPipeWaitDelay
 	defer controller.Close()
 	if err := child.Start(); err != nil {
 		return -1, err
@@ -99,7 +105,13 @@ func (runner ExecRunner) Run(ctx context.Context, root string, command, environm
 		return -1, fmt.Errorf("contain fork process: %w", err)
 	}
 	err = child.Wait()
-	if closeErr := controller.Close(); err == nil && closeErr != nil {
+	closeErr := controller.Close()
+	if errors.Is(err, exec.ErrWaitDelay) {
+		// The main process exited successfully; Wait only had to close a pipe
+		// retained by a descendant, which the controller has now terminated.
+		err = nil
+	}
+	if err == nil && closeErr != nil {
 		err = fmt.Errorf("terminate fork process descendants: %w", closeErr)
 	}
 	if err == nil {
