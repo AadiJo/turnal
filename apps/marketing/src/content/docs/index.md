@@ -294,7 +294,17 @@ turnal fork claude-7f2a:4 --dry-run
 turnal fork claude-7f2a:4 --dry-run --json
 ```
 
-Fork execution is not implemented. This command is a read-only preflight report: it does not create files, launch an agent, or claim that a recorded turn is deterministic.
+The preflight is read-only and does not claim that a recorded turn is deterministic. When the report has a usable base, execute a supervised attempt by putting the runner after `--`:
+
+```sh
+# Reuse the captured instruction with Codex.
+turnal fork claude-7f2a:4 -- codex exec
+
+# Or use any runner; Turnal exports TURNAL_FORK_* provenance variables.
+turnal fork claude-7f2a:4 -- sh -c 'my-runner "$TURNAL_FORK_INSTRUCTION"'
+```
+
+Turnal creates or reuses a Case, materializes its pre-turn checkpoint into an owner-only temporary directory, and runs the child there. The source workspace is never the child's working directory, `.git/` and `.turnal/` are excluded, and inherited `GIT_*` variables are removed. The wrapper records pre/post checkpoints, command status, and results from the verifier contract frozen into the Case. The directory is removed by default; `--keep` preserves it.
 
 Experimental cases turn that readiness report into an immutable record. A case preserves the source turn, task revision, starting checkpoint, repository verifier contract, known limitations, and links to any existing wrapper attempts associated with the source turn.
 
@@ -310,7 +320,17 @@ turnal task show task_...
 turnal case create codex-b91e:2 --task task_...
 ```
 
-Cases and tasks currently support creation and inspection. They do not execute agents or compare outcomes automatically, and their CLI is experimental.
+Compare completed attempts against their common immutable base, select one, and apply it only when the live workspace still matches that base:
+
+```sh
+turnal compare case_...
+turnal compare case_... --patch attempt_...
+turnal select case_... attempt_...
+turnal apply case_... --dry-run
+turnal apply case_...
+```
+
+Apply is exact-base only and does not attempt a three-way merge. A real apply uses the journaled rollback engine, captures a safety checkpoint before changing files, restores the selected attempt's post-checkpoint, and records the application on the Case.
 
 ---
 
@@ -704,13 +724,27 @@ With no target, checks run in the live workspace. Historical verification requir
 
 ### `turnal fork`
 
-Inspect whether a recorded turn has enough captured context for a faithful rerun.
+Inspect fork readiness or execute a supervised command from the historical pre-turn workspace.
 
 ```text
 turnal fork SESSION:TURN --dry-run [--json]
+turnal fork SESSION:TURN|CASE_ID [--keep] [--no-replay-instruction]
+            [--json] -- COMMAND [ARGS...]
 ```
 
-`--dry-run` is currently required because fork execution is not implemented. The report is read-only and distinguishes exact captured state from missing, live, or reauthorization-dependent context.
+`--dry-run` is read-only and distinguishes exact captured state from missing, live, or reauthorization-dependent context. Execution creates or reuses a Case, runs outside the source workspace, records a durable Attempt, and removes its temporary directory unless `--keep` is set. Bare `codex` and `codex exec` commands receive the captured instruction automatically; explicit command arguments are preserved.
+
+### `turnal compare`, `turnal select`, and `turnal apply`
+
+Review attempts against their common Case base, record the chosen result, and restore it safely.
+
+```text
+turnal compare CASE_ID [--patch ATTEMPT_ID] [--json]
+turnal select CASE_ID ATTEMPT_ID [--json]
+turnal apply CASE_ID [--attempt ATTEMPT_ID] [--dry-run] [--json]
+```
+
+Comparison reports command status, the frozen verifier outcome, aggregate additions and deletions, and per-file stats; `--patch` includes one full base-to-result patch. Selection is append-only and may be changed without altering attempts. Apply requires the live captured surface to equal the Case base, previews the restore with `--dry-run`, and creates a rollback safety checkpoint before an actual restore. Diverged workspaces are rejected because three-way application is not implemented.
 
 ### `turnal case` and `turnal task`
 
@@ -722,7 +756,7 @@ turnal case show CASE_ID [--json]
 turnal task show TASK_ID [--json]
 ```
 
-Creating a case without `--task` creates a task identity and its initial revision. `--task` creates a sibling case only when the recorded instruction matches the task's applicable revision. These commands preserve and inspect evidence; they do not launch an agent.
+Creating a case without `--task` creates a task identity and its initial revision. `--task` creates a sibling case only when the recorded instruction matches the task's applicable revision. `case show` includes linked attempt status, verifier outcome, and the current selection; `turnal fork` is the command that launches the isolated runner.
 
 ### `turnal recovery`
 

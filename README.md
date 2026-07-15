@@ -85,6 +85,9 @@ turnal diff <session>:<turn>
 # Check what Turnal could reconstruct before rerunning a task.
 turnal fork <session>:<turn> --dry-run
 
+# Run the captured instruction from the historical pre-turn workspace.
+turnal fork <session>:<turn> -- codex exec
+
 # See what would be restored, then perform the rollback.
 turnal rollback --to <session>:<turn>:pre --dry-run
 turnal rollback --to <session>:<turn>:pre
@@ -302,7 +305,7 @@ Checks run sequentially and continue after ordinary failures. Turnal terminates 
 
 The command exits `0` when every check passes and `3` after running every eligible check when any check fails, times out, or cannot start. Invalid configuration, unresolved or corrupt targets, materialization failures, and cleanup errors are ordinary Turnal errors and exit `1`. A passing verifier is evidence for the property that command checks; it is not proof that the entire change is correct.
 
-Verifier reports are currently returned and printed only. They are not yet attached to logical Attempts because Attempt identity and reconciliation are outside this release.
+Standalone verifier reports are printed or returned as JSON. Forked Case attempts also run the verifier contract frozen when the Case was created, and the report is stored with the durable attempt result so later comparisons retain the evidence used at execution time.
 
 ## Fork readiness
 
@@ -320,9 +323,43 @@ toolchain, live external services, and secrets that require fresh authorization.
 A redacted or missing prompt is reported as requiring new user input and is
 never recovered from raw storage.
 
-This command is currently inspection-only. It does not create a worktree or run
-an agent. Use `turnal replay checkout <session>:<turn>:pre` to materialize the
-captured files for manual inspection.
+Execute a supervised attempt from that checkpoint by placing the command after
+`--`:
+
+```sh
+# A bare Codex command receives the exact captured instruction automatically.
+turnal fork <session>:<turn> -- codex exec
+
+# Any runner can consume the provenance exported as TURNAL_FORK_* variables.
+turnal fork <session>:<turn> -- sh -c 'my-runner "$TURNAL_FORK_INSTRUCTION"'
+```
+
+Execution creates or reuses an immutable Case for the source turn, materializes
+its pre-turn checkpoint into an owner-only temporary directory, and runs the
+child there. The child never runs in the source workspace, `.git/` and
+`.turnal/` are excluded, and inherited `GIT_*` variables are removed. Turnal
+records wrapper pre/post checkpoints, the command status, and the Case's frozen
+verifier report as a durable Attempt. The temporary directory is removed by
+default; `--keep` preserves it for inspection. Bare `codex` and `codex exec`
+commands receive the captured instruction unless `--no-replay-instruction` is
+set; commands with explicit arguments are left unchanged.
+
+Compare every completed Attempt against the same Case base, record a choice,
+then preview or apply it:
+
+```sh
+turnal compare <case-id>
+turnal compare <case-id> --patch <attempt-id>
+turnal select <case-id> <attempt-id>
+turnal apply <case-id> --dry-run
+turnal apply <case-id>
+```
+
+Apply is intentionally exact-base only. It refuses to change a workspace whose
+captured surface differs from the Case base; when the base matches, it uses the
+journaled rollback engine, creates a safety checkpoint first, restores the
+selected post-checkpoint, and records the application on the Case. It does not
+perform a three-way merge.
 
 ## Worktrees and store history
 
