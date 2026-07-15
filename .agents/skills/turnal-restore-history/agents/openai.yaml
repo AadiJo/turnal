@@ -1,0 +1,4 @@
+interface:
+  display_name: "Restore Turnal History"
+  short_description: "Preview and safely restore a Turnal checkpoint"
+  default_prompt: "Use $turnal-restore-history to preview and safely restore the requested Turnal checkpoint."

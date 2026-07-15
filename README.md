@@ -68,6 +68,22 @@ turnal status --probe-agent-capture
 
 Normal status is offline. The explicit capture probe starts Codex app-server only long enough to call `hooks/list`; it does not start a thread or turn, invoke a model, modify workspace files, or change provider trust or configuration. Codex may still update its own local cache and runtime state while app-server starts. The probe also explains the Claude Agent SDK limitation that only the host knows whether it loads project settings.
 
+### Agent skills
+
+Turnal includes three project-scoped agent skills. The npm CLI does not copy them into another repository, so place the desired skill folders under `<project>/.agents/skills/` as part of that project's agent setup. Compatible agents can select a skill from its description or invoke it explicitly:
+
+- [`$turnal-inspect-history`](.agents/skills/turnal-inspect-history/SKILL.md) searches recorded work before implementation when a request may have been tried before, revisits existing code, or depends on missing prior intent. It can recover what the user asked for, what earlier agents attempted, what changed, and whether checks passed.
+- [`$turnal-fork-history`](.agents/skills/turnal-fork-history/SKILL.md) previews fork readiness, reruns a recorded task from its historical pre-turn workspace, and compares or selects isolated attempts.
+- [`$turnal-restore-history`](.agents/skills/turnal-restore-history/SKILL.md) resolves checkpoint arguments, previews rollback, and performs an explicitly requested restore or interrupted-rollback recovery safely.
+
+For example, ask the agent directly:
+
+```text
+$turnal-inspect-history Check whether this request has been tried before and recover the earlier user intent before implementing it.
+$turnal-fork-history Rerun <session>:<turn> in isolation and compare the result with the existing attempts.
+$turnal-restore-history Preview restoring the workspace to before <session>:<turn>; do not apply it yet.
+```
+
 Now use your agent normally. After it has completed a turn:
 
 ```sh

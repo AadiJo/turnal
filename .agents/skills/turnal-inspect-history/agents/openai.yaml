@@ -1,0 +1,4 @@
+interface:
+  display_name: "Inspect Turnal History"
+  short_description: "Find prior attempts, intent, and implementation history"
+  default_prompt: "Use $turnal-inspect-history to check for relevant prior attempts and recorded intent before proceeding."

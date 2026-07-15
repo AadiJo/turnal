@@ -1,0 +1,4 @@
+interface:
+  display_name: "Fork Turnal History"
+  short_description: "Rerun and compare a recorded agent turn"
+  default_prompt: "Use $turnal-fork-history to assess and rerun this recorded turn in isolation."

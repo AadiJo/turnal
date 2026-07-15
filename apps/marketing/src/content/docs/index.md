@@ -61,6 +61,20 @@ turnal log --transcript
 2. **Install agent hooks.** Existing non-Turnal hooks are preserved. Invalid supported config files are moved aside with a `.backup` suffix before replacement.
 3. **Work normally.** The provider launches as usual; Turnal records hook events and snapshots in the background.
 
+### Give the agent Turnal workflows
+
+Turnal's source repository includes three project-scoped skills. The npm CLI does not copy them into another repository, so place the desired folders under `<project>/.agents/skills/` as part of that project's agent setup. Compatible agents can select them from their descriptions or you can invoke them explicitly:
+
+- [`$turnal-inspect-history`](https://github.com/AadiJo/turnal/blob/main/.agents/skills/turnal-inspect-history/SKILL.md) checks recorded work before implementation when a request may have been tried before, revisits existing code, or depends on missing prior intent. It recovers what the user asked for, what earlier agents attempted, what changed, and whether checks passed.
+- [`$turnal-fork-history`](https://github.com/AadiJo/turnal/blob/main/.agents/skills/turnal-fork-history/SKILL.md) previews fork readiness, reruns a recorded task from its historical pre-turn workspace, and compares or selects isolated attempts.
+- [`$turnal-restore-history`](https://github.com/AadiJo/turnal/blob/main/.agents/skills/turnal-restore-history/SKILL.md) resolves checkpoint arguments, previews rollback, and performs an explicitly requested restore or interrupted-rollback recovery safely.
+
+```text
+$turnal-inspect-history Check whether this request has been tried before and recover the earlier user intent before implementing it.
+$turnal-fork-history Rerun <session>:<turn> in isolation and compare the result with the existing attempts.
+$turnal-restore-history Preview restoring the workspace to before <session>:<turn>; do not apply it yet.
+```
+
 > **Check health before relying on recovery.** Run `turnal status` after setup. It validates identities, hidden Git, durable refs, configuration, hook wiring, and unfinished merge or rollback journals. A non-zero exit status means the workspace needs attention.
 
 ---
