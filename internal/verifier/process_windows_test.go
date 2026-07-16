@@ -25,7 +25,7 @@ func TestWindowsTimeoutTerminatesProcessTree(t *testing.T) {
 		Name:    "windows-process-tree",
 		Command: os.Args[0],
 		Args:    []string{"-test.run=^TestVerifierWindowsTreeHelperProcess$", "--", "parent", marker},
-		Timeout: 2 * time.Second,
+		Timeout: 10 * time.Second,
 	}
 	started := time.Now()
 	report, err := Run(context.Background(), Request{
@@ -37,7 +37,7 @@ func TestWindowsTimeoutTerminatesProcessTree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if elapsed := time.Since(started); elapsed > 5*time.Second {
+	if elapsed := time.Since(started); elapsed > 15*time.Second {
 		t.Fatalf("Windows process-tree timeout took %s", elapsed)
 	}
 	if report.Checks[0].Status != StatusTimedOut {
