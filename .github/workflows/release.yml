@@ -1,0 +1,48 @@
+name: Publish release
+
+on:
+  workflow_call:
+    inputs:
+      channel:
+        description: Release channel selected by the gated CI workflow
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: publish-${{ inputs.channel }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish ${{ inputs.channel }} release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NPM_PUBLISH_PROVENANCE: "true"
+          TURNAL_PUBLISH: "true"
+        run: scripts/ci/release.sh "${{ inputs.channel }}" "${{ github.ref_name }}" "${{ github.run_number }}" "${{ github.sha }}"

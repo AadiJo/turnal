@@ -344,13 +344,17 @@ func TestForkVerifierHelper(t *testing.T) {
 }
 
 func TestExecRunnerScrubsInheritedGitEnvironment(t *testing.T) {
-	if _, err := exec.LookPath("sh"); err != nil {
-		t.Skip("sh required")
-	}
 	root := t.TempDir()
 	output := filepath.Join(root, "environment.txt")
-	runner := ExecRunner{Env: []string{"PATH=" + os.Getenv("PATH"), "GIT_DIR=/danger", "GIT_WORK_TREE=/danger", "PWD=/stale"}}
-	code, err := runner.Run(context.Background(), root, []string{"sh", "-c", `printf '%s|%s|%s' "${GIT_DIR-unset}" "${GIT_WORK_TREE-unset}" "$PWD" > environment.txt`}, []string{EnvRunID + "=run_11111111111111111111111111111111"})
+	baseEnvironment := append([]string(nil), os.Environ()...)
+	baseEnvironment = append(baseEnvironment, "GIT_DIR=/danger", "GIT_WORK_TREE=/danger", "PWD=/stale")
+	runner := ExecRunner{Env: baseEnvironment}
+	code, err := runner.Run(
+		context.Background(),
+		root,
+		[]string{os.Args[0], "-test.run=^TestExecRunnerEnvironmentHelper$"},
+		[]string{EnvRunID + "=run_11111111111111111111111111111111", "TURNAL_EXEC_RUNNER_ENV_HELPER=1"},
+	)
 	if err != nil || code != 0 {
 		t.Fatalf("Run = %d, %v", code, err)
 	}
@@ -361,6 +365,23 @@ func TestExecRunnerScrubsInheritedGitEnvironment(t *testing.T) {
 	if string(data) != "unset|unset|"+root {
 		t.Fatalf("child environment = %q", data)
 	}
+}
+
+func TestExecRunnerEnvironmentHelper(t *testing.T) {
+	if os.Getenv("TURNAL_EXEC_RUNNER_ENV_HELPER") != "1" {
+		return
+	}
+	value := fmt.Sprintf("%s|%s|%s", environmentValue("GIT_DIR"), environmentValue("GIT_WORK_TREE"), os.Getenv("PWD"))
+	if err := os.WriteFile("environment.txt", []byte(value), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func environmentValue(name string) string {
+	if value, ok := os.LookupEnv(name); ok {
+		return value
+	}
+	return "unset"
 }
 
 func TestExecRunnerReportsContainmentWaitFailureOverNonzeroExit(t *testing.T) {

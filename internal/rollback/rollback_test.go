@@ -28,6 +28,34 @@ func writeOwnedJournal(repo *checkpoint.Repo, journal Journal) error {
 	return writeJournal(JournalPath(repo), journal)
 }
 
+func TestValidateJournalOwnerAcceptsWorkspaceFilesystemAlias(t *testing.T) {
+	requireGit(t)
+	parent := t.TempDir()
+	root := filepath.Join(parent, "workspace")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	alias := filepath.Join(parent, "workspace-alias")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	workspace, err := primitives.ParseWorkspaceRoot(root)
+	if err != nil {
+		t.Fatalf("ParseWorkspaceRoot: %v", err)
+	}
+	repo, err := checkpoint.Init(workspace)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	journal := Journal{
+		Version: 1, RepoID: repo.RepoID, StoreID: repo.StoreID,
+		WorktreeID: repo.WorktreeID, WorkspaceRoot: alias,
+	}
+	if err := validateJournalOwner(repo, journal); err != nil {
+		t.Fatalf("validateJournalOwner: %v", err)
+	}
+}
+
 func TestResolveTargetDefaultsToPost(t *testing.T) {
 	requireGit(t)
 

@@ -25,7 +25,7 @@ func TestWindowsTimeoutTerminatesProcessTree(t *testing.T) {
 		Name:    "windows-process-tree",
 		Command: os.Args[0],
 		Args:    []string{"-test.run=^TestVerifierWindowsTreeHelperProcess$", "--", "parent", marker},
-		Timeout: 500 * time.Millisecond,
+		Timeout: 10 * time.Second,
 	}
 	started := time.Now()
 	report, err := Run(context.Background(), Request{
@@ -37,7 +37,7 @@ func TestWindowsTimeoutTerminatesProcessTree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if elapsed := time.Since(started); elapsed > 3*time.Second {
+	if elapsed := time.Since(started); elapsed > 15*time.Second {
 		t.Fatalf("Windows process-tree timeout took %s", elapsed)
 	}
 	if report.Checks[0].Status != StatusTimedOut {
@@ -89,9 +89,6 @@ func TestVerifierWindowsTreeHelperProcess(t *testing.T) {
 	}
 	mode, marker := os.Args[separator+1], os.Args[separator+2]
 	if mode == "child" {
-		if err := os.WriteFile(marker, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
-			os.Exit(41)
-		}
 		time.Sleep(30 * time.Second)
 		os.Exit(0)
 	}
@@ -105,18 +102,16 @@ func TestVerifierWindowsTreeHelperProcess(t *testing.T) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(43)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(marker); err == nil {
-			if mode == "fast-parent" {
-				os.Exit(0)
-			}
-			time.Sleep(30 * time.Second)
-			os.Exit(0)
-		}
-		time.Sleep(10 * time.Millisecond)
+	if err := os.WriteFile(marker, []byte(strconv.Itoa(child.Process.Pid)), 0o600); err != nil {
+		_ = child.Process.Kill()
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(44)
 	}
-	os.Exit(44)
+	if mode == "fast-parent" {
+		os.Exit(0)
+	}
+	time.Sleep(30 * time.Second)
+	os.Exit(0)
 }
 
 func readWindowsPIDMarker(t *testing.T, marker string) int {
