@@ -164,9 +164,7 @@ func TestListDurableStreamsRejectsSymlink(t *testing.T) {
 	if err := os.WriteFile(target, []byte("outside\n"), 0o644); err != nil {
 		t.Fatalf("write target: %v", err)
 	}
-	if err := os.Symlink(target, filepath.Join(dir, "demo.jsonl")); err != nil {
-		t.Fatalf("symlink: %v", err)
-	}
+	createTestSymlink(t, target, filepath.Join(dir, "demo.jsonl"))
 	if _, err := ListDurableStreams(metadataDir); err == nil || !strings.Contains(err.Error(), "symlink is not allowed") {
 		t.Fatalf("ListDurableStreams error = %v, want symlink invariant", err)
 	}

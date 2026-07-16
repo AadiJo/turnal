@@ -27,18 +27,27 @@ type Result struct {
 	Residuals     []string
 }
 
+type sessionLockAcquirer func(*checkpoint.Repo, primitives.SessionID) (func(), error)
+
 func DropSession(repo *checkpoint.Repo, sessionID primitives.SessionID, dryRun bool) (Result, error) {
 	return dropSession(repo, sessionID, dryRun, removeRetentionPath)
 }
 
 func dropSession(repo *checkpoint.Repo, sessionID primitives.SessionID, dryRun bool, removePath func(string) error) (Result, error) {
+	return dropSessionWithLock(repo, sessionID, dryRun, removePath, adapters.AcquireSessionLock)
+}
+
+func dropSessionWithLock(repo *checkpoint.Repo, sessionID primitives.SessionID, dryRun bool, removePath func(string) error, acquireSessionLock sessionLockAcquirer) (Result, error) {
 	if repo == nil {
 		return Result{}, fmt.Errorf("retention repo is required")
 	}
 	if removePath == nil {
 		return Result{}, fmt.Errorf("retention path remover is required")
 	}
-	unlockSession, err := adapters.AcquireSessionLock(repo, sessionID)
+	if acquireSessionLock == nil {
+		return Result{}, fmt.Errorf("retention session lock acquirer is required")
+	}
+	unlockSession, err := acquireSessionLock(repo, sessionID)
 	if err != nil {
 		return Result{}, fmt.Errorf("lock session %s for deletion: %w", sessionID, err)
 	}

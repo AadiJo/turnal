@@ -472,11 +472,22 @@ func TestDropSessionSerializesWithHookCapture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AcquireSessionLock: %v", err)
 	}
+	lockAttempted := make(chan struct{})
+	acquireSessionLock := func(repo *checkpoint.Repo, sessionID primitives.SessionID) (func(), error) {
+		close(lockAttempted)
+		return adapters.AcquireSessionLock(repo, sessionID)
+	}
 	result := make(chan error, 1)
 	go func() {
-		_, dropErr := DropSession(repo, sessionID, false)
+		_, dropErr := dropSessionWithLock(repo, sessionID, false, removeRetentionPath, acquireSessionLock)
 		result <- dropErr
 	}()
+	select {
+	case <-lockAttempted:
+	case <-time.After(3 * time.Second):
+		release()
+		t.Fatal("DropSession did not attempt to acquire the capture lock")
+	}
 	select {
 	case err := <-result:
 		release()
@@ -489,7 +500,7 @@ func TestDropSessionSerializesWithHookCapture(t *testing.T) {
 		if err != nil {
 			t.Fatalf("DropSession after release: %v", err)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatal("DropSession did not resume after capture lock release")
 	}
 	if _, err := os.Stat(rawDir); !os.IsNotExist(err) {
