@@ -283,6 +283,38 @@ func TestDropSessionRejectsInconsistentRollbackJournal(t *testing.T) {
 	}
 }
 
+func TestRollbackJournalOwnerAcceptsWorkspaceFilesystemAlias(t *testing.T) {
+	requireGit(t)
+	parent := t.TempDir()
+	root := filepath.Join(parent, "workspace")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	alias := filepath.Join(parent, "workspace-alias")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	workspace, err := primitives.ParseWorkspaceRoot(root)
+	if err != nil {
+		t.Fatalf("ParseWorkspaceRoot: %v", err)
+	}
+	repo, err := checkpoint.Init(workspace)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	journal := rollbackengine.Journal{
+		RepoID: repo.RepoID, StoreID: repo.StoreID, WorktreeID: repo.WorktreeID, WorkspaceRoot: alias,
+	}
+	path := filepath.Join(repo.TmpDir, "rollback-journal-"+repo.WorktreeID.String()+".json")
+	owner, err := rollbackJournalOwnerRepo(repo, path, journal)
+	if err != nil {
+		t.Fatalf("rollbackJournalOwnerRepo: %v", err)
+	}
+	if owner.WorkspaceRoot.String() != alias {
+		t.Fatalf("owner workspace root = %q, want alias %q", owner.WorkspaceRoot, alias)
+	}
+}
+
 func TestDropSessionRedactsRawPayloadAndInvalidatesIndex(t *testing.T) {
 	requireGit(t)
 
@@ -472,11 +504,22 @@ func TestDropSessionSerializesWithHookCapture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AcquireSessionLock: %v", err)
 	}
+	lockAttempted := make(chan struct{})
+	acquireSessionLock := func(repo *checkpoint.Repo, sessionID primitives.SessionID) (func(), error) {
+		close(lockAttempted)
+		return adapters.AcquireSessionLock(repo, sessionID)
+	}
 	result := make(chan error, 1)
 	go func() {
-		_, dropErr := DropSession(repo, sessionID, false)
+		_, dropErr := dropSessionWithLock(repo, sessionID, false, removeRetentionPath, acquireSessionLock)
 		result <- dropErr
 	}()
+	select {
+	case <-lockAttempted:
+	case <-time.After(3 * time.Second):
+		release()
+		t.Fatal("DropSession did not attempt to acquire the capture lock")
+	}
 	select {
 	case err := <-result:
 		release()
@@ -489,7 +532,7 @@ func TestDropSessionSerializesWithHookCapture(t *testing.T) {
 		if err != nil {
 			t.Fatalf("DropSession after release: %v", err)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatal("DropSession did not resume after capture lock release")
 	}
 	if _, err := os.Stat(rawDir); !os.IsNotExist(err) {

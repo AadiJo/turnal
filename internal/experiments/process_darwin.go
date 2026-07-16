@@ -20,6 +20,21 @@ const darwinForkGateArgument = "__turnal_internal_fork_gate_7d69d1be__"
 
 var killDarwinForkProcessGroup = syscall.Kill
 
+const darwinZombieProcessState = 5
+
+var darwinForkProcessGroupHasLiveMembers = func(processGroupID int) (bool, error) {
+	processes, err := unix.SysctlKinfoProcSlice("kern.proc.pgrp", processGroupID)
+	if err != nil {
+		return false, err
+	}
+	for _, process := range processes {
+		if process.Proc.P_stat != darwinZombieProcessState {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func init() {
 	if len(os.Args) < 7 || os.Args[1] != darwinForkGateArgument {
 		return
@@ -344,7 +359,19 @@ func (controller *darwinForkProcessController) terminate() error {
 		if controller.cmd.Process == nil {
 			return
 		}
-		controller.terminateErr = killDarwinForkProcessGroup(-controller.cmd.Process.Pid, syscall.SIGKILL)
+		processGroupID := controller.cmd.Process.Pid
+		controller.terminateErr = killDarwinForkProcessGroup(-processGroupID, syscall.SIGKILL)
+		if errors.Is(controller.terminateErr, syscall.EPERM) {
+			hasLiveMembers, inspectErr := darwinForkProcessGroupHasLiveMembers(processGroupID)
+			if inspectErr != nil {
+				controller.terminateErr = errors.Join(controller.terminateErr, fmt.Errorf("inspect fork process group after permission failure: %w", inspectErr))
+			} else if !hasLiveMembers {
+				// Darwin excludes zombies when signaling a process group and
+				// returns EPERM when the deliberately unreaped leader is the
+				// group's only remaining member. No descendant remains to kill.
+				controller.terminateErr = nil
+			}
+		}
 		if errors.Is(controller.terminateErr, syscall.ESRCH) || errors.Is(controller.terminateErr, os.ErrProcessDone) {
 			controller.terminateErr = nil
 		}

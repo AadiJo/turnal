@@ -1,9 +1,30 @@
 version: 2.1
 
+orbs:
+  win: circleci/windows@5.1.1
+
 parameters:
-  nightly:
+  publish_nightly:
     type: boolean
     default: false
+  rehearse_release:
+    type: boolean
+    default: false
+
+commands:
+  restore_go_modules:
+    steps:
+      - restore_cache:
+          keys:
+            - go-mod-v2-{{ arch }}-{{ checksum "go.sum" }}
+            - go-mod-v2-{{ arch }}-
+      - run:
+          name: Download Go modules
+          command: go mod download
+      - save_cache:
+          key: go-mod-v2-{{ arch }}-{{ checksum "go.sum" }}
+          paths:
+            - /home/circleci/go/pkg/mod
 
 jobs:
   quality:
@@ -12,273 +33,290 @@ jobs:
     resource_class: small
     steps:
       - checkout
-
-      - restore_cache:
-          keys:
-            - go-mod-v1-{{ checksum "go.sum" }}
-            - go-mod-v1-
-
+      - restore_go_modules
       - run:
-          name: Download Go modules
-          command: go mod download
+          name: Quality and race
+          command: scripts/ci/quality.sh
 
-      - save_cache:
-          key: go-mod-v1-{{ checksum "go.sum" }}
-          paths:
-            - /home/circleci/go/pkg/mod
-
+  test_linux:
+    docker:
+      - image: cimg/go:1.26.4
+    resource_class: small
+    steps:
+      - checkout
+      - restore_go_modules
       - run:
-          name: Check Go formatting
-          command: |
-            unformatted="$(gofmt -l .)"
-            if [ -n "$unformatted" ]; then
-              echo "Go files need formatting:" >&2
-              echo "$unformatted" >&2
-              exit 1
-            fi
-
-      - run:
-          name: Check modules are tidy
-          command: |
-            go mod tidy
-            git diff --exit-code -- go.mod go.sum
-
-      - run:
-          name: Vet
-          command: go vet ./...
-
-      - run:
-          name: Race tests
-          command: go test -race ./...
-
+          name: Test
+          command: go test ./...
       - run:
           name: Build CLI
           command: go build ./cmd/turnal
 
-      - run:
-          name: Vulnerability scan
-          command: |
-            go install golang.org/x/vuln/cmd/govulncheck@latest
-            govulncheck ./...
-
-  nightly-publish:
-    docker:
-      - image: cimg/go:1.26.4-node
-    resource_class: small
+  test_macos:
+    macos:
+      xcode: 16.4.0
+    resource_class: m4pro.medium
     steps:
       - checkout
-
       - run:
-          name: Require publishing credentials
+          name: Install Go
           command: |
-            if [ -z "${NPM_TOKEN:-}" ] || [ -z "${GH_TOKEN:-}" ]; then
-              echo "NPM_TOKEN and GH_TOKEN must be configured in the CircleCI project" >&2
-              exit 1
-            fi
-
-      - run:
-          name: Resolve nightly release
-          command: |
-            node scripts/resolve-release.js nightly \
-              "$(date -u +%Y%m%d)" \
-              "${CIRCLE_BUILD_NUM}" \
-              "${CIRCLE_SHA1}" | while IFS='=' read -r key value; do
-                printf 'export RELEASE_%s=%q\n' "$key" "$value" >> "$BASH_ENV"
-              done
-
-      - run:
-          name: Align package version
-          command: node scripts/set-release-version.js "$RELEASE_version"
-
-      - run:
-          name: Test
-          command: npm test
-
-      - run:
-          name: Pack dry run
-          command: npm run pack:dry-run
-          environment:
-            TURNAL_RELEASE_CHANNEL: nightly
-            TURNAL_COMMIT: << pipeline.git.revision >>
-
-      - run:
-          name: Generate SBOM
-          command: |
-            go install github.com/anchore/syft/cmd/syft@v1.33.0
-            syft dir:. --output spdx-json=turnal.spdx.json
-
-      - run:
-          name: Install GitHub CLI
-          command: |
-            sudo apt-get update
-            sudo apt-get install -y gh
-
-      - run:
-          name: Publish npm package
-          command: |
-            npm config set //registry.npmjs.org/:_authToken '${NPM_TOKEN}'
-            npm whoami
-            if ! timeout 120s npm publish --ignore-scripts --access public --tag "$RELEASE_npm_tag" </dev/null; then
-              echo "npm publish did not complete non-interactively" >&2
-              echo "NPM_TOKEN must be a read/write granular token with bypass 2FA enabled" >&2
-              exit 1
-            fi
-          environment:
-            TURNAL_RELEASE_CHANNEL: nightly
-            TURNAL_COMMIT: << pipeline.git.revision >>
-
-      - run:
-          name: Publish GitHub prerelease
-          command: |
-            gh release create \
-              "$RELEASE_tag" \
-              turnal.spdx.json \
-              --target "$CIRCLE_SHA1" \
-              --title "$RELEASE_name" \
-              --generate-notes \
-              --prerelease \
-              --latest=false
-
-  stable-publish:
-    docker:
-      - image: cimg/go:1.26.4-node
-    resource_class: small
-    steps:
-      - checkout
-
-      - run:
-          name: Ignore nightly tags
-          command: |
-            case "$CIRCLE_TAG" in
-              *-nightly.*) circleci-agent step halt ;;
+            case "$(uname -m)" in
+              arm64)
+                go_arch=arm64
+                go_sha256=b62ad2b6d7d2464f12a5bcad7ff47f19d08325773b5efd21610e445a05a9bf53
+                ;;
+              x86_64)
+                go_arch=amd64
+                go_sha256=05dc9b5f9997744520aaebb3d5deaa7c755371aebbfb7f97c2511a9f3367538d
+                ;;
+              *) echo "unsupported macOS architecture: $(uname -m)" >&2; exit 1 ;;
             esac
-
+            archive="go1.26.4.darwin-${go_arch}.tar.gz"
+            curl --fail --location --silent --show-error \
+              "https://go.dev/dl/${archive}" \
+              --output "/tmp/${archive}"
+            echo "${go_sha256}  /tmp/${archive}" | shasum -a 256 --check
+            sudo rm -rf /usr/local/go
+            sudo tar -C /usr/local -xzf "/tmp/${archive}"
+            echo 'export PATH=/usr/local/go/bin:$PATH' >> "$BASH_ENV"
+            export PATH="/usr/local/go/bin:$PATH"
+            go version
+      - restore_cache:
+          keys:
+            - go-mod-v2-{{ arch }}-{{ checksum "go.sum" }}
+            - go-mod-v2-{{ arch }}-
       - run:
-          name: Require publishing credentials
-          command: |
-            if [ -z "${NPM_TOKEN:-}" ] || [ -z "${GH_TOKEN:-}" ]; then
-              echo "NPM_TOKEN and GH_TOKEN must be configured in the CircleCI project" >&2
-              exit 1
-            fi
-
-      - run:
-          name: Resolve stable release
-          command: |
-            node scripts/resolve-release.js stable "$CIRCLE_TAG" \
-              | while IFS='=' read -r key value; do
-                printf 'export RELEASE_%s=%q\n' "$key" "$value" >> "$BASH_ENV"
-              done
-
-      - run:
-          name: Align package version
-          command: node scripts/set-release-version.js "$RELEASE_version"
-
-      - run:
-          name: Verify package version
-          command: |
-            tag_version="${CIRCLE_TAG#v}"
-            package_version="$(node -p "require('./package.json').version")"
-            if [ "$tag_version" != "$package_version" ]; then
-              echo "release invariant failed: tag v$tag_version does not match package.json version $package_version" >&2
-              exit 1
-            fi
-
+          name: Download Go modules
+          command: go mod download
+      - save_cache:
+          key: go-mod-v2-{{ arch }}-{{ checksum "go.sum" }}
+          paths:
+            - ~/go/pkg/mod
       - run:
           name: Test
-          command: npm test
-
+          command: go test ./...
       - run:
-          name: Check Go formatting
+          name: Build CLI
+          command: go build ./cmd/turnal
+
+  test_windows:
+    executor:
+      name: win/server-2025
+      size: medium
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - windows-go-v1-{{ checksum "go.sum" }}
+            - windows-go-v1-
+      - run:
+          name: Install Go, test, and build
+          no_output_timeout: 20m
           command: |
-            unformatted="$(gofmt -l .)"
-            if [ -n "$unformatted" ]; then
-              echo "Go files need formatting:" >&2
-              echo "$unformatted" >&2
+            $ErrorActionPreference = "Stop"
+            $goVersion = "1.26.4"
+            $goSha256 = "3ca8fb4630b07c419cbdd51f754e31363cfcfb83b3a5354d9e895c90be2cc345"
+            $archive = Join-Path $env:TEMP "go$goVersion.windows-amd64.zip"
+            $installRoot = Join-Path $env:USERPROFILE "turnal-go-$goVersion"
+
+            curl.exe --fail --location --silent --show-error `
+              --output $archive `
+              "https://go.dev/dl/go$goVersion.windows-amd64.zip"
+            if ($LASTEXITCODE -ne 0) {
+              throw "failed to download Go $goVersion"
+            }
+            $actualSha256 = (Get-FileHash -Algorithm SHA256 -Path $archive).Hash.ToLowerInvariant()
+            if ($actualSha256 -ne $goSha256) {
+              throw "Go archive checksum mismatch: expected $goSha256, got $actualSha256"
+            }
+            if (Test-Path $installRoot) {
+              Remove-Item -Recurse -Force $installRoot
+            }
+            New-Item -ItemType Directory -Path $installRoot | Out-Null
+            tar.exe -xf $archive -C $installRoot
+            if ($LASTEXITCODE -ne 0) {
+              throw "failed to extract Go $goVersion"
+            }
+
+            $env:Path = "$(Join-Path $installRoot 'go\bin');$env:Path"
+            go version
+            if ($LASTEXITCODE -ne 0) {
+              throw "failed to run Go $goVersion"
+            }
+            go mod download
+            if ($LASTEXITCODE -ne 0) {
+              throw "failed to download Go modules"
+            }
+            go test ./...
+            if ($LASTEXITCODE -ne 0) {
+              throw "Windows tests failed"
+            }
+            go build ./cmd/turnal
+            if ($LASTEXITCODE -ne 0) {
+              throw "Windows CLI build failed"
+            }
+      - save_cache:
+          key: windows-go-v1-{{ checksum "go.sum" }}
+          paths:
+            - C:\Users\circleci\go\pkg\mod
+            - C:\Users\circleci\AppData\Local\go-build
+
+  publish_release:
+    parameters:
+      channel:
+        type: enum
+        enum:
+          - stable
+          - nightly
+      publish:
+        type: boolean
+        default: true
+    docker:
+      - image: cimg/go:1.26.4-node
+    resource_class: small
+    steps:
+      - checkout
+      - restore_go_modules
+      - when:
+          condition:
+            equal:
+              - stable
+              - << parameters.channel >>
+          steps:
+            - run:
+                name: Ignore nightly tags
+                command: |
+                  case "$CIRCLE_TAG" in
+                    *-nightly.*) circleci-agent step halt ;;
+                  esac
+      - run:
+          name: Verify release runtime
+          command: |
+            node --version
+            npm --version
+      - when:
+          condition: << parameters.publish >>
+          steps:
+            - run:
+                name: Install publish tools
+                command: |
+                  sudo npm install --global npm@11.16.0
+                  sudo apt-get update
+                  sudo apt-get install --yes gh
+      - run:
+          name: Prepare << parameters.channel >> release
+          command: |
+            export NPM_ID_TOKEN
+            NPM_ID_TOKEN="$(circleci run oidc get --claims '{"aud":"npm:registry.npmjs.org"}')"
+            if [[ -z "$NPM_ID_TOKEN" ]]; then
+              echo "release invariant failed: CircleCI did not issue an npm OIDC token" >&2
               exit 1
             fi
-
-      - run:
-          name: Check modules are tidy
-          command: |
-            go mod tidy
-            git diff --exit-code -- go.mod go.sum
-
-      - run:
-          name: Vet
-          command: go vet ./...
-
-      - run:
-          name: Build
-          command: npm run build
-
-      - run:
-          name: Pack dry run
-          command: npm run pack:dry-run
-          environment:
-            TURNAL_RELEASE_CHANNEL: stable
-            TURNAL_COMMIT: << pipeline.git.revision >>
-
-      - run:
-          name: Generate SBOM
-          command: |
-            go install github.com/anchore/syft/cmd/syft@v1.33.0
-            syft dir:. --output spdx-json=turnal.spdx.json
-
-      - run:
-          name: Install GitHub CLI
-          command: |
-            sudo apt-get update
-            sudo apt-get install -y gh
-
-      - run:
-          name: Publish npm package
-          command: |
-            npm config set //registry.npmjs.org/:_authToken '${NPM_TOKEN}'
-            npm whoami
-            if ! timeout 120s npm publish --ignore-scripts --access public --tag "$RELEASE_npm_tag" </dev/null; then
-              echo "npm publish did not complete non-interactively" >&2
-              echo "NPM_TOKEN must be a read/write granular token with bypass 2FA enabled" >&2
-              exit 1
-            fi
-          environment:
-            TURNAL_RELEASE_CHANNEL: stable
-            TURNAL_COMMIT: << pipeline.git.revision >>
-
-      - run:
-          name: Publish GitHub release
-          command: |
-            args=(
-              "$RELEASE_tag"
-              turnal.spdx.json
-              --target "$CIRCLE_SHA1"
-              --title "$RELEASE_name"
-              --generate-notes
-              --verify-tag
-            )
-            if [ "$RELEASE_prerelease" = "true" ]; then
-              args+=(--prerelease)
-            fi
-            if [ "$RELEASE_make_latest" = "false" ]; then
-              args+=(--latest=false)
-            fi
-            gh release create "${args[@]}"
+            export NPM_PUBLISH_PROVENANCE=false
+            export TURNAL_PUBLISH="<< parameters.publish >>"
+            scripts/ci/release.sh \
+              "<< parameters.channel >>" \
+              "${CIRCLE_TAG:-${CIRCLE_BRANCH:-main}}" \
+              "$CIRCLE_BUILD_NUM" \
+              "$CIRCLE_SHA1"
 
 workflows:
   ci:
-    unless: << pipeline.parameters.nightly >>
+    when:
+      and:
+        - not: << pipeline.parameters.publish_nightly >>
+        - not: << pipeline.parameters.rehearse_release >>
     jobs:
-      - quality
-
-  nightly:
-    when: << pipeline.parameters.nightly >>
-    jobs:
-      - nightly-publish
-
-  stable-release:
-    jobs:
-      - stable-publish:
+      - quality:
+          name: Quality and race
+          filters: &all_refs
+            tags:
+              only: /.*/
+      - test_linux:
+          name: Test (linux)
+          filters: *all_refs
+      - test_macos:
+          name: Test (macos)
+          filters: *all_refs
+      - test_windows:
+          name: Test (windows)
+          filters: *all_refs
+      - publish_release:
+          name: Publish stable release
+          channel: stable
+          context:
+            - turnal-release
+          requires:
+            - Quality and race
+            - Test (linux)
+            - Test (macos)
+            - Test (windows)
           filters:
             branches:
               ignore: /.*/
             tags:
-              only: /^v.*/
+              only: /^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$/
+
+  nightly:
+    when: << pipeline.parameters.publish_nightly >>
+    jobs:
+      - quality:
+          name: Nightly quality and race
+          filters: &main_only
+            branches:
+              only: main
+            tags:
+              ignore: /.*/
+      - test_linux:
+          name: Nightly test (linux)
+          filters: *main_only
+      - test_macos:
+          name: Nightly test (macos)
+          filters: *main_only
+      - test_windows:
+          name: Nightly test (windows)
+          filters: *main_only
+      - publish_release:
+          name: Publish nightly release
+          channel: nightly
+          context:
+            - turnal-release
+          requires:
+            - Nightly quality and race
+            - Nightly test (linux)
+            - Nightly test (macos)
+            - Nightly test (windows)
+          filters: *main_only
+
+  release_rehearsal:
+    when: << pipeline.parameters.rehearse_release >>
+    jobs:
+      - quality:
+          name: Rehearsal quality and race
+          filters: &rehearsal_main_only
+            branches:
+              only: main
+            tags:
+              ignore: /.*/
+      - test_linux:
+          name: Rehearsal test (linux)
+          filters: *rehearsal_main_only
+      - test_macos:
+          name: Rehearsal test (macos)
+          filters: *rehearsal_main_only
+      - test_windows:
+          name: Rehearsal test (windows)
+          filters: *rehearsal_main_only
+      - publish_release:
+          name: Rehearse release
+          channel: nightly
+          publish: false
+          context:
+            - turnal-release
+          requires:
+            - Rehearsal quality and race
+            - Rehearsal test (linux)
+            - Rehearsal test (macos)
+            - Rehearsal test (windows)
+          filters: *rehearsal_main_only
