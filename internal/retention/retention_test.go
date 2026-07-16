@@ -2,19 +2,34 @@ package retention
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/AadiJo/turnal/internal/adapters"
+	caseengine "github.com/AadiJo/turnal/internal/cases"
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
+	experimentengine "github.com/AadiJo/turnal/internal/experiments"
 	"github.com/AadiJo/turnal/internal/primitives"
+	rollbackengine "github.com/AadiJo/turnal/internal/rollback"
+	"github.com/AadiJo/turnal/internal/runs"
+	"github.com/AadiJo/turnal/internal/turnevents"
+	"github.com/AadiJo/turnal/internal/turns"
 )
+
+type retentionRunner func(context.Context, string, []string, []string) (int, error)
+
+func (runner retentionRunner) Run(ctx context.Context, root string, command, environment []string) (int, error) {
+	return runner(ctx, root, command, environment)
+}
 
 func TestDropSessionDeletesEventLogAndPrivateRefs(t *testing.T) {
 	requireGit(t)
@@ -53,6 +68,218 @@ func TestDropSessionDeletesEventLogAndPrivateRefs(t *testing.T) {
 	}
 	if len(sessions) != 0 {
 		t.Fatalf("sessions after drop = %#v, want none", sessions)
+	}
+}
+
+func TestDropSessionInterruptionLeavesCheckpointRefsIntact(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	session := sessionID(t, "interrupted")
+	turnID, _ := primitives.NewTurnID(1)
+	writeFile(t, root, "app.txt", "content\n")
+	created, err := repo.CreateCheckpoint(session, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("CreateCheckpoint: %v", err)
+	}
+	appendCheckpointEvent(t, repo, session, turnID, created)
+	removals := 0
+	_, err = dropSession(repo, session, false, func(path string) error {
+		removals++
+		if removals == 1 {
+			return removeRetentionPath(path)
+		}
+		return errors.New("injected durable record removal failure")
+	})
+	if err == nil || !strings.Contains(err.Error(), "injected durable record removal failure") {
+		t.Fatalf("DropSession error = %v, want injected removal failure", err)
+	}
+	for _, ref := range []primitives.CheckpointRef{created.Ref, created.CanonicalRef} {
+		if got, refErr := repo.CheckpointCommit(ref); refErr != nil || got != created.Commit {
+			t.Fatalf("checkpoint ref %s after interrupted deletion = %s, %v; want %s", ref, got, refErr, created.Commit)
+		}
+	}
+}
+
+func TestDropSessionRejectsActiveTurnUntilFinish(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	writeFile(t, root, "app.txt", "before\n")
+	session := sessionID(t, "active-turn")
+	turnID, _ := primitives.NewTurnID(1)
+	gitSync := false
+	recorder := turnevents.Recorder{Log: repo.EventLog(), Manager: turns.NewManager(repo), Adapter: primitives.AdapterCodex}
+	recorder.Manager.GitSyncEnabled = &gitSync
+	started, err := recorder.Start(session, turnID)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := DropSession(repo, session, false); err == nil || !strings.Contains(err.Error(), "while turn 1 is active") {
+		t.Fatalf("DropSession active turn error = %v", err)
+	}
+	if got, err := repo.CheckpointCommit(started.Pre.Ref); err != nil || got != started.Pre.Commit {
+		t.Fatalf("active pre-checkpoint = %s, %v; want %s", got, err, started.Pre.Commit)
+	}
+	active, err := turns.ListActive(repo, session)
+	if err != nil || len(active) != 1 || active[0].TurnID != turnID {
+		t.Fatalf("active turns after rejected drop = %#v, %v", active, err)
+	}
+	if _, err := recorder.Finish(session, turnID); err != nil {
+		t.Fatalf("Finish after rejected drop: %v", err)
+	}
+	if _, err := DropSession(repo, session, false); err != nil {
+		t.Fatalf("DropSession after finish: %v", err)
+	}
+	if _, err := repo.CheckpointCommit(started.Pre.Ref); err == nil {
+		t.Fatal("finished session pre-checkpoint remains after drop")
+	}
+}
+
+func TestRecoveredAbandonedForkClearsActiveTurnBeforeSessionDrop(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	writeFile(t, root, "app.txt", "before\n")
+	source := sessionID(t, "recovery-source")
+	sourceTurn := recordCaseSource(t, repo, source, "Recover the abandoned fork")
+	created, err := caseengine.Create(repo, caseengine.CreateRequest{SessionID: source, TurnID: sourceTurn})
+	if err != nil {
+		t.Fatalf("Create Case: %v", err)
+	}
+	runID, err := primitives.NewRunID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution, err := primitives.ParseSessionID("fork-" + strings.TrimPrefix(runID.String(), "run_"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := runs.Begin(repo, runID, execution, []string{"runner"})
+	if err != nil {
+		t.Fatalf("Begin run: %v", err)
+	}
+	if err := runs.LinkCapture(repo, runID, runs.CaptureWrapper, execution, primitives.AdapterCodex); err != nil {
+		release()
+		t.Fatal(err)
+	}
+	gitSync := false
+	recorder := turnevents.Recorder{Log: repo.EventLog(), Manager: turns.NewManager(repo), Adapter: primitives.AdapterCodex}
+	recorder.Manager.GitSyncEnabled = &gitSync
+	started, err := recorder.Start(execution, 1)
+	if err != nil {
+		release()
+		t.Fatalf("Start fork turn: %v", err)
+	}
+	attemptID, err := runs.EnsureWrapperAttempt(repo, runID, execution, started.TurnID, primitives.AdapterCodex)
+	if err != nil {
+		release()
+		t.Fatal(err)
+	}
+	if _, err := caseengine.LinkAttempt(repo, caseengine.LinkAttemptRequest{CaseID: created.Case.ID, RunID: runID, AttemptID: attemptID, Command: []string{"runner"}}); err != nil {
+		release()
+		t.Fatal(err)
+	}
+	release()
+
+	if err := experimentengine.RecoverAbandoned(repo); err != nil {
+		t.Fatalf("RecoverAbandoned: %v", err)
+	}
+	active, err := turns.ListActive(repo, execution)
+	if err != nil || len(active) != 0 {
+		t.Fatalf("active fork turns after recovery = %#v, %v", active, err)
+	}
+	if _, err := caseengine.Delete(repo, created.Case.ID); err != nil {
+		t.Fatalf("Delete Case: %v", err)
+	}
+	if _, err := DropSession(repo, execution, false); err != nil {
+		t.Fatalf("Drop recovered fork session: %v", err)
+	}
+}
+
+func TestDropSessionRejectsInconsistentRollbackJournal(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	demoSession := sessionID(t, "demo")
+	turnID, _ := primitives.NewTurnID(1)
+	writeFile(t, root, "app.txt", "content\n")
+	created, err := repo.CreateCheckpoint(demoSession, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("CreateCheckpoint: %v", err)
+	}
+	appendCheckpointEvent(t, repo, demoSession, turnID, created)
+	safety, err := repo.CreateSnapshotRef("refs/agent-vcs/rollback-safety/retention-test", "retention test safety")
+	if err != nil {
+		t.Fatalf("CreateSnapshotRef: %v", err)
+	}
+	target, _ := primitives.NewTargetRef(demoSession, turnID, primitives.CheckpointPhasePre)
+	base := rollbackengine.Journal{
+		Version: 1, State: "planned", RestorePhase: "planned",
+		Target: target.String(), CheckpointRef: created.Ref.String(), TargetCommitSHA: created.Commit.String(),
+		Mode: primitives.RollbackModeCheckpoint.String(), SafetyRef: safety.Ref, SafetyCommitSHA: safety.Commit.String(),
+		RepoID: repo.RepoID, StoreID: repo.StoreID, WorktreeID: repo.WorktreeID, WorkspaceRoot: repo.WorkspaceRoot.String(),
+	}
+
+	tests := []struct {
+		name     string
+		expected string
+		mutate   func(*rollbackengine.Journal)
+	}{
+		{
+			name:     "manual flag cannot hide a session checkpoint",
+			expected: "rollback journal is invalid",
+			mutate: func(journal *rollbackengine.Journal) {
+				journal.Manual = true
+			},
+		},
+		{
+			name:     "target must identify the checkpoint ref",
+			expected: "rollback journal is invalid",
+			mutate: func(journal *rollbackengine.Journal) {
+				otherSession := sessionID(t, "other")
+				otherTarget, _ := primitives.NewTargetRef(otherSession, turnID, primitives.CheckpointPhasePre)
+				journal.Target = otherTarget.String()
+			},
+		},
+		{
+			name:     "workspace root must match the registered worktree",
+			expected: "rollback journal ownership is invalid",
+			mutate: func(journal *rollbackengine.Journal) {
+				journal.WorkspaceRoot = t.TempDir()
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			journal := base
+			test.mutate(&journal)
+			data, marshalErr := json.Marshal(journal)
+			if marshalErr != nil {
+				t.Fatalf("Marshal journal: %v", marshalErr)
+			}
+			if writeErr := os.WriteFile(rollbackengine.JournalPath(repo), data, 0o600); writeErr != nil {
+				t.Fatalf("write rollback journal: %v", writeErr)
+			}
+			if _, dropErr := DropSession(repo, demoSession, false); dropErr == nil || !strings.Contains(dropErr.Error(), test.expected) {
+				t.Fatalf("DropSession error = %v, want %q", dropErr, test.expected)
+			}
+			if _, refErr := repo.CheckpointCommit(created.Ref); refErr != nil {
+				t.Fatalf("protected checkpoint was deleted: %v", refErr)
+			}
+		})
 	}
 }
 
@@ -110,6 +337,119 @@ func TestDropSessionRedactsRawPayloadAndInvalidatesIndex(t *testing.T) {
 	}
 	if _, err := os.Stat(v2Dir); !os.IsNotExist(err) {
 		t.Fatalf("v2 session raw dir stat error = %v, want removed", err)
+	}
+}
+
+func TestDropSessionRefusesCaseSourceAndAttemptExecutionHistory(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, root, "app.txt", "before\n")
+	source := sessionID(t, "case-source")
+	turnID, _ := primitives.NewTurnID(1)
+	if _, err := repo.EventLog().Append(eventlog.AppendInput{SessionID: source, Type: primitives.EventTypeSessionStart, Adapter: primitives.AdapterCodex, Payload: json.RawMessage(`{"provider_session_id":"source"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	gitSync := false
+	recorder := turnevents.Recorder{Log: repo.EventLog(), Manager: turns.NewManager(repo), Adapter: primitives.AdapterCodex}
+	recorder.Manager.GitSyncEnabled = &gitSync
+	if _, err := recorder.Start(source, turnID); err != nil {
+		t.Fatal(err)
+	}
+	prompt, _ := json.Marshal(map[string]string{"text": "Fix it"})
+	if _, err := repo.EventLog().Append(eventlog.AppendInput{SessionID: source, TurnID: &turnID, Type: primitives.EventTypePromptUser, Adapter: primitives.AdapterCodex, Payload: prompt}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recorder.Finish(source, turnID); err != nil {
+		t.Fatal(err)
+	}
+	created, err := caseengine.Create(repo, caseengine.CreateRequest{SessionID: source, TurnID: turnID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := experimentengine.Execute(context.Background(), repo, experimentengine.Request{Case: created.Case, Command: []string{"runner"}, Runner: retentionRunner(func(context.Context, string, []string, []string) (int, error) { return 0, nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, protected := range []primitives.SessionID{source, result.SessionID} {
+		if _, err := DropSession(repo, protected, false); err == nil || !strings.Contains(err.Error(), "cannot drop session") || !strings.Contains(err.Error(), created.Case.ID.String()) {
+			t.Fatalf("drop protected session %s error = %v", protected, err)
+		}
+	}
+	if _, err := repo.CheckpointCommit(created.Case.Readiness.Base.Ref); err != nil {
+		t.Fatalf("protected base ref was removed: %v", err)
+	}
+	if _, err := repo.CheckpointCommit(result.PostRef); err != nil {
+		t.Fatalf("protected attempt ref was removed: %v", err)
+	}
+	if _, err := caseengine.Delete(repo, created.Case.ID); err != nil {
+		t.Fatalf("Delete case: %v", err)
+	}
+	if _, err := DropSession(repo, result.SessionID, false); err != nil {
+		t.Fatalf("drop attempt session after Case deletion: %v", err)
+	}
+	if _, err := DropSession(repo, source, false); err != nil {
+		t.Fatalf("drop source session after Case deletion: %v", err)
+	}
+	projection, err := caseengine.Rebuild(repo)
+	if err != nil {
+		t.Fatalf("Rebuild after linked session deletion: %v", err)
+	}
+	if len(projection.Cases) != 0 {
+		t.Fatalf("deleted Case remains after dropping linked sessions: %#v", projection.Cases)
+	}
+}
+
+func TestDropSessionPreservesTombstonedSiblingTaskDependencies(t *testing.T) {
+	requireGit(t)
+	for _, order := range []string{"task-first", "sibling-first"} {
+		t.Run(order, func(t *testing.T) {
+			root := workspaceRoot(t)
+			repo, err := checkpoint.Init(root)
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			writeFile(t, root, "app.txt", "before\n")
+			taskSession := sessionID(t, "task-source")
+			siblingSession := sessionID(t, "sibling-source")
+			taskTurn := recordCaseSource(t, repo, taskSession, "Fix the shared task")
+			first, err := caseengine.Create(repo, caseengine.CreateRequest{SessionID: taskSession, TurnID: taskTurn})
+			if err != nil {
+				t.Fatalf("Create first Case: %v", err)
+			}
+			siblingTurn := recordCaseSource(t, repo, siblingSession, "Fix the shared task")
+			second, err := caseengine.Create(repo, caseengine.CreateRequest{SessionID: siblingSession, TurnID: siblingTurn, TaskID: first.Task.ID})
+			if err != nil {
+				t.Fatalf("Create sibling Case: %v", err)
+			}
+			for _, caseID := range []primitives.CaseID{first.Case.ID, second.Case.ID} {
+				if _, err := caseengine.Delete(repo, caseID); err != nil {
+					t.Fatalf("Delete Case %s: %v", caseID, err)
+				}
+			}
+
+			if order == "task-first" {
+				if _, err := DropSession(repo, taskSession, false); err == nil || !strings.Contains(err.Error(), "tombstoned case") || !strings.Contains(err.Error(), second.Case.ID.String()) {
+					t.Fatalf("task-first DropSession error = %v, want surviving sibling dependency", err)
+				}
+			}
+			if _, err := DropSession(repo, siblingSession, false); err != nil {
+				t.Fatalf("drop sibling session: %v", err)
+			}
+			if _, err := DropSession(repo, taskSession, false); err != nil {
+				t.Fatalf("drop task session after sibling: %v", err)
+			}
+			projection, err := caseengine.Rebuild(repo)
+			if err != nil {
+				t.Fatalf("Rebuild after ordered deletion: %v", err)
+			}
+			if len(projection.Cases) != 0 || len(projection.TombstonedCases) != 0 {
+				t.Fatalf("Case history remains after both sessions were dropped: active=%#v tombstoned=%#v", projection.Cases, projection.TombstonedCases)
+			}
+		})
 	}
 }
 
@@ -209,6 +549,10 @@ func TestPruneOrphanRefsKeepsEventReferencedRefs(t *testing.T) {
 		t.Fatalf("CreateCheckpoint: %v", err)
 	}
 	appendCheckpointEvent(t, repo, sessionID, turnID, created)
+	manual, err := repo.CreateManualCheckpoint()
+	if err != nil {
+		t.Fatalf("CreateManualCheckpoint: %v", err)
+	}
 	orphan, err := repo.CreateSnapshotRef("refs/agent-vcs/rollback-safety/demo/turn/000001/pre/orphan", "orphan")
 	if err != nil {
 		t.Fatalf("CreateSnapshotRef: %v", err)
@@ -238,6 +582,12 @@ func TestPruneOrphanRefsKeepsEventReferencedRefs(t *testing.T) {
 	if _, err := repo.CheckpointCommit(created.Ref); err != nil {
 		t.Fatalf("event-referenced checkpoint ref was pruned: %v", err)
 	}
+	if _, err := repo.CheckpointCommit(manual.Ref); err != nil {
+		t.Fatalf("manual checkpoint ref was pruned: %v", err)
+	}
+	if _, err := repo.CheckpointCommit(manual.CanonicalRef); err != nil {
+		t.Fatalf("manual canonical checkpoint ref was pruned: %v", err)
+	}
 }
 
 func appendCheckpointEvent(t *testing.T, repo *checkpoint.Repo, sessionID primitives.SessionID, turnID primitives.TurnID, created checkpoint.Checkpoint) {
@@ -259,6 +609,29 @@ func appendCheckpointEvent(t *testing.T, repo *checkpoint.Repo, sessionID primit
 	}); err != nil {
 		t.Fatalf("Append checkpoint event: %v", err)
 	}
+}
+
+func recordCaseSource(t *testing.T, repo *checkpoint.Repo, source primitives.SessionID, instruction string) primitives.TurnID {
+	t.Helper()
+	turnID, _ := primitives.NewTurnID(1)
+	startPayload, _ := json.Marshal(map[string]string{"provider_session_id": source.String()})
+	if _, err := repo.EventLog().Append(eventlog.AppendInput{SessionID: source, Type: primitives.EventTypeSessionStart, Adapter: primitives.AdapterCodex, Payload: startPayload}); err != nil {
+		t.Fatalf("append session start: %v", err)
+	}
+	gitSync := false
+	recorder := turnevents.Recorder{Log: repo.EventLog(), Manager: turns.NewManager(repo), Adapter: primitives.AdapterCodex}
+	recorder.Manager.GitSyncEnabled = &gitSync
+	if _, err := recorder.Start(source, turnID); err != nil {
+		t.Fatalf("start source turn: %v", err)
+	}
+	prompt, _ := json.Marshal(map[string]string{"text": instruction})
+	if _, err := repo.EventLog().Append(eventlog.AppendInput{SessionID: source, TurnID: &turnID, Type: primitives.EventTypePromptUser, Adapter: primitives.AdapterCodex, Payload: prompt}); err != nil {
+		t.Fatalf("append source prompt: %v", err)
+	}
+	if _, err := recorder.Finish(source, turnID); err != nil {
+		t.Fatalf("finish source turn: %v", err)
+	}
+	return turnID
 }
 
 func requireGit(t *testing.T) {

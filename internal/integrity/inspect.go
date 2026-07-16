@@ -8,10 +8,12 @@ import (
 	"strings"
 
 	"github.com/AadiJo/turnal/internal/adapters"
+	caseengine "github.com/AadiJo/turnal/internal/cases"
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/filelock"
 	queryindex "github.com/AadiJo/turnal/internal/index"
+	"github.com/AadiJo/turnal/internal/manualcheckpoints"
 	"github.com/AadiJo/turnal/internal/primitives"
 	rollbackengine "github.com/AadiJo/turnal/internal/rollback"
 )
@@ -33,6 +35,13 @@ func Inspect(repo *checkpoint.Repo) Report {
 		report.Problems = append(report.Problems, fmt.Sprintf("workspace lock held: %s", repo.WorkspaceLockPath()))
 	}
 	report.Problems = append(report.Problems, inspectEventLogs(repo)...)
+	if _, err := manualcheckpoints.Read(repo, true); err != nil {
+		report.Problems = append(report.Problems, fmt.Sprintf("manual checkpoint event inspection failed: %v", err))
+	}
+	report.Problems = append(report.Problems, inspectWorkspaceRollbackEvents(repo)...)
+	if _, err := caseengine.Rebuild(repo); err != nil {
+		report.Problems = append(report.Problems, fmt.Sprintf("task/case projection failed: %v", err))
+	}
 	report.Problems = append(report.Problems, inspectCheckpointRefs(repo)...)
 	report.Problems = append(report.Problems, inspectCheckpointJournals(repo)...)
 	report.Problems = append(report.Problems, rollbackengine.InspectJournal(repo)...)
@@ -42,12 +51,30 @@ func Inspect(repo *checkpoint.Repo) Report {
 	return report
 }
 
+func inspectWorkspaceRollbackEvents(repo *checkpoint.Repo) []string {
+	events, err := manualcheckpoints.ReadEvents(repo, true)
+	if err != nil {
+		return []string{fmt.Sprintf("workspace event inspection failed: %v", err)}
+	}
+	var problems []string
+	for _, event := range events {
+		if event.Type != primitives.EventTypeRollback {
+			continue
+		}
+		if _, err := manualcheckpoints.ValidateRollbackEvent(repo, event); err != nil {
+			problems = append(problems, err.Error())
+		}
+	}
+	return problems
+}
+
 func inspectCaptureFiles(repo *checkpoint.Repo) []string {
 	var problems []string
 	roots := []string{
 		filepath.Join(repo.MetadataDir, "log", "adapter"),
 		filepath.Join(repo.MetadataDir, "log", "raw"),
 		filepath.Join(repo.MetadataDir, "log", "events"),
+		filepath.Join(repo.MetadataDir, "log", "manual-checkpoints"),
 		filepath.Join(repo.TmpDir, "hooks"),
 	}
 	for _, root := range roots {

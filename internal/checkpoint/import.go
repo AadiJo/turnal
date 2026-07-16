@@ -42,6 +42,9 @@ func readOrCreateStoreIdentityReadOnly(repo *Repo) (StoreIdentity, error) {
 	if identity.StoreID, err = primitives.ParseStoreID(identity.StoreID.String()); err != nil {
 		return StoreIdentity{}, err
 	}
+	if identity.GitObjectFormat == "" {
+		return StoreIdentity{}, fmt.Errorf("store identity invariant failed: git_object_format is required")
+	}
 	return identity, nil
 }
 

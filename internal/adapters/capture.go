@@ -14,6 +14,7 @@ import (
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/filelock"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/runs"
 	"github.com/AadiJo/turnal/internal/turnevents"
 	"github.com/AadiJo/turnal/internal/turns"
 	adaptersdk "github.com/AadiJo/turnal/sdk/adapter"
@@ -85,6 +86,7 @@ type sessionPayload struct {
 type promptPayload struct {
 	Text           string `json:"text"`
 	ProviderTurnID string `json:"provider_turn_id,omitempty"`
+	Redacted       bool   `json:"redacted"`
 }
 
 type assistantPayload struct {
@@ -112,6 +114,10 @@ type errorPayload struct {
 }
 
 func HandleHookPayload(adapter primitives.AdapterName, hookName string, raw []byte) error {
+	return HandleHookPayloadWithRunID(adapter, hookName, raw, "")
+}
+
+func HandleHookPayloadWithRunID(adapter primitives.AdapterName, hookName string, raw []byte, runIDText string) error {
 	if repo, sessionID, ok := hookSessionContext(raw); ok {
 		unlock, err := AcquireSessionLock(repo, sessionID)
 		if err != nil {
@@ -125,7 +131,11 @@ func HandleHookPayload(adapter primitives.AdapterName, hookName string, raw []by
 		if rawRef == "" {
 			return nil
 		}
-		return processHookPayload(adapter, hookName, rawRef, raw, true)
+		if err := processHookPayload(adapter, hookName, rawRef, raw, true); err != nil {
+			return err
+		}
+		reconcileHookRun(repo, adapter, hookName, rawRef, raw, sessionID, runIDText)
+		return nil
 	}
 	rawRef, recordErr := RecordHookPayload(adapter, hookName, raw)
 	if recordErr != nil {
@@ -134,7 +144,42 @@ func HandleHookPayload(adapter primitives.AdapterName, hookName string, raw []by
 	if rawRef == "" {
 		return nil
 	}
-	return processHookPayload(adapter, hookName, rawRef, raw, false)
+	if err := processHookPayload(adapter, hookName, rawRef, raw, false); err != nil {
+		return err
+	}
+	if repo, sessionID, ok := hookSessionContext(raw); ok {
+		reconcileHookRun(repo, adapter, hookName, rawRef, raw, sessionID, runIDText)
+	}
+	return nil
+}
+
+func reconcileHookRun(repo *checkpoint.Repo, adapter primitives.AdapterName, hookName, rawRef string, raw []byte, sessionID primitives.SessionID, runIDText string) {
+	if strings.TrimSpace(runIDText) == "" {
+		return
+	}
+	runID, err := primitives.ParseRunID(runIDText)
+	if err == nil {
+		err = runs.LinkCapture(repo, runID, runs.CaptureProvider, sessionID, adapter)
+	}
+	if err == nil && normalizeHookName(hookName) == "userpromptsubmit" {
+		_, decodeErr := decodeHookPayload(adapter, raw)
+		if decodeErr != nil {
+			err = decodeErr
+		} else {
+			manager := turns.NewManager(repo)
+			active, ok, activeErr := manager.Active(sessionID)
+			if activeErr != nil {
+				err = activeErr
+			} else if !ok {
+				err = fmt.Errorf("provider prompt has no active Turnal turn")
+			} else {
+				_, err = runs.EnsureAttempt(repo, runID, sessionID, active.TurnID, adapter)
+			}
+		}
+	}
+	if err != nil {
+		_ = appendErrorEvent(repo.EventLog(), adapter, sessionID, rawRef, "run-correlation", err)
+	}
 }
 
 func ProcessHookPayload(adapter primitives.AdapterName, hookName, rawRef string, raw []byte) error {
@@ -559,6 +604,7 @@ func appendPrompt(log eventlog.Log, adapter primitives.AdapterName, sessionID pr
 		Payload: mustJSON(promptPayload{
 			Text:           redactedText(payload.Prompt, secrets.StorePrompts),
 			ProviderTurnID: payload.TurnID,
+			Redacted:       !secrets.StorePrompts,
 		}),
 	})
 }
@@ -708,7 +754,7 @@ func redactedText(value string, store bool) string {
 	if store {
 		return value
 	}
-	return "[redacted by turnal secrets policy]"
+	return primitives.SecretsRedactionText
 }
 
 func redactedJSON(value json.RawMessage, store bool) json.RawMessage {

@@ -17,6 +17,8 @@ import (
 	agentconfig "github.com/AadiJo/turnal/internal/config"
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/runs"
+	"github.com/AadiJo/turnal/internal/turnevents"
 	"github.com/AadiJo/turnal/internal/turns"
 	"github.com/spf13/cobra"
 )
@@ -25,18 +27,6 @@ type runSessionPayload struct {
 	ProviderSessionID string   `json:"provider_session_id"`
 	Source            string   `json:"source"`
 	Command           []string `json:"command"`
-}
-
-type runTurnPayload struct {
-	Turn uint64 `json:"turn"`
-}
-
-type runCheckpointPayload struct {
-	Turn       uint64 `json:"turn"`
-	Phase      string `json:"phase"`
-	CommitSHA  string `json:"commit_sha"`
-	Ref        string `json:"ref"`
-	GitSyncRef string `json:"git_sync_ref,omitempty"`
 }
 
 type runIncompletePayload struct {
@@ -68,13 +58,16 @@ func runCmd() *cobra.Command {
 		Short:        "Run Codex with turnal safety checkpoints",
 		SilenceUsage: true,
 		Args:         cobra.MinimumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) (resultErr error) {
 			if !isCodexCommand(args[0]) {
 				return fmt.Errorf("turnal run currently supports Codex only; expected command %q to be codex", args[0])
 			}
 
 			repo, err := openCheckpointRepo()
 			if err != nil {
+				return err
+			}
+			if err := runs.RecoverAbandoned(repo); err != nil {
 				return err
 			}
 
@@ -106,6 +99,10 @@ func runCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			runID, err := primitives.NewRunID()
+			if err != nil {
+				return err
+			}
 			sessionID, err := newRunSessionID(time.Now())
 			if err != nil {
 				return err
@@ -115,6 +112,25 @@ func runCmd() *cobra.Command {
 				return err
 			}
 			defer unlockSession()
+			releaseLifecycle, err := runs.Begin(repo, runID, sessionID, args)
+			if err != nil {
+				return err
+			}
+			defer releaseLifecycle()
+			runOpen := true
+			defer func() {
+				if !runOpen || resultErr == nil {
+					return
+				}
+				if finishErr := runs.Finish(repo, runID, sessionID, runs.StatusIncomplete, resultErr.Error()); finishErr != nil {
+					resultErr = errors.Join(resultErr, fmt.Errorf("finalize incomplete run %s: %w", runID, finishErr))
+				} else {
+					runOpen = false
+				}
+			}()
+			if err := runs.LinkCapture(repo, runID, runs.CaptureWrapper, sessionID, primitives.AdapterCodex); err != nil {
+				return err
+			}
 
 			started, err := startRunTurn(repo, sessionID, args)
 			if err != nil {
@@ -122,13 +138,13 @@ func runCmd() *cobra.Command {
 			}
 
 			childArgs := prepareCodexCommand(args, effective.Run.BypassHookTrust)
-			childErr := runChildCommand(cmd, childArgs)
+			childErr := runChildCommand(cmd, childArgs, runID)
 
 			finishErr := finishRunTurn(repo, sessionID, started.TurnID)
 			afterRawCount, countErr := codexRawRecordCount(repo.MetadataDir)
 
 			if !effective.Run.Quiet {
-				fmt.Fprintf(cmd.ErrOrStderr(), "turnal: recorded wrapper checkpoints for %s:%s\n", sessionID, started.TurnID)
+				fmt.Fprintf(cmd.ErrOrStderr(), "turnal: recorded run %s with wrapper checkpoints for %s:%s\n", runID, sessionID, started.TurnID)
 				if countErr == nil && afterRawCount == beforeRawCount {
 					fmt.Fprintln(cmd.ErrOrStderr(), "turnal: no Codex hook payloads were observed; wrapper checkpoints are available, but prompt/tool/assistant capture depends on Codex hooks. Review /hooks in Codex, or rerun with --bypass-hook-trust after reviewing hook sources.")
 				}
@@ -148,8 +164,16 @@ func runCmd() *cobra.Command {
 				return countErr
 			}
 			if childErr != nil {
+				if err := runs.Finish(repo, runID, sessionID, runs.StatusFailed, childErr.Error()); err != nil {
+					return errors.Join(childErr, err)
+				}
+				runOpen = false
 				return childErr
 			}
+			if err := runs.Finish(repo, runID, sessionID, runs.StatusSucceeded, ""); err != nil {
+				return err
+			}
+			runOpen = false
 			return nil
 		},
 	}
@@ -216,13 +240,13 @@ func containsArg(args []string, want string) bool {
 	return false
 }
 
-func runChildCommand(cmd *cobra.Command, args []string) error {
+func runChildCommand(cmd *cobra.Command, args []string, runID primitives.RunID) error {
 	child := exec.Command(args[0], args[1:]...)
 	child.Stdin = os.Stdin
 	child.Stdout = cmd.OutOrStdout()
 	child.Stderr = cmd.ErrOrStderr()
 	child.Dir = ""
-	child.Env = os.Environ()
+	child.Env = runEnvironment(os.Environ(), runID)
 
 	if err := child.Start(); err != nil {
 		return err
@@ -241,6 +265,18 @@ func runChildCommand(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	return nil
+}
+
+func runEnvironment(existing []string, runID primitives.RunID) []string {
+	result := make([]string, 0, len(existing)+1)
+	for _, entry := range existing {
+		name, _, found := strings.Cut(entry, "=")
+		if found && environmentNamesEqual(name, runs.EnvRunID) {
+			continue
+		}
+		result = append(result, entry)
+	}
+	return append(result, runs.EnvRunID+"="+runID.String())
 }
 
 func waitForChild(done <-chan error, signals <-chan os.Signal, forward func(os.Signal) error, kill func() error) error {
@@ -268,6 +304,9 @@ func newRunSessionID(now time.Time) (primitives.SessionID, error) {
 
 func startRunTurn(repo *checkpoint.Repo, sessionID primitives.SessionID, command []string) (turns.StartResult, error) {
 	log := repo.EventLog()
+	if err := turnevents.RecoverCheckpointJournals(log, repo); err != nil {
+		return turns.StartResult{}, err
+	}
 	if _, err := log.Append(eventlog.AppendInput{
 		SessionID: sessionID,
 		Type:      primitives.EventTypeSessionStart,
@@ -282,34 +321,15 @@ func startRunTurn(repo *checkpoint.Repo, sessionID primitives.SessionID, command
 		return turns.StartResult{}, err
 	}
 
-	started, err := turns.NewManager(repo).Start(sessionID, 0)
+	manager := turns.NewManager(repo).WithCheckpointEvents(primitives.AdapterCodex, "")
+	started, err := manager.Start(sessionID, 0)
 	if err != nil {
 		return turns.StartResult{}, err
 	}
-	if _, err := log.Append(eventlog.AppendInput{
-		SessionID: sessionID,
-		TurnID:    &started.TurnID,
-		Type:      primitives.EventTypeTurnStart,
-		Adapter:   primitives.AdapterCodex,
-		SourceID:  fmt.Sprintf("codex-run:%s:%s:start", sessionID, started.TurnID),
-		Payload:   mustJSON(runTurnPayload{Turn: started.TurnID.Uint64()}),
-	}); err != nil {
+	if err := turnevents.AppendTurnStart(log, primitives.AdapterCodex, sessionID, started.TurnID, ""); err != nil {
 		return turns.StartResult{}, err
 	}
-	if _, err := log.Append(eventlog.AppendInput{
-		SessionID: sessionID,
-		TurnID:    &started.TurnID,
-		Type:      primitives.EventTypeCheckpoint,
-		Adapter:   primitives.AdapterCodex,
-		SourceID:  fmt.Sprintf("codex-run:%s:%s:checkpoint:pre", sessionID, started.TurnID),
-		Payload: mustJSON(runCheckpointPayload{
-			Turn:       started.TurnID.Uint64(),
-			Phase:      primitives.CheckpointPhasePre.String(),
-			CommitSHA:  started.Pre.Commit.String(),
-			Ref:        started.Pre.Ref.String(),
-			GitSyncRef: snapshotRef(started.GitSync),
-		}),
-	}); err != nil {
+	if err := turnevents.AppendCheckpointWithGitSync(log, primitives.AdapterCodex, sessionID, started.TurnID, primitives.CheckpointPhasePre, started.Pre, started.GitSync, ""); err != nil {
 		return turns.StartResult{}, err
 	}
 	return started, nil
@@ -317,44 +337,21 @@ func startRunTurn(repo *checkpoint.Repo, sessionID primitives.SessionID, command
 
 func finishRunTurn(repo *checkpoint.Repo, sessionID primitives.SessionID, turnID primitives.TurnID) error {
 	log := repo.EventLog()
-	finished, err := turns.NewManager(repo).Finish(sessionID, turnID)
+	if err := turnevents.RecoverCheckpointJournals(log, repo); err != nil {
+		return err
+	}
+	manager := turns.NewManager(repo).WithCheckpointEvents(primitives.AdapterCodex, "")
+	finished, err := manager.Finish(sessionID, turnID)
 	if err != nil {
 		return err
 	}
-	if _, err := log.Append(eventlog.AppendInput{
-		SessionID: sessionID,
-		TurnID:    &finished.TurnID,
-		Type:      primitives.EventTypeTurnFinish,
-		Adapter:   primitives.AdapterCodex,
-		SourceID:  fmt.Sprintf("codex-run:%s:%s:finish", sessionID, finished.TurnID),
-		Payload:   mustJSON(runTurnPayload{Turn: finished.TurnID.Uint64()}),
-	}); err != nil {
+	if err := turnevents.AppendTurnFinish(log, primitives.AdapterCodex, sessionID, finished.TurnID, ""); err != nil {
 		return err
 	}
-	if _, err := log.Append(eventlog.AppendInput{
-		SessionID: sessionID,
-		TurnID:    &finished.TurnID,
-		Type:      primitives.EventTypeCheckpoint,
-		Adapter:   primitives.AdapterCodex,
-		SourceID:  fmt.Sprintf("codex-run:%s:%s:checkpoint:post", sessionID, finished.TurnID),
-		Payload: mustJSON(runCheckpointPayload{
-			Turn:       finished.TurnID.Uint64(),
-			Phase:      primitives.CheckpointPhasePost.String(),
-			CommitSHA:  finished.Post.Commit.String(),
-			Ref:        finished.Post.Ref.String(),
-			GitSyncRef: snapshotRef(finished.GitSync),
-		}),
-	}); err != nil {
+	if err := turnevents.AppendCheckpointWithGitSync(log, primitives.AdapterCodex, sessionID, finished.TurnID, primitives.CheckpointPhasePost, finished.Post, finished.GitSync, ""); err != nil {
 		return err
 	}
 	return nil
-}
-
-func snapshotRef(snapshot *checkpoint.Snapshot) string {
-	if snapshot == nil {
-		return ""
-	}
-	return snapshot.Ref
 }
 
 func codexRawRecordCount(metadataDir string) (int, error) {

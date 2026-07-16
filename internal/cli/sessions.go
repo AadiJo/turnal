@@ -66,6 +66,7 @@ type sessionView struct {
 	FirstActivity  time.Time
 	LastActivity   time.Time
 	Turns          map[uint64]*sessionViewTurn
+	Rollbacks      []sessionViewRollback
 	Head           *sessionViewHead
 	Warnings       []string
 }
@@ -85,26 +86,43 @@ type sessionViewHead struct {
 	Time   time.Time
 }
 
+type sessionViewRollback struct {
+	Sequence      primitives.EventSeq
+	StreamID      primitives.EventStreamID
+	TurnID        uint64
+	Target        string
+	Phase         string
+	Mode          string
+	Time          time.Time
+	ChangeSummary sessionJSONChangeSummary
+}
+
+const sessionsJSONSchemaVersion = 1
+
 type sessionsJSONOutput struct {
+	SchemaVersion int                  `json:"schema_version"`
 	TotalSessions int                  `json:"total_sessions"`
 	Sessions      []sessionJSONSummary `json:"sessions"`
 }
 
 type sessionJSONSummary struct {
-	SessionID         string           `json:"session_id"`
-	Status            string           `json:"status"`
-	Adapter           string           `json:"adapter,omitempty"`
-	Model             string           `json:"model,omitempty"`
-	PermissionMode    string           `json:"permission_mode,omitempty"`
-	TurnCount         int              `json:"turn_count"`
-	CompleteTurnCount int              `json:"complete_turn_count"`
-	ActiveTurnCount   int              `json:"active_turn_count"`
-	EventCount        int              `json:"event_count"`
-	FirstActivity     string           `json:"first_activity,omitempty"`
-	LastActivity      string           `json:"last_activity,omitempty"`
-	Head              *sessionJSONHead `json:"head,omitempty"`
-	LatestTurn        *sessionJSONTurn `json:"latest_turn,omitempty"`
-	Warnings          []string         `json:"warnings,omitempty"`
+	SessionID         string                `json:"session_id"`
+	Status            string                `json:"status"`
+	Adapter           string                `json:"adapter,omitempty"`
+	Model             string                `json:"model,omitempty"`
+	PermissionMode    string                `json:"permission_mode,omitempty"`
+	TurnCount         int                   `json:"turn_count"`
+	CompleteTurnCount int                   `json:"complete_turn_count"`
+	ActiveTurnCount   int                   `json:"active_turn_count"`
+	EventCount        int                   `json:"event_count"`
+	RollbackCount     int                   `json:"rollback_count"`
+	FirstActivity     string                `json:"first_activity,omitempty"`
+	LastActivity      string                `json:"last_activity,omitempty"`
+	Head              *sessionJSONHead      `json:"head,omitempty"`
+	LatestTurn        *sessionJSONTurn      `json:"latest_turn,omitempty"`
+	Turns             []sessionJSONTurn     `json:"turns,omitempty"`
+	Rollbacks         []sessionJSONRollback `json:"rollbacks"`
+	Warnings          []string              `json:"warnings,omitempty"`
 }
 
 type sessionJSONHead struct {
@@ -116,11 +134,40 @@ type sessionJSONHead struct {
 }
 
 type sessionJSONTurn struct {
-	TurnID    uint64   `json:"turn_id"`
-	Status    string   `json:"status"`
-	Prompt    string   `json:"prompt,omitempty"`
-	Assistant string   `json:"assistant,omitempty"`
-	ToolNames []string `json:"tool_names,omitempty"`
+	TurnID        uint64   `json:"turn_id"`
+	Status        string   `json:"status"`
+	Prompt        string   `json:"prompt,omitempty"`
+	Assistant     string   `json:"assistant,omitempty"`
+	ToolNames     []string `json:"tool_names,omitempty"`
+	FirstActivity string   `json:"first_activity,omitempty"`
+	LastActivity  string   `json:"last_activity,omitempty"`
+}
+
+type sessionJSONRollback struct {
+	Sequence      uint64                   `json:"sequence"`
+	StreamID      string                   `json:"stream_id,omitempty"`
+	TurnID        uint64                   `json:"turn_id,omitempty"`
+	Target        string                   `json:"target"`
+	Phase         string                   `json:"phase,omitempty"`
+	Mode          string                   `json:"mode"`
+	Time          string                   `json:"time"`
+	ChangeSummary sessionJSONChangeSummary `json:"change_summary"`
+}
+
+type sessionJSONChangeSummary struct {
+	Total       int `json:"total"`
+	Added       int `json:"added"`
+	Modified    int `json:"modified"`
+	Deleted     int `json:"deleted"`
+	ModeChanged int `json:"mode_changed"`
+}
+
+type sessionRollbackPayload struct {
+	Turn          uint64                   `json:"turn,omitempty"`
+	Phase         string                   `json:"phase,omitempty"`
+	Mode          string                   `json:"mode,omitempty"`
+	Target        string                   `json:"target"`
+	ChangeSummary sessionJSONChangeSummary `json:"change_summary"`
 }
 
 type sessionStartPayload struct {
@@ -161,6 +208,9 @@ func loadSessionViews(repo *checkpoint.Repo) ([]sessionView, error) {
 		return nil, err
 	}
 	for _, info := range infos {
+		if info.Manual {
+			continue
+		}
 		session := ensure(info.SessionID)
 		turn := ensureTurn(session, info.TurnID)
 		infoCopy := info
@@ -206,12 +256,21 @@ func loadSessionViews(repo *checkpoint.Repo) ([]sessionView, error) {
 			if event.Type == primitives.EventTypeSessionStart {
 				session.applySessionStartPayload(event.Payload)
 			}
+			if event.Type == primitives.EventTypeRollback {
+				rollback, err := sessionRollbackFromEvent(event)
+				if err != nil {
+					session.Warnings = append(session.Warnings, fmt.Sprintf("ignored rollback event %s: %v", event.Seq, err))
+					continue
+				}
+				session.Rollbacks = append(session.Rollbacks, rollback)
+				continue
+			}
 			if event.TurnID != nil {
 				ensureTurn(session, *event.TurnID)
 			}
 		}
 
-		for turnKey, summary := range queryindex.SummarizeTurnEvents(events) {
+		for turnKey, summary := range queryindex.SummarizeTurnEvents(nonRollbackEvents(events)) {
 			turnID, err := primitives.NewTurnID(turnKey)
 			if err != nil {
 				session.Warnings = append(session.Warnings, fmt.Sprintf("ignored invalid turn id %d", turnKey))
@@ -237,6 +296,43 @@ func loadSessionViews(repo *checkpoint.Repo) ([]sessionView, error) {
 		return left.ID.String() < right.ID.String()
 	})
 	return sessions, nil
+}
+
+func sessionRollbackFromEvent(event eventlog.Event) (sessionViewRollback, error) {
+	var payload sessionRollbackPayload
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		return sessionViewRollback{}, fmt.Errorf("payload malformed: %w", err)
+	}
+	target := strings.TrimSpace(payload.Target)
+	if target == "" {
+		target = strings.TrimSpace(event.RawRef)
+	}
+	if target == "" {
+		return sessionViewRollback{}, fmt.Errorf("target missing")
+	}
+	turnID := payload.Turn
+	if event.TurnID != nil {
+		turnID = event.TurnID.Uint64()
+	}
+	mode := strings.TrimSpace(payload.Mode)
+	if mode == "" {
+		mode = primitives.RollbackModeCheckpoint.String()
+	}
+	return sessionViewRollback{
+		Sequence: event.Seq, StreamID: event.StreamID, TurnID: turnID,
+		Target: target, Phase: strings.TrimSpace(payload.Phase), Mode: mode,
+		Time: event.Time.Time, ChangeSummary: payload.ChangeSummary,
+	}, nil
+}
+
+func nonRollbackEvents(events []eventlog.Event) []eventlog.Event {
+	filtered := make([]eventlog.Event, 0, len(events))
+	for _, event := range events {
+		if event.Type != primitives.EventTypeRollback {
+			filtered = append(filtered, event)
+		}
+	}
+	return filtered
 }
 
 func (session *sessionView) noteActivity(at time.Time) {
@@ -309,6 +405,11 @@ func writeSessionView(w io.Writer, session sessionView) error {
 	}
 	if err := writeSessionField(w, "events", styleSessionNumber(session.EventCount)); err != nil {
 		return err
+	}
+	if len(session.Rollbacks) > 0 {
+		if err := writeSessionField(w, "rollbacks", styleSessionNumber(len(session.Rollbacks))); err != nil {
+			return err
+		}
 	}
 	if !session.FirstActivity.IsZero() || !session.LastActivity.IsZero() {
 		if err := writeSessionField(w, "activity", styleSessionsMuted(formatSessionsActivityRange(session.FirstActivity, session.LastActivity))); err != nil {
@@ -453,25 +554,41 @@ func formatSessionTurnCounts(counts sessionTurnCountSummary) string {
 }
 
 func latestSessionTurn(session sessionView) *sessionViewTurn {
-	var latest *sessionViewTurn
-	for _, turn := range session.Turns {
-		if latest == nil {
-			latest = turn
-			continue
-		}
-		left := sessionTurnActivity(*turn)
-		right := sessionTurnActivity(*latest)
-		if !left.Equal(right) {
-			if left.After(right) {
-				latest = turn
-			}
-			continue
-		}
-		if turn.TurnID.Uint64() > latest.TurnID.Uint64() {
-			latest = turn
-		}
+	turns := orderedSessionTurns(session)
+	if len(turns) == 0 {
+		return nil
 	}
-	return latest
+	return turns[0]
+}
+
+func orderedSessionTurns(session sessionView) []*sessionViewTurn {
+	turns := make([]*sessionViewTurn, 0, len(session.Turns))
+	for _, turn := range session.Turns {
+		turns = append(turns, turn)
+	}
+	sort.Slice(turns, func(i, j int) bool {
+		left := sessionTurnActivity(*turns[i])
+		right := sessionTurnActivity(*turns[j])
+		if !left.Equal(right) {
+			return left.After(right)
+		}
+		return turns[i].TurnID.Uint64() > turns[j].TurnID.Uint64()
+	})
+	return turns
+}
+
+func orderedSessionRollbacks(session sessionView) []sessionViewRollback {
+	rollbacks := append([]sessionViewRollback(nil), session.Rollbacks...)
+	sort.Slice(rollbacks, func(i, j int) bool {
+		if !rollbacks[i].Time.Equal(rollbacks[j].Time) {
+			return rollbacks[i].Time.After(rollbacks[j].Time)
+		}
+		if rollbacks[i].StreamID != rollbacks[j].StreamID {
+			return rollbacks[i].StreamID.String() < rollbacks[j].StreamID.String()
+		}
+		return rollbacks[i].Sequence.Uint64() > rollbacks[j].Sequence.Uint64()
+	})
+	return rollbacks
 }
 
 func sessionTurnActivity(turn sessionViewTurn) time.Time {
@@ -601,12 +718,14 @@ func styleSessionsMuted(value string) string {
 
 func sessionsJSONFromViews(sessions []sessionView) sessionsJSONOutput {
 	output := sessionsJSONOutput{
+		SchemaVersion: sessionsJSONSchemaVersion,
 		TotalSessions: len(sessions),
 		Sessions:      make([]sessionJSONSummary, 0, len(sessions)),
 	}
 	for _, session := range sessions {
 		counts := sessionTurnCounts(session)
-		latest := latestSessionTurn(session)
+		turns := orderedSessionTurns(session)
+		rollbacks := orderedSessionRollbacks(session)
 		summary := sessionJSONSummary{
 			SessionID:         session.ID.String(),
 			Status:            sessionStatus(session, counts),
@@ -617,7 +736,10 @@ func sessionsJSONFromViews(sessions []sessionView) sessionsJSONOutput {
 			CompleteTurnCount: counts.Complete,
 			ActiveTurnCount:   counts.Active,
 			EventCount:        session.EventCount,
+			RollbackCount:     len(rollbacks),
 			Warnings:          session.Warnings,
+			Turns:             make([]sessionJSONTurn, 0, len(turns)),
+			Rollbacks:         make([]sessionJSONRollback, 0, len(rollbacks)),
 		}
 		if !session.FirstActivity.IsZero() {
 			summary.FirstActivity = session.FirstActivity.UTC().Format(time.RFC3339Nano)
@@ -634,16 +756,45 @@ func sessionsJSONFromViews(sessions []sessionView) sessionsJSONOutput {
 				Time:      session.Head.Time.UTC().Format(time.RFC3339Nano),
 			}
 		}
-		if latest != nil {
-			summary.LatestTurn = &sessionJSONTurn{
-				TurnID:    latest.TurnID.Uint64(),
-				Status:    sessionTurnStatus(*latest),
-				Prompt:    latest.Events.Prompt,
-				Assistant: latest.Events.Assistant,
-				ToolNames: latest.Events.ToolNames,
-			}
+		for _, turn := range turns {
+			jsonTurn := sessionJSONTurnFromView(*turn)
+			summary.Turns = append(summary.Turns, jsonTurn)
+		}
+		for _, rollback := range rollbacks {
+			summary.Rollbacks = append(summary.Rollbacks, sessionJSONRollback{
+				Sequence: rollback.Sequence.Uint64(), StreamID: rollback.StreamID.String(),
+				TurnID: rollback.TurnID, Target: rollback.Target, Phase: rollback.Phase,
+				Mode: rollback.Mode, Time: rollback.Time.UTC().Format(time.RFC3339Nano),
+				ChangeSummary: rollback.ChangeSummary,
+			})
+		}
+		if len(summary.Turns) > 0 {
+			latest := summary.Turns[0]
+			summary.LatestTurn = &latest
 		}
 		output.Sessions = append(output.Sessions, summary)
+	}
+	return output
+}
+
+func sessionJSONTurnFromView(turn sessionViewTurn) sessionJSONTurn {
+	output := sessionJSONTurn{
+		TurnID:    turn.TurnID.Uint64(),
+		Status:    sessionTurnStatus(turn),
+		Prompt:    turn.Events.Prompt,
+		Assistant: turn.Events.Assistant,
+		ToolNames: turn.Events.ToolNames,
+	}
+	first := turn.Events.First
+	last := sessionTurnActivity(turn)
+	if first.IsZero() {
+		first = checkpointInfoTime(turn.Pre)
+	}
+	if !first.IsZero() {
+		output.FirstActivity = first.UTC().Format(time.RFC3339Nano)
+	}
+	if !last.IsZero() {
+		output.LastActivity = last.UTC().Format(time.RFC3339Nano)
 	}
 	return output
 }

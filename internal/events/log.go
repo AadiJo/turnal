@@ -750,16 +750,47 @@ func (log Log) read(sessionID primitives.SessionID) ([]Event, error) {
 			events = append(events, streamEvents...)
 		}
 	}
-	sort.SliceStable(events, func(i, j int) bool {
-		if !events[i].Time.Time.Equal(events[j].Time.Time) {
-			return events[i].Time.Time.Before(events[j].Time.Time)
+	return orderAggregateEvents(events), nil
+}
+
+func orderAggregateEvents(events []Event) []Event {
+	type orderedEvent struct {
+		event         Event
+		effectiveTime time.Time
+	}
+	byStream := map[primitives.EventStreamID][]Event{}
+	for _, event := range events {
+		byStream[event.StreamID] = append(byStream[event.StreamID], event)
+	}
+	ordered := make([]orderedEvent, 0, len(events))
+	for _, streamEvents := range byStream {
+		sort.SliceStable(streamEvents, func(i, j int) bool {
+			return streamEvents[i].Seq.Uint64() < streamEvents[j].Seq.Uint64()
+		})
+		var previous time.Time
+		for _, event := range streamEvents {
+			effective := event.Time.Time
+			if effective.Before(previous) {
+				effective = previous
+			}
+			ordered = append(ordered, orderedEvent{event: event, effectiveTime: effective})
+			previous = effective
 		}
-		if events[i].StreamID != events[j].StreamID {
-			return events[i].StreamID.String() < events[j].StreamID.String()
+	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if !ordered[i].effectiveTime.Equal(ordered[j].effectiveTime) {
+			return ordered[i].effectiveTime.Before(ordered[j].effectiveTime)
 		}
-		return events[i].Seq.Uint64() < events[j].Seq.Uint64()
+		if ordered[i].event.StreamID != ordered[j].event.StreamID {
+			return ordered[i].event.StreamID.String() < ordered[j].event.StreamID.String()
+		}
+		return ordered[i].event.Seq.Uint64() < ordered[j].event.Seq.Uint64()
 	})
-	return events, nil
+	result := make([]Event, 0, len(ordered))
+	for _, item := range ordered {
+		result = append(result, item.event)
+	}
+	return result
 }
 
 func (log Log) readPath(sessionID primitives.SessionID, path string, expectedStreamID primitives.EventStreamID) ([]Event, error) {
@@ -786,7 +817,11 @@ func (log Log) readPath(sessionID primitives.SessionID, path string, expectedStr
 			return nil, fmt.Errorf("event log invariant failed for session %s line %d: empty event line", sessionID, lineNumber)
 		}
 
-		event, err := parseEventLine(line)
+		// Detach each record from the buffer populated by os.ReadFile before
+		// decoding it. Besides giving parsers immutable ownership, this avoids a
+		// Go 1.26 race-instrumentation false positive across ReadFile and JSON
+		// scanning of slices backed by the same allocation.
+		event, err := parseEventLine(append([]byte(nil), line...))
 		if err != nil {
 			return nil, fmt.Errorf("event log invariant failed for session %s line %d: %w", sessionID, lineNumber, err)
 		}
@@ -985,6 +1020,14 @@ func (log Log) ensureStreamMetadata(sessionID primitives.SessionID, streamID pri
 }
 
 func WriteStreamMetadata(metadataDir string, metadata StreamMetadata) error {
+	return writeStreamMetadata(filepath.Join(metadataDir, "log", "streams"), metadata)
+}
+
+func WriteWorkspaceStreamMetadata(metadataDir string, metadata StreamMetadata) error {
+	return writeStreamMetadata(filepath.Join(metadataDir, "log", "manual-checkpoints", metadata.WorktreeID.String(), "streams"), metadata)
+}
+
+func writeStreamMetadata(dir string, metadata StreamMetadata) error {
 	if metadata.Version != 1 {
 		return fmt.Errorf("event stream metadata invariant failed: unsupported version %d", metadata.Version)
 	}
@@ -1010,7 +1053,6 @@ func WriteStreamMetadata(metadataDir string, metadata StreamMetadata) error {
 	if metadata.CreatedAt == "" {
 		metadata.CreatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	}
-	dir := filepath.Join(metadataDir, "log", "streams")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create event stream metadata dir: %w", err)
 	}
@@ -1131,11 +1173,36 @@ func compactPayload(payload json.RawMessage) (json.RawMessage, error) {
 	if len(payload) == 0 {
 		return json.RawMessage(`{}`), nil
 	}
-	var buf bytes.Buffer
-	if err := json.Compact(&buf, payload); err != nil {
-		return nil, fmt.Errorf("payload must be valid JSON: %w", err)
+	if !json.Valid(payload) {
+		return nil, fmt.Errorf("payload must be valid JSON")
 	}
-	return append(json.RawMessage(nil), buf.Bytes()...), nil
+	compacted := make(json.RawMessage, 0, len(payload))
+	inString := false
+	escaped := false
+	for _, value := range payload {
+		if inString {
+			compacted = append(compacted, value)
+			switch {
+			case escaped:
+				escaped = false
+			case value == '\\':
+				escaped = true
+			case value == '"':
+				inString = false
+			}
+			continue
+		}
+		switch value {
+		case '"':
+			inString = true
+			compacted = append(compacted, value)
+		case ' ', '\t', '\r', '\n':
+			// JSON whitespace is insignificant outside string literals.
+		default:
+			compacted = append(compacted, value)
+		}
+	}
+	return compacted, nil
 }
 
 func appendLengthPrefixed(input []byte, value string) []byte {

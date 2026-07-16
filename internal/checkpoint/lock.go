@@ -14,14 +14,14 @@ const workspaceLockName = "workspace.lock"
 
 var workspaceLocks = struct {
 	sync.Mutex
-	held map[string]workspaceLock
+	held map[string]*workspaceLock
 }{
-	held: map[string]workspaceLock{},
+	held: map[string]*workspaceLock{},
 }
 
 type workspaceLock struct {
-	count int
-	lock  *filelock.Lock
+	gate  chan struct{}
+	users int
 }
 
 func (repo *Repo) WorkspaceLockPath() string {
@@ -50,49 +50,65 @@ func (repo *Repo) acquireWorkspaceLock(operation string) (func(), error) {
 	lockDir := repo.WorkspaceLockPath()
 
 	workspaceLocks.Lock()
-	if held, ok := workspaceLocks.held[lockDir]; ok {
-		held.count++
+	held, ok := workspaceLocks.held[lockDir]
+	if !ok {
+		held = &workspaceLock{gate: make(chan struct{}, 1)}
+		held.gate <- struct{}{}
 		workspaceLocks.held[lockDir] = held
-		workspaceLocks.Unlock()
-		return func() { releaseWorkspaceLock(lockDir) }, nil
 	}
+	held.users++
 	workspaceLocks.Unlock()
-
 	timeout := repo.LockTimeout
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	lock, err := filelock.Acquire(lockDir, timeout)
+	deadline := time.Now().Add(timeout)
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-held.gate:
+	case <-timer.C:
+		releaseWorkspaceLockEntry(lockDir, held)
+		return nil, workspaceLockError(repo, operation, filelock.ErrBusy)
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		held.gate <- struct{}{}
+		releaseWorkspaceLockEntry(lockDir, held)
+		return nil, workspaceLockError(repo, operation, filelock.ErrBusy)
+	}
+	lock, err := filelock.Acquire(lockDir, remaining)
 	if err != nil {
-		if errors.Is(err, filelock.ErrBusy) {
-			err = fmt.Errorf("workspace lock busy: %s", repo.MetadataDir)
-		}
-		if operation == "" {
-			return nil, err
-		}
-		return nil, fmt.Errorf("%s: %w", operation, err)
+		held.gate <- struct{}{}
+		releaseWorkspaceLockEntry(lockDir, held)
+		return nil, workspaceLockError(repo, operation, err)
 	}
 
-	workspaceLocks.Lock()
-	workspaceLocks.held[lockDir] = workspaceLock{count: 1, lock: lock}
-	workspaceLocks.Unlock()
-
-	return func() { releaseWorkspaceLock(lockDir) }, nil
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			_ = lock.Release()
+			held.gate <- struct{}{}
+			releaseWorkspaceLockEntry(lockDir, held)
+		})
+	}, nil
 }
 
-func releaseWorkspaceLock(lockDir string) {
+func workspaceLockError(repo *Repo, operation string, err error) error {
+	if errors.Is(err, filelock.ErrBusy) {
+		err = fmt.Errorf("workspace lock busy: %s", repo.MetadataDir)
+	}
+	if operation == "" {
+		return err
+	}
+	return fmt.Errorf("%s: %w", operation, err)
+}
+
+func releaseWorkspaceLockEntry(lockDir string, held *workspaceLock) {
 	workspaceLocks.Lock()
 	defer workspaceLocks.Unlock()
-
-	held, ok := workspaceLocks.held[lockDir]
-	if !ok {
-		return
-	}
-	if held.count <= 1 {
+	held.users--
+	if held.users == 0 && workspaceLocks.held[lockDir] == held {
 		delete(workspaceLocks.held, lockDir)
-		_ = held.lock.Release()
-		return
 	}
-	held.count--
-	workspaceLocks.held[lockDir] = held
 }

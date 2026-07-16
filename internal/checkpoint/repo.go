@@ -59,6 +59,12 @@ version = 1
 # [rollback]
 # mode = "checkpoint" # checkpoint | workspace-git
 #
+# [[verify]]
+# name = "unit-tests"
+# command = "go"
+# args = ["test", "./..."]
+# timeout = "2m"
+#
 # [retention]
 # Hidden Git objects are retained while private refs exist. Use
 # turnal session drop, turnal retention prune, then explicit
@@ -124,6 +130,7 @@ type CheckpointRefInfo struct {
 	StreamID     primitives.EventStreamID
 	Commit       primitives.CommitSHA
 	Time         time.Time
+	Manual       bool
 }
 
 type DiffFileStat struct {
@@ -168,12 +175,61 @@ type RestoreChange struct {
 }
 
 type RestorePlan struct {
-	TargetCommit primitives.CommitSHA `json:"target_commit"`
-	Changes      []RestoreChange      `json:"changes"`
+	TargetCommit  primitives.CommitSHA `json:"target_commit"`
+	WorkspaceTree string               `json:"workspace_tree,omitempty"`
+	Changes       []RestoreChange      `json:"changes"`
 }
 
 type MaterializeOptions struct {
-	PreservePaths []string
+	PreservePaths               []string
+	ApplyCurrentSecretDenyGlobs bool
+}
+
+// ForCaptureRoot returns a repository view that snapshots root into this
+// store while retaining the store's durable repository and worktree identity.
+// It deliberately does not attach root as a Turnal worktree. This is used for
+// short-lived, isolated execution directories whose files must become durable
+// hidden-Git checkpoints in the originating store.
+func (repo *Repo) ForCaptureRoot(root string) (*Repo, error) {
+	if repo == nil {
+		return nil, fmt.Errorf("capture root requires checkpoint repo")
+	}
+	if strings.TrimSpace(root) == "" {
+		return nil, fmt.Errorf("capture root is required")
+	}
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return nil, fmt.Errorf("resolve capture root: %w", err)
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return nil, fmt.Errorf("stat capture root: %w", err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("capture root is not a directory: %s", abs)
+	}
+	metadata, err := filepath.Abs(repo.MetadataDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve metadata dir: %w", err)
+	}
+	if pathWithin(abs, metadata) {
+		return nil, fmt.Errorf("capture root must be outside Turnal metadata: %s", metadata)
+	}
+	parsed, err := primitives.ParseWorkspaceRoot(abs)
+	if err != nil {
+		return nil, err
+	}
+	view := *repo
+	view.WorkspaceRoot = parsed
+	return &view, nil
+}
+
+func pathWithin(path, parent string) bool {
+	rel, err := filepath.Rel(parent, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
 func Init(root primitives.WorkspaceRoot) (*Repo, error) {
@@ -260,6 +316,30 @@ func Open(root primitives.WorkspaceRoot) (*Repo, error) {
 	return OpenAt(root, store.StorePath)
 }
 
+// OpenReadOnly opens an existing checkpoint store without refreshing identity,
+// registry, permissions, hidden Git configuration, or other durable metadata.
+func OpenReadOnly(root primitives.WorkspaceRoot) (*Repo, error) {
+	local := paths(root)
+	if info, err := os.Stat(local.GitDir); err == nil && info.IsDir() {
+		return OpenAtReadOnly(root, local.MetadataDir)
+	} else if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("stat hidden git repo: %w", err)
+	}
+
+	gitIdentity, err := discoverUserGit(root.String())
+	if err != nil {
+		return nil, fmt.Errorf("hidden git repo not initialized at %s and attached store discovery failed: %w", local.GitDir, err)
+	}
+	store, ok, err := resolveRegisteredStore(gitIdentity)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("hidden git repo not initialized at %s and no attached Turnal store is registered for %s", local.GitDir, gitIdentity.GitCommonDir)
+	}
+	return OpenAtReadOnly(root, store.StorePath)
+}
+
 func OpenAt(root primitives.WorkspaceRoot, metadataDir string) (*Repo, error) {
 	metadataDir, err := filepath.Abs(metadataDir)
 	if err != nil {
@@ -285,6 +365,32 @@ func OpenAt(root primitives.WorkspaceRoot, metadataDir string) (*Repo, error) {
 		return nil, err
 	}
 	if err := ensureSecureMetadataPermissions(repo); err != nil {
+		return nil, err
+	}
+	return repo, nil
+}
+
+// OpenAtReadOnly loads an existing store and worktree binding without writing
+// migrations or last-seen bookkeeping.
+func OpenAtReadOnly(root primitives.WorkspaceRoot, metadataDir string) (*Repo, error) {
+	metadataDir, err := filepath.Abs(metadataDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve metadata dir: %w", err)
+	}
+	repo := pathsAt(root, metadataDir)
+	if _, err := os.Stat(repo.GitDir); err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("hidden git repo not initialized at %s", repo.GitDir)
+		}
+		return nil, fmt.Errorf("stat hidden git repo: %w", err)
+	}
+	var gitIdentity *UserGitIdentity
+	if discovered, discoverErr := discoverUserGit(root.String()); discoverErr == nil {
+		gitIdentity = &discovered
+	} else if !isNoGitRepository(discoverErr) {
+		return nil, fmt.Errorf("discover workspace git identity: %w", discoverErr)
+	}
+	if err := repo.readIdentity(gitIdentity); err != nil {
 		return nil, err
 	}
 	return repo, nil
@@ -331,6 +437,68 @@ func (repo *Repo) CreateCheckpoint(sessionID primitives.SessionID, turnID primit
 		return err
 	})
 	return checkpoint, err
+}
+
+// CreateCheckpointLocked captures a checkpoint while the caller holds the
+// workspace lock.
+func (repo *Repo) CreateCheckpointLocked(sessionID primitives.SessionID, turnID primitives.TurnID, phase primitives.CheckpointPhase) (Checkpoint, error) {
+	return repo.createCheckpoint(sessionID, turnID, phase)
+}
+
+// CreateManualCheckpoint captures the current workspace without assigning the
+// checkpoint to an agent session or turn.
+func (repo *Repo) CreateManualCheckpoint() (Checkpoint, error) {
+	var created Checkpoint
+	err := repo.WithWorkspaceLock("create manual checkpoint", func() error {
+		var err error
+		created, err = repo.createManualCheckpoint()
+		return err
+	})
+	return created, err
+}
+
+// CreateManualCheckpointLocked captures a manual checkpoint while the caller
+// holds the workspace lock.
+func (repo *Repo) CreateManualCheckpointLocked() (Checkpoint, error) {
+	return repo.createManualCheckpoint()
+}
+
+func (repo *Repo) createManualCheckpoint() (Checkpoint, error) {
+	checkpointID, err := primitives.NewCheckpointID()
+	if err != nil {
+		return Checkpoint{}, err
+	}
+	ref, err := primitives.NewManualCheckpointRef(repo.WorktreeID, checkpointID)
+	if err != nil {
+		return Checkpoint{}, err
+	}
+	canonicalRef, err := primitives.NewCheckpointIDRef(checkpointID)
+	if err != nil {
+		return Checkpoint{}, err
+	}
+	commit, err := repo.createSnapshotCommit(fmt.Sprintf("turnal manual checkpoint %s", checkpointID))
+	if err != nil {
+		return Checkpoint{}, err
+	}
+	if err := repo.installCheckpointRefsAtomic(canonicalRef, ref, commit); err != nil {
+		return Checkpoint{}, err
+	}
+	return Checkpoint{ID: checkpointID, Ref: ref, CanonicalRef: canonicalRef, Commit: commit, WorktreeID: repo.WorktreeID}, nil
+}
+
+func (repo *Repo) installCheckpointRefsAtomic(canonicalRef, friendlyRef primitives.CheckpointRef, commit primitives.CommitSHA) error {
+	input := strings.Join([]string{
+		"start",
+		fmt.Sprintf("create %s %s", canonicalRef, commit),
+		fmt.Sprintf("create %s %s", friendlyRef, commit),
+		"prepare",
+		"commit",
+		"",
+	}, "\n")
+	if _, err := runHiddenGitWithInput(repo, "", strings.NewReader(input), "update-ref", "--stdin"); err != nil {
+		return fmt.Errorf("install checkpoint refs atomically: %w", err)
+	}
+	return nil
 }
 
 func (repo *Repo) createCheckpoint(sessionID primitives.SessionID, turnID primitives.TurnID, phase primitives.CheckpointPhase) (Checkpoint, error) {
@@ -448,6 +616,12 @@ func (repo *Repo) CreateSnapshotRef(ref string, message string) (Snapshot, error
 	return snapshot, err
 }
 
+// CreateSnapshotRefLocked creates a snapshot while the caller holds the
+// workspace lock. It exists for compound operations that must remain atomic.
+func (repo *Repo) CreateSnapshotRefLocked(ref string, message string) (Snapshot, error) {
+	return repo.createSnapshotRef(ref, message)
+}
+
 func (repo *Repo) createSnapshotRef(ref string, message string) (Snapshot, error) {
 	ref, err := repo.validatePrivateRef(ref)
 	if err != nil {
@@ -475,6 +649,12 @@ func (repo *Repo) CreateSyntheticSnapshotRef(ref string, message string, entries
 		return err
 	})
 	return snapshot, err
+}
+
+// CreateSyntheticSnapshotRefLocked creates a synthetic snapshot while the
+// caller holds the workspace lock.
+func (repo *Repo) CreateSyntheticSnapshotRefLocked(ref string, message string, entries []SyntheticTreeEntry) (Snapshot, error) {
+	return repo.createSyntheticSnapshotRef(ref, message, entries)
 }
 
 func (repo *Repo) createSyntheticSnapshotRef(ref string, message string, entries []SyntheticTreeEntry) (Snapshot, error) {
@@ -841,10 +1021,11 @@ func (repo *Repo) listCheckpointRefInfos(refPrefix string) ([]CheckpointRefInfo,
 				worktreeID = repo.WorktreeID
 			}
 		}
-		if streamID == "" && repo.StoreID != "" {
+		if streamID == "" && repo.StoreID != "" && !refParts.Manual {
 			streamID, _ = primitives.DeriveLegacyEventStreamID(repo.StoreID, refParts.SessionID)
 		}
 		infos = append(infos, CheckpointRefInfo{
+			ID:         refParts.CheckpointID,
 			Ref:        ref,
 			SessionID:  refParts.SessionID,
 			TurnID:     refParts.TurnID,
@@ -854,13 +1035,17 @@ func (repo *Repo) listCheckpointRefInfos(refPrefix string) ([]CheckpointRefInfo,
 			StreamID:   streamID,
 			Commit:     commit,
 			Time:       createdAt,
+			Manual:     refParts.Manual,
 		})
 	}
 	for index := range infos {
 		if canonical, ok := canonicalByCommit[infos[index].Commit.String()]; ok {
+			if infos[index].Manual && infos[index].ID != canonical.id {
+				return nil, fmt.Errorf("manual checkpoint identity invariant failed: ref %s names %s but canonical ref names %s", infos[index].Ref, infos[index].ID, canonical.id)
+			}
 			infos[index].ID = canonical.id
 			infos[index].CanonicalRef = canonical.ref
-			if parts, err := infos[index].Ref.Parts(); err == nil && !parts.Scoped {
+			if parts, err := infos[index].Ref.Parts(); err == nil && !parts.Scoped && !parts.Manual {
 				producerID := repo.EventProducerID
 				if primary, ok := repo.primaryWorktreeBinding(); ok {
 					producerID = primary.ProducerID
@@ -869,6 +1054,9 @@ func (repo *Repo) listCheckpointRefInfos(refPrefix string) ([]CheckpointRefInfo,
 					infos[index].StreamID = streamID
 				}
 			}
+		}
+		if infos[index].Manual && infos[index].CanonicalRef == "" {
+			return nil, fmt.Errorf("manual checkpoint identity invariant failed: ref %s has no matching canonical ref", infos[index].Ref)
 		}
 	}
 
@@ -1020,6 +1208,16 @@ func (repo *Repo) DeleteCheckpointRef(ref primitives.CheckpointRef) error {
 	return repo.DeletePrivateRef(parsedRef.String())
 }
 
+// DeleteCheckpointRefLocked deletes a checkpoint ref while the caller holds
+// the workspace lock.
+func (repo *Repo) DeleteCheckpointRefLocked(ref primitives.CheckpointRef) error {
+	parsedRef, err := primitives.ParseCheckpointRef(ref.String())
+	if err != nil {
+		return err
+	}
+	return repo.DeletePrivateRefLocked(parsedRef.String())
+}
+
 func (repo *Repo) ListPrivateRefs(prefix string) ([]string, error) {
 	prefix, err := repo.validatePrivateRef(prefix)
 	if err != nil {
@@ -1062,6 +1260,17 @@ func (repo *Repo) DeletePrivateRef(ref string) error {
 	})
 }
 
+// DeletePrivateRefLocked deletes a private ref while the caller holds the
+// workspace lock.
+func (repo *Repo) DeletePrivateRefLocked(ref string) error {
+	parsedRef, err := repo.validatePrivateRef(ref)
+	if err != nil {
+		return err
+	}
+	_, err = runHiddenGit(repo, "", "update-ref", "-d", parsedRef)
+	return err
+}
+
 func (repo *Repo) RunHiddenGitGC() error {
 	return repo.WithWorkspaceLock("garbage collect hidden repository", func() error {
 		if _, err := repo.pruneModeManifests(); err != nil {
@@ -1087,6 +1296,12 @@ func (repo *Repo) PruneModeManifests() ([]string, error) {
 		return err
 	})
 	return removed, err
+}
+
+// PruneModeManifestsLocked prunes sidecars while the caller holds the
+// workspace lock.
+func (repo *Repo) PruneModeManifestsLocked() ([]string, error) {
+	return repo.pruneModeManifests()
 }
 
 func (repo *Repo) pruneModeManifests() ([]string, error) {
@@ -1141,7 +1356,7 @@ func (repo *Repo) RefCommit(ref string) (primitives.CommitSHA, error) {
 	if err != nil {
 		return "", err
 	}
-	output, err := runHiddenGit(repo, "", "rev-parse", parsedRef+"^{commit}")
+	output, err := runHiddenGitReadOnly(repo, "rev-parse", parsedRef+"^{commit}")
 	if err != nil {
 		return "", err
 	}
@@ -1240,13 +1455,19 @@ func (repo *Repo) PlanRestoreCommit(commit primitives.CommitSHA) (RestorePlan, e
 		return RestorePlan{}, err
 	}
 	changes = filterSecretDeniedChanges(changes, denyGlobs)
-	return RestorePlan{TargetCommit: parsedCommit, Changes: changes}, nil
+	return RestorePlan{TargetCommit: parsedCommit, WorkspaceTree: currentTree, Changes: changes}, nil
 }
 
 func (repo *Repo) RestoreCommit(commit primitives.CommitSHA) error {
 	return repo.WithWorkspaceLock("restore checkpoint", func() error {
 		return repo.restoreCommit(commit)
 	})
+}
+
+// RestoreCommitLocked restores a checkpoint while the caller holds the
+// workspace lock.
+func (repo *Repo) RestoreCommitLocked(commit primitives.CommitSHA) error {
+	return repo.restoreCommit(commit)
 }
 
 // PreflightRestoreCommit verifies every target object and the optional mode
@@ -1309,6 +1530,14 @@ func (repo *Repo) MaterializeCommit(commit primitives.CommitSHA, root string, op
 	if err != nil {
 		return err
 	}
+	var denyGlobs []string
+	if options.ApplyCurrentSecretDenyGlobs {
+		denyGlobs, err = repo.secretDenyGlobs()
+		if err != nil {
+			return fmt.Errorf("resolve current materialization secret policy: %w", err)
+		}
+		entries = filterSecretDeniedTreeEntries(entries, denyGlobs)
+	}
 	modes, err := repo.readModeManifest(parsedCommit)
 	if err != nil {
 		return err
@@ -1316,6 +1545,11 @@ func (repo *Repo) MaterializeCommit(commit primitives.CommitSHA, root string, op
 	preservePaths, err := materializePreserveSet(options.PreservePaths)
 	if err != nil {
 		return err
+	}
+	for preservedPath := range preservePaths {
+		if secretDeniedPath(preservedPath, denyGlobs) {
+			delete(preservePaths, preservedPath)
+		}
 	}
 	for _, entry := range entries {
 		mode, hasMode := modes[entry.Path]
@@ -1333,6 +1567,19 @@ func (repo *Repo) MaterializeCommit(commit primitives.CommitSHA, root string, op
 		return err
 	}
 	return materializeRemoveEmptyDirs(materializeRoot)
+}
+
+func filterSecretDeniedTreeEntries(entries []TreeEntry, denyGlobs []string) []TreeEntry {
+	if len(entries) == 0 || len(denyGlobs) == 0 {
+		return entries
+	}
+	filtered := make([]TreeEntry, 0, len(entries))
+	for _, entry := range entries {
+		if !secretDeniedPath(entry.Path, denyGlobs) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
 }
 
 func (repo *Repo) restoreCommit(commit primitives.CommitSHA) error {
@@ -1387,7 +1634,7 @@ func (repo *Repo) ListCommitTree(commit primitives.CommitSHA) ([]TreeEntry, erro
 	if err != nil {
 		return nil, err
 	}
-	output, err := runHiddenGit(repo, "", "ls-tree", "-r", "-z", "--full-tree", parsedCommit.String())
+	output, err := runHiddenGitReadOnly(repo, "ls-tree", "-r", "-z", "--full-tree", parsedCommit.String())
 	if err != nil {
 		return nil, err
 	}
@@ -1932,7 +2179,7 @@ func (repo *Repo) validatePrivateRef(ref string) (string, error) {
 	if strings.ContainsRune(ref, 0) {
 		return "", fmt.Errorf("private ref %q must not contain NUL", ref)
 	}
-	if _, err := runHiddenGit(repo, "", "check-ref-format", ref); err != nil {
+	if _, err := runHiddenGitReadOnly(repo, "check-ref-format", ref); err != nil {
 		return "", err
 	}
 	return ref, nil
@@ -2258,6 +2505,21 @@ func runHiddenGit(repo *Repo, indexPath string, args ...string) (string, error) 
 
 func runHiddenGitWithInput(repo *Repo, indexPath string, stdin io.Reader, args ...string) (string, error) {
 	return runHiddenGitCommand(repo, indexPath, stdin, args...)
+}
+
+func runHiddenGitReadOnly(repo *Repo, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = repo.WorkspaceRoot.String()
+	cmd.Env = append(cleanGitEnv(os.Environ()),
+		"GIT_DIR="+repo.GitDir,
+		"GIT_WORK_TREE="+repo.WorkspaceRoot.String(),
+		"GIT_OPTIONAL_LOCKS=0",
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+	}
+	return string(output), nil
 }
 
 func runHiddenGitCommand(repo *Repo, indexPath string, stdin io.Reader, args ...string) (string, error) {

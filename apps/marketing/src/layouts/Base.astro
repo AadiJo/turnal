@@ -1,0 +1,38 @@
+---
+import '../styles/base.css';
+import faviconUrl from '../../../../assets/logo.svg?url';
+
+interface Props {
+  title?: string;
+  description?: string;
+  theme?: string; // maps to a body class for page-level palettes
+}
+const {
+  title = 'Turnal | Local history for AI coding agents',
+  description = 'Turnal pairs AI agent activity with hidden Git checkpoints. Search what happened, inspect file changes, verify earlier states, and roll back safely.',
+  theme,
+} = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content={description} />
+    <title>{title}</title>
+
+    <link rel="icon" href={faviconUrl} type="image/svg+xml" />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap"
+      rel="stylesheet"
+    />
+    <slot name="head" />
+  </head>
+  <body class={theme}>
+    <slot />
+  </body>
+</html>

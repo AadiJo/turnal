@@ -22,15 +22,17 @@ Turnal should be piloted before company-wide adoption. Pin a version and validat
 - Diff the workspace before and after a specific agent turn.
 - Attribute current lines to the turns that last changed them.
 - Roll the workspace back with a safety checkpoint created first.
+- Save an explicit rollback point without committing to the project's Git history.
 - Search recorded turns without making SQLite the source of truth.
 - Replay checkpoints in isolated worktrees.
+- Run repository-defined checks against the live workspace or a recorded checkpoint.
 - Share one Turnal store across linked Git worktrees.
 
 ## Requirements
 
 - Git available on `PATH`. Turnal uses Git plumbing for its private checkpoint store.
 - Node.js 18 or newer when installing through npm.
-- Claude Code, Codex, OpenCode, Gemini CLI, or Copilot CLI for automatic agent capture. Manual checkpoints are also available.
+- Claude Code, Codex, OpenCode, Gemini CLI, or Copilot CLI for automatic agent capture. `turnal save` also works without an agent session.
 
 Turnal does not initialize a Git repository for your project. It works in both Git and non-Git directories.
 
@@ -40,7 +42,7 @@ Turnal does not initialize a Git repository for your project. It works in both G
 npm install -g @aadijo/turnal
 ```
 
-The npm package ships prebuilt binaries for macOS, Linux, and Windows on x64 and arm64. Go is only needed when installing from source or using an unsupported npm platform.
+Turnal is supported on Linux, macOS, and Windows on x64 and arm64; the npm package ships prebuilt binaries for each. Go is only needed when installing from source or using an unsupported npm platform. Isolated `turnal fork` execution is available only on those three platforms. On any other target it fails closed with an explicit error instead of running a child without process containment.
 
 From source:
 
@@ -48,16 +50,42 @@ From source:
 go install github.com/AadiJo/turnal/cmd/turnal@latest
 ```
 
+### VS Code extension
+
+The first-party VS Code extension is under [`apps/vscode`](apps/vscode). It provides current-line AI blame, a native sessions and turns sidebar, read-only turn diffs, and previewed rollback while delegating history and restore operations to the installed `turnal` CLI. See the [extension README](apps/vscode/README.md) for development and local packaging instructions.
+
 ## Quick start
 
 From the root of the project you want to record:
 
 ```sh
-turnal init
+turnal init --agent all
 turnal status
+turnal status --probe-agent-capture
 ```
 
-`turnal init` creates a `.turnal/` store, adds `.turnal/` to `.gitignore`, and configures hooks according to the `--agent` selection. The default `auto` mode detects Claude Code and Codex, falling back to configuring both when neither is discoverable. Initialization does not change your existing `.git/`.
+`turnal init --agent all` creates a `.turnal/` store, adds `.turnal/` to `.gitignore`, and configures hooks for all supported agents. Initialization does not change your existing `.git/`.
+
+> [!IMPORTANT]
+> **Trust the workspace hooks before using your agent.** For Codex, launch the Codex CLI in this workspace first and approve the Turnal hooks there before using Codex through another surface, such as the desktop app; those surfaces may not show the hook-trust prompt. For Claude Code, trust the workspace when prompted—no separate hook approval is needed.
+
+Normal status is offline. The explicit capture probe starts Codex app-server only long enough to call `hooks/list`; it does not start a thread or turn, invoke a model, modify workspace files, or change provider trust or configuration. Codex may still update its own local cache and runtime state while app-server starts. The probe also explains the Claude Agent SDK limitation that only the host knows whether it loads project settings.
+
+### Agent skills
+
+Turnal includes three project-scoped agent skills. The npm CLI does not copy them into another repository, so place the desired skill folders under `<project>/.agents/skills/` as part of that project's agent setup. Compatible agents can select a skill from its description or invoke it explicitly:
+
+- [`$turnal-inspect-history`](.agents/skills/turnal-inspect-history/SKILL.md) searches recorded work before implementation when a request may have been tried before, revisits existing code, or depends on missing prior intent. It can recover what the user asked for, what earlier agents attempted, what changed, and whether checks passed.
+- [`$turnal-fork-history`](.agents/skills/turnal-fork-history/SKILL.md) previews fork readiness, reruns a recorded task from its historical pre-turn workspace, and compares or selects isolated attempts.
+- [`$turnal-restore-history`](.agents/skills/turnal-restore-history/SKILL.md) resolves checkpoint arguments, previews rollback, and performs an explicitly requested restore or interrupted-rollback recovery safely.
+
+For example, ask the agent directly:
+
+```text
+$turnal-inspect-history Check whether this request has been tried before and recover the earlier user intent before implementing it.
+$turnal-fork-history Rerun <session>:<turn> in isolation and compare the result with the existing attempts.
+$turnal-restore-history Preview restoring the workspace to before <session>:<turn>; do not apply it yet.
+```
 
 OpenCode, Gemini CLI, and Copilot CLI use the versioned external adapter SDK. Release packages ship their adapter executables; verify discovery with `turnal adapter list` and `turnal adapter doctor`, then follow the [provider hook examples](docs/adapters.md#included-adapters).
 
@@ -75,12 +103,28 @@ turnal log --transcript
 turnal show <session>:<turn>
 turnal diff <session>:<turn>
 
+# Check what Turnal could reconstruct before rerunning a task.
+turnal fork <session>:<turn> --dry-run
+
+# Run the captured instruction from the historical pre-turn workspace.
+turnal fork <session>:<turn> -- codex exec
+
 # See what would be restored, then perform the rollback.
 turnal rollback --to <session>:<turn>:pre --dry-run
 turnal rollback --to <session>:<turn>:pre
 ```
 
 Rollback targets default to the post-turn checkpoint when the phase is omitted. Use `:pre` to return to the state before the turn and `:post` to return to the state after it.
+
+To record the current workspace as an explicit rollback point, use `save`. The optional message is descriptive metadata; rollback uses the hidden Git commit hash printed by the command.
+
+```sh
+turnal save "tests passing before refactor"
+turnal rollback --to <printed-hash> --dry-run
+turnal rollback --to <printed-hash>
+```
+
+Manual saves capture the same project surface as automatic checkpoints. They do not capture the project's Git HEAD or index, so `--workspace-git` rollback is unavailable for them.
 
 ### Codex wrapper mode
 
@@ -91,6 +135,8 @@ turnal run -- codex
 ```
 
 Wrapper checkpoints remain available even when Codex hook payloads are unavailable. Prompt, tool, and assistant details still depend on Codex hooks.
+
+An application embedding Codex app-server does not automatically pass through this wrapper. App-server may discover Turnal's project hooks but skip untrusted definitions until you review and trust them in the host's hooks UI; Turnal diagnoses trust but never grants it.
 
 ### Manual turns
 
@@ -200,6 +246,10 @@ Git-sync capture requires the workspace to already be a valid Git worktree. It i
 turnal sessions                         # Session summaries
 turnal sessions --json                  # Scriptable session output
 turnal log                              # Turn graph for this worktree
+turnal log --max-lanes 12               # Override the bounded eight-column graph
+turnal log --max-lanes 0                # Allow unlimited graph columns
+turnal log --session-limit 10           # Keep the ten most recently active sessions
+turnal log --limit 20                   # Keep at most twenty turns per session
 turnal log --transcript                 # Prompt/assistant/tool transcript
 turnal log --all-worktrees              # Shared-store history
 turnal show <session>:<turn>             # Normalized events for one turn
@@ -208,6 +258,8 @@ turnal diff <session>:<turn>             # Pre-to-post patch
 turnal search "authentication failure"  # Search the SQLite projection
 turnal blame src/auth.go:42              # Turn that last changed a line
 ```
+
+The checkpoint graph packs non-overlapping or timestamp-touching session spans into reusable lanes and caps the display at eight columns by default. When more lanes are needed, the most recently active spans keep dedicated lanes and the eighth becomes an overflow lane with turn markers but no connecting line; each inline session label and session-derived true color continues to identify the turn. Graph summaries always include the displayed lane count and disclose overflow or session/turn filtering. Use `--verbose` to print the full session legend.
 
 If the disposable index is missing or stale:
 
@@ -231,6 +283,104 @@ turnal replay stop
 ```
 
 Use `turnal replay list` to find active replay sessions and `turnal replay --help` for path and retention controls.
+
+## Repository verification
+
+Declare an ordered set of verifier commands in the repository's `.turnal/config.toml`:
+
+```toml
+[[verify]]
+name = "unit-tests"
+command = "go"
+args = ["test", "./..."]
+timeout = "2m"
+
+[[verify]]
+name = "race-detector"
+command = "go"
+args = ["test", "-race", "./..."]
+timeout = "5m"
+```
+
+Each command and argument is passed directly to the operating system in declaration order; Turnal does not invoke a shell or expand variables, globs, pipes, or redirects. Names must be unique printable UTF-8 text without formatting controls, commands and timeouts are required, and malformed or excessive definitions make verification fail before any check starts.
+
+Run the checks directly in the current workspace:
+
+```sh
+turnal verify
+turnal verify --json
+```
+
+Live verification does not create a checkpoint or move the project's branch, HEAD, index, or Git configuration. The checks run in the mutable workspace and may modify it themselves, so the report identifies this target as live and does not claim that the result is reproducible.
+
+Run the same declarations against a recorded state:
+
+```sh
+turnal verify <session>:<turn>:pre
+turnal verify <session>:<turn>:post --json
+```
+
+The canonical `<session>:turn:<turn>:pre|post` spelling is accepted too. Turnal verifies the durable checkpoint metadata and refs before launching a command, then materializes the captured project surface into a Turnal-owned temporary directory. It never runs checkpoint checks in the active workspace and never moves or initializes the project's `.git/`. The evaluation omits `.git/`, `.turnal/`, ignored paths, uncaptured files, and empty directories that were not represented by the checkpoint tree. Turnal reapplies the current `secrets.snapshot_deny_globs` during verifier materialization, so a newly denied path stays absent even if an older checkpoint captured it; exact replay materialization retains the historical surface.
+
+Checks run sequentially and continue after ordinary failures. Turnal terminates remaining supervised descendants when the direct verifier exits, and a configured timeout terminates the supervised process tree through a Windows Job Object or the child's process group on Unix. If containment cleanup fails, the check keeps its original result while JSON and human output report a separate infrastructure error and the aggregate verification remains unsuccessful. A Unix descendant that deliberately detaches from that process group is outside Turnal's containment boundary, but retained output pipes have a bounded one-second wait so such a descendant cannot keep `turnal verify` blocked indefinitely. Ctrl+C and SIGTERM cancel the active verifier and trigger owned checkpoint-directory cleanup. Stdout and stderr are captured separately, with the first 1 MiB retained for each stream and independent truncation flags in JSON. Children inherit the caller's environment, toolchain, network access, and current external-service state, but reports record only that inheritance policy and never serialize environment-variable values.
+
+The command exits `0` when every check passes and `3` after running every eligible check when any check fails, times out, or cannot start. Invalid configuration, unresolved or corrupt targets, materialization failures, and cleanup errors are ordinary Turnal errors and exit `1`. A passing verifier is evidence for the property that command checks; it is not proof that the entire change is correct.
+
+Standalone verifier reports are printed or returned as JSON. Forked Case attempts also run the verifier contract frozen when the Case was created, and the report is stored with the durable attempt result so later comparisons retain the evidence used at execution time.
+
+## Fork readiness
+
+Before rerunning a recorded task, inspect what Turnal can reconstruct:
+
+```sh
+turnal fork <session>:<turn> --dry-run
+turnal fork <session>:<turn> --dry-run --json
+```
+
+The report identifies the exact pre-turn checkpoint, captured file count,
+observable instruction status, provider metadata, and known gaps such as the
+conversation context that cannot currently be reconstructed, unpinned
+toolchain, live external services, and secrets that require fresh authorization.
+A redacted or missing prompt is reported as requiring new user input and is
+never recovered from raw storage.
+
+Execute a supervised attempt from that checkpoint by placing the command after
+`--`:
+
+```sh
+# A bare Codex command receives the exact captured instruction automatically.
+turnal fork <session>:<turn> -- codex exec
+
+# Any runner can consume the provenance exported as TURNAL_FORK_* variables.
+turnal fork <session>:<turn> -- sh -c 'my-runner "$TURNAL_FORK_INSTRUCTION"'
+```
+
+Execution creates or reuses an immutable Case for the source turn, materializes
+its pre-turn checkpoint into an owner-only temporary directory, and runs the
+child there. The child never runs in the source workspace, `.git/` and
+`.turnal/` are excluded, and inherited `GIT_*` variables are removed. Turnal
+records wrapper pre/post checkpoints, the command status, and the Case's frozen
+verifier report as a durable Attempt. The temporary directory is removed by
+default; `--keep` preserves it for inspection. Bare `codex` and `codex exec`
+commands receive the captured instruction unless `--no-replay-instruction` is
+set; commands with explicit arguments are left unchanged.
+
+Compare every completed Attempt against the same Case base, record a choice,
+then preview or apply it:
+
+```sh
+turnal compare <case-id>
+turnal compare <case-id> --patch <attempt-id>
+turnal select <case-id> <attempt-id>
+turnal apply <case-id> --dry-run
+turnal apply <case-id>
+```
+
+Apply is intentionally exact-base only. It refuses to change a workspace whose
+captured surface differs from the Case base; when the base matches, it uses the
+journaled rollback engine, creates a safety checkpoint first, restores the
+selected post-checkpoint, and records the application on the Case. It does not
+perform a three-way merge.
 
 ## Worktrees and store history
 
@@ -298,6 +448,12 @@ enabled = false
 [rollback]
 mode = "checkpoint"     # checkpoint | workspace-git
 
+[[verify]]
+name = "unit-tests"
+command = "go"
+args = ["test", "./..."]
+timeout = "2m"
+
 [secrets]
 store_prompts = true
 store_tool_io = true
@@ -322,11 +478,14 @@ Start with:
 
 ```sh
 turnal status
+turnal status --probe-agent-capture
 turnal sessions
 turnal recovery status
 ```
 
-- **Hooks need attention:** rerun `turnal init --agent claude`, `--agent codex`, or `--agent all`.
+- **Hooks need attention:** status distinguishes a missing event from an event configured with a different command; rerun `turnal init --agent claude`, `--agent codex`, or `--agent all` only after reviewing the reported configuration.
+- **Claude Agent SDK is host-controlled:** the host must omit `settingSources` or include `"project"`. Turnal cannot infer arbitrary SDK host configuration and does not consume the SDK stream directly.
+- **Codex app-server hooks are untrusted:** review the project and exact hook definitions in Codex's hooks UI. Turnal does not change project trust, hook trust, or private provider trust databases.
 - **No Codex hook payloads:** review Codex hook trust, or use `turnal run -- codex` for wrapper checkpoints.
 - **A session is active after an interrupted agent run:** resume the same session so the next prompt can close the stale turn, or finalize it manually with `turnal turn finish --session <session>` after inspecting the workspace.
 - **Search index missing or stale:** run `turnal reindex`.
@@ -349,6 +508,14 @@ For npm installs, Turnal may occasionally print a channel-preserving update noti
 go test ./...
 go vet ./...
 go build -o bin/turnal ./cmd/turnal
+```
+
+The Astro marketing and documentation site is kept outside the npm package:
+
+```sh
+cd apps/marketing
+npm install
+npm run dev
 ```
 
 Authenticated provider testing is intentionally excluded from the default suite. Set `TURNAL_LIVE_CODEX_TEST=1` to run the live Codex integration test in a trusted disposable repository.

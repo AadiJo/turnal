@@ -126,6 +126,12 @@ func collectRebuildData(repo *checkpoint.Repo) (rebuildData, error) {
 	turnsBySession := make(map[string]map[StreamTurnKey]*turnRecord)
 	var checkpointRows []checkpointRecord
 	for _, info := range infos {
+		// Manual checkpoints are workspace timeline records, not turn rows. The
+		// graph reads them from durable refs/events until the disposable index
+		// grows a dedicated workspace-event projection.
+		if info.Manual {
+			continue
+		}
 		sessionKey := info.SessionID.String()
 		sessionSet[sessionKey] = info.SessionID
 		if turnsBySession[sessionKey] == nil {

@@ -1,0 +1,90 @@
+---
+import Base from '../layouts/Base.astro';
+---
+
+<Base
+  theme="not-found-theme"
+  title="Page not found | Turnal"
+  description="The requested Turnal page could not be found."
+>
+  <meta slot="head" name="robots" content="noindex" />
+
+  <main class="not-found">
+    <div class="status">404</div>
+    <h1>Page not found</h1>
+    <p>The page may have moved or the address may be incorrect.</p>
+
+    <a class="home-link" href="/">
+      <span aria-hidden="true">←</span>
+      Return to Turnal
+    </a>
+  </main>
+</Base>
+
+<style is:global>
+  .not-found-theme {
+    --nf-bg: #100f0d;
+    --nf-fg: #ece3d4;
+    --nf-muted: rgba(236, 227, 212, 0.58);
+    --nf-hair: rgba(236, 227, 212, 0.11);
+    min-height: 100dvh;
+    background: var(--nf-bg);
+    color: var(--nf-fg);
+  }
+
+  .not-found {
+    display: flex;
+    width: min(100%, 36rem);
+    min-height: 100dvh;
+    margin-inline: auto;
+    padding: 6rem 1.5rem 7rem;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    text-align: center;
+  }
+
+  .status {
+    color: #ff4f00;
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+  }
+
+  .not-found h1 {
+    margin-top: 0.85rem;
+    font-size: clamp(2.5rem, 7vw, 4.5rem);
+    font-weight: 660;
+    letter-spacing: -0.06em;
+    line-height: 0.94;
+    text-wrap: balance;
+  }
+
+  .not-found p {
+    max-width: 34rem;
+    margin-top: 1.2rem;
+    color: var(--nf-muted);
+    font-size: 0.98rem;
+    line-height: 1.65;
+    text-wrap: pretty;
+  }
+
+  .home-link {
+    display: inline-flex;
+    margin-top: 2.1rem;
+    padding: 0.75rem 1rem;
+    align-items: center;
+    gap: 0.65rem;
+    border: 1px solid var(--nf-hair);
+    border-radius: 0.7rem;
+    background: transparent;
+    font-size: 0.82rem;
+    font-weight: 600;
+    transition: border-color 180ms ease, background 180ms ease, transform 140ms ease;
+  }
+  .home-link span { color: #ff4f00; font-family: var(--mono); }
+  .home-link:hover { border-color: rgba(255, 79, 0, 0.45); color: #ff4f00; }
+  .home-link:active { transform: translateY(0); }
+  .home-link:focus-visible { outline: 2px solid #ff4f00; outline-offset: 4px; }
+</style>

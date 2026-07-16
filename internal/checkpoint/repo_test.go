@@ -46,6 +46,50 @@ func TestInitCreatesHiddenBareRepo(t *testing.T) {
 	}
 }
 
+func TestForCaptureRootSnapshotsIsolatedFilesIntoOriginStore(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root.String(), "live.txt"), []byte("live\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	isolated := t.TempDir()
+	if err := os.WriteFile(filepath.Join(isolated, "result.txt"), []byte("forked\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(isolated, ".turnal"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(isolated, ".turnal", "must-not-capture"), []byte("metadata\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	view, err := repo.ForCaptureRoot(isolated)
+	if err != nil {
+		t.Fatalf("ForCaptureRoot: %v", err)
+	}
+	snapshot, err := view.CreateSnapshotRef("refs/agent-vcs/test/isolated", "isolated")
+	if err != nil {
+		t.Fatalf("CreateSnapshotRef: %v", err)
+	}
+	entries, err := repo.ListCommitTree(snapshot.Commit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Path != "result.txt" {
+		t.Fatalf("captured entries = %#v", entries)
+	}
+	if _, err := os.Stat(filepath.Join(root.String(), "result.txt")); !os.IsNotExist(err) {
+		t.Fatalf("isolated capture changed source workspace: %v", err)
+	}
+	if _, err := repo.ForCaptureRoot(repo.MetadataDir); err == nil || !strings.Contains(err.Error(), "outside Turnal metadata") {
+		t.Fatalf("metadata capture root error = %v", err)
+	}
+}
+
 func TestOpenUpgradesLegacyMetadataPermissions(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX permission bits are not enforced on Windows")
@@ -120,7 +164,49 @@ func TestWorkspaceLockBlocksCheckpointMutation(t *testing.T) {
 	}
 }
 
-func TestWorkspaceLockIsReentrantInProcess(t *testing.T) {
+func TestInstallCheckpointRefsAtomic(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	writeFile(t, root, "app.txt", "content\n")
+	commit, err := repo.createSnapshotCommit("atomic ref test")
+	if err != nil {
+		t.Fatalf("createSnapshotCommit: %v", err)
+	}
+	checkpointID, _ := primitives.NewCheckpointID()
+	canonicalRef, _ := primitives.NewCheckpointIDRef(checkpointID)
+	friendlyRef, _ := primitives.NewManualCheckpointRef(repo.WorktreeID, checkpointID)
+	if _, err := runHiddenGit(repo, "", "update-ref", canonicalRef.String(), commit.String()); err != nil {
+		t.Fatalf("seed canonical ref: %v", err)
+	}
+
+	if err := repo.installCheckpointRefsAtomic(canonicalRef, friendlyRef, commit); err == nil {
+		t.Fatal("atomic install succeeded despite canonical ref collision")
+	}
+	if _, err := repo.RefCommit(friendlyRef.String()); err == nil {
+		t.Fatal("failed transaction installed the friendly ref")
+	}
+	if got, err := repo.RefCommit(canonicalRef.String()); err != nil || got != commit {
+		t.Fatalf("failed transaction changed canonical ref: got=%s err=%v", got, err)
+	}
+
+	if _, err := runHiddenGit(repo, "", "update-ref", "-d", canonicalRef.String()); err != nil {
+		t.Fatalf("remove seeded canonical ref: %v", err)
+	}
+	if err := repo.installCheckpointRefsAtomic(canonicalRef, friendlyRef, commit); err != nil {
+		t.Fatalf("atomic install: %v", err)
+	}
+	for _, ref := range []primitives.CheckpointRef{canonicalRef, friendlyRef} {
+		if got, err := repo.RefCommit(ref.String()); err != nil || got != commit {
+			t.Fatalf("ref %s = %s, err=%v; want %s", ref, got, err, commit)
+		}
+	}
+}
+
+func TestWorkspaceLockExcludesConcurrentGoroutines(t *testing.T) {
 	requireGit(t)
 
 	root := workspaceRoot(t)
@@ -128,15 +214,77 @@ func TestWorkspaceLockIsReentrantInProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	writeFile(t, root, "app.txt", "content\n")
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- repo.WithWorkspaceLock("first", func() error {
+			close(firstEntered)
+			<-releaseFirst
+			return nil
+		})
+	}()
+	<-firstEntered
 
-	sessionID, _ := primitives.ParseSessionID("demo")
-	turnID, _ := primitives.NewTurnID(1)
-	if err := repo.WithWorkspaceLock("test", func() error {
-		_, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
-		return err
-	}); err != nil {
-		t.Fatalf("CreateCheckpoint under existing workspace lock: %v", err)
+	secondStarted := make(chan struct{})
+	secondEntered := make(chan struct{})
+	secondDone := make(chan error, 1)
+	go func() {
+		close(secondStarted)
+		secondDone <- repo.WithWorkspaceLock("second", func() error {
+			close(secondEntered)
+			return nil
+		})
+	}()
+	<-secondStarted
+	select {
+	case <-secondEntered:
+		close(releaseFirst)
+		t.Fatal("second goroutine entered while the first held the workspace lock")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first workspace lock: %v", err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatalf("second workspace lock: %v", err)
+	}
+}
+
+func TestWorkspaceLockTimesOutOnInProcessContention(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	repo.LockTimeout = 50 * time.Millisecond
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- repo.WithWorkspaceLock("holder", func() error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	<-entered
+	started := time.Now()
+	err = repo.WithWorkspaceLock("contender", func() error {
+		t.Fatal("contender entered while workspace lock was held")
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "workspace lock busy") {
+		t.Fatalf("contender error = %v, want workspace lock busy", err)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("in-process lock timeout took %s, want bounded wait", elapsed)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("holder lock: %v", err)
 	}
 }
 

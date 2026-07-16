@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -11,9 +12,82 @@ import (
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/runs"
 	"github.com/AadiJo/turnal/internal/turns"
 	adaptersdk "github.com/AadiJo/turnal/sdk/adapter"
 )
+
+func TestCodexHookReconcilesProviderTurnsWithWrapperRun(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root.String())
+	runID, _ := primitives.NewRunID()
+	wrapper := sessionID(t, "wrapper-capture")
+	releaseRun, err := runs.Begin(repo, runID, wrapper, []string{"codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(releaseRun)
+	if err := runs.LinkCapture(repo, runID, runs.CaptureWrapper, wrapper, primitives.AdapterCodex); err != nil {
+		t.Fatal(err)
+	}
+
+	for turn := 1; turn <= 2; turn++ {
+		raw, _ := json.Marshal(map[string]any{"cwd": root.String(), "session_id": "provider-capture", "hook_event_name": "UserPromptSubmit", "turn_id": strconv.Itoa(turn), "prompt": "prompt"})
+		if err := HandleHookPayloadWithRunID(primitives.AdapterCodex, "UserPromptSubmit", raw, runID.String()); err != nil {
+			t.Fatal(err)
+		}
+		// Exact duplicate delivery must not create another attempt or capture link.
+		if err := HandleHookPayloadWithRunID(primitives.AdapterCodex, "UserPromptSubmit", raw, runID.String()); err != nil {
+			t.Fatal(err)
+		}
+		if turn == 1 {
+			oneShot, err := runs.Read(repo, runID)
+			if err != nil || oneShot.Shape != "single-attempt" || len(oneShot.Attempts) != 1 {
+				t.Fatalf("one-shot projection = %+v, %v", oneShot, err)
+			}
+		}
+	}
+	projection, err := runs.Read(repo, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection.Shape != "multi-attempt" || len(projection.Captures) != 2 || len(projection.Attempts) != 2 {
+		t.Fatalf("projection = %+v", projection)
+	}
+	if projection.Captures[0].SessionID == projection.Captures[1].SessionID {
+		t.Fatal("wrapper and provider captures were merged")
+	}
+	for _, attempt := range projection.Attempts {
+		for _, source := range attempt.Fields {
+			if source.SessionID != sessionID(t, "provider-capture") {
+				t.Fatalf("wrapper checkpoint attributed to provider attempt: %+v", source)
+			}
+		}
+	}
+}
+
+func TestHookRunCorrelationFailureIsDiagnosticAndDoesNotLink(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root.String())
+	raw, _ := json.Marshal(map[string]any{"cwd": root.String(), "session_id": "direct-provider", "hook_event_name": "UserPromptSubmit", "prompt": "hello"})
+	if err := HandleHookPayloadWithRunID(primitives.AdapterCodex, "UserPromptSubmit", raw, "run_fabricated"); err != nil {
+		t.Fatal(err)
+	}
+	events := readEvents(t, repo, sessionID(t, "direct-provider"))
+	if countEvents(events, primitives.EventTypePromptUser) != 1 || countEvents(events, primitives.EventTypeError) != 1 || countEvents(events, primitives.EventTypeRunCaptureLink) != 0 {
+		t.Fatalf("events after invalid correlation = %#v", eventTypes(events))
+	}
+}
 
 type checkpointEventPayload struct {
 	Turn          uint64 `json:"turn"`

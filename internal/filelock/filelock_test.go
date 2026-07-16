@@ -40,6 +40,26 @@ func TestLockReportsHeldAndReleases(t *testing.T) {
 	}
 }
 
+func TestInspectReadsOwnerWhileLockIsHeld(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "inspect.lock")
+	lock, err := Acquire(path, time.Second)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	t.Cleanup(func() { _ = lock.Release() })
+
+	owner, held, err := Inspect(path)
+	if err != nil {
+		t.Fatalf("Inspect while held: %v", err)
+	}
+	if !held {
+		t.Fatal("Inspect held=false while lock is acquired")
+	}
+	if owner != lock.Identity() {
+		t.Fatalf("Inspect owner = %+v, want %+v", owner, lock.Identity())
+	}
+}
+
 func TestAcquireRefusesLegacyLockDirectory(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.lock")
 	if err := os.Mkdir(path, 0o700); err != nil {
@@ -47,6 +67,52 @@ func TestAcquireRefusesLegacyLockDirectory(t *testing.T) {
 	}
 	if _, err := Acquire(path, time.Second); err == nil || !strings.Contains(err.Error(), "ensure no older Turnal process") {
 		t.Fatalf("Acquire legacy lock error = %v", err)
+	}
+}
+
+func TestAcquireRefusesSymlinkWithoutChangingTarget(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "sentinel")
+	want := []byte("must remain unchanged\n")
+	if err := os.WriteFile(target, want, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "crafted.lock")
+	if err := os.Symlink(target, path); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := Acquire(path, time.Second); err == nil {
+		t.Fatal("Acquire accepted a symlink lock path")
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("symlink target changed to %q", got)
+	}
+}
+
+func TestAcquireRefusesHardLinkWithoutChangingTarget(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "sentinel")
+	want := []byte("must remain unchanged\n")
+	if err := os.WriteFile(target, want, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "crafted.lock")
+	if err := os.Link(target, path); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+	if _, err := Acquire(path, time.Second); err == nil {
+		t.Fatal("Acquire accepted a multiply linked lock file")
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("hard-link target changed to %q", got)
 	}
 }
 

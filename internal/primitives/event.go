@@ -124,32 +124,60 @@ func (hash *EventHash) UnmarshalText(text []byte) error {
 // EventType is the normalized event kind written to the append-only event log.
 type EventType string
 
+// SecretsRedactionText is the durable marker stored when text capture is
+// disabled by Turnal's secrets policy.
+const SecretsRedactionText = "[redacted by turnal secrets policy]"
+
 const (
-	EventTypeSessionStart     EventType = "session.start"
-	EventTypeTurnStart        EventType = "turn.start"
-	EventTypePromptUser       EventType = "prompt.user"
-	EventTypeAssistantMessage EventType = "assistant.message"
-	EventTypeToolCall         EventType = "tool.call"
-	EventTypeToolResult       EventType = "tool.result"
-	EventTypeTurnFinish       EventType = "turn.finish"
-	EventTypeCheckpoint       EventType = "checkpoint"
-	EventTypeRollback         EventType = "rollback"
-	EventTypeError            EventType = "error"
-	EventTypeAdapterRaw       EventType = "adapter.raw"
+	EventTypeSessionStart      EventType = "session.start"
+	EventTypeTurnStart         EventType = "turn.start"
+	EventTypePromptUser        EventType = "prompt.user"
+	EventTypeAssistantMessage  EventType = "assistant.message"
+	EventTypeToolCall          EventType = "tool.call"
+	EventTypeToolResult        EventType = "tool.result"
+	EventTypeTurnFinish        EventType = "turn.finish"
+	EventTypeCheckpoint        EventType = "checkpoint"
+	EventTypeRollback          EventType = "rollback"
+	EventTypeError             EventType = "error"
+	EventTypeAdapterRaw        EventType = "adapter.raw"
+	EventTypeRunStart          EventType = "run.start"
+	EventTypeRunCaptureLink    EventType = "run.capture.link"
+	EventTypeRunAttemptLink    EventType = "run.attempt.link"
+	EventTypeRunFinish         EventType = "run.finish"
+	EventTypeTaskCreate        EventType = "task.create"
+	EventTypeTaskRevision      EventType = "task.revision.create"
+	EventTypeCaseCreate        EventType = "case.create"
+	EventTypeCaseDelete        EventType = "case.delete"
+	EventTypeCaseAttemptLink   EventType = "case.attempt.link"
+	EventTypeCaseAttemptResult EventType = "case.attempt.result"
+	EventTypeCaseAttemptSelect EventType = "case.attempt.select"
+	EventTypeCaseAttemptApply  EventType = "case.attempt.apply"
 )
 
 var validEventTypes = map[EventType]struct{}{
-	EventTypeSessionStart:     {},
-	EventTypeTurnStart:        {},
-	EventTypePromptUser:       {},
-	EventTypeAssistantMessage: {},
-	EventTypeToolCall:         {},
-	EventTypeToolResult:       {},
-	EventTypeTurnFinish:       {},
-	EventTypeCheckpoint:       {},
-	EventTypeRollback:         {},
-	EventTypeError:            {},
-	EventTypeAdapterRaw:       {},
+	EventTypeSessionStart:      {},
+	EventTypeTurnStart:         {},
+	EventTypePromptUser:        {},
+	EventTypeAssistantMessage:  {},
+	EventTypeToolCall:          {},
+	EventTypeToolResult:        {},
+	EventTypeTurnFinish:        {},
+	EventTypeCheckpoint:        {},
+	EventTypeRollback:          {},
+	EventTypeError:             {},
+	EventTypeAdapterRaw:        {},
+	EventTypeRunStart:          {},
+	EventTypeRunCaptureLink:    {},
+	EventTypeRunAttemptLink:    {},
+	EventTypeRunFinish:         {},
+	EventTypeTaskCreate:        {},
+	EventTypeTaskRevision:      {},
+	EventTypeCaseCreate:        {},
+	EventTypeCaseDelete:        {},
+	EventTypeCaseAttemptLink:   {},
+	EventTypeCaseAttemptResult: {},
+	EventTypeCaseAttemptSelect: {},
+	EventTypeCaseAttemptApply:  {},
 }
 
 func ParseEventType(value string) (EventType, error) {

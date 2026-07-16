@@ -14,7 +14,10 @@ import (
 )
 
 func sourceFingerprint(metadataDir string) (string, error) {
-	roots := []string{filepath.Join(metadataDir, "log", "events")}
+	roots := []string{
+		filepath.Join(metadataDir, "log", "events"),
+		filepath.Join(metadataDir, "log", "manual-checkpoints"),
+	}
 	var records []string
 	for _, root := range roots {
 		info, err := os.Lstat(root)

@@ -14,7 +14,27 @@ import (
 	"time"
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
+	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/runs"
 )
+
+func TestRunEnvironmentPreservesExistingValuesAndReplacesCorrelation(t *testing.T) {
+	runID, _ := primitives.ParseRunID("run_0123456789abcdef0123456789abcdef")
+	got := runEnvironment([]string{"PATH=/tools", "EMPTY=", "turnal_run_id=lowercase", "TURNAL_RUN_ID=run_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, runID)
+	joined := strings.Join(got, "\n")
+	if !strings.Contains(joined, "PATH=/tools") || !strings.Contains(joined, "EMPTY=") {
+		t.Fatalf("existing environment was discarded: %#v", got)
+	}
+	if strings.Count(joined, runs.EnvRunID+"=") != 1 || !strings.Contains(joined, runs.EnvRunID+"="+runID.String()) {
+		t.Fatalf("run correlation was not replaced safely: %#v", got)
+	}
+	if runtime.GOOS == "windows" && strings.Contains(joined, "turnal_run_id=lowercase") {
+		t.Fatalf("case-insensitive Windows correlation was retained: %#v", got)
+	}
+	if runtime.GOOS != "windows" && !strings.Contains(joined, "turnal_run_id=lowercase") {
+		t.Fatalf("distinct POSIX environment variable was removed: %#v", got)
+	}
+}
 
 func TestRunCodexWrapperCreatesCheckpointsAndEnablesHooks(t *testing.T) {
 	requireGit(t)
@@ -63,6 +83,20 @@ func TestRunCodexWrapperCreatesCheckpointsAndEnablesHooks(t *testing.T) {
 	}
 	if len(infos) != 2 {
 		t.Fatalf("checkpoint refs = %d, want 2: %#v", len(infos), infos)
+	}
+	journals, err := repo.ListCheckpointJournals()
+	if err != nil {
+		t.Fatalf("ListCheckpointJournals: %v", err)
+	}
+	if len(journals) != 0 {
+		t.Fatalf("wrapper left checkpoint journals: %#v", journals)
+	}
+	inventory, err := runs.Inspect(repo)
+	if err != nil {
+		t.Fatalf("inspect runs: %v", err)
+	}
+	if len(inventory.Runs) != 1 || inventory.Runs[0].Shape != "wrapper-only" || inventory.Runs[0].Status != runs.StatusSucceeded {
+		t.Fatalf("wrapper-only run projection = %+v", inventory)
 	}
 	sessionID := infos[0].SessionID
 	turnID := infos[0].TurnID
@@ -203,6 +237,13 @@ func TestRunCodexWrapperPropagatesChildExitCodeAndFinishesTurn(t *testing.T) {
 	if len(infos) != 2 {
 		t.Fatalf("checkpoint refs = %d, want pre and post despite child failure: %#v", len(infos), infos)
 	}
+	inventory, inspectErr := runs.Inspect(repo)
+	if inspectErr != nil {
+		t.Fatalf("inspect failed run: %v", inspectErr)
+	}
+	if len(inventory.Runs) != 1 || inventory.Runs[0].Status != runs.StatusFailed || inventory.Runs[0].Shape != "wrapper-only" {
+		t.Fatalf("failed run projection = %+v", inventory)
+	}
 
 	argsData, err := os.ReadFile(filepath.Join(root.String(), "fake-codex-args.txt"))
 	if err != nil {
@@ -210,6 +251,40 @@ func TestRunCodexWrapperPropagatesChildExitCodeAndFinishesTurn(t *testing.T) {
 	}
 	if !strings.Contains(string(argsData), "--dangerously-bypass-hook-trust\n") {
 		t.Fatalf("fake codex args missing bypass hook trust:\n%s", argsData)
+	}
+}
+
+func TestRunCodexSetupFailureFinalizesRunIncomplete(t *testing.T) {
+	requireGit(t)
+	isolateAgentConfig(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root.String())
+	installFakeCodex(t, root.String(), 0)
+	journalDir := filepath.Join(repo.TmpDir, "checkpoints")
+	if err := os.MkdirAll(journalDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(journalDir, "broken.json"), []byte("{broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRootCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"run", "--quiet", "--", "codex", "exec", "never-starts"})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("setup failure unexpectedly succeeded")
+	}
+	inventory, err := runs.Inspect(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inventory.Runs) != 1 || inventory.Runs[0].Status != runs.StatusIncomplete {
+		t.Fatalf("setup failure projection = %+v", inventory)
 	}
 }
 

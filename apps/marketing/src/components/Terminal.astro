@@ -1,0 +1,144 @@
+---
+/*
+ * Terminal renders a single Turnal command + its representative output in a
+ * window frame. Colors come from CSS variables so page contexts can theme the
+ * chrome while the ANSI token hues stay recognizable.
+ *
+ * Props:
+ *   demo      a Demo object from src/data/demos.ts (cmd + out)
+ *   title     the window title-bar label (defaults to a path)
+ *   flat      drop the traffic-light dots for a barer frame
+ *   rec       show a blinking REC indicator (flight-recorder motif)
+ */
+import type { Demo } from '../data/demos';
+
+interface Props {
+  demo: Demo;
+  title?: string;
+  flat?: boolean;
+  rec?: boolean;
+}
+
+const { demo, title = '~/acme-api', flat = false, rec = false } = Astro.props;
+---
+
+<figure class="term" data-flat={flat ? '' : undefined}>
+  <div class="term-bar">
+    {!flat && (
+      <span class="dots" aria-hidden="true">
+        <i></i><i></i><i></i>
+      </span>
+    )}
+    <span class="term-title">{title}</span>
+    {rec && (
+      <span class="rec" aria-hidden="true"><b></b>REC</span>
+    )}
+  </div>
+  <pre class="term-body"><code><span class="line prompt"><span class="chev">$</span> <span class="cmd">{demo.cmd}</span></span>
+<span class="out" set:html={demo.out} /></code></pre>
+</figure>
+
+<style>
+  .term {
+    margin: 0;
+    border-radius: var(--term-radius, 10px);
+    background: var(--term-bg, #0c0b09);
+    border: 1px solid var(--term-border, rgba(255, 255, 255, 0.08));
+    box-shadow: var(--term-shadow, 0 24px 60px -30px rgba(0, 0, 0, 0.6));
+    overflow: hidden;
+    font-family: var(--mono, ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace);
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  .term-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 11px 14px;
+    background: var(--term-bar-bg, #12100e);
+    border-bottom: 1px solid var(--term-border, rgba(255, 255, 255, 0.08));
+    font-size: 12px;
+    letter-spacing: 0.02em;
+  }
+
+  .dots {
+    display: inline-flex;
+    gap: 7px;
+  }
+  .dots i {
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    background: var(--term-dot, rgba(255, 255, 255, 0.18));
+  }
+
+  .term-title {
+    color: var(--term-title, rgba(255, 255, 255, 0.45));
+    font-weight: 500;
+  }
+
+  .rec {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--accent, #ff4f00);
+    font-weight: 600;
+    font-size: 11px;
+    letter-spacing: 0.14em;
+  }
+  .rec b {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent, #ff4f00);
+    animation: blink 1.6s steps(1) infinite;
+  }
+  @keyframes blink {
+    50% { opacity: 0.15; }
+  }
+
+  .term-body {
+    margin: 0;
+    padding: 18px 20px 22px;
+    overflow: hidden;
+    font-size: var(--term-fs, 13.5px);
+    line-height: 1.65;
+    color: var(--term-fg, #ece3d4);
+    background: var(--term-bg, #0c0b09);
+    tab-size: 2;
+  }
+  .term-body code {
+    display: block;
+    min-width: 0;
+    font-family: inherit;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .line.prompt { display: block; margin-bottom: 6px; }
+  .chev { color: var(--accent, #ff4f00); font-weight: 700; }
+  .cmd { color: var(--term-cmd, #fff); font-weight: 600; }
+
+  /* ANSI token hues, tuned for the active terminal theme */
+  .out :global(.t-b)   { color: var(--tk-b, #9db4e8); }
+  .out :global(.t-g)   { color: var(--tk-g, #e8c15f); }
+  .out :global(.t-ok)  { color: var(--tk-ok, #4bd695); }
+  .out :global(.t-gr)  { color: var(--tk-gr, #86d38a); }
+  .out :global(.t-del) { color: var(--tk-del, #f0736b); }
+  .out :global(.t-dim) { color: var(--tk-dim, rgba(236, 227, 212, 0.42)); }
+
+  @media (max-width: 600px) {
+    .term-bar { padding: 9px 12px; }
+    .term-body {
+      padding: 14px 13px 17px;
+      font-size: var(--term-mobile-fs, 11.5px);
+      line-height: 1.55;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .rec b { animation: none; }
+  }
+</style>

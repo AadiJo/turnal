@@ -1,0 +1,279 @@
+---
+// Two-column comparison: what a Git commit preserves versus what a Turnal
+// agent turn preserves. Every claim maps to real behavior described in
+// content.ts / terminalHome. No invented capabilities.
+import Logo from './Logo.astro';
+
+type Level = 'full' | 'partial' | 'none';
+
+interface Row {
+  label: string;
+  detail: string;
+  git: Level;
+  gitNote: string;
+  turnal: Level;
+  turnalNote: string;
+}
+
+const rows: Row[] = [
+  {
+    label: 'Captured files & bytes',
+    detail: 'Byte-exact contents and executable bits for the captured workspace surface.',
+    git: 'full',
+    gitNote: 'Full tree',
+    turnal: 'full',
+    turnalNote: 'Captured tree',
+  },
+  {
+    label: 'Branch & commit context',
+    detail: 'Which branch and commit the work was sitting on.',
+    git: 'full',
+    gitNote: 'Ref + SHA',
+    turnal: 'full',
+    turnalNote: 'Repo + worktree identity',
+  },
+  {
+    label: 'Prompt & assistant response',
+    detail: 'The instruction and response when the agent integration exposes them.',
+    git: 'none',
+    gitNote: 'Not captured',
+    turnal: 'full',
+    turnalNote: 'Captured or marked redacted',
+  },
+  {
+    label: 'Tool activity',
+    detail: 'Ordered tool activity exposed by the agent integration.',
+    git: 'none',
+    gitNote: 'Not captured',
+    turnal: 'full',
+    turnalNote: 'Append-only event trail',
+  },
+  {
+    label: 'Before / after diff',
+    detail: 'What actually changed, scoped to a single agent turn.',
+    git: 'partial',
+    gitNote: 'Between commits',
+    turnal: 'full',
+    turnalNote: 'Per-turn checkpoints',
+  },
+  {
+    label: 'Attribution to the responsible turn',
+    detail: 'Which agent turn and prompt are behind a given line.',
+    git: 'partial',
+    gitNote: 'Author + hash only',
+    turnal: 'full',
+    turnalNote: 'Prompt-aware blame',
+  },
+  {
+    label: 'Safety-first rollback',
+    detail: 'Previewing a restore and preserving the current captured state first.',
+    git: 'partial',
+    gitNote: 'Manual reset or revert',
+    turnal: 'full',
+    turnalNote: 'Safety checkpoint first',
+  },
+];
+
+const levelLabel: Record<Level, string> = {
+  full: 'Included',
+  partial: 'Partial',
+  none: 'Not available',
+};
+---
+
+<div class="snapshot-compare">
+  <div class="sc-grid" role="table" aria-label="What a Git commit preserves compared with an agent turn">
+    <div class="sc-head" role="row">
+      <div class="sc-corner" role="columnheader"><span class="sc-sr">Turn detail</span></div>
+      <div class="sc-col-head sc-col-git" role="columnheader">
+        <span class="sc-mark sc-mark-git" aria-hidden="true"><img src="/brands/git.svg" alt="" width="17" height="17" /></span>
+        <span class="sc-col-name">Git commit</span>
+        <span class="sc-col-sub">What the code looked like</span>
+      </div>
+      <div class="sc-col-head sc-col-turnal" role="columnheader">
+        <span class="sc-mark sc-mark-turnal" aria-hidden="true"><Logo size={24} wordmark={false} /></span>
+        <span class="sc-col-name">Agent turn</span>
+        <span class="sc-col-sub">What happened, and how to get back</span>
+      </div>
+    </div>
+
+    {rows.map((row) => (
+      <div class="sc-row" role="row">
+        <div class="sc-label" role="rowheader">
+          <span class="sc-label-title">{row.label}</span>
+          <span class="sc-label-detail">{row.detail}</span>
+        </div>
+
+        <div class={`sc-cell sc-git sc-${row.git}`} role="cell">
+          <span class={`sc-dot sc-dot-${row.git}`} aria-hidden="true">
+            {row.git === 'full' && <i class="sc-check"></i>}
+            {row.git === 'partial' && <i class="sc-tilde"></i>}
+            {row.git === 'none' && <i class="sc-minus"></i>}
+          </span>
+          <span class="sc-note">{row.gitNote}</span>
+          <span class="sc-sr">{levelLabel[row.git]} in a Git commit</span>
+        </div>
+
+        <div class={`sc-cell sc-turnal sc-${row.turnal}`} role="cell">
+          <span class={`sc-dot sc-dot-${row.turnal}`} aria-hidden="true">
+            {row.turnal === 'full' && <i class="sc-check"></i>}
+            {row.turnal === 'partial' && <i class="sc-tilde"></i>}
+            {row.turnal === 'none' && <i class="sc-minus"></i>}
+          </span>
+          <span class="sc-note">{row.turnalNote}</span>
+          <span class="sc-sr">{levelLabel[row.turnal]} in an agent turn</span>
+        </div>
+      </div>
+    ))}
+  </div>
+</div>
+
+<style is:global>
+  .terminal-home-theme .snapshot-compare { margin-top: 54px; }
+
+  .terminal-home-theme .sc-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1fr);
+    border: 1px solid var(--hair);
+    border-radius: 16px;
+    overflow: hidden;
+    background: rgba(12, 11, 9, 0.4);
+  }
+
+  .terminal-home-theme .sc-head,
+  .terminal-home-theme .sc-row { display: contents; }
+
+  /* Header row */
+  .terminal-home-theme .sc-corner,
+  .terminal-home-theme .sc-col-head {
+    padding: 22px 24px;
+    border-bottom: 1px solid var(--hair);
+    background: rgba(236, 227, 212, 0.02);
+  }
+  .terminal-home-theme .sc-corner {
+    display: flex;
+    align-items: flex-end;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .terminal-home-theme .sc-col-head {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    border-left: 1px solid var(--hair);
+  }
+  .terminal-home-theme .sc-col-turnal {
+    background: linear-gradient(180deg, rgba(255, 79, 0, 0.09), rgba(255, 79, 0, 0.02));
+  }
+  .terminal-home-theme .sc-mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 24px;
+    margin-bottom: 6px;
+  }
+  .terminal-home-theme .sc-mark-git img { display: block; }
+  .terminal-home-theme .sc-mark-turnal .logo { transform: translateX(-5px); }
+  .terminal-home-theme .sc-col-name { color: var(--fg); font-size: 16px; font-weight: 620; letter-spacing: -0.02em; }
+  .terminal-home-theme .sc-col-turnal .sc-col-name { color: #ff7040; }
+  .terminal-home-theme .sc-col-sub { color: var(--muted); font-size: 12.5px; line-height: 1.4; }
+
+  /* Body rows */
+  .terminal-home-theme .sc-label,
+  .terminal-home-theme .sc-cell {
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--hair);
+  }
+  .terminal-home-theme .sc-row:last-child .sc-label,
+  .terminal-home-theme .sc-row:last-child .sc-cell { border-bottom: 0; }
+
+  .terminal-home-theme .sc-label { display: flex; flex-direction: column; gap: 5px; }
+  .terminal-home-theme .sc-label-title { color: var(--fg); font-size: 14.5px; font-weight: 600; letter-spacing: -0.01em; }
+  .terminal-home-theme .sc-label-detail { color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+
+  .terminal-home-theme .sc-cell {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 8px;
+    border-left: 1px solid var(--hair);
+  }
+  .terminal-home-theme .sc-turnal { background: rgba(255, 79, 0, 0.025); }
+
+  .terminal-home-theme .sc-dot {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+  }
+  .terminal-home-theme .sc-dot-full { color: var(--bg); background: #ff5f22; }
+  .terminal-home-theme .sc-git .sc-dot-full { background: rgba(236, 227, 212, 0.82); }
+  .terminal-home-theme .sc-dot-partial { border: 1px solid var(--hair); background: rgba(236, 227, 212, 0.04); }
+  .terminal-home-theme .sc-dot-none { border: 1px dashed rgba(236, 227, 212, 0.22); }
+
+  .terminal-home-theme .sc-tilde,
+  .terminal-home-theme .sc-minus { display: block; width: 9px; border-radius: 2px; background: var(--muted); }
+  .terminal-home-theme .sc-check { display: block; width: 9px; height: 5px; border-bottom: 1.7px solid currentColor; border-left: 1.7px solid currentColor; transform: translateY(-1px) rotate(-45deg); }
+  .terminal-home-theme .sc-tilde { height: 2px; box-shadow: 0 3px 0 var(--muted); transform: translateY(-1.5px); }
+  .terminal-home-theme .sc-minus { height: 2px; }
+
+  .terminal-home-theme .sc-note { color: var(--muted); font-family: var(--mono); font-size: 11.5px; line-height: 1.35; }
+  .terminal-home-theme .sc-turnal .sc-note { color: rgba(236, 227, 212, 0.72); }
+  .terminal-home-theme .sc-none .sc-note { color: rgba(236, 227, 212, 0.4); }
+
+  .terminal-home-theme .sc-sr {
+    position: absolute;
+    width: 1px; height: 1px;
+    padding: 0; margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  @media (max-width: 720px) {
+    .terminal-home-theme .snapshot-compare { margin-top: 40px; }
+    .terminal-home-theme .sc-grid {
+      grid-template-columns: 1fr;
+      border-radius: 14px;
+    }
+    .terminal-home-theme .sc-head { display: none; }
+    .terminal-home-theme .sc-row {
+      display: grid;
+      grid-template-columns: 1fr;
+    }
+    .terminal-home-theme .sc-row + .sc-row { margin-top: 0; }
+    .terminal-home-theme .sc-label {
+      padding: 20px 20px 14px;
+      border-left: 0;
+      background: rgba(236, 227, 212, 0.02);
+    }
+    .terminal-home-theme .sc-cell {
+      flex-direction: row;
+      align-items: center;
+      gap: 12px;
+      padding: 13px 20px;
+      border-left: 0;
+    }
+    .terminal-home-theme .sc-cell::before {
+      flex: none;
+      width: 92px;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+    }
+    .terminal-home-theme .sc-git::before { content: 'Git commit'; }
+    .terminal-home-theme .sc-turnal::before { content: 'Agent turn'; color: #ff7040; }
+    .terminal-home-theme .sc-row:last-child .sc-turnal { border-bottom: 0; }
+    .terminal-home-theme .sc-cell .sc-note { flex: 1; }
+  }
+</style>

@@ -9,8 +9,17 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// Windows byte-range locks are mandatory: locking byte 0 would make the owner
+// identity JSON at the start of the file unreadable by Inspect while the lock
+// is held. Lock a single byte far past any offset the file will ever reach
+// instead (locking beyond EOF is permitted).
+const (
+	lockByteOffsetLow  = 0xFFFFFFFE
+	lockByteOffsetHigh = 0x7FFFFFFF
+)
+
 func tryLock(file *os.File) (bool, error) {
-	var overlapped windows.Overlapped
+	overlapped := windows.Overlapped{Offset: lockByteOffsetLow, OffsetHigh: lockByteOffsetHigh}
 	err := windows.LockFileEx(
 		windows.Handle(file.Fd()),
 		windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY,
@@ -29,6 +38,6 @@ func tryLock(file *os.File) (bool, error) {
 }
 
 func unlock(file *os.File) error {
-	var overlapped windows.Overlapped
+	overlapped := windows.Overlapped{Offset: lockByteOffsetLow, OffsetHigh: lockByteOffsetHigh}
 	return windows.UnlockFileEx(windows.Handle(file.Fd()), 0, 1, 0, &overlapped)
 }

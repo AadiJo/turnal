@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
@@ -38,9 +39,11 @@ type FinishResult struct {
 }
 
 type ActiveTurn struct {
+	SessionID primitives.SessionID
 	TurnID    primitives.TurnID
 	PreRef    primitives.CheckpointRef
 	PreCommit primitives.CommitSHA
+	Path      string
 }
 
 type activeTurnState struct {
@@ -119,7 +122,7 @@ func (manager Manager) startUnlocked(sessionID primitives.SessionID, requestedTu
 		}
 	}
 
-	pre, err := manager.Repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
+	pre, err := manager.Repo.CreateCheckpointLocked(sessionID, turnID, primitives.CheckpointPhasePre)
 	if err != nil {
 		if journaled {
 			_ = manager.Repo.ClearCheckpointJournal(sessionID, turnID, primitives.CheckpointPhasePre)
@@ -128,7 +131,7 @@ func (manager Manager) startUnlocked(sessionID primitives.SessionID, requestedTu
 	}
 	if journaled {
 		if err := manager.Repo.MarkCheckpointJournalCommitted(sessionID, turnID, primitives.CheckpointPhasePre, pre); err != nil {
-			if cleanupErr := manager.Repo.DeleteCheckpointRef(pre.Ref); cleanupErr != nil {
+			if cleanupErr := manager.Repo.DeleteCheckpointRefLocked(pre.Ref); cleanupErr != nil {
 				return StartResult{}, errors.Join(err, fmt.Errorf("cleanup pre checkpoint after checkpoint journal failure: %w", cleanupErr))
 			}
 			return StartResult{}, err
@@ -139,14 +142,14 @@ func (manager Manager) startUnlocked(sessionID primitives.SessionID, requestedTu
 		if journaled {
 			_ = manager.Repo.ClearCheckpointJournal(sessionID, turnID, primitives.CheckpointPhasePre)
 		}
-		if cleanupErr := manager.Repo.DeleteCheckpointRef(pre.Ref); cleanupErr != nil {
+		if cleanupErr := manager.Repo.DeleteCheckpointRefLocked(pre.Ref); cleanupErr != nil {
 			return StartResult{}, errors.Join(err, fmt.Errorf("cleanup pre checkpoint after git-sync capture failure: %w", cleanupErr))
 		}
 		return StartResult{}, err
 	}
 	if journaled {
 		if err := manager.Repo.MarkCheckpointJournalGitSync(sessionID, turnID, primitives.CheckpointPhasePre, gitSync); err != nil {
-			if cleanupErr := manager.Repo.DeleteCheckpointRef(pre.Ref); cleanupErr != nil {
+			if cleanupErr := manager.Repo.DeleteCheckpointRefLocked(pre.Ref); cleanupErr != nil {
 				return StartResult{}, errors.Join(err, fmt.Errorf("cleanup pre checkpoint after checkpoint git-sync journal failure: %w", cleanupErr))
 			}
 			return StartResult{}, err
@@ -156,7 +159,7 @@ func (manager Manager) startUnlocked(sessionID primitives.SessionID, requestedTu
 		if journaled {
 			_ = manager.Repo.ClearCheckpointJournal(sessionID, turnID, primitives.CheckpointPhasePre)
 		}
-		if cleanupErr := manager.Repo.DeleteCheckpointRef(pre.Ref); cleanupErr != nil {
+		if cleanupErr := manager.Repo.DeleteCheckpointRefLocked(pre.Ref); cleanupErr != nil {
 			return StartResult{}, errors.Join(err, fmt.Errorf("cleanup pre checkpoint after active turn state failure: %w", cleanupErr))
 		}
 		return StartResult{}, err
@@ -221,7 +224,7 @@ func (manager Manager) finishUnlocked(sessionID primitives.SessionID, requestedT
 		}
 	}
 
-	post, err := manager.Repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePost)
+	post, err := manager.Repo.CreateCheckpointLocked(sessionID, turnID, primitives.CheckpointPhasePost)
 	if err != nil {
 		if journaled {
 			_ = manager.Repo.ClearCheckpointJournal(sessionID, turnID, primitives.CheckpointPhasePost)
@@ -230,7 +233,7 @@ func (manager Manager) finishUnlocked(sessionID primitives.SessionID, requestedT
 	}
 	if journaled {
 		if err := manager.Repo.MarkCheckpointJournalCommitted(sessionID, turnID, primitives.CheckpointPhasePost, post); err != nil {
-			if cleanupErr := manager.Repo.DeleteCheckpointRef(post.Ref); cleanupErr != nil {
+			if cleanupErr := manager.Repo.DeleteCheckpointRefLocked(post.Ref); cleanupErr != nil {
 				return FinishResult{}, errors.Join(err, fmt.Errorf("cleanup post checkpoint after checkpoint journal failure: %w", cleanupErr))
 			}
 			return FinishResult{}, err
@@ -241,14 +244,14 @@ func (manager Manager) finishUnlocked(sessionID primitives.SessionID, requestedT
 		if journaled {
 			_ = manager.Repo.ClearCheckpointJournal(sessionID, turnID, primitives.CheckpointPhasePost)
 		}
-		if cleanupErr := manager.Repo.DeleteCheckpointRef(post.Ref); cleanupErr != nil {
+		if cleanupErr := manager.Repo.DeleteCheckpointRefLocked(post.Ref); cleanupErr != nil {
 			return FinishResult{}, errors.Join(err, fmt.Errorf("cleanup post checkpoint after git-sync capture failure: %w", cleanupErr))
 		}
 		return FinishResult{}, err
 	}
 	if journaled {
 		if err := manager.Repo.MarkCheckpointJournalGitSync(sessionID, turnID, primitives.CheckpointPhasePost, gitSync); err != nil {
-			if cleanupErr := manager.Repo.DeleteCheckpointRef(post.Ref); cleanupErr != nil {
+			if cleanupErr := manager.Repo.DeleteCheckpointRefLocked(post.Ref); cleanupErr != nil {
 				return FinishResult{}, errors.Join(err, fmt.Errorf("cleanup post checkpoint after checkpoint git-sync journal failure: %w", cleanupErr))
 			}
 			return FinishResult{}, err
@@ -301,9 +304,11 @@ func (manager Manager) Active(sessionID primitives.SessionID) (ActiveTurn, bool,
 		return ActiveTurn{}, false, nil
 	}
 	return ActiveTurn{
+		SessionID: sessionID,
 		TurnID:    active.TurnID,
 		PreRef:    active.PreRef,
 		PreCommit: active.PreCommit,
+		Path:      manager.activeStatePath(sessionID),
 	}, true, nil
 }
 
@@ -345,7 +350,7 @@ func (manager Manager) captureGitSyncIfEnabled(sessionID primitives.SessionID, t
 	if err != nil {
 		return nil, fmt.Errorf("capture workspace git state for %s: %w", ref, err)
 	}
-	snapshot, err := gitsync.SavePrivate(manager.Repo, ref, capture, fmt.Sprintf("turnal git-sync %s turn %s %s", sessionID, turnID, phase))
+	snapshot, err := gitsync.SavePrivateLocked(manager.Repo, ref, capture, fmt.Sprintf("turnal git-sync %s turn %s %s", sessionID, turnID, phase))
 	if err != nil {
 		return nil, err
 	}
@@ -363,8 +368,30 @@ func (manager Manager) activeStatePath(sessionID primitives.SessionID) string {
 	return filepath.Join(manager.Repo.TmpDir, "turns", name)
 }
 
-func (manager Manager) ClearActiveForRecovery(sessionID primitives.SessionID) error {
-	return manager.clearActive(sessionID)
+func (manager Manager) ClearActiveForRecovery(sessionID primitives.SessionID, expectedTurnID primitives.TurnID) error {
+	if err := manager.validate(); err != nil {
+		return err
+	}
+	return manager.Repo.WithWorkspaceLock("clear recovered active turn", func() error {
+		active, err := manager.readActive(sessionID)
+		if err != nil {
+			return err
+		}
+		if active == nil {
+			return nil
+		}
+		if active.TurnID != expectedTurnID {
+			return fmt.Errorf("active turn recovery invariant failed for session %s: active turn %s does not match terminal turn %s", sessionID, active.TurnID, expectedTurnID)
+		}
+		commit, err := manager.Repo.CheckpointCommit(active.PreRef)
+		if err != nil {
+			return fmt.Errorf("active turn recovery invariant failed for session %s turn %s: resolve pre-checkpoint: %w", sessionID, expectedTurnID, err)
+		}
+		if commit != active.PreCommit {
+			return fmt.Errorf("active turn recovery invariant failed for session %s turn %s: pre ref %s points to %s, state records %s", sessionID, expectedTurnID, active.PreRef, commit, active.PreCommit)
+		}
+		return manager.clearActive(sessionID)
+	})
 }
 
 func (manager Manager) readActive(sessionID primitives.SessionID) (*parsedActiveTurnState, error) {
@@ -377,6 +404,10 @@ func (manager Manager) readActive(sessionID primitives.SessionID) (*parsedActive
 		return nil, fmt.Errorf("read active turn state: %w", err)
 	}
 
+	return parseActiveTurnState(path, data, sessionID)
+}
+
+func parseActiveTurnState(path string, data []byte, sessionID primitives.SessionID) (*parsedActiveTurnState, error) {
 	var state activeTurnState
 	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, fmt.Errorf("active turn state invariant failed: malformed JSON in %s: %w", path, err)
@@ -422,6 +453,64 @@ func (manager Manager) readActive(sessionID primitives.SessionID) (*parsedActive
 		PreRef:    preRef,
 		PreCommit: preCommit,
 	}, nil
+}
+
+// ListActive returns every active turn state for a session across the linked
+// worktrees sharing this Turnal store.
+func ListActive(repo *checkpoint.Repo, sessionID primitives.SessionID) ([]ActiveTurn, error) {
+	if repo == nil {
+		return nil, fmt.Errorf("list active turns requires checkpoint repo")
+	}
+	sessionID, err := primitives.ParseSessionID(sessionID.String())
+	if err != nil {
+		return nil, err
+	}
+	dir := filepath.Join(repo.TmpDir, "turns")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read active turn state directory: %w", err)
+	}
+	var active []ActiveTurn
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		info, err := os.Lstat(path)
+		if err != nil {
+			return nil, fmt.Errorf("inspect active turn state %s: %w", path, err)
+		}
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("active turn state invariant failed: regular files only: %s", path)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read active turn state %s: %w", path, err)
+		}
+		var envelope struct {
+			SessionID string `json:"session_id"`
+		}
+		if err := json.Unmarshal(data, &envelope); err != nil {
+			return nil, fmt.Errorf("active turn state invariant failed: malformed JSON in %s: %w", path, err)
+		}
+		stateSessionID, err := primitives.ParseSessionID(envelope.SessionID)
+		if err != nil {
+			return nil, fmt.Errorf("active turn state invariant failed in %s: %w", path, err)
+		}
+		if stateSessionID != sessionID {
+			continue
+		}
+		state, err := parseActiveTurnState(path, data, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		active = append(active, ActiveTurn{SessionID: sessionID, TurnID: state.TurnID, PreRef: state.PreRef, PreCommit: state.PreCommit, Path: path})
+	}
+	sort.Slice(active, func(i, j int) bool { return active[i].Path < active[j].Path })
+	return active, nil
 }
 
 func (manager Manager) writeActive(sessionID primitives.SessionID, turnID primitives.TurnID, pre checkpoint.Checkpoint) error {
