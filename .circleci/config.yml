@@ -103,8 +103,13 @@ jobs:
       size: medium
     steps:
       - checkout
+      - restore_cache:
+          keys:
+            - windows-go-v1-{{ checksum "go.sum" }}
+            - windows-go-v1-
       - run:
           name: Install Go, test, and build
+          no_output_timeout: 20m
           command: |
             $ErrorActionPreference = "Stop"
             $goVersion = "1.26.4"
@@ -112,7 +117,12 @@ jobs:
             $archive = Join-Path $env:TEMP "go$goVersion.windows-amd64.zip"
             $installRoot = Join-Path $env:TEMP "turnal-go-$goVersion"
 
-            Invoke-WebRequest -Uri "https://go.dev/dl/go$goVersion.windows-amd64.zip" -OutFile $archive
+            curl.exe --fail --location --silent --show-error `
+              --output $archive `
+              "https://go.dev/dl/go$goVersion.windows-amd64.zip"
+            if ($LASTEXITCODE -ne 0) {
+              throw "failed to download Go $goVersion"
+            }
             $actualSha256 = (Get-FileHash -Algorithm SHA256 -Path $archive).Hash.ToLowerInvariant()
             if ($actualSha256 -ne $goSha256) {
               throw "Go archive checksum mismatch: expected $goSha256, got $actualSha256"
@@ -121,13 +131,21 @@ jobs:
               Remove-Item -Recurse -Force $installRoot
             }
             New-Item -ItemType Directory -Path $installRoot | Out-Null
-            Expand-Archive -Path $archive -DestinationPath $installRoot
+            tar.exe -xf $archive -C $installRoot
+            if ($LASTEXITCODE -ne 0) {
+              throw "failed to extract Go $goVersion"
+            }
 
             $env:Path = "$(Join-Path $installRoot 'go\bin');$env:Path"
             go version
             go mod download
             go test ./...
             go build ./cmd/turnal
+      - save_cache:
+          key: windows-go-v1-{{ checksum "go.sum" }}
+          paths:
+            - C:\Users\circleci\go\pkg\mod
+            - C:\Users\circleci\AppData\Local\go-build
 
   publish_release:
     parameters:
