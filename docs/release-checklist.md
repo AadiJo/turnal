@@ -7,3 +7,11 @@
 - Verify session deletion removes v2 raw data, redacts legacy payloads, invalidates search, and reports residual hidden-Git data.
 - Review the generated SBOM and npm provenance, package contents, changelog, support statement, and security disclosures.
 - Test upgrade from the previous stable metadata version and confirm pre-manifest checkpoints still restore.
+
+## Automated release gates
+
+- Stable releases start only from a `v*.*.*` tag. The CI workflow runs quality checks and the Linux, macOS, and Windows matrix at the tagged commit before it can call the reusable publish workflow.
+- Nightly releases start from a manual CI dispatch on `main` with `publish_nightly` enabled. Dispatches from any other ref run checks but cannot publish.
+- Failed, cancelled, or missing prerequisite jobs leave the publish job skipped. Do not bypass that state by adding a direct dispatch trigger to `release.yml`.
+- npm publication uses GitHub OIDC trusted publishing from `release.yml`; the workflow also emits provenance, builds all supported npm binaries, and attaches the generated SBOM to the GitHub release.
+- CircleCI is an independent Linux quality signal only. It has no npm or GitHub release credentials and no publishing workflow.
