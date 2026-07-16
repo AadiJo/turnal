@@ -3,11 +3,15 @@
   "version": "0.0.0",
   "description": "Local-first CLI for recording AI coding agent history, file changes, diffs, and safe rollbacks.",
   "bin": {
-    "turnal": "npm/turnal.js"
+    "turnal": "npm/turnal.js",
+    "turnal-adapter-opencode": "npm/turnal-adapter-opencode.js",
+    "turnal-adapter-gemini-cli": "npm/turnal-adapter-gemini-cli.js",
+    "turnal-adapter-copilot-cli": "npm/turnal-adapter-copilot-cli.js"
   },
   "files": [
     "cmd/",
     "internal/",
+    "sdk/",
     "npm/",
     "go.mod",
     "go.sum",

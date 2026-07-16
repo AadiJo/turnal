@@ -32,7 +32,7 @@ Turnal should be piloted before company-wide adoption. Pin a version and validat
 
 - Git available on `PATH`. Turnal uses Git plumbing for its private checkpoint store.
 - Node.js 18 or newer when installing through npm.
-- Claude Code or Codex for automatic agent capture. `turnal save` also works without an agent session.
+- Claude Code, Codex, OpenCode, Gemini CLI, or Copilot CLI for automatic agent capture. `turnal save` also works without an agent session.
 
 Turnal does not initialize a Git repository for your project. It works in both Git and non-Git directories.
 
@@ -86,6 +86,8 @@ $turnal-inspect-history Check whether this request has been tried before and rec
 $turnal-fork-history Rerun <session>:<turn> in isolation and compare the result with the existing attempts.
 $turnal-restore-history Preview restoring the workspace to before <session>:<turn>; do not apply it yet.
 ```
+
+OpenCode, Gemini CLI, and Copilot CLI use the versioned external adapter SDK. Release packages ship their adapter executables; verify discovery with `turnal adapter list` and `turnal adapter doctor`, then follow the [provider hook examples](docs/adapters.md#included-adapters).
 
 Now use your agent normally. After it has completed a turn:
 

@@ -1,0 +1,1 @@
+{"protocol":"turnal-adapter","version":1,"id":"describe-1","type":"manifest","manifest":{"name":"example","display_name":"Example adapter","adapter_version":"1.0.0","provider":"Example","protocol_versions":[1],"event_types":["session.start","prompt.user","tool.call","tool.result","assistant.message","turn.finish"]}}

@@ -47,6 +47,38 @@ func TestRecordHookPayloadAppendsRawAdapterLog(t *testing.T) {
 	}
 }
 
+func TestRecordExternalHookPayloadRedactsProviderAliases(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	config := []byte("version = 1\n\n[secrets]\nstore_prompts = false\nstore_tool_io = false\n")
+	if err := os.WriteFile(filepath.Join(repo.MetadataDir, "config.toml"), config, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	sessionID, _ := primitives.ParseSessionID("external-session")
+	raw := []byte(`{"sessionId":"external-session","prompt":"prompt-secret","toolArgs":{"token":"tool-secret"},"toolResult":{"textResultForLlm":"result-secret"}}`)
+	ref, err := RecordExternalHookPayload("copilot-cli", "postToolUse", raw, root.String(), sessionID)
+	if err != nil {
+		t.Fatalf("RecordExternalHookPayload: %v", err)
+	}
+	record, err := ReadRawHookRecord(repo.MetadataDir, ref)
+	if err != nil {
+		t.Fatalf("ReadRawHookRecord: %v", err)
+	}
+	stored := string(record.Payload)
+	for _, secret := range []string{"prompt-secret", "tool-secret", "result-secret"} {
+		if strings.Contains(stored, secret) {
+			t.Fatalf("external raw payload retained %q: %s", secret, stored)
+		}
+	}
+	if !strings.Contains(stored, "redacted") {
+		t.Fatalf("external raw payload has no redaction markers: %s", stored)
+	}
+}
+
 func TestRecordHookPayloadPreservesMalformedPayload(t *testing.T) {
 	requireGit(t)
 
