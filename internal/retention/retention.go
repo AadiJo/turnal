@@ -12,6 +12,7 @@ import (
 	caseengine "github.com/AadiJo/turnal/internal/cases"
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/fsidentity"
 	"github.com/AadiJo/turnal/internal/index"
 	"github.com/AadiJo/turnal/internal/manualcheckpoints"
 	"github.com/AadiJo/turnal/internal/primitives"
@@ -364,7 +365,7 @@ func rollbackJournalOwnerRepo(repo *checkpoint.Repo, path string, journal rollba
 			continue
 		}
 		registered = true
-		if filepath.Clean(worktree.Root) != filepath.Clean(workspaceRoot.String()) {
+		if !fsidentity.Same(worktree.Root, workspaceRoot.String()) {
 			return nil, fmt.Errorf("workspace root does not match registered worktree %s", worktreeID)
 		}
 		break

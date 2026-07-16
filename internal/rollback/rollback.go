@@ -13,6 +13,7 @@ import (
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/fsidentity"
 	"github.com/AadiJo/turnal/internal/gitsync"
 	"github.com/AadiJo/turnal/internal/manualcheckpoints"
 	"github.com/AadiJo/turnal/internal/primitives"
@@ -1004,7 +1005,7 @@ func validateJournalOwner(repo *checkpoint.Repo, journal Journal) error {
 	if journal.RepoID == "" || journal.StoreID == "" || journal.WorktreeID == "" || journal.WorkspaceRoot == "" {
 		return fmt.Errorf("rollback journal owner invariant failed: complete repository, store, worktree, and workspace identity is required")
 	}
-	if journal.RepoID != repo.RepoID || journal.StoreID != repo.StoreID || journal.WorktreeID != repo.WorktreeID || filepath.Clean(journal.WorkspaceRoot) != filepath.Clean(repo.WorkspaceRoot.String()) {
+	if journal.RepoID != repo.RepoID || journal.StoreID != repo.StoreID || journal.WorktreeID != repo.WorktreeID || !fsidentity.Same(journal.WorkspaceRoot, repo.WorkspaceRoot.String()) {
 		return fmt.Errorf("rollback journal owner invariant failed: repository, store, worktree, or workspace mismatch")
 	}
 	return nil

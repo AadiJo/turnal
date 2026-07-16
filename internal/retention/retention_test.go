@@ -283,6 +283,38 @@ func TestDropSessionRejectsInconsistentRollbackJournal(t *testing.T) {
 	}
 }
 
+func TestRollbackJournalOwnerAcceptsWorkspaceFilesystemAlias(t *testing.T) {
+	requireGit(t)
+	parent := t.TempDir()
+	root := filepath.Join(parent, "workspace")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	alias := filepath.Join(parent, "workspace-alias")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	workspace, err := primitives.ParseWorkspaceRoot(root)
+	if err != nil {
+		t.Fatalf("ParseWorkspaceRoot: %v", err)
+	}
+	repo, err := checkpoint.Init(workspace)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	journal := rollbackengine.Journal{
+		RepoID: repo.RepoID, StoreID: repo.StoreID, WorktreeID: repo.WorktreeID, WorkspaceRoot: alias,
+	}
+	path := filepath.Join(repo.TmpDir, "rollback-journal-"+repo.WorktreeID.String()+".json")
+	owner, err := rollbackJournalOwnerRepo(repo, path, journal)
+	if err != nil {
+		t.Fatalf("rollbackJournalOwnerRepo: %v", err)
+	}
+	if owner.WorkspaceRoot.String() != alias {
+		t.Fatalf("owner workspace root = %q, want alias %q", owner.WorkspaceRoot, alias)
+	}
+}
+
 func TestDropSessionRedactsRawPayloadAndInvalidatesIndex(t *testing.T) {
 	requireGit(t)
 

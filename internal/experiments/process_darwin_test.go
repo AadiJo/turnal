@@ -5,11 +5,13 @@ package experiments
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -142,5 +144,47 @@ func TestValidateDarwinForkExitRejectsRegistrationError(t *testing.T) {
 	_, err := validateDarwinForkExit(unix.Kevent_t{Flags: unix.EV_ERROR, Data: int64(unix.ESRCH)}, 42)
 	if err == nil {
 		t.Fatal("registration error was accepted as process exit")
+	}
+}
+
+func TestDarwinProcessControllerAcceptsZombieOnlyGroup(t *testing.T) {
+	originalKill := killDarwinForkProcessGroup
+	originalHasLiveMembers := darwinForkProcessGroupHasLiveMembers
+	t.Cleanup(func() {
+		killDarwinForkProcessGroup = originalKill
+		darwinForkProcessGroupHasLiveMembers = originalHasLiveMembers
+	})
+	killDarwinForkProcessGroup = func(pid int, signal syscall.Signal) error {
+		if pid != -4242 || signal != syscall.SIGKILL {
+			t.Fatalf("kill = (%d, %v), want (-4242, SIGKILL)", pid, signal)
+		}
+		return syscall.EPERM
+	}
+	darwinForkProcessGroupHasLiveMembers = func(processGroupID int) (bool, error) {
+		if processGroupID != 4242 {
+			t.Fatalf("process group = %d, want 4242", processGroupID)
+		}
+		return false, nil
+	}
+
+	controller := &darwinForkProcessController{cmd: &exec.Cmd{Process: &os.Process{Pid: 4242}}, queue: -1}
+	if err := controller.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+func TestDarwinProcessControllerRejectsPermissionFailureWithLiveMembers(t *testing.T) {
+	originalKill := killDarwinForkProcessGroup
+	originalHasLiveMembers := darwinForkProcessGroupHasLiveMembers
+	t.Cleanup(func() {
+		killDarwinForkProcessGroup = originalKill
+		darwinForkProcessGroupHasLiveMembers = originalHasLiveMembers
+	})
+	killDarwinForkProcessGroup = func(int, syscall.Signal) error { return syscall.EPERM }
+	darwinForkProcessGroupHasLiveMembers = func(int) (bool, error) { return true, nil }
+
+	controller := &darwinForkProcessController{cmd: &exec.Cmd{Process: &os.Process{Pid: 4242}}, queue: -1}
+	if err := controller.Close(); !errors.Is(err, syscall.EPERM) {
+		t.Fatalf("Close error = %v, want EPERM", err)
 	}
 }
