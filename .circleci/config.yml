@@ -118,7 +118,7 @@ jobs:
             $goVersion = "1.26.4"
             $goSha256 = "3ca8fb4630b07c419cbdd51f754e31363cfcfb83b3a5354d9e895c90be2cc345"
             $archive = Join-Path $env:TEMP "go$goVersion.windows-amd64.zip"
-            $installRoot = Join-Path $env:TEMP "turnal-go-$goVersion"
+            $installRoot = Join-Path $env:USERPROFILE "turnal-go-$goVersion"
 
             curl.exe --fail --location --silent --show-error `
               --output $archive `
