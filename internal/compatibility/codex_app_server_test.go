@@ -121,7 +121,6 @@ func TestAppServerProbeBoundsDescendantHoldingStderr(t *testing.T) {
 
 func testAppServerProbe(scenario string) AppServerProbe {
 	probe := DefaultAppServerProbe()
-	probe.Timeout = 2 * time.Second
 	probe.ShutdownTimeout = 200 * time.Millisecond
 	probe.Command = func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
 		return helperCommand(ctx, scenario)
