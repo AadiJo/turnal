@@ -7,6 +7,9 @@ parameters:
   publish_nightly:
     type: boolean
     default: false
+  rehearse_release:
+    type: boolean
+    default: false
 
 commands:
   restore_go_modules:
@@ -138,9 +141,21 @@ jobs:
 
             $env:Path = "$(Join-Path $installRoot 'go\bin');$env:Path"
             go version
+            if ($LASTEXITCODE -ne 0) {
+              throw "failed to run Go $goVersion"
+            }
             go mod download
+            if ($LASTEXITCODE -ne 0) {
+              throw "failed to download Go modules"
+            }
             go test ./...
+            if ($LASTEXITCODE -ne 0) {
+              throw "Windows tests failed"
+            }
             go build ./cmd/turnal
+            if ($LASTEXITCODE -ne 0) {
+              throw "Windows CLI build failed"
+            }
       - save_cache:
           key: windows-go-v1-{{ checksum "go.sum" }}
           paths:
@@ -154,6 +169,9 @@ jobs:
         enum:
           - stable
           - nightly
+      publish:
+        type: boolean
+        default: true
     docker:
       - image: cimg/go:1.26.4-node
     resource_class: small
@@ -177,16 +195,26 @@ jobs:
           command: |
             node --version
             npm --version
-            sudo npm install --global npm@11.16.0
-            sudo apt-get update
-            sudo apt-get install --yes gh
+      - when:
+          condition: << parameters.publish >>
+          steps:
+            - run:
+                name: Install publish tools
+                command: |
+                  sudo npm install --global npm@11.16.0
+                  sudo apt-get update
+                  sudo apt-get install --yes gh
       - run:
-          name: Publish << parameters.channel >> release
+          name: Prepare << parameters.channel >> release
           command: |
             export NPM_ID_TOKEN
             NPM_ID_TOKEN="$(circleci run oidc get --claims '{"aud":"npm:registry.npmjs.org"}')"
+            if [[ -z "$NPM_ID_TOKEN" ]]; then
+              echo "release invariant failed: CircleCI did not issue an npm OIDC token" >&2
+              exit 1
+            fi
             export NPM_PUBLISH_PROVENANCE=false
-            export TURNAL_PUBLISH=true
+            export TURNAL_PUBLISH="<< parameters.publish >>"
             scripts/ci/release.sh \
               "<< parameters.channel >>" \
               "${CIRCLE_TAG:-${CIRCLE_BRANCH:-main}}" \
@@ -195,7 +223,10 @@ jobs:
 
 workflows:
   ci:
-    unless: << pipeline.parameters.publish_nightly >>
+    when:
+      and:
+        - not: << pipeline.parameters.publish_nightly >>
+        - not: << pipeline.parameters.rehearse_release >>
     jobs:
       - quality:
           name: Quality and race
@@ -257,3 +288,35 @@ workflows:
             - Nightly test (macos)
             - Nightly test (windows)
           filters: *main_only
+
+  release_rehearsal:
+    when: << pipeline.parameters.rehearse_release >>
+    jobs:
+      - quality:
+          name: Rehearsal quality and race
+          filters: &rehearsal_main_only
+            branches:
+              only: main
+            tags:
+              ignore: /.*/
+      - test_linux:
+          name: Rehearsal test (linux)
+          filters: *rehearsal_main_only
+      - test_macos:
+          name: Rehearsal test (macos)
+          filters: *rehearsal_main_only
+      - test_windows:
+          name: Rehearsal test (windows)
+          filters: *rehearsal_main_only
+      - publish_release:
+          name: Rehearse release
+          channel: nightly
+          publish: false
+          context:
+            - turnal-release
+          requires:
+            - Rehearsal quality and race
+            - Rehearsal test (linux)
+            - Rehearsal test (macos)
+            - Rehearsal test (windows)
+          filters: *rehearsal_main_only

@@ -23,6 +23,6 @@ Make the cutover in one pull request so only one provider can publish a given re
 2. Disable the `Publish stable release` and `Publish nightly release` invocations in `.circleci/config.yml` before merging. CircleCI validation jobs may remain as redundant signals.
 3. Change npm trusted publishing from the CircleCI pipeline to the GitHub Actions `release.yml` workflow.
 4. Replace the four required CircleCI contexts with `Quality and race` plus the three GitHub platform contexts only after those GitHub jobs have completed successfully on the cutover commit.
-5. Manually dispatch GitHub Actions with publication disabled or from a non-publishing ref, then verify package contents and the SBOM before creating the next release tag.
+5. Manually dispatch GitHub Actions with both publication inputs disabled, then verify the validation matrix before creating the next release tag. Stable fallback publication requires selecting the tag and explicitly setting `publish_stable` to `true`.
 
 Never leave both stable publish paths enabled. Both are fail-closed behind their own gates, but concurrent publishers would race on the same immutable npm version and GitHub tag.
