@@ -1,5 +1,28 @@
 version: 2.1
 
+orbs:
+  win: circleci/windows@5.1.1
+
+parameters:
+  publish_nightly:
+    type: boolean
+    default: false
+
+commands:
+  restore_go_modules:
+    steps:
+      - restore_cache:
+          keys:
+            - go-mod-v2-{{ arch }}-{{ checksum "go.sum" }}
+            - go-mod-v2-{{ arch }}-
+      - run:
+          name: Download Go modules
+          command: go mod download
+      - save_cache:
+          key: go-mod-v2-{{ arch }}-{{ checksum "go.sum" }}
+          paths:
+            - /home/circleci/go/pkg/mod
+
 jobs:
   quality:
     docker:
@@ -7,56 +30,212 @@ jobs:
     resource_class: small
     steps:
       - checkout
-
-      - restore_cache:
-          keys:
-            - go-mod-v1-{{ checksum "go.sum" }}
-            - go-mod-v1-
-
+      - restore_go_modules
       - run:
-          name: Download Go modules
-          command: go mod download
+          name: Quality and race
+          command: scripts/ci/quality.sh
 
-      - save_cache:
-          key: go-mod-v1-{{ checksum "go.sum" }}
-          paths:
-            - /home/circleci/go/pkg/mod
-
+  test_linux:
+    docker:
+      - image: cimg/go:1.26.4
+    resource_class: small
+    steps:
+      - checkout
+      - restore_go_modules
       - run:
-          name: Check Go formatting
-          command: |
-            unformatted="$(gofmt -l .)"
-            if [ -n "$unformatted" ]; then
-              echo "Go files need formatting:" >&2
-              echo "$unformatted" >&2
-              exit 1
-            fi
-
-      - run:
-          name: Check modules are tidy
-          command: |
-            go mod tidy
-            git diff --exit-code -- go.mod go.sum
-
-      - run:
-          name: Vet
-          command: go vet ./...
-
-      - run:
-          name: Race tests
-          command: go test -race ./...
-
+          name: Test
+          command: go test ./...
       - run:
           name: Build CLI
           command: go build ./cmd/turnal
 
+  test_macos:
+    macos:
+      xcode: 16.4.0
+    resource_class: m4pro.medium
+    steps:
+      - checkout
       - run:
-          name: Vulnerability scan
+          name: Install Go
           command: |
-            go install golang.org/x/vuln/cmd/govulncheck@latest
-            govulncheck ./...
+            case "$(uname -m)" in
+              arm64)
+                go_arch=arm64
+                go_sha256=b62ad2b6d7d2464f12a5bcad7ff47f19d08325773b5efd21610e445a05a9bf53
+                ;;
+              x86_64)
+                go_arch=amd64
+                go_sha256=05dc9b5f9997744520aaebb3d5deaa7c755371aebbfb7f97c2511a9f3367538d
+                ;;
+              *) echo "unsupported macOS architecture: $(uname -m)" >&2; exit 1 ;;
+            esac
+            archive="go1.26.4.darwin-${go_arch}.tar.gz"
+            curl --fail --location --silent --show-error \
+              "https://go.dev/dl/${archive}" \
+              --output "/tmp/${archive}"
+            echo "${go_sha256}  /tmp/${archive}" | shasum -a 256 --check
+            sudo rm -rf /usr/local/go
+            sudo tar -C /usr/local -xzf "/tmp/${archive}"
+            echo 'export PATH=/usr/local/go/bin:$PATH' >> "$BASH_ENV"
+            export PATH="/usr/local/go/bin:$PATH"
+            go version
+      - restore_cache:
+          keys:
+            - go-mod-v2-{{ arch }}-{{ checksum "go.sum" }}
+            - go-mod-v2-{{ arch }}-
+      - run:
+          name: Download Go modules
+          command: go mod download
+      - save_cache:
+          key: go-mod-v2-{{ arch }}-{{ checksum "go.sum" }}
+          paths:
+            - ~/go/pkg/mod
+      - run:
+          name: Test
+          command: go test ./...
+      - run:
+          name: Build CLI
+          command: go build ./cmd/turnal
+
+  test_windows:
+    executor:
+      name: win/server-2025
+      size: medium
+    steps:
+      - checkout
+      - run:
+          name: Install Go, test, and build
+          command: |
+            $ErrorActionPreference = "Stop"
+            $goVersion = "1.26.4"
+            $goSha256 = "3ca8fb4630b07c419cbdd51f754e31363cfcfb83b3a5354d9e895c90be2cc345"
+            $archive = Join-Path $env:TEMP "go$goVersion.windows-amd64.zip"
+            $installRoot = Join-Path $env:TEMP "turnal-go-$goVersion"
+
+            Invoke-WebRequest -Uri "https://go.dev/dl/go$goVersion.windows-amd64.zip" -OutFile $archive
+            $actualSha256 = (Get-FileHash -Algorithm SHA256 -Path $archive).Hash.ToLowerInvariant()
+            if ($actualSha256 -ne $goSha256) {
+              throw "Go archive checksum mismatch: expected $goSha256, got $actualSha256"
+            }
+            if (Test-Path $installRoot) {
+              Remove-Item -Recurse -Force $installRoot
+            }
+            New-Item -ItemType Directory -Path $installRoot | Out-Null
+            Expand-Archive -Path $archive -DestinationPath $installRoot
+
+            $env:Path = "$(Join-Path $installRoot 'go\bin');$env:Path"
+            go version
+            go mod download
+            go test ./...
+            go build ./cmd/turnal
+
+  publish_release:
+    parameters:
+      channel:
+        type: enum
+        enum:
+          - stable
+          - nightly
+    docker:
+      - image: cimg/go:1.26.4-node
+    resource_class: small
+    steps:
+      - checkout
+      - restore_go_modules
+      - when:
+          condition:
+            equal:
+              - stable
+              - << parameters.channel >>
+          steps:
+            - run:
+                name: Ignore nightly tags
+                command: |
+                  case "$CIRCLE_TAG" in
+                    *-nightly.*) circleci-agent step halt ;;
+                  esac
+      - run:
+          name: Verify release runtime
+          command: |
+            node --version
+            npm --version
+            sudo npm install --global npm@11.16.0
+            sudo apt-get update
+            sudo apt-get install --yes gh
+      - run:
+          name: Publish << parameters.channel >> release
+          command: |
+            export NPM_ID_TOKEN
+            NPM_ID_TOKEN="$(circleci run oidc get --claims '{"aud":"npm:registry.npmjs.org"}')"
+            export NPM_PUBLISH_PROVENANCE=false
+            export TURNAL_PUBLISH=true
+            scripts/ci/release.sh \
+              "<< parameters.channel >>" \
+              "${CIRCLE_TAG:-${CIRCLE_BRANCH:-main}}" \
+              "$CIRCLE_BUILD_NUM" \
+              "$CIRCLE_SHA1"
 
 workflows:
   ci:
+    unless: << pipeline.parameters.publish_nightly >>
     jobs:
-      - quality
+      - quality:
+          name: Quality and race
+          filters: &all_refs
+            tags:
+              only: /.*/
+      - test_linux:
+          name: Test (linux)
+          filters: *all_refs
+      - test_macos:
+          name: Test (macos)
+          filters: *all_refs
+      - test_windows:
+          name: Test (windows)
+          filters: *all_refs
+      - publish_release:
+          name: Publish stable release
+          channel: stable
+          context:
+            - turnal-release
+          requires:
+            - Quality and race
+            - Test (linux)
+            - Test (macos)
+            - Test (windows)
+          filters:
+            branches:
+              ignore: /.*/
+            tags:
+              only: /^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$/
+
+  nightly:
+    when: << pipeline.parameters.publish_nightly >>
+    jobs:
+      - quality:
+          name: Nightly quality and race
+          filters: &main_only
+            branches:
+              only: main
+            tags:
+              ignore: /.*/
+      - test_linux:
+          name: Nightly test (linux)
+          filters: *main_only
+      - test_macos:
+          name: Nightly test (macos)
+          filters: *main_only
+      - test_windows:
+          name: Nightly test (windows)
+          filters: *main_only
+      - publish_release:
+          name: Publish nightly release
+          channel: nightly
+          context:
+            - turnal-release
+          requires:
+            - Nightly quality and race
+            - Nightly test (linux)
+            - Nightly test (macos)
+            - Nightly test (windows)
+          filters: *main_only
