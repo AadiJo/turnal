@@ -196,7 +196,7 @@ function blameHover(entry: BlameEntry, folder: vscode.WorkspaceFolder): vscode.M
   markdown.isTrusted = {
     enabledCommands: ["turnal.openTurnDiff", "turnal.showTurnDetails", "turnal.rollbackBeforeTurn"],
   };
-  markdown.appendMarkdown(`**Turnal — ${escapeMarkdown(target.title)}**\n\n`);
+  markdown.appendMarkdown(`**Turnal: ${escapeMarkdown(target.title)}**\n\n`);
   markdown.appendMarkdown(`${displayAgent(origin.adapter)} · ${formatTimestamp(origin.time)} · ${relativeTime(origin.time)}\n\n`);
   markdown.appendMarkdown("Session: ");
   markdown.appendText(origin.session_id);

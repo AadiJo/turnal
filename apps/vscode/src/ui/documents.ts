@@ -30,7 +30,7 @@ export class VirtualDocumentStore implements vscode.TextDocumentContentProvider,
 
   async openTurnDetails(target: TurnTarget, content: string): Promise<void> {
     this.beginDocumentSet();
-    const uri = this.virtualUri(target, `${target.title} — turn ${target.turnId}.txt`, "details", content);
+    const uri = this.virtualUri(target, `${target.title}, turn ${target.turnId}.txt`, "details", content);
     const document = await vscode.workspace.openTextDocument(uri);
     await vscode.window.showTextDocument(document, { preview: true, preserveFocus: false });
   }

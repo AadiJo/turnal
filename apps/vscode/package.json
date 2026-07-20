@@ -2,13 +2,21 @@
   "name": "turnal-vscode",
   "displayName": "Turnal",
   "description": "See which AI turn changed a line, browse agent history, and roll back safely.",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "aadijo",
+  "author": {
+    "name": "Advait Johari",
+    "url": "https://github.com/aadijo"
+  },
   "icon": "media/icon.png",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/AadiJo/turnal"
+    "url": "https://github.com/aadijo/turnal"
+  },
+  "homepage": "https://github.com/aadijo/turnal#readme",
+  "bugs": {
+    "url": "https://github.com/aadijo/turnal/issues"
   },
   "engines": {
     "vscode": "^1.95.0"

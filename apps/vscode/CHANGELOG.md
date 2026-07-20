@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.2
+
+- Changed Marketplace screenshot links to publicly accessible HTTPS assets.
+
 ## 0.0.1
 
 - Added current-line AI blame with turn hover details.
