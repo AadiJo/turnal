@@ -57,7 +57,7 @@ turnal sessions
 turnal log --transcript
 ```
 
-> **Trust the workspace hooks before using your agent.** For Codex, launch the Codex CLI in this workspace first and approve the Turnal hooks there before using Codex through another surface, such as the desktop app; those surfaces may not show the hook-trust prompt. For Claude Code, trust the workspace when prompted—no separate hook approval is needed.
+> **Trust the workspace hooks before using your agent.** For Codex, launch the Codex CLI in this workspace first and approve the Turnal hooks there before using Codex through another surface, such as the desktop app; those surfaces may not show the hook-trust prompt. For Claude Code, trust the workspace when prompted; no separate hook approval is needed.
 
 1. **Initialize storage.** Turnal creates or attaches `.turnal/`, ensures workspace Git exists by default, and adds the store to `.gitignore`.
 2. **Install agent hooks.** Existing non-Turnal hooks are preserved. Invalid supported config files are moved aside with a `.backup` suffix before replacement.
