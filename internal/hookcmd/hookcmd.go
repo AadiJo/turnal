@@ -45,11 +45,14 @@ func shellQuote(value string, goos string) string {
 	if value == "" {
 		return "''"
 	}
+	if goos == "windows" {
+		if !strings.ContainsAny(value, " \t\n\"&|<>^()%!") {
+			return value
+		}
+		return `"` + value + `"`
+	}
 	if !strings.ContainsAny(value, " \t\n'\"\\$`") {
 		return value
-	}
-	if goos == "windows" {
-		return `"` + value + `"`
 	}
 	return strconv.Quote(value)
 }
