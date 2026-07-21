@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.3
+
+- Fixed automatic CLI discovery for global npm installations on Windows.
+
 ## 0.0.2
 
 - Changed Marketplace screenshot links to publicly accessible HTTPS assets.
