@@ -1,6 +1,40 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CommandExecutor, rollbackTarget, TurnalCli } from "../turnal/cli";
+import { CommandExecutor, resolveCliExecutable, rollbackTarget, TurnalCli } from "../turnal/cli";
+
+test("resolves the Windows npm launcher to the packaged native executable", () => {
+  const npmDirectory = String.raw`C:\Users\Aadi\AppData\Roaming\npm`;
+  const nativeExecutable = String.raw`C:\Users\Aadi\AppData\Roaming\npm\node_modules\@aadijo\turnal\npm\bin\win32-x64\turnal.exe`;
+  assert.equal(
+    resolveCliExecutable("turnal", {
+      platform: "win32",
+      arch: "x64",
+      env: { Path: String.raw`C:\Windows\System32;${npmDirectory}` },
+      exists: (candidate) => candidate === nativeExecutable,
+    }),
+    nativeExecutable,
+  );
+});
+
+test("resolves an explicitly configured Windows npm shim", () => {
+  const shim = String.raw`D:\Tools\npm\turnal.cmd`;
+  const nativeExecutable = String.raw`D:\Tools\npm\node_modules\@aadijo\turnal\npm\bin\win32-arm64\turnal.exe`;
+  assert.equal(
+    resolveCliExecutable(shim, {
+      platform: "win32",
+      arch: "arm64",
+      env: {},
+      exists: (candidate) => candidate === nativeExecutable,
+    }),
+    nativeExecutable,
+  );
+});
+
+test("leaves custom executables and unresolved launchers unchanged", () => {
+  const options = { platform: "win32" as const, arch: "x64", env: {}, exists: () => false };
+  assert.equal(resolveCliExecutable(String.raw`C:\Turnal\turnal.exe`, options), String.raw`C:\Turnal\turnal.exe`);
+  assert.equal(resolveCliExecutable("turnal", options), "turnal");
+});
 
 test("uses the CLI JSON contracts without a shell", async () => {
   const calls: Array<{ executable: string; args: readonly string[]; cwd: string }> = [];

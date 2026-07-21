@@ -2,7 +2,7 @@
   "name": "turnal-vscode",
   "displayName": "Turnal",
   "description": "See which AI turn changed a line, browse agent history, and roll back safely.",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher": "aadijo",
   "author": {
     "name": "Advait Johari",

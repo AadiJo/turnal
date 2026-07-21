@@ -5,7 +5,7 @@ import test from "node:test";
 
 const extensionRoot = path.resolve(__dirname, "../..");
 
-test("keeps the Marketplace update at 0.0.2", async () => {
+test("keeps the Marketplace update at 0.0.3", async () => {
   const manifest = JSON.parse(
     await readFile(path.join(extensionRoot, "package.json"), "utf8"),
   ) as {
@@ -18,7 +18,7 @@ test("keeps the Marketplace update at 0.0.2", async () => {
     bugs?: { url?: unknown };
   };
 
-  assert.equal(manifest.version, "0.0.2");
+  assert.equal(manifest.version, "0.0.3");
   assert.equal(manifest.publisher, "aadijo");
   assert.deepEqual(manifest.author, {
     name: "Advait Johari",

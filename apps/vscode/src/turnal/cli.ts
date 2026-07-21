@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import {
   BlameResult,
   parseBlameResult,
@@ -23,6 +25,69 @@ export type CommandExecutor = (
   cwd: string,
 ) => Promise<CommandOutput>;
 
+interface ExecutableResolutionOptions {
+  platform?: NodeJS.Platform;
+  arch?: string;
+  env?: NodeJS.ProcessEnv;
+  exists?: (candidate: string) => boolean;
+}
+
+export function resolveCliExecutable(
+  executable: string,
+  options: ExecutableResolutionOptions = {},
+): string {
+  const platform = options.platform ?? process.platform;
+  if (platform !== "win32") {
+    return executable;
+  }
+
+  const launcher = path.win32.basename(executable).toLowerCase();
+  if (launcher !== "turnal" && launcher !== "turnal.cmd" && launcher !== "turnal.ps1") {
+    return executable;
+  }
+
+  const env = options.env ?? process.env;
+  const arch = options.arch ?? process.arch;
+  const exists = options.exists ?? existsSync;
+  const searchDirectories: string[] = [];
+  const explicitDirectory = path.win32.dirname(executable);
+  if (explicitDirectory !== ".") {
+    searchDirectories.push(explicitDirectory);
+  }
+  searchDirectories.push(...(env.Path ?? env.PATH ?? "").split(path.win32.delimiter));
+  if (env.APPDATA) {
+    searchDirectories.push(path.win32.join(env.APPDATA, "npm"));
+  }
+
+  const visited = new Set<string>();
+  for (const directory of searchDirectories) {
+    const normalizedDirectory = directory.trim();
+    if (!normalizedDirectory) {
+      continue;
+    }
+    const key = normalizedDirectory.toLowerCase();
+    if (visited.has(key)) {
+      continue;
+    }
+    visited.add(key);
+    const candidate = path.win32.join(
+      normalizedDirectory,
+      "node_modules",
+      "@aadijo",
+      "turnal",
+      "npm",
+      "bin",
+      `win32-${arch}`,
+      "turnal.exe",
+    );
+    if (exists(candidate)) {
+      return candidate;
+    }
+  }
+
+  return executable;
+}
+
 export class TurnalCommandError extends Error {
   constructor(
     public readonly executable: string,
@@ -43,11 +108,15 @@ export class TurnalCommandError extends Error {
 }
 
 export class TurnalCli {
+  public readonly executable: string;
+
   constructor(
     public readonly cwd: string,
-    public readonly executable = "turnal",
+    executable = "turnal",
     private readonly execute: CommandExecutor = executeCommand,
-  ) {}
+  ) {
+    this.executable = resolveCliExecutable(executable);
+  }
 
   async sessions(): Promise<SessionsResult> {
     return parseSessionsResult(await this.json(["sessions", "--json"]));
