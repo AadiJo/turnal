@@ -207,12 +207,14 @@ jobs:
       - run:
           name: Prepare << parameters.channel >> release
           command: |
-            export NPM_ID_TOKEN
-            NPM_ID_TOKEN="$(circleci run oidc get --claims '{"aud":"npm:registry.npmjs.org"}')"
-            if [[ -z "$NPM_ID_TOKEN" ]]; then
-              echo "release invariant failed: CircleCI did not issue an npm OIDC token" >&2
+            if [[ -z "${NPM_TOKEN:-}" ]]; then
+              echo "release invariant failed: NPM_TOKEN is not configured" >&2
               exit 1
             fi
+            unset NPM_ID_TOKEN
+            export NPM_CONFIG_USERCONFIG=/tmp/turnal-npmrc
+            trap 'rm -f "$NPM_CONFIG_USERCONFIG"' EXIT
+            printf '%s\n' '//registry.npmjs.org/:_authToken=${NPM_TOKEN}' > "$NPM_CONFIG_USERCONFIG"
             export NPM_PUBLISH_PROVENANCE=false
             export TURNAL_PUBLISH="<< parameters.publish >>"
             scripts/ci/release.sh \
