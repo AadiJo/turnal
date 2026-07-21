@@ -22,9 +22,27 @@ func TestIsTurnalExecutableRecognizesWindowsBinary(t *testing.T) {
 }
 
 func TestShellQuoteUsesWindowsPathSyntax(t *testing.T) {
-	path := `C:\Program Files\Turnal\turnal.exe`
-	if got, want := shellQuote(path, "windows"), `"C:\Program Files\Turnal\turnal.exe"`; got != want {
-		t.Fatalf("shellQuote() = %q, want %q", got, want)
+	for _, test := range []struct {
+		name string
+		path string
+		want string
+	}{
+		{
+			name: "npm path without spaces",
+			path: `C:\Users\Aadi\AppData\Roaming\npm\node_modules\@aadijo\turnal\turnal.exe`,
+			want: `C:\Users\Aadi\AppData\Roaming\npm\node_modules\@aadijo\turnal\turnal.exe`,
+		},
+		{
+			name: "program files path",
+			path: `C:\Program Files\Turnal\turnal.exe`,
+			want: `"C:\Program Files\Turnal\turnal.exe"`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := shellQuote(test.path, "windows"); got != test.want {
+				t.Fatalf("shellQuote() = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 
