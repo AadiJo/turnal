@@ -10,10 +10,10 @@ Before the first release:
 
 1. Create a CircleCI context named `turnal-release`, restrict it to this project, and add the expression restriction `not job.ssh.enabled`.
 2. Add a least-privilege `GH_TOKEN` capable of creating releases in this repository to that context.
-3. Register CircleCI as the trusted publisher for `@aadijo/turnal`. Bind the npm configuration to the CircleCI organization ID, project ID, pipeline definition ID, `github.com/AadiJo/turnal`, and the `turnal-release` context ID.
+3. Add an npm granular access token named `NPM_TOKEN` to the context. Restrict it to read and write access for `@aadijo/turnal`, enable bypass 2FA for CI publication, and keep package publishing access configured to allow tokens.
 4. Require the four exact CircleCI checks listed in the release checklist on `main`, with current-branch checks and administrative enforcement enabled.
 
-CircleCI trusted publishing uses `NPM_ID_TOKEN` and deliberately omits `--provenance` because npm provenance is not currently supported for this provider. The GitHub Actions fallback retains `NPM_PUBLISH_PROVENANCE=true` so provenance returns with that publisher.
+CircleCI publishing uses the granular access token stored as `NPM_TOKEN` in the `turnal-release` context and deliberately omits `--provenance` because npm provenance is not currently supported for this provider. The GitHub Actions fallback retains `NPM_PUBLISH_PROVENANCE=true` so provenance returns with that publisher.
 
 ## Return to GitHub Actions
 
