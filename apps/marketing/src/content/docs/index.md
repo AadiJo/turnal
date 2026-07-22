@@ -358,7 +358,7 @@ The first-party VS Code extension keeps Turnal's durable CLI model visible in th
 
 Editor rollback always performs a fresh dry run, warns about affected unsaved editors, and asks for confirmation before changing the workspace. It uses checkpoint mode and never moves the project's Git HEAD or index. Recording, verification, replay, search, retention, and configuration remain CLI workflows.
 
-[Read the extension guide on GitHub](https://github.com/AadiJo/turnal/tree/main/apps/vscode).
+[Install the extension from the Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=aadijo.turnal-vscode).
 
 ---
 
