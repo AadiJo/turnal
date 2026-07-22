@@ -65,7 +65,7 @@ turnal log --transcript
 
 ### Give the agent Turnal workflows
 
-Turnal's source repository includes three project-scoped skills. The npm CLI does not copy them into another repository, so place the desired folders under `<project>/.agents/skills/` as part of that project's agent setup. Compatible agents can select them from their descriptions or you can invoke them explicitly:
+Turnal includes three project-scoped skills. At the end of an interactive `turnal init`, press Enter or type `y` to install the bundled skills under `.turnal/skills/` and link them into the project skill directories for the initialized agents: `.agents/skills/` for Codex and `.claude/skills/` for Claude Code. Windows uses directory junctions when ordinary symlink creation requires Developer Mode or elevation. Compatible agents can select them from their descriptions or you can invoke them explicitly:
 
 - [`$turnal-inspect-history`](https://github.com/AadiJo/turnal/blob/main/.agents/skills/turnal-inspect-history/SKILL.md) checks recorded work before implementation when a request may have been tried before, revisits existing code, or depends on missing prior intent. It recovers what the user asked for, what earlier agents attempted, what changed, and whether checks passed.
 - [`$turnal-fork-history`](https://github.com/AadiJo/turnal/blob/main/.agents/skills/turnal-fork-history/SKILL.md) previews fork readiness, reruns a recorded task from its historical pre-turn workspace, and compares or selects isolated attempts.

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
 )
@@ -251,5 +252,50 @@ func TestInitCommandPersistsSkipHooksForStatus(t *testing.T) {
 	}
 	if !strings.Contains(statusOut.String(), "hooks:      ok") || !strings.Contains(statusOut.String(), "state:      ok") {
 		t.Fatalf("status output not ok:\n%s", statusOut.String())
+	}
+}
+
+func TestCodexTrustNoticeExplainsCLIApproval(t *testing.T) {
+	var out bytes.Buffer
+	writeCodexTrustNotice(&out)
+	for _, want := range []string{"Codex hook trust required", "Codex desktop app", "app-server wrapper", "Codex CLI", "trust the Turnal hooks"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("trust notice missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestCodexTrustNoticeHasAlignedBorders(t *testing.T) {
+	var out bytes.Buffer
+	writeCodexTrustNotice(&out)
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("notice has %d lines, want 4:\n%s", len(lines), out.String())
+	}
+	wantWidth := utf8.RuneCountInString(lines[0])
+	for index, line := range lines[1:] {
+		if got := utf8.RuneCountInString(line); got != wantWidth {
+			t.Fatalf("line %d width = %d, want %d:\n%s", index+2, got, wantWidth, out.String())
+		}
+	}
+}
+
+func TestConfirmSkillInstallationDefaultsToYes(t *testing.T) {
+	for _, answer := range []string{"\n", "y\n", "YES\n"} {
+		var prompt bytes.Buffer
+		confirmed, err := confirmSkillInstallation(strings.NewReader(answer), &prompt)
+		if err != nil || !confirmed {
+			t.Fatalf("answer %q: confirmed=%v err=%v", answer, confirmed, err)
+		}
+		if !strings.Contains(prompt.String(), "[Y/n]") {
+			t.Fatalf("prompt = %q, want default-yes marker", prompt.String())
+		}
+	}
+}
+
+func TestConfirmSkillInstallationDeclinesOtherAnswers(t *testing.T) {
+	confirmed, err := confirmSkillInstallation(strings.NewReader("n\n"), &bytes.Buffer{})
+	if err != nil || confirmed {
+		t.Fatalf("confirmed=%v err=%v, want declined", confirmed, err)
 	}
 }

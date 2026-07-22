@@ -69,11 +69,13 @@ turnal status --probe-agent-capture
 > [!IMPORTANT]
 > **Trust the workspace hooks before using your agent.** For Codex, launch the Codex CLI in this workspace first and approve the Turnal hooks there before using Codex through another surface, such as the desktop app; those surfaces may not show the hook-trust prompt. For Claude Code, trust the workspace when prompted; no separate hook approval is needed.
 
+When Codex hooks are configured, `turnal init` prints this trust reminder as a yellow terminal notice. At the end of an interactive initialization, Turnal also offers to install its project-scoped skills; Enter and `y` accept. The bundled files are stored once under `.turnal/skills/`, then linked into `.agents/skills/` for Codex and `.claude/skills/` for Claude Code according to the initialized agents. On Windows, Turnal prefers directory symlinks and falls back to directory junctions when symlink creation requires Developer Mode or elevation.
+
 Normal status is offline. The explicit capture probe starts Codex app-server only long enough to call `hooks/list`; it does not start a thread or turn, invoke a model, modify workspace files, or change provider trust or configuration. Codex may still update its own local cache and runtime state while app-server starts. The probe also explains the Claude Agent SDK limitation that only the host knows whether it loads project settings.
 
 ### Agent skills
 
-Turnal includes three project-scoped agent skills. The npm CLI does not copy them into another repository, so place the desired skill folders under `<project>/.agents/skills/` as part of that project's agent setup. Compatible agents can select a skill from its description or invoke it explicitly:
+Turnal includes three project-scoped agent skills. Accept the installation prompt from `turnal init` to make them available to the initialized agents. Compatible agents can select a skill from its description or invoke it explicitly:
 
 - [`$turnal-inspect-history`](.agents/skills/turnal-inspect-history/SKILL.md) searches recorded work before implementation when a request may have been tried before, revisits existing code, or depends on missing prior intent. It can recover what the user asked for, what earlier agents attempted, what changed, and whether checks passed.
 - [`$turnal-fork-history`](.agents/skills/turnal-fork-history/SKILL.md) previews fork readiness, reruns a recorded task from its historical pre-turn workspace, and compares or selects isolated attempts.

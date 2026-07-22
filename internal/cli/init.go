@@ -1,11 +1,16 @@
 package cli
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/AadiJo/turnal/internal/adapters"
+	"github.com/AadiJo/turnal/internal/agentskills"
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	agentconfig "github.com/AadiJo/turnal/internal/config"
 	"github.com/AadiJo/turnal/internal/primitives"
@@ -97,22 +102,25 @@ func initCmd() *cobra.Command {
 			}
 			if !effective.Init.InstallHooks || len(targets) == 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "adapter hooks skipped")
-				return nil
-			}
-
-			installed, err := adapters.InstallWithOptions(root.String(), targets, adapters.InstallOptions{
-				HookCommand: effective.Hooks.Command,
-			})
-			if err != nil {
-				return err
-			}
-			for _, adapter := range installed {
-				fmt.Fprintf(cmd.OutOrStdout(), "configured %s hooks: %s\n", adapter.Target, adapter.ConfigPath)
-				if adapter.BackupPath != "" {
-					fmt.Fprintf(cmd.OutOrStdout(), "backed up invalid hook config: %s\n", adapter.BackupPath)
+			} else {
+				installed, err := adapters.InstallWithOptions(root.String(), targets, adapters.InstallOptions{
+					HookCommand: effective.Hooks.Command,
+				})
+				if err != nil {
+					return err
+				}
+				for _, adapter := range installed {
+					fmt.Fprintf(cmd.OutOrStdout(), "configured %s hooks: %s\n", adapter.Target, adapter.ConfigPath)
+					if adapter.BackupPath != "" {
+						fmt.Fprintf(cmd.OutOrStdout(), "backed up invalid hook config: %s\n", adapter.BackupPath)
+					}
+				}
+				if containsAdapterTarget(targets, adapters.TargetCodex) {
+					writeCodexTrustNotice(cmd.OutOrStdout())
 				}
 			}
-			return nil
+
+			return offerSkillInstallation(cmd, root.String(), result.Repo.MetadataDir, targets)
 		},
 	}
 
@@ -121,6 +129,85 @@ func initCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&enableGitSync, "git-sync", false, "Enable opt-in workspace Git state capture for future workspace-git rollbacks")
 	cmd.Flags().StringVar(&storePath, "store", "", "Use or create a Turnal store at this explicit .turnal path")
 	return cmd
+}
+
+func containsAdapterTarget(targets []adapters.Target, expected adapters.Target) bool {
+	for _, target := range targets {
+		if target == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func writeCodexTrustNotice(w io.Writer) {
+	title := "Codex hook trust required"
+	lines := []string{
+		"Before using Turnal with the Codex desktop app or an app-server wrapper,",
+		"open the Codex CLI in this workspace and trust the Turnal hooks there.",
+	}
+	contentWidth := utf8.RuneCountInString(title) + 1
+	for _, line := range lines {
+		if width := utf8.RuneCountInString(line); width > contentWidth {
+			contentWidth = width
+		}
+	}
+
+	prefix, suffix := "", ""
+	if colorOutputEnabled(w) {
+		prefix, suffix = "\x1b[33m", "\x1b[0m"
+	}
+	fmt.Fprintf(w, "\n%s┌─ %s %s┐%s\n", prefix, title, strings.Repeat("─", contentWidth-utf8.RuneCountInString(title)-1), suffix)
+	for _, line := range lines {
+		fmt.Fprintf(w, "%s│ %s%s │%s\n", prefix, line, strings.Repeat(" ", contentWidth-utf8.RuneCountInString(line)), suffix)
+	}
+	fmt.Fprintf(w, "%s└%s┘%s\n\n", prefix, strings.Repeat("─", contentWidth+2), suffix)
+}
+
+func offerSkillInstallation(cmd *cobra.Command, projectRoot, metadataDir string, targets []adapters.Target) error {
+	if len(targets) == 0 {
+		return nil
+	}
+	if !canPrompt(cmd.InOrStdin()) {
+		fmt.Fprintln(cmd.OutOrStdout(), "agent skills not installed (run turnal init interactively to install them)")
+		return nil
+	}
+	confirmed, err := confirmSkillInstallation(cmd.InOrStdin(), cmd.ErrOrStderr())
+	if err != nil {
+		return err
+	}
+	if !confirmed {
+		fmt.Fprintln(cmd.OutOrStdout(), "agent skills skipped")
+		return nil
+	}
+	agents := make([]string, 0, len(targets))
+	for _, target := range targets {
+		agents = append(agents, string(target))
+	}
+	installed, err := agentskills.Install(projectRoot, metadataDir, agents)
+	if err != nil {
+		return err
+	}
+	for _, result := range installed {
+		fmt.Fprintf(cmd.OutOrStdout(), "linked %s skills: %s\n", result.Agent, result.Path)
+	}
+	return nil
+}
+
+func confirmSkillInstallation(in io.Reader, prompt io.Writer) (bool, error) {
+	if _, err := fmt.Fprint(prompt, "Install Turnal agent skills for the initialized agents? [Y/n] "); err != nil {
+		return false, err
+	}
+	line, err := bufio.NewReader(in).ReadString('\n')
+	if err != nil && len(line) == 0 {
+		return false, err
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "", "y", "yes":
+		return true, nil
+	default:
+		return false, nil
+	}
 }
 
 type initConfigPersistence struct {

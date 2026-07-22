@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/AadiJo/turnal/internal/upgrade"
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
 
@@ -285,11 +286,8 @@ func canPrompt(r io.Reader) bool {
 	if !ok {
 		return false
 	}
-	stat, err := file.Stat()
-	if err != nil {
-		return false
-	}
-	return stat.Mode()&os.ModeCharDevice != 0
+	fd := file.Fd()
+	return isatty.IsTerminal(fd) || isatty.IsCygwinTerminal(fd)
 }
 
 func executeUpgradeCommand(ctx context.Context, command []string, stdout io.Writer, stderr io.Writer) error {
