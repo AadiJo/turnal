@@ -51,6 +51,7 @@ npm install -g @aadijo/turnal
 cd path/to/your/project
 turnal init --agent all
 turnal status
+turnal status --probe-agent-capture
 
 # Use Claude Code or Codex normally, then inspect the recording.
 turnal sessions
@@ -59,9 +60,11 @@ turnal log --transcript
 
 > **Trust the workspace hooks before using your agent.** For Codex, launch the Codex CLI in this workspace first and approve the Turnal hooks there before using Codex through another surface, such as the desktop app; those surfaces may not show the hook-trust prompt. For Claude Code, trust the workspace when prompted; no separate hook approval is needed.
 
-1. **Initialize storage.** Turnal creates or attaches `.turnal/`, ensures workspace Git exists by default, and adds the store to `.gitignore`.
-2. **Install agent hooks.** Existing non-Turnal hooks are preserved. Invalid supported config files are moved aside with a `.backup` suffix before replacement.
+1. **Initialize storage.** Turnal creates or attaches `.turnal/` and adds the store to `.gitignore`. It does not initialize or modify the project's Git repository.
+2. **Install agent hooks.** Existing non-Turnal hooks are preserved. If a supported hook configuration file is invalid or has an unexpected shape, initialization leaves it unchanged and asks you to repair it before retrying.
 3. **Work normally.** The provider launches as usual; Turnal records hook events and snapshots in the background.
+
+Normal `turnal status` is offline. The explicit `--probe-agent-capture` check starts Codex app-server only long enough to inspect hook discovery, enablement, and trust; it does not start a thread or turn, invoke a model, change provider trust, or modify workspace files. Codex may update its own cache or runtime state while app-server starts. For Claude Agent SDK hosts, the probe explains that only the host can determine whether project settings are loaded.
 
 ### Give the agent Turnal workflows
 
@@ -119,7 +122,7 @@ A normal turn has a before-and-after boundary. The prompt hook records context a
 - Paths matching `secrets.snapshot_deny_globs`
 - Excluded files already present during restore
 
-> **Turnal Git is not your project Git.** Turnal works in Git and non-Git directories without initializing a project repository. Normal checkpoints and checkpoint-mode rollback do not write the project's `HEAD`, index, branches, or refs. Full workspace-Git capture is a separate, opt-in mode and requires an existing Git worktree.
+> **Turnal Git is not your project Git.** Turnal works in Git and non-Git directories without initializing a project repository. Normal checkpoints and checkpoint-mode rollback do not write the project's `HEAD`, index, branches, or refs. Full workspace-Git capture is a separate, opt-in mode and requires the Turnal workspace root to be the Git worktree root with an initial commit.
 
 ---
 
@@ -165,6 +168,19 @@ turnal init --agent none --skip-hooks
 ### Codex wrapper checkpoints
 
 `turnal run -- codex` launches Codex with hooks enabled and adds independent wrapper-level pre/post checkpoints. If hooks emit no prompt, tool, or assistant payloads, the safety checkpoints still exist but the semantic transcript will be sparse. The wrapper currently supports Codex only.
+
+### Manual turns
+
+Use manual turn boundaries when an agent has no compatible hook integration or when you need to capture a non-agent workflow. `start` creates the pre checkpoint and `finish` closes the active turn with its post checkpoint.
+
+```sh
+turnal turn start --session demo
+# Make changes or run the unsupported agent.
+turnal turn finish --session demo
+turnal diff demo:1
+```
+
+Pass `--turn N` when you need to choose the turn number explicitly; otherwise `start` uses the next turn and `finish` uses the active turn.
 
 ---
 
@@ -247,7 +263,7 @@ Targets can also be a `chk_` checkpoint ID prefix or a hidden Git SHA prefix; pr
 
 ### Workspace-Git rollback
 
-Enable `git_sync.enabled` before the turn when you need to capture and later restore project Git state: `HEAD`, index, staged and unstaged patches, and non-ignored untracked files. Then pass `--workspace-git`, or set `rollback.mode = "workspace-git"`. A checkpoint captured before Git sync was enabled cannot be upgraded retroactively.
+Enable `git_sync.enabled` before the turn when you need to capture and later restore project Git state: `HEAD`, index, staged and unstaged patches, and non-ignored untracked files. The Turnal workspace root must be the Git worktree root, and the repository must already have an initial `HEAD` commit. Then pass `--workspace-git`, or set `rollback.mode = "workspace-git"`. A checkpoint captured before Git sync was enabled cannot be upgraded retroactively.
 
 ---
 
@@ -525,11 +541,12 @@ Transcript reads are limited to recognized Claude Code or Codex roots, such as `
 
 Durable history and hidden-Git object bytes are removed in deliberate stages. Preview each stage before committing to it.
 
-1. **Drop a session:** `turnal session drop ID --dry-run` deletes its event log, stream metadata, temporary state, and related private refs.
-2. **Prune refs:** `turnal retention prune --dry-run` removes private refs no durable record, journal, active turn, or import manifest still needs.
-3. **Collect objects:** `turnal maintenance gc --dry-run` previews expiration of hidden reflogs and pruning of unreachable Git objects.
+1. **Release Case retention when necessary:** `turnal case delete CASE_ID --dry-run` confirms the experimental Case exists and previews its tombstone so its source and attempt sessions can become eligible for deletion. Confirm with `--yes` only when the Case is no longer needed; deletion refuses while an attempt is still running.
+2. **Drop a session:** `turnal session drop ID --dry-run` previews removal of its event log, stream metadata, temporary state, and related private refs. Run the drop separately, or use `--purge` for immediate ref pruning and hidden-Git garbage collection.
+3. **Prune refs:** `turnal retention prune --dry-run` removes private refs no durable record, journal, active turn, or import manifest still needs.
+4. **Collect objects:** `turnal maintenance gc --dry-run` previews expiration of hidden reflogs and pruning of unreachable Git objects.
 
-> **Garbage collection is the irreversible step.** Dropping a session or pruning a ref does not immediately erase underlying Git objects. `turnal maintenance gc` performs immediate object pruning. Review the earlier dry runs and keep an external backup when the history may still matter.
+> **Garbage collection is the irreversible step.** Dropping a session or pruning a ref does not immediately erase underlying Git objects. `turnal maintenance gc` and `turnal session drop --purge` perform immediate object pruning. Review a separate dry run first and keep an external backup when the history may still matter.
 
 ### Remove Turnal from a workspace
 
@@ -544,7 +561,7 @@ Destroy removes Turnal metadata and, when requested, Turnal-owned agent hook com
 
 ## Command reference
 
-These are Turnal's primary public commands. Hook, checkpoint, and turn-plumbing commands are internal and intentionally omitted.
+These are Turnal's primary public commands. Low-level hook and checkpoint plumbing commands are intentionally omitted; the supported manual turn workflow is included.
 
 ### `turnal init`
 
@@ -562,17 +579,28 @@ turnal init [--agent auto|claude|codex|all|none] [--skip-hooks]
 | `--git-sync` | Capture workspace Git state for future workspace-git rollbacks. |
 | `--store PATH` | Use or create an explicit physical `.turnal` store. |
 
-Run this from the directory that should become the workspace root. By default Turnal ensures workspace Git exists, adds `.turnal/` to `.gitignore`, and installs detected hooks.
+Run this from the directory that should become the workspace root. By default Turnal creates its own hidden Git store, adds `.turnal/` to `.gitignore`, and installs detected hooks without initializing or modifying the project's Git repository. `--git-sync` requires an existing Git worktree rooted at this directory with an initial commit.
 
 ### `turnal status`
 
 Inspect storage, identities, hidden Git, hook health, integrity, and pending journals.
 
 ```text
-turnal status
+turnal status [--probe-agent-capture]
 ```
 
-Returns a non-zero status when the workspace needs attention.
+Returns a non-zero status when the workspace needs attention. `--probe-agent-capture` adds a runtime compatibility check for configured execution surfaces; normal status remains offline.
+
+### `turnal adapter`
+
+Discover external adapter executables and verify that they implement the supported protocol.
+
+```text
+turnal adapter list
+turnal adapter doctor [ADAPTER...]
+```
+
+`list` finds `turnal-adapter-*` executables on `PATH` and prints their advertised versions. `doctor` checks discovery, executable naming, and protocol compatibility for every discovered adapter or only the named adapters.
 
 ### `turnal sessions`
 
@@ -591,6 +619,7 @@ Render checkpoint history across one or more agent sessions.
 ```text
 turnal log [--session ID] [--limit N] [--transcript] [--verbose]
            [--worktree ID | --all-worktrees] [--stream ID]
+           [--session-limit N] [--max-lanes N]
            [--index | --durable] [--no-pager]
 ```
 
@@ -603,6 +632,8 @@ turnal log [--session ID] [--limit N] [--transcript] [--verbose]
 | `--worktree ID` | Select one attached worktree; current is the default. |
 | `--all-worktrees` | Show every attached worktree in the store. |
 | `--stream ID` | Select one durable event stream. |
+| `--session-limit N` | Include only the most recently active sessions; 0 shows all. Default: 0. |
+| `--max-lanes N` | Maximum graph columns; 0 allows unlimited columns. Default: 8. |
 | `--index` | Read the disposable index when available; falls back to durable data. |
 | `--durable` | Explicitly read event logs and checkpoint refs, which is the default path. |
 | `--no-pager` | Write directly even when the output is taller than the terminal. |
@@ -632,10 +663,10 @@ No target means latest. A bare turn number works only when it is unambiguous acr
 Print the patch between the pre and post checkpoints of one turn.
 
 ```text
-turnal diff SESSION:TURN
+turnal diff SESSION:TURN [--json]
 ```
 
-Diffs come from hidden Git snapshots, not provider-reported file changes.
+Diffs come from hidden Git snapshots, not provider-reported file changes. `--json` emits changed-file metadata and checkpoint contents in a structured document.
 
 ### `turnal blame`
 
@@ -771,10 +802,14 @@ Create and inspect experimental immutable cases derived from recorded turns.
 ```text
 turnal case create SESSION:TURN [--task TASK_ID] [--json]
 turnal case show CASE_ID [--json]
+turnal case delete CASE_ID --dry-run
+turnal case delete CASE_ID --yes
 turnal task show TASK_ID [--json]
 ```
 
 Creating a case without `--task` creates a task identity and its initial revision. `--task` creates a sibling case only when the recorded instruction matches the task's applicable revision. `case show` includes linked attempt status, verifier outcome, and the current selection; `turnal fork` is the command that launches the isolated runner.
+
+Cases retain their source and attempt sessions. `case delete` writes an irreversible tombstone that makes those sessions eligible for `turnal session drop`; use `--dry-run` to confirm and preview the target, then pass `--yes` to confirm deletion. Deletion refuses while any linked attempt is still running.
 
 ### `turnal recovery`
 
@@ -804,6 +839,17 @@ turnal run [--quiet] [--skip-hook-install]
 | `--bypass-hook-trust` | Pass `--dangerously-bypass-hook-trust` to Codex for this invocation. |
 
 The wrapper currently supports Codex only. Wrapper checkpoints still exist if hooks emit no prompt, tool, or assistant payloads.
+
+### `turnal turn start` and `turnal turn finish`
+
+Create explicit pre/post boundaries for an unsupported agent or a manual workflow.
+
+```text
+turnal turn start --session SESSION [--turn N]
+turnal turn finish --session SESSION [--turn N]
+```
+
+Without `--turn`, `start` chooses the next turn number and `finish` closes the active turn. A manual turn participates in history, diff, replay, and rollback like a hook-captured turn, although its semantic transcript contains only events that were explicitly recorded.
 
 ### `turnal worktree`
 
@@ -841,10 +887,10 @@ A successful merge rebuilds the destination index. Durable history remains impor
 Delete one session event log, stream metadata, temporary state, and related private refs.
 
 ```text
-turnal session drop SESSION [--dry-run]
+turnal session drop SESSION [--dry-run | --purge]
 ```
 
-`--dry-run` reports the refs and files that would be deleted. Run `turnal reindex` afterward; object bytes remain until hidden Git garbage collection.
+`--dry-run` reports the refs and files that would be deleted. Cases can retain source and attempt sessions until the Case is deleted. `--purge` also prunes unreferenced private refs and immediately garbage-collects hidden Git objects; it cannot be combined with `--dry-run`, and filesystem backups, sync history, and disk snapshots remain outside Turnal's deletion boundary. Without `--purge`, run `turnal reindex` afterward and use the staged retention commands when object bytes must be reclaimed.
 
 ### `turnal retention prune`
 
@@ -865,6 +911,16 @@ turnal maintenance gc [--dry-run]
 ```
 
 `--dry-run` prints the garbage-collection policy without invoking Git. Run this only after reviewing session-drop and retention-prune results.
+
+### `turnal maintenance clear-hook-failures`
+
+Acknowledge recorded fail-open hook capture errors after investigating them.
+
+```text
+turnal maintenance clear-hook-failures --yes
+```
+
+Hook capture failures do not block the agent, but `turnal status` retains them so missing history remains visible. Review the failures first; `--yes` confirms that review and clears the health ledger.
 
 ### `turnal store rekey`
 
@@ -935,12 +991,20 @@ turnal completion bash|zsh|fish|powershell
 
 ## Troubleshooting
 
-Run `turnal status` first. It is the fastest way to separate hook, store, identity, integrity, and unfinished-operation failures.
+Run `turnal status` first. It is the fastest offline way to separate hook, store, identity, integrity, and unfinished-operation failures. Add `turnal status --probe-agent-capture` when static hook files look correct but capture still does not run in the provider surface.
 
 <div class="troubleshooting-list not-typeset" data-not-typeset>
   <details open>
     <summary>Search says the index is missing, or recent turns are absent</summary>
     <p>Run <code>turnal reindex</code> from the workspace. The SQLite database is intentionally disposable and normal recording does not rebuild it after every turn.</p>
+  </details>
+  <details>
+    <summary>Hooks are configured, but the agent is not being captured</summary>
+    <p>Run <code>turnal status --probe-agent-capture</code>. For Codex app-server, review the reported discovery, enablement, and trust state in the host's hooks UI. For a Claude Agent SDK host, confirm that it loads project settings; Turnal cannot infer that host-controlled choice from the workspace.</p>
+  </details>
+  <details>
+    <summary>Status reports earlier hook capture failures</summary>
+    <p>Hook capture fails open so it cannot block the agent. Review the reported failures and any resulting history gaps, then acknowledge them with <code>turnal maintenance clear-hook-failures --yes</code>.</p>
   </details>
   <details>
     <summary>A linked worktree cannot find its Turnal store</summary>
@@ -952,7 +1016,7 @@ Run `turnal status` first. It is the fastest way to separate hook, store, identi
   </details>
   <details>
     <summary>Workspace-Git rollback is unavailable</summary>
-    <p>Git sync must have been enabled when the target was captured. Enable it with <code>turnal init --git-sync</code> or <code>git_sync.enabled = true</code> for future turns; use normal checkpoint rollback for older turns.</p>
+    <p>Git sync must have been enabled when the target was captured, the Turnal workspace root must equal the Git worktree root, and the repository must have an initial commit. Enable it with <code>turnal init --git-sync</code> or <code>git_sync.enabled = true</code> for future turns; use normal checkpoint rollback for older turns.</p>
   </details>
   <details>
     <summary>Provider transcript text cannot be loaded</summary>
@@ -963,8 +1027,12 @@ Run `turnal status` first. It is the fastest way to separate hook, store, identi
     <p>Inspect <code>turnal status</code>, then choose <code>turnal merge --recover</code> to resume the single pending journal or <code>turnal merge --abort</code> to remove its staging data.</p>
   </details>
   <details>
+    <summary>A session cannot be dropped because a Case retains it</summary>
+    <p>Confirm and preview the target with <code>turnal case delete CASE_ID --dry-run</code>, then use <code>turnal case delete CASE_ID --yes</code> only when the Case and its experimental record are no longer needed and no attempt is still running. Its source and attempt sessions then become eligible for <code>turnal session drop</code>.</p>
+  </details>
+  <details>
     <summary>Disk use remains after dropping a session</summary>
-    <p>Run <code>turnal reindex</code>, preview <code>turnal retention prune --dry-run</code>, then preview and run <code>turnal maintenance gc</code> only when you are ready to irreversibly prune unreachable objects.</p>
+    <p>For staged cleanup, run <code>turnal reindex</code>, preview <code>turnal retention prune --dry-run</code>, then preview and run <code>turnal maintenance gc</code> only when you are ready to irreversibly prune unreachable objects. For immediate local cleanup during the drop, use <code>turnal session drop SESSION --purge</code> after reviewing a separate dry run.</p>
   </details>
 </div>
 

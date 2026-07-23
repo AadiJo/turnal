@@ -32,7 +32,7 @@ export const installCommand = 'npm install -g @aadijo/turnal';
 
 export const graphLines = [
   '',
-  `${label('checkpoint graph:')} 5 sessions, 13 turns, 2 rollbacks`,
+  `${label('checkpoint graph:')} 5 sessions, 13 turns, 5 lanes, 2 rollbacks`,
   '',
   `${label('sessions:')} ${session('[claude 14:20]', 0)} ${session('[claude 14:46]', 1)} ${session('[claude 14:16]', 2)} ${session('[codex 14:28]', 3)} ${session('[codex 14:12]', 4)}`,
   '',
@@ -137,7 +137,6 @@ export const sessionsOutput = sessionsLines.join('\n');
 const initLines = [
   `initialized hidden git repo: ${muted('/Users/aadijo/Dev/relay-api/.turnal/git')}`,
   `worktree id: ${muted('wt_1d994d3024c8')}`,
-  `workspace git already configured: ${muted('/Users/aadijo/Dev/relay-api/.git')}`,
   `updated gitignore: ${muted('/Users/aadijo/Dev/relay-api/.gitignore')}`,
   `configured claude hooks: ${muted('/Users/aadijo/Dev/relay-api/.claude/settings.json')}`,
   `configured codex hooks: ${muted('/Users/aadijo/Dev/relay-api/.codex/config.toml')}`,
@@ -188,7 +187,7 @@ const rollbackLines = [
 ];
 
 const replayLines = [
-  `${label('replay worktree:')} /Users/aadijo/.turnal/replays/claude-a13f-turn-000003-post`,
+  `${label('replay worktree:')} /Users/aadijo/Dev/relay-api/.turnal/tmp/replay/worktrees/claude-a13f-turn-000003-post-6f83bc21`,
   `${label('state:')} claude-a13f turn 3 ${success('post')}`,
   `${label('commands:')}`,
   `  turnal replay next`,

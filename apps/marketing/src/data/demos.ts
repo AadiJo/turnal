@@ -35,7 +35,6 @@ export const demos: Record<string, Demo> = {
     out: [
       `initialized hidden git repo: ${dim('.turnal/git')}`,
       `worktree id: ${dim('wt_1d994d3024c8')}`,
-      `workspace git already configured: ${dim('.git')}`,
       `updated gitignore: ${dim('.gitignore')}`,
       `configured claude hooks: ${dim('.claude/settings.json')}`,
       `configured codex hooks: ${dim('.codex/config.toml')}`,
@@ -48,7 +47,7 @@ export const demos: Record<string, Demo> = {
     caption: 'One timeline across every Claude Code and Codex session in the repo.',
     out: [
       ``,
-      `checkpoint graph: 3 sessions, 6 turns`,
+      `checkpoint graph: 3 sessions, 6 turns, 3 lanes`,
       ``,
       `sessions: ${gr('[codex 15:08]')} ${gr('[claude 15:02]')} ${gr('[codex 14:48]')}`,
       ``,
