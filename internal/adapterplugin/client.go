@@ -52,17 +52,21 @@ func Discover() ([]Adapter, error) {
 				continue
 			}
 			filename := entry.Name()
+			if runtime.GOOS == "windows" {
+				extension := filepath.Ext(filename)
+				if !strings.EqualFold(extension, ".exe") {
+					continue
+				}
+				filename = strings.TrimSuffix(filename, extension)
+			}
 			name := strings.TrimPrefix(filename, executablePrefix)
 			if name == filename {
 				continue
 			}
-			if runtime.GOOS == "windows" {
-				name = strings.TrimSuffix(name, ".exe")
-			}
 			if name == "" {
 				continue
 			}
-			path := filepath.Join(dir, filename)
+			path := filepath.Join(dir, entry.Name())
 			info, err := entry.Info()
 			if err != nil || runtime.GOOS != "windows" && info.Mode()&0o111 == 0 {
 				continue
@@ -85,23 +89,38 @@ func Discover() ([]Adapter, error) {
 
 func Find(name string) (Adapter, error) {
 	executable := executablePrefix + name
-	path, err := exec.LookPath(executable)
+	lookupName := executable
+	if runtime.GOOS == "windows" {
+		lookupName += ".exe"
+		if adapter, found := findSibling(name, lookupName); found {
+			return adapter, nil
+		}
+	}
+	path, err := exec.LookPath(lookupName)
 	if err == nil {
 		absolute, absErr := filepath.Abs(path)
 		if absErr == nil {
 			return Adapter{Name: name, Path: absolute}, nil
 		}
 	}
-	if current, currentErr := os.Executable(); currentErr == nil {
-		candidate := filepath.Join(filepath.Dir(current), executable)
-		if runtime.GOOS == "windows" {
-			candidate += ".exe"
-		}
-		if info, statErr := os.Stat(candidate); statErr == nil && !info.IsDir() {
-			return Adapter{Name: name, Path: candidate}, nil
+	if runtime.GOOS != "windows" {
+		if adapter, found := findSibling(name, executable); found {
+			return adapter, nil
 		}
 	}
 	return Adapter{}, fmt.Errorf("adapter %q not found on PATH (expected %s)", name, executable)
+}
+
+func findSibling(name, executable string) (Adapter, bool) {
+	current, err := os.Executable()
+	if err != nil {
+		return Adapter{}, false
+	}
+	candidate := filepath.Join(filepath.Dir(current), executable)
+	if info, err := os.Stat(candidate); err != nil || info.IsDir() {
+		return Adapter{}, false
+	}
+	return Adapter{Name: name, Path: candidate}, true
 }
 
 func Inspect(ctx context.Context, adapter Adapter) Inspection {
