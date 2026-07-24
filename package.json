@@ -1,6 +1,6 @@
 {
   "name": "@aadijo/turnal",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "Local-first CLI for recording AI coding agent history, file changes, diffs, and safe rollbacks.",
   "bin": {
     "turnal": "npm/turnal.js",
