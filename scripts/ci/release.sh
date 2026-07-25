@@ -70,6 +70,7 @@ npm run build
 export TURNAL_RELEASE_CHANNEL="$RELEASE_CHANNEL"
 export TURNAL_COMMIT="$sha"
 npm run pack:dry-run
+npm run build:release-archives
 
 syft_bin="${SYFT_BIN:-}"
 if [[ -z "$syft_bin" ]]; then
@@ -114,6 +115,8 @@ fi
 gh_args=(
   "$RELEASE_TAG"
   turnal.spdx.json
+  dist/releases/checksums.txt
+  dist/releases/turnal_*.tar.gz
   --target "$sha"
   --title "$RELEASE_NAME"
   --generate-notes
