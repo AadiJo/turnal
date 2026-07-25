@@ -15,11 +15,15 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var newUpgradeRegistry = func() upgrade.Registry {
+var newUpgradeRegistry = func(metadata upgrade.Metadata) upgrade.Registry {
+	if metadata.Normalize().InstallSource == upgrade.InstallSourceStandalone {
+		return upgrade.HTTPRegistry{}
+	}
 	return upgrade.NPMRegistry{}
 }
 
 var runUpgradeCommand = executeUpgradeCommand
+var runStandaloneUpgrade = upgrade.InstallStandalone
 
 func upgradeCmd() *cobra.Command {
 	var checkOnly bool
@@ -49,10 +53,11 @@ func upgradeCmd() *cobra.Command {
 				requestedChannel = upgrade.ChannelNightly
 			}
 
+			metadata := currentBuildMetadata()
 			plan, err := upgrade.BuildPlan(context.Background(), upgrade.PlanOptions{
-				Current:          currentBuildMetadata(),
+				Current:          metadata,
 				RequestedChannel: requestedChannel,
-				Registry:         newUpgradeRegistry(),
+				Registry:         newUpgradeRegistry(metadata),
 			})
 			if err != nil {
 				return err
@@ -137,6 +142,23 @@ func finishUpgradePlan(cmd *cobra.Command, plan upgrade.Plan, opts upgradeRunOpt
 		}
 		return writeManualUpgradeInstructions(cmd.OutOrStdout(), plan)
 	}
+	if plan.Action.Kind == upgrade.ActionStandaloneReplace {
+		writer := cmd.OutOrStdout()
+		if opts.JSON {
+			writer = cmd.ErrOrStderr()
+		}
+		if _, err := fmt.Fprintf(writer, "Downloading and installing Turnal %s...\n", plan.Target.Version); err != nil {
+			return err
+		}
+		if err := runStandaloneUpgrade(context.Background(), upgrade.StandaloneInstallOptions{
+			Version: plan.Target.Version,
+			Channel: plan.Target.Channel,
+		}); err != nil {
+			return err
+		}
+		_, err := fmt.Fprintf(writer, "Turnal %s installed successfully.\n", plan.Target.Version)
+		return err
+	}
 	if plan.Action.Kind != upgrade.ActionNPMInstallGlobal {
 		return nil
 	}
@@ -184,6 +206,8 @@ func upgradeActionText(plan upgrade.Plan) string {
 		return "already up to date"
 	case upgrade.ActionNPMInstallGlobal:
 		return strings.Join(plan.Action.Command, " ")
+	case upgrade.ActionStandaloneReplace:
+		return "download and replace standalone release binaries"
 	case upgrade.ActionManual:
 		return "manual update"
 	default:

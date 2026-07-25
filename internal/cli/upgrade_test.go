@@ -79,6 +79,39 @@ func TestUpgradeRunsNPMCommand(t *testing.T) {
 	}
 }
 
+func TestUpgradeRunsStandaloneReplacement(t *testing.T) {
+	setBuildMetadataForTest(t, "0.4.1", upgrade.ChannelStable, "abc1234", upgrade.InstallSourceStandalone)
+	setUpgradeTestHooks(t, cliFakeRegistry{tags: map[string]string{"latest": "0.4.2"}}, func(ctx context.Context, command []string, stdout io.Writer, stderr io.Writer) error {
+		t.Fatalf("npm command called for standalone upgrade: %#v", command)
+		return nil
+	})
+	oldStandaloneRunner := runStandaloneUpgrade
+	var installed upgrade.StandaloneInstallOptions
+	runStandaloneUpgrade = func(ctx context.Context, opts upgrade.StandaloneInstallOptions) error {
+		installed = opts
+		return nil
+	}
+	t.Cleanup(func() {
+		runStandaloneUpgrade = oldStandaloneRunner
+	})
+
+	cmd := NewRootCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"upgrade"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("upgrade: %v\n%s", err, out.String())
+	}
+
+	if installed.Version != "0.4.2" || installed.Channel != upgrade.ChannelStable {
+		t.Fatalf("standalone install options = %+v", installed)
+	}
+	if !strings.Contains(out.String(), "action:  download and replace standalone release binaries") {
+		t.Fatalf("output missing standalone action:\n%s", out.String())
+	}
+}
+
 func TestUpgradeNightlySwitchRequiresConfirmationNonInteractive(t *testing.T) {
 	setBuildMetadataForTest(t, "0.4.2", upgrade.ChannelStable, "abc1234", upgrade.InstallSourceNPM)
 	setUpgradeTestHooks(t, cliFakeRegistry{tags: map[string]string{"nightly": "0.4.3-nightly.20260709.4"}}, func(ctx context.Context, command []string, stdout io.Writer, stderr io.Writer) error {
@@ -233,7 +266,7 @@ func setUpgradeTestHooks(t *testing.T, registry upgrade.Registry, runner func(co
 	t.Helper()
 	oldRegistry := newUpgradeRegistry
 	oldRunner := runUpgradeCommand
-	newUpgradeRegistry = func() upgrade.Registry {
+	newUpgradeRegistry = func(upgrade.Metadata) upgrade.Registry {
 		return registry
 	}
 	runUpgradeCommand = runner

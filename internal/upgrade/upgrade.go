@@ -17,13 +17,15 @@ const (
 	ChannelNightly = "nightly"
 	ChannelDev     = "dev"
 
-	InstallSourceNPM     = "npm"
-	InstallSourceSource  = "source"
-	InstallSourceUnknown = "unknown"
+	InstallSourceNPM        = "npm"
+	InstallSourceStandalone = "standalone"
+	InstallSourceSource     = "source"
+	InstallSourceUnknown    = "unknown"
 
-	ActionNone             = "none"
-	ActionNPMInstallGlobal = "npm_install_global"
-	ActionManual           = "manual"
+	ActionNone              = "none"
+	ActionNPMInstallGlobal  = "npm_install_global"
+	ActionStandaloneReplace = "standalone_replace"
+	ActionManual            = "manual"
 )
 
 type Metadata struct {
@@ -112,10 +114,13 @@ func BuildPlan(ctx context.Context, opts PlanOptions) (Plan, error) {
 	action := Action{Kind: ActionNone}
 	command := NPMInstallCommand(npmTag)
 	if !upToDate {
-		if current.InstallSource == InstallSourceNPM {
+		switch current.InstallSource {
+		case InstallSourceNPM:
 			action.Kind = ActionNPMInstallGlobal
 			action.Command = command
-		} else {
+		case InstallSourceStandalone:
+			action.Kind = ActionStandaloneReplace
+		default:
 			action.Kind = ActionManual
 			action.Command = command
 		}

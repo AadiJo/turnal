@@ -120,6 +120,26 @@ func TestCheckUpdateNoticeSkipsSourceInstalls(t *testing.T) {
 	}
 }
 
+func TestCheckUpdateNoticeSupportsStandaloneInstalls(t *testing.T) {
+	notice, ok, err := CheckUpdateNotice(context.Background(), NoticeOptions{
+		Current: Metadata{
+			Version:       "0.4.1",
+			Channel:       ChannelStable,
+			InstallSource: InstallSourceStandalone,
+		},
+		Registry: fakeRegistry{tags: map[string]string{"latest": "0.4.2"}},
+	})
+	if err != nil {
+		t.Fatalf("CheckUpdateNotice: %v", err)
+	}
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	if strings.Join(notice.Command, " ") != "turnal upgrade" {
+		t.Fatalf("command = %#v", notice.Command)
+	}
+}
+
 func TestCheckUpdateNoticeUsesFreshCache(t *testing.T) {
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
 	cache := &memoryNoticeCache{

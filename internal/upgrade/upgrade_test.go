@@ -154,6 +154,29 @@ func TestBuildPlanUnknownInstallSourceIsManual(t *testing.T) {
 	}
 }
 
+func TestBuildPlanStandaloneInstallReplacesReleaseBinaries(t *testing.T) {
+	plan, err := BuildPlan(context.Background(), PlanOptions{
+		Current: Metadata{
+			Version:       "0.4.2",
+			Channel:       ChannelStable,
+			InstallSource: InstallSourceStandalone,
+		},
+		Registry: fakeRegistry{tags: map[string]string{"latest": "0.4.3"}},
+	})
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	if plan.Action.Kind != ActionStandaloneReplace {
+		t.Fatalf("action kind = %q, want %q", plan.Action.Kind, ActionStandaloneReplace)
+	}
+	if plan.Action.RequiresConfirmation {
+		t.Fatalf("standalone same-channel upgrade requires confirmation: %+v", plan.Action)
+	}
+	if len(plan.Action.Command) != 0 {
+		t.Fatalf("standalone command = %#v, want empty", plan.Action.Command)
+	}
+}
+
 func TestBuildPlanUpToDateHasNoAction(t *testing.T) {
 	plan, err := BuildPlan(context.Background(), PlanOptions{
 		Current: Metadata{

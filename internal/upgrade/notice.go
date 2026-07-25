@@ -45,7 +45,7 @@ type NoticeCacheEntry struct {
 
 func CheckUpdateNotice(ctx context.Context, opts NoticeOptions) (UpdateNotice, bool, error) {
 	current := opts.Current.Normalize()
-	if current.InstallSource != InstallSourceNPM {
+	if current.InstallSource != InstallSourceNPM && current.InstallSource != InstallSourceStandalone {
 		return UpdateNotice{}, false, nil
 	}
 	if current.Channel != ChannelStable && current.Channel != ChannelNightly {
@@ -118,6 +118,10 @@ func noticeFromTargetVersion(current Metadata, targetVersion string, npmTag stri
 	if comparison <= 0 {
 		return UpdateNotice{}, false, nil
 	}
+	command := NPMInstallCommand(npmTag)
+	if current.InstallSource == InstallSourceStandalone {
+		command = []string{"turnal", "upgrade"}
+	}
 	return UpdateNotice{
 		Current: Current{
 			Version:       current.Version,
@@ -129,7 +133,7 @@ func noticeFromTargetVersion(current Metadata, targetVersion string, npmTag stri
 			Channel: current.Channel,
 			NPMTag:  npmTag,
 		},
-		Command: NPMInstallCommand(npmTag),
+		Command: command,
 	}, true, nil
 }
 
