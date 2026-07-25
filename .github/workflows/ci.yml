@@ -51,6 +51,9 @@ jobs:
           cache: true
       - name: Test
         run: go test ./...
+      - name: Test standalone installer
+        if: runner.os != 'Windows'
+        run: sh scripts/test-install.sh
       - name: Build CLI
         run: go build ./cmd/turnal
 

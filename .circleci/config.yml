@@ -49,6 +49,9 @@ jobs:
           name: Test
           command: go test ./...
       - run:
+          name: Test standalone installer
+          command: sh scripts/test-install.sh
+      - run:
           name: Build CLI
           command: go build ./cmd/turnal
 
@@ -96,6 +99,9 @@ jobs:
       - run:
           name: Test
           command: go test ./...
+      - run:
+          name: Test standalone installer
+          command: sh scripts/test-install.sh
       - run:
           name: Build CLI
           command: go build ./cmd/turnal

@@ -51,7 +51,7 @@ curl --proto '=https' --tlsv1.2 -fsSL \
   https://raw.githubusercontent.com/AadiJo/turnal/main/install.sh | sh
 ```
 
-The standalone installer detects x64 or arm64, verifies the release archive checksum, and installs `turnal` and its external adapter executables under `~/.local/bin`. Select a different directory or pin a version with installer arguments:
+The standalone installer detects x64 or arm64, verifies the archive against the SHA-256 checksum published with the same GitHub release, and installs `turnal` and its external adapter executables under `~/.local/bin`. The checksum detects download corruption; it is not an independent signature if the GitHub release itself is compromised. Select a different directory or pin a version with installer arguments:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -fsSL \

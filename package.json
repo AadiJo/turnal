@@ -23,7 +23,7 @@
   "scripts": {
     "build": "go build -o bin/turnal ./cmd/turnal",
     "build:npm-binaries": "node scripts/build-npm-binaries.js",
-    "test": "go test ./... && sh scripts/test-install.sh",
+    "test": "go test ./...",
     "test:installer": "sh scripts/test-install.sh",
     "build:release-archives": "node scripts/build-release-archives.js",
     "pack:dry-run": "npm pack --dry-run",
