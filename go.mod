@@ -1,6 +1,6 @@
 module github.com/AadiJo/turnal
 
-go 1.26.4
+go 1.26.5
 
 require (
 	github.com/mattn/go-isatty v0.0.20

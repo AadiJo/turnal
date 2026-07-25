@@ -29,7 +29,7 @@ commands:
 jobs:
   quality:
     docker:
-      - image: cimg/go:1.26.4
+      - image: cimg/go:1.26.5
     resource_class: small
     steps:
       - checkout
@@ -40,7 +40,7 @@ jobs:
 
   test_linux:
     docker:
-      - image: cimg/go:1.26.4
+      - image: cimg/go:1.26.5
     resource_class: small
     steps:
       - checkout
@@ -64,15 +64,15 @@ jobs:
             case "$(uname -m)" in
               arm64)
                 go_arch=arm64
-                go_sha256=b62ad2b6d7d2464f12a5bcad7ff47f19d08325773b5efd21610e445a05a9bf53
+                go_sha256=efb87ff28af9a188d0536ef5d42e63dd52ba8263cd7344a993cc48dd11dedb6a
                 ;;
               x86_64)
                 go_arch=amd64
-                go_sha256=05dc9b5f9997744520aaebb3d5deaa7c755371aebbfb7f97c2511a9f3367538d
+                go_sha256=6231d8d3b8f5552ec6cbf6d685bdd5482e1e703214b120e89b3bf0d7bf1ef725
                 ;;
               *) echo "unsupported macOS architecture: $(uname -m)" >&2; exit 1 ;;
             esac
-            archive="go1.26.4.darwin-${go_arch}.tar.gz"
+            archive="go1.26.5.darwin-${go_arch}.tar.gz"
             curl --fail --location --silent --show-error \
               "https://go.dev/dl/${archive}" \
               --output "/tmp/${archive}"
@@ -115,8 +115,8 @@ jobs:
           no_output_timeout: 20m
           command: |
             $ErrorActionPreference = "Stop"
-            $goVersion = "1.26.4"
-            $goSha256 = "3ca8fb4630b07c419cbdd51f754e31363cfcfb83b3a5354d9e895c90be2cc345"
+            $goVersion = "1.26.5"
+            $goSha256 = "97e6b2a833b6d89f9ff17d25419ac0a7e3b482a044e9ab18cdef834bd834fd38"
             $archive = Join-Path $env:TEMP "go$goVersion.windows-amd64.zip"
             $installRoot = Join-Path $env:USERPROFILE "turnal-go-$goVersion"
 
@@ -173,7 +173,7 @@ jobs:
         type: boolean
         default: true
     docker:
-      - image: cimg/go:1.26.4-node
+      - image: cimg/go:1.26.5-node
     resource_class: small
     steps:
       - checkout
