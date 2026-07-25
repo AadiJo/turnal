@@ -16,9 +16,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 const defaultReleaseBaseURL = "https://github.com/AadiJo/turnal/releases/download"
+const defaultStandaloneDownloadTimeout = 5 * time.Minute
 
 var standaloneExecutables = []string{
 	"turnal",
@@ -61,7 +63,7 @@ func InstallStandalone(ctx context.Context, opts StandaloneInstallOptions) error
 	releaseURL := baseURL + "/v" + version
 	client := opts.Client
 	if client == nil {
-		client = http.DefaultClient
+		client = &http.Client{Timeout: defaultStandaloneDownloadTimeout}
 	}
 	archive, err := download(ctx, client, releaseURL+"/"+archiveName, 256<<20)
 	if err != nil {
@@ -75,9 +77,9 @@ func InstallStandalone(ctx context.Context, opts StandaloneInstallOptions) error
 		return err
 	}
 
-	stageDir, err := os.MkdirTemp("", "turnal-upgrade-stage-*")
+	stageDir, err := os.MkdirTemp(installDir, ".turnal-upgrade-stage-*")
 	if err != nil {
-		return fmt.Errorf("create standalone upgrade staging directory: %w", err)
+		return fmt.Errorf("create standalone upgrade staging directory in %s: %w", installDir, err)
 	}
 	defer os.RemoveAll(stageDir)
 	if err := extractStandaloneArchive(archive, stageDir); err != nil {
@@ -217,6 +219,9 @@ func extractStandaloneArchive(archive []byte, destination string) error {
 		if closeErr != nil {
 			return fmt.Errorf("close staged %s: %w", name, closeErr)
 		}
+		if err := os.Chmod(target, 0o755); err != nil {
+			return fmt.Errorf("set staged %s executable mode: %w", name, err)
+		}
 		expected[name] = true
 	}
 	for name, found := range expected {
@@ -248,6 +253,10 @@ func verifyStagedStandalone(ctx context.Context, executable, version, channel st
 }
 
 func replaceStandaloneFiles(stageDir, installDir string) error {
+	return replaceStandaloneFilesWithRename(stageDir, installDir, os.Rename)
+}
+
+func replaceStandaloneFilesWithRename(stageDir, installDir string, rename func(string, string) error) error {
 	if err := os.MkdirAll(installDir, 0o755); err != nil {
 		return fmt.Errorf("create standalone install directory: %w", err)
 	}
@@ -271,7 +280,7 @@ func replaceStandaloneFiles(stageDir, installDir string) error {
 			target := filepath.Join(installDir, name)
 			_ = os.Remove(target)
 			if hadOriginal[name] {
-				_ = os.Rename(filepath.Join(transactionDir, name+".old"), target)
+				_ = rename(filepath.Join(transactionDir, name+".old"), target)
 			}
 		}
 	}
@@ -280,7 +289,7 @@ func replaceStandaloneFiles(stageDir, installDir string) error {
 		target := filepath.Join(installDir, name)
 		backup := filepath.Join(transactionDir, name+".old")
 		if _, err := os.Lstat(target); err == nil {
-			if err := os.Rename(target, backup); err != nil {
+			if err := rename(target, backup); err != nil {
 				rollback()
 				return fmt.Errorf("back up installed %s: %w", name, err)
 			}
@@ -289,9 +298,9 @@ func replaceStandaloneFiles(stageDir, installDir string) error {
 			rollback()
 			return fmt.Errorf("inspect installed %s: %w", name, err)
 		}
-		if err := os.Rename(filepath.Join(transactionDir, name+".new"), target); err != nil {
+		if err := rename(filepath.Join(transactionDir, name+".new"), target); err != nil {
 			if hadOriginal[name] {
-				_ = os.Rename(backup, target)
+				_ = rename(backup, target)
 			}
 			rollback()
 			return fmt.Errorf("install %s: %w", name, err)
@@ -318,6 +327,9 @@ func copyExecutable(source, destination string) error {
 	}
 	if closeErr != nil {
 		return fmt.Errorf("close replacement executable: %w", closeErr)
+	}
+	if err := os.Chmod(destination, 0o755); err != nil {
+		return fmt.Errorf("set replacement executable mode: %w", err)
 	}
 	return nil
 }

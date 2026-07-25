@@ -8,9 +8,11 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 const defaultRegistryURL = "https://registry.npmjs.org"
+const defaultRegistryTimeout = 30 * time.Second
 
 type HTTPRegistry struct {
 	BaseURL string
@@ -47,10 +49,10 @@ func (r HTTPRegistry) getJSON(ctx context.Context, path string, target any) erro
 	if err != nil {
 		return err
 	}
-	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Accept", "application/vnd.npm.install-v1+json")
 	client := r.Client
 	if client == nil {
-		client = http.DefaultClient
+		client = &http.Client{Timeout: defaultRegistryTimeout}
 	}
 	response, err := client.Do(request)
 	if err != nil {
@@ -61,7 +63,15 @@ func (r HTTPRegistry) getJSON(ctx context.Context, path string, target any) erro
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
 		return fmt.Errorf("registry returned %s", response.Status)
 	}
-	if err := json.NewDecoder(io.LimitReader(response.Body, 10<<20)).Decode(target); err != nil {
+	const maxResponseBytes = 10 << 20
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+	if err != nil {
+		return fmt.Errorf("read registry response: %w", err)
+	}
+	if len(data) > maxResponseBytes {
+		return fmt.Errorf("registry response exceeds %d bytes", maxResponseBytes)
+	}
+	if err := json.Unmarshal(data, target); err != nil {
 		return fmt.Errorf("decode registry response: %w", err)
 	}
 	return nil

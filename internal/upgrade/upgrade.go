@@ -177,13 +177,10 @@ func NPMInstallCommand(npmTag string) []string {
 }
 
 func lookupTargetVersion(ctx context.Context, registry Registry, npmTag string) (string, error) {
-	tags, err := registry.DistTags(ctx)
-	if err != nil {
-		return "", err
-	}
+	tags, tagsErr := registry.DistTags(ctx)
 	tagVersion := strings.TrimSpace(tags[npmTag])
-	version, err := registry.Version(ctx, npmTag)
-	if err == nil {
+	version, versionErr := registry.Version(ctx, npmTag)
+	if versionErr == nil {
 		version = strings.TrimSpace(version)
 		if version != "" {
 			return version, nil
@@ -192,11 +189,17 @@ func lookupTargetVersion(ctx context.Context, registry Registry, npmTag string) 
 	if tagVersion != "" {
 		return tagVersion, nil
 	}
-	if err != nil {
-		return "", err
+	if versionErr != nil {
+		if tagsErr != nil {
+			return "", fmt.Errorf("query dist-tags: %v; query %s version: %w", tagsErr, npmTag, versionErr)
+		}
+		return "", versionErr
 	}
 	if version != "" {
 		return version, nil
+	}
+	if tagsErr != nil {
+		return "", tagsErr
 	}
 	return "", fmt.Errorf("npm tag %q did not resolve to a version", npmTag)
 }

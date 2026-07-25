@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/AadiJo/turnal/internal/upgrade"
 	"github.com/mattn/go-isatty"
@@ -24,6 +25,11 @@ var newUpgradeRegistry = func(metadata upgrade.Metadata) upgrade.Registry {
 
 var runUpgradeCommand = executeUpgradeCommand
 var runStandaloneUpgrade = upgrade.InstallStandalone
+
+const (
+	upgradeLookupTimeout     = 30 * time.Second
+	standaloneUpgradeTimeout = 5 * time.Minute
+)
 
 func upgradeCmd() *cobra.Command {
 	var checkOnly bool
@@ -54,7 +60,9 @@ func upgradeCmd() *cobra.Command {
 			}
 
 			metadata := currentBuildMetadata()
-			plan, err := upgrade.BuildPlan(context.Background(), upgrade.PlanOptions{
+			lookupContext, cancelLookup := context.WithTimeout(cmd.Context(), upgradeLookupTimeout)
+			defer cancelLookup()
+			plan, err := upgrade.BuildPlan(lookupContext, upgrade.PlanOptions{
 				Current:          metadata,
 				RequestedChannel: requestedChannel,
 				Registry:         newUpgradeRegistry(metadata),
@@ -150,7 +158,9 @@ func finishUpgradePlan(cmd *cobra.Command, plan upgrade.Plan, opts upgradeRunOpt
 		if _, err := fmt.Fprintf(writer, "Downloading and installing Turnal %s...\n", plan.Target.Version); err != nil {
 			return err
 		}
-		if err := runStandaloneUpgrade(context.Background(), upgrade.StandaloneInstallOptions{
+		installContext, cancelInstall := context.WithTimeout(cmd.Context(), standaloneUpgradeTimeout)
+		defer cancelInstall()
+		if err := runStandaloneUpgrade(installContext, upgrade.StandaloneInstallOptions{
 			Version: plan.Target.Version,
 			Channel: plan.Target.Channel,
 		}); err != nil {

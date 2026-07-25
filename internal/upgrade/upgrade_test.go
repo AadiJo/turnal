@@ -13,6 +13,18 @@ type fakeRegistry struct {
 	err      error
 }
 
+type fallbackRegistry struct {
+	version string
+}
+
+func (r fallbackRegistry) DistTags(context.Context) (map[string]string, error) {
+	return nil, errors.New("packument too large")
+}
+
+func (r fallbackRegistry) Version(context.Context, string) (string, error) {
+	return r.version, nil
+}
+
 func (r fakeRegistry) DistTags(ctx context.Context) (map[string]string, error) {
 	if r.err != nil {
 		return nil, r.err
@@ -209,6 +221,23 @@ func TestBuildPlanFallsBackToTagVersionLookup(t *testing.T) {
 			tags:     map[string]string{},
 			versions: map[string]string{"latest": "0.4.2"},
 		},
+	})
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	if plan.Target.Version != "0.4.2" {
+		t.Fatalf("target version = %q, want 0.4.2", plan.Target.Version)
+	}
+}
+
+func TestBuildPlanFallsBackWhenDistTagsLookupFails(t *testing.T) {
+	plan, err := BuildPlan(context.Background(), PlanOptions{
+		Current: Metadata{
+			Version:       "0.4.1",
+			Channel:       ChannelStable,
+			InstallSource: InstallSourceStandalone,
+		},
+		Registry: fallbackRegistry{version: "0.4.2"},
 	})
 	if err != nil {
 		t.Fatalf("BuildPlan: %v", err)

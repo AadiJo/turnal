@@ -6,12 +6,14 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -81,11 +83,76 @@ func TestVerifyArchiveChecksumRejectsMismatch(t *testing.T) {
 	}
 }
 
+func TestVerifyArchiveChecksumRejectsMissingEntry(t *testing.T) {
+	err := verifyArchiveChecksum("turnal_1.0.0_linux_amd64.tar.gz", []byte("archive"), "")
+	if err == nil || !strings.Contains(err.Error(), "does not contain") {
+		t.Fatalf("verifyArchiveChecksum error = %v, want missing entry", err)
+	}
+}
+
+func TestDownloadReportsNotFound(t *testing.T) {
+	server := httptest.NewServer(http.NotFoundHandler())
+	defer server.Close()
+
+	_, err := download(context.Background(), server.Client(), server.URL+"/missing", 1024)
+	if err == nil || !strings.Contains(err.Error(), "404") {
+		t.Fatalf("download error = %v, want 404", err)
+	}
+}
+
 func TestExtractStandaloneArchiveRejectsUnexpectedEntry(t *testing.T) {
 	archive := standaloneTestArchive(t, map[string][]byte{"unexpected": []byte("payload")})
 	err := extractStandaloneArchive(archive, t.TempDir())
 	if err == nil {
 		t.Fatal("extractStandaloneArchive succeeded, want unexpected entry error")
+	}
+}
+
+func TestReplaceStandaloneFilesRollsBackMidTransactionFailure(t *testing.T) {
+	stageDir := t.TempDir()
+	installDir := t.TempDir()
+	for _, name := range standaloneExecutables {
+		if err := os.WriteFile(filepath.Join(stageDir, name), []byte("new-"+name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(installDir, name), []byte("old-"+name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rename := func(source, destination string) error {
+		if strings.HasSuffix(source, "turnal-adapter-gemini-cli.new") {
+			return errors.New("injected replacement failure")
+		}
+		return os.Rename(source, destination)
+	}
+	err := replaceStandaloneFilesWithRename(stageDir, installDir, rename)
+	if err == nil || !strings.Contains(err.Error(), "injected replacement failure") {
+		t.Fatalf("replace error = %v", err)
+	}
+	for _, name := range standaloneExecutables {
+		data, readErr := os.ReadFile(filepath.Join(installDir, name))
+		if readErr != nil {
+			t.Fatalf("read restored %s: %v", name, readErr)
+		}
+		if string(data) != "old-"+name {
+			t.Fatalf("%s = %q, want original", name, data)
+		}
+	}
+}
+
+func TestVerifyStagedStandaloneRejectsMetadataMismatch(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture uses a POSIX shell script")
+	}
+	executable := filepath.Join(t.TempDir(), "turnal")
+	body := "#!/bin/sh\nprintf '%s\\n' '{\"version\":\"9.9.9\",\"channel\":\"stable\",\"install_source\":\"standalone\"}'\n"
+	if err := os.WriteFile(executable, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err := verifyStagedStandalone(context.Background(), executable, "1.2.3", ChannelStable)
+	if err == nil || !strings.Contains(err.Error(), "metadata mismatch") {
+		t.Fatalf("verify error = %v", err)
 	}
 }
 
