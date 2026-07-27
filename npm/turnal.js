@@ -30,10 +30,10 @@ function inferChannel(version) {
 
 function ldflags() {
   return [
-    `-X github.com/AadiJo/turnal/internal/cli.version=${packageJson.version}`,
-    `-X github.com/AadiJo/turnal/internal/cli.channel=${buildChannel}`,
-    `-X github.com/AadiJo/turnal/internal/cli.commit=${buildCommit}`,
-    '-X github.com/AadiJo/turnal/internal/cli.installSource=npm',
+    `-X github.com/AadiJo/turnal/internal/buildinfo.Version=${packageJson.version}`,
+    `-X github.com/AadiJo/turnal/internal/buildinfo.Channel=${buildChannel}`,
+    `-X github.com/AadiJo/turnal/internal/buildinfo.Commit=${buildCommit}`,
+    '-X github.com/AadiJo/turnal/internal/buildinfo.InstallSource=npm',
   ].join(' ');
 }
 

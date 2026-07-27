@@ -70,6 +70,37 @@ npm run build
 export TURNAL_RELEASE_CHANNEL="$RELEASE_CHANNEL"
 export TURNAL_COMMIT="$sha"
 npm run pack:dry-run
+if [[ -n "${TURNAL_RELEASE_TARGETS:-}" ]]; then
+  echo "release invariant failed: TURNAL_RELEASE_TARGETS must be unset for publication" >&2
+  exit 1
+fi
+npm run build:release-archives
+
+expected_archives=(
+  "turnal_${RELEASE_VERSION}_darwin_amd64.tar.gz"
+  "turnal_${RELEASE_VERSION}_darwin_arm64.tar.gz"
+  "turnal_${RELEASE_VERSION}_linux_amd64.tar.gz"
+  "turnal_${RELEASE_VERSION}_linux_arm64.tar.gz"
+)
+release_assets=(turnal.spdx.json dist/releases/checksums.txt)
+for archive in "${expected_archives[@]}"; do
+  archive_path="dist/releases/$archive"
+  if [[ ! -f "$archive_path" ]]; then
+    echo "release invariant failed: missing standalone archive '$archive_path'" >&2
+    exit 1
+  fi
+  checksum_matches="$(awk -v name="$archive" '$2 == name { count++ } END { print count + 0 }' dist/releases/checksums.txt)"
+  if [[ "$checksum_matches" -ne 1 ]]; then
+    echo "release invariant failed: checksums.txt must contain exactly one entry for '$archive'" >&2
+    exit 1
+  fi
+  release_assets+=("$archive_path")
+done
+checksum_lines="$(awk 'NF { count++ } END { print count + 0 }' dist/releases/checksums.txt)"
+if [[ "$checksum_lines" -ne 4 ]]; then
+  echo "release invariant failed: checksums.txt contains $checksum_lines entries; expected 4" >&2
+  exit 1
+fi
 
 syft_bin="${SYFT_BIN:-}"
 if [[ -z "$syft_bin" ]]; then
@@ -113,7 +144,7 @@ fi
 
 gh_args=(
   "$RELEASE_TAG"
-  turnal.spdx.json
+  "${release_assets[@]}"
   --target "$sha"
   --title "$RELEASE_NAME"
   --generate-notes

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/AadiJo/turnal/internal/buildinfo"
 	"github.com/AadiJo/turnal/internal/upgrade"
 )
 
@@ -76,6 +77,39 @@ func TestUpgradeRunsNPMCommand(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "action:  npm install -g @aadijo/turnal@latest") {
 		t.Fatalf("output missing action:\n%s", out.String())
+	}
+}
+
+func TestUpgradeRunsStandaloneReplacement(t *testing.T) {
+	setBuildMetadataForTest(t, "0.4.1", upgrade.ChannelStable, "abc1234", upgrade.InstallSourceStandalone)
+	setUpgradeTestHooks(t, cliFakeRegistry{tags: map[string]string{"latest": "0.4.2"}}, func(ctx context.Context, command []string, stdout io.Writer, stderr io.Writer) error {
+		t.Fatalf("npm command called for standalone upgrade: %#v", command)
+		return nil
+	})
+	oldStandaloneRunner := runStandaloneUpgrade
+	var installed upgrade.StandaloneInstallOptions
+	runStandaloneUpgrade = func(ctx context.Context, opts upgrade.StandaloneInstallOptions) error {
+		installed = opts
+		return nil
+	}
+	t.Cleanup(func() {
+		runStandaloneUpgrade = oldStandaloneRunner
+	})
+
+	cmd := NewRootCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"upgrade"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("upgrade: %v\n%s", err, out.String())
+	}
+
+	if installed.Version != "0.4.2" || installed.Channel != upgrade.ChannelStable {
+		t.Fatalf("standalone install options = %+v", installed)
+	}
+	if !strings.Contains(out.String(), "action:  download and replace standalone release binaries") {
+		t.Fatalf("output missing standalone action:\n%s", out.String())
 	}
 }
 
@@ -213,19 +247,19 @@ func TestVersionJSONIncludesBuildMetadata(t *testing.T) {
 
 func setBuildMetadataForTest(t *testing.T, testVersion, testChannel, testCommit, testInstallSource string) {
 	t.Helper()
-	oldVersion := version
-	oldChannel := channel
-	oldCommit := commit
-	oldInstallSource := installSource
-	version = testVersion
-	channel = testChannel
-	commit = testCommit
-	installSource = testInstallSource
+	oldVersion := buildinfo.Version
+	oldChannel := buildinfo.Channel
+	oldCommit := buildinfo.Commit
+	oldInstallSource := buildinfo.InstallSource
+	buildinfo.Version = testVersion
+	buildinfo.Channel = testChannel
+	buildinfo.Commit = testCommit
+	buildinfo.InstallSource = testInstallSource
 	t.Cleanup(func() {
-		version = oldVersion
-		channel = oldChannel
-		commit = oldCommit
-		installSource = oldInstallSource
+		buildinfo.Version = oldVersion
+		buildinfo.Channel = oldChannel
+		buildinfo.Commit = oldCommit
+		buildinfo.InstallSource = oldInstallSource
 	})
 }
 
@@ -233,7 +267,7 @@ func setUpgradeTestHooks(t *testing.T, registry upgrade.Registry, runner func(co
 	t.Helper()
 	oldRegistry := newUpgradeRegistry
 	oldRunner := runUpgradeCommand
-	newUpgradeRegistry = func() upgrade.Registry {
+	newUpgradeRegistry = func(upgrade.Metadata) upgrade.Registry {
 		return registry
 	}
 	runUpgradeCommand = runner

@@ -28,9 +28,10 @@ func maybeShowUpdateNotice(rootCmd *cobra.Command, executedCmd *cobra.Command) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), updateNoticeTimeout)
 	defer cancel()
+	metadata := currentBuildMetadata()
 	notice, ok, err := upgrade.CheckUpdateNotice(ctx, upgrade.NoticeOptions{
-		Current:  currentBuildMetadata(),
-		Registry: newUpgradeRegistry(),
+		Current:  metadata,
+		Registry: newUpgradeRegistry(metadata),
 		Cache:    upgrade.FileNoticeCache{Path: cachePath},
 	})
 	if err != nil || !ok {
@@ -45,7 +46,7 @@ func shouldShowUpdateNotice(cmd *cobra.Command, metadata upgrade.Metadata) bool 
 		return false
 	}
 	metadata = metadata.Normalize()
-	if metadata.InstallSource != upgrade.InstallSourceNPM {
+	if metadata.InstallSource != upgrade.InstallSourceNPM && metadata.InstallSource != upgrade.InstallSourceStandalone {
 		return false
 	}
 	if metadata.Channel != upgrade.ChannelStable && metadata.Channel != upgrade.ChannelNightly {

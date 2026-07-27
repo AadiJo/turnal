@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/AadiJo/turnal/internal/buildinfo"
 	"github.com/AadiJo/turnal/internal/upgrade"
 	"github.com/spf13/cobra"
 )
@@ -37,10 +38,5 @@ func versionCmd() *cobra.Command {
 }
 
 func currentBuildMetadata() upgrade.Metadata {
-	return upgrade.Metadata{
-		Version:       version,
-		Channel:       channel,
-		Commit:        commit,
-		InstallSource: installSource,
-	}.Normalize()
+	return buildinfo.Current()
 }

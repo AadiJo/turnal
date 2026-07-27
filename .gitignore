@@ -3,3 +3,4 @@ apps/marketing/dist/
 apps/marketing/.astro/
 apps/marketing/.vercel/
 apps/marketing/.env*
+dist/

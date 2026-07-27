@@ -6,19 +6,15 @@ import (
 	"os"
 	"strings"
 
+	"github.com/AadiJo/turnal/internal/buildinfo"
 	"github.com/spf13/cobra"
 )
-
-var version = "0.0.0"
-var channel = "dev"
-var commit = ""
-var installSource = "unknown"
 
 func NewRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use:     "turnal",
 		Short:   "Local-first version control for AI agent activity",
-		Version: version,
+		Version: buildinfo.Version,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return cmd.Help()
 		},

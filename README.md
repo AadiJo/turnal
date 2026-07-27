@@ -38,11 +38,30 @@ Turnal does not initialize a Git repository for your project. It works in both G
 
 ## Install
 
+With npm:
+
 ```sh
 npm install -g @aadijo/turnal
 ```
 
-Turnal is supported on Linux, macOS, and Windows on x64 and arm64; the npm package ships prebuilt binaries for each. Go is only needed when installing from source or using an unsupported npm platform. Isolated `turnal fork` execution is available only on those three platforms. On any other target it fails closed with an explicit error instead of running a child without process containment.
+On macOS or Linux, install the standalone binaries without Node.js:
+
+```sh
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://raw.githubusercontent.com/AadiJo/turnal/main/install.sh | sh
+```
+
+The standalone installer detects x64 or arm64, verifies the archive against the SHA-256 checksum published with the same GitHub release, and installs `turnal` and its external adapter executables under `~/.local/bin`. Each release provides `turnal_<version>_darwin_amd64.tar.gz`, `turnal_<version>_darwin_arm64.tar.gz`, `turnal_<version>_linux_amd64.tar.gz`, `turnal_<version>_linux_arm64.tar.gz`, and `checksums.txt`. The checksum detects download corruption; it is not an independent signature if the GitHub release itself is compromised. Select a different directory or pin a version with installer arguments:
+
+```sh
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://raw.githubusercontent.com/AadiJo/turnal/main/install.sh |
+  sh -s -- --version 0.0.1 --install-dir "$HOME/bin"
+```
+
+The installer never invokes `sudo`; the selected directory must already be writable.
+
+Turnal is supported on Linux, macOS, and Windows on x64 and arm64. The npm package ships prebuilt binaries for each, while standalone release archives cover macOS and Linux. Go is only needed when installing from source or using an unsupported npm platform. Isolated `turnal fork` execution is available only on those three platforms. On any other target it fails closed with an explicit error instead of running a child without process containment.
 
 From source:
 
@@ -502,7 +521,13 @@ turnal upgrade
 
 `turnal upgrade` preserves the current release channel. Use `turnal upgrade --stable` or `turnal upgrade --nightly` to switch channels explicitly.
 
-For npm installs, Turnal may occasionally print a channel-preserving update notice after interactive commands. Set `TURNAL_NO_UPDATE_CHECK=1` to disable these notices.
+The upgrade action follows the installation source:
+
+- npm installations run the matching global npm install.
+- Standalone installations download the matching GitHub release archive, verify its checksum and embedded build metadata, and transactionally replace `turnal` plus its external adapter executables.
+- Source or unknown installations print manual update instructions.
+
+Turnal may occasionally print a channel-preserving update notice after interactive commands for npm and standalone installations. Set `TURNAL_NO_UPDATE_CHECK=1` to disable these notices.
 
 ## Development
 

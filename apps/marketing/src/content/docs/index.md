@@ -19,16 +19,27 @@ description: Production documentation for Turnal, including local agent history,
 
 ## Installation
 
-Install Turnal globally with npm. The package selects a prebuilt binary for macOS, Linux, or Windows on x64 and arm64. On an unsupported platform it can fall back to a local Go build. Isolated `turnal fork` execution requires Linux, macOS, or Windows; elsewhere it fails closed rather than running an uncontained child.
+Install Turnal globally with npm. The package selects a prebuilt binary for macOS, Linux, or Windows on x64 and arm64.
 
 ```sh
 npm install -g @aadijo/turnal
 ```
 
+On macOS or Linux, install standalone binaries without Node.js:
+
+```sh
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://raw.githubusercontent.com/AadiJo/turnal/main/install.sh | sh
+```
+
+The standalone installer verifies the archive against the SHA-256 checksum published with the same GitHub release and installs Turnal and its external adapters under `~/.local/bin`. Releases provide `turnal_<version>_darwin_amd64.tar.gz`, `turnal_<version>_darwin_arm64.tar.gz`, `turnal_<version>_linux_amd64.tar.gz`, `turnal_<version>_linux_arm64.tar.gz`, and `checksums.txt`. This detects download corruption but is not an independent signature if the release itself is compromised. Pass `--version VERSION` to pin a release or `--install-dir DIRECTORY` to select a writable destination. It never invokes `sudo`.
+
+On an unsupported npm platform Turnal can fall back to a local Go build. Isolated `turnal fork` execution requires Linux, macOS, or Windows; elsewhere it fails closed rather than running an uncontained child.
+
 ### Requirements
 
-- Node.js 18 or newer
 - Git available on `PATH`
+- Node.js 18 or newer when installing through npm
 - Go only when a prebuilt binary is unavailable
 
 Verify the installation:
@@ -38,7 +49,7 @@ turnal version
 turnal --help
 ```
 
-Turnal preserves the installed release channel during upgrades. Use `turnal upgrade --check` to check without installing, or select `--stable` or `--nightly` explicitly when switching channels.
+Turnal preserves the installed release channel during upgrades. Use `turnal upgrade --check` to check without installing, or select `--stable` or `--nightly` explicitly when switching channels. npm installations upgrade through npm; standalone installations download, verify, and transactionally replace the matching release binaries. Source and unknown installations receive manual instructions.
 
 ---
 
