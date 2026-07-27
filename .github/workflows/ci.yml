@@ -1,15 +1,17 @@
 name: CI
 
 on:
+  push:
+  pull_request:
   workflow_dispatch:
     inputs:
-      publish_stable:
-        description: Publish from a selected stable tag after CircleCI publishing is disabled
+      publish_nightly:
+        description: Publish a nightly release from main after all checks pass
         required: false
         default: false
         type: boolean
-      publish_nightly:
-        description: Publish a nightly release from main after all checks pass
+      rehearse_release:
+        description: Build release artifacts from main without publishing them
         required: false
         default: false
         type: boolean
@@ -26,6 +28,8 @@ jobs:
     name: Quality and race
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    outputs:
+      stable_release: ${{ steps.stable-ref.outputs.eligible }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
@@ -34,13 +38,38 @@ jobs:
           cache: true
       - name: Quality and race
         run: scripts/ci/quality.sh
+      - id: stable-ref
+        name: Classify stable release ref
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          eligible=false
+          if [[ "$EVENT_NAME" == push &&
+                "$REF_TYPE" == tag &&
+                "$REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ &&
+                "$REF_NAME" != *-nightly.* ]]; then
+            eligible=true
+          fi
+          echo "eligible=$eligible" >> "$GITHUB_OUTPUT"
 
   platform-tests:
-    name: Test (${{ matrix.os }})
+    name: Test (${{ matrix.name }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15, windows-2025]
+        include:
+          - name: linux
+            os: ubuntu-24.04
+            test-installer: true
+          - name: macos
+            os: macos-15
+            test-installer: true
+          - name: windows
+            os: windows-2025
+            test-installer: false
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -52,14 +81,14 @@ jobs:
       - name: Test
         run: go test ./...
       - name: Test standalone installer
-        if: runner.os != 'Windows'
+        if: matrix.test-installer
         run: sh scripts/test-install.sh
       - name: Build CLI
         run: go build ./cmd/turnal
 
   stable-release:
     name: Publish stable release
-    if: inputs.publish_stable && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-nightly.')
+    if: needs.quality.outputs.stable_release == 'true'
     needs:
       - quality
       - platform-tests
@@ -69,6 +98,7 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       channel: stable
+      publish: true
     secrets: inherit
 
   nightly-release:
@@ -83,4 +113,20 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       channel: nightly
+      publish: true
+    secrets: inherit
+
+  release-rehearsal:
+    name: Rehearse release
+    if: github.event_name == 'workflow_dispatch' && inputs.rehearse_release && github.ref == 'refs/heads/main'
+    needs:
+      - quality
+      - platform-tests
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/release.yml
+    with:
+      channel: nightly
+      publish: false
     secrets: inherit
