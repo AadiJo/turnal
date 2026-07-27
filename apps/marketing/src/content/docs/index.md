@@ -32,7 +32,7 @@ curl --proto '=https' --tlsv1.2 -fsSL \
   https://raw.githubusercontent.com/AadiJo/turnal/main/install.sh | sh
 ```
 
-The standalone installer verifies the archive against the SHA-256 checksum published with the same GitHub release and installs Turnal and its external adapters under `~/.local/bin`. This detects download corruption but is not an independent signature if the release itself is compromised. Pass `--version VERSION` to pin a release or `--install-dir DIRECTORY` to select a writable destination. It never invokes `sudo`.
+The standalone installer verifies the archive against the SHA-256 checksum published with the same GitHub release and installs Turnal and its external adapters under `~/.local/bin`. Releases provide `turnal_<version>_darwin_amd64.tar.gz`, `turnal_<version>_darwin_arm64.tar.gz`, `turnal_<version>_linux_amd64.tar.gz`, `turnal_<version>_linux_arm64.tar.gz`, and `checksums.txt`. This detects download corruption but is not an independent signature if the release itself is compromised. Pass `--version VERSION` to pin a release or `--install-dir DIRECTORY` to select a writable destination. It never invokes `sudo`.
 
 On an unsupported npm platform Turnal can fall back to a local Go build. Isolated `turnal fork` execution requires Linux, macOS, or Windows; elsewhere it fails closed rather than running an uncontained child.
 
