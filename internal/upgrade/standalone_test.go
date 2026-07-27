@@ -108,6 +108,39 @@ func TestExtractStandaloneArchiveRejectsUnexpectedEntry(t *testing.T) {
 	}
 }
 
+func TestExtractStandaloneArchiveRejectsPathTraversal(t *testing.T) {
+	archive := standaloneTestArchiveEntries(t, []standaloneTestArchiveEntry{{
+		header: tar.Header{
+			Name: "../turnal",
+			Mode: 0o755,
+		},
+		data: []byte("payload"),
+	}})
+	destination := t.TempDir()
+	err := extractStandaloneArchive(archive, destination)
+	if err == nil || !strings.Contains(err.Error(), "unexpected entry") {
+		t.Fatalf("extractStandaloneArchive error = %v, want unexpected entry", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(destination, "..", "turnal")); !os.IsNotExist(statErr) {
+		t.Fatalf("path traversal created file outside destination: %v", statErr)
+	}
+}
+
+func TestExtractStandaloneArchiveRejectsSymlink(t *testing.T) {
+	archive := standaloneTestArchiveEntries(t, []standaloneTestArchiveEntry{{
+		header: tar.Header{
+			Name:     "turnal",
+			Mode:     0o755,
+			Typeflag: tar.TypeSymlink,
+			Linkname: "../victim",
+		},
+	}})
+	err := extractStandaloneArchive(archive, t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "unexpected entry") {
+		t.Fatalf("extractStandaloneArchive error = %v, want unexpected entry", err)
+	}
+}
+
 func TestReplaceStandaloneFilesRollsBackMidTransactionFailure(t *testing.T) {
 	stageDir := t.TempDir()
 	installDir := t.TempDir()
@@ -158,19 +191,35 @@ func TestVerifyStagedStandaloneRejectsMetadataMismatch(t *testing.T) {
 
 func standaloneTestArchive(t *testing.T, files map[string][]byte) []byte {
 	t.Helper()
+	entries := make([]standaloneTestArchiveEntry, 0, len(files))
+	for name, data := range files {
+		entries = append(entries, standaloneTestArchiveEntry{
+			header: tar.Header{
+				Name: name,
+				Mode: 0o755,
+			},
+			data: data,
+		})
+	}
+	return standaloneTestArchiveEntries(t, entries)
+}
+
+type standaloneTestArchiveEntry struct {
+	header tar.Header
+	data   []byte
+}
+
+func standaloneTestArchiveEntries(t *testing.T, entries []standaloneTestArchiveEntry) []byte {
+	t.Helper()
 	var buffer bytes.Buffer
 	gzipWriter := gzip.NewWriter(&buffer)
 	tarWriter := tar.NewWriter(gzipWriter)
-	for name, data := range files {
-		header := &tar.Header{
-			Name: name,
-			Mode: 0o755,
-			Size: int64(len(data)),
-		}
-		if err := tarWriter.WriteHeader(header); err != nil {
+	for _, entry := range entries {
+		entry.header.Size = int64(len(entry.data))
+		if err := tarWriter.WriteHeader(&entry.header); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := tarWriter.Write(data); err != nil {
+		if _, err := tarWriter.Write(entry.data); err != nil {
 			t.Fatal(err)
 		}
 	}
