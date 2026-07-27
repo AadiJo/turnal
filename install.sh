@@ -191,7 +191,10 @@ main() {
     esac
   done <"$tmp_dir/members"
 
-  tar -xzf "$tmp_dir/$archive" -C "$stage_dir" $executables ||
+  # Every listed entry was checked above, so extract the whole archive rather
+  # than naming members: tar does not match bare names against "./"-prefixed
+  # entries, and the two spellings normalize to the same staged paths.
+  tar -xzf "$tmp_dir/$archive" -C "$stage_dir" ||
     fail "could not extract $archive"
   for executable in $executables; do
     [ -f "$stage_dir/$executable" ] && [ ! -L "$stage_dir/$executable" ] ||

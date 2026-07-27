@@ -92,6 +92,19 @@ TURNAL_ALLOW_INSECURE_TRANSPORT=1 \
   sh "$repo_root/install.sh" --install-dir "$tmp_dir/latest-bin"
 test -x "$tmp_dir/latest-bin/turnal"
 
+write_valid_payload
+dot_members=""
+for executable in $executables; do
+  dot_members="$dot_members ./$executable"
+done
+# shellcheck disable=SC2086
+tar -czf "$release_dir/$archive" -C "$payload_dir" $dot_members
+write_checksum
+run_installer --version "$version" --install-dir "$tmp_dir/dot-bin"
+for executable in $executables; do
+  test -x "$tmp_dir/dot-bin/$executable"
+done
+
 rm -rf "$payload_dir"
 mkdir -p "$payload_dir"
 for executable in $executables; do
@@ -122,6 +135,20 @@ if run_installer --version "$version" --install-dir "$tmp_dir/extra-bin" \
   exit 1
 fi
 grep -q "archive contains unexpected entry" "$tmp_dir/extra.stderr"
+
+write_valid_payload
+mkdir -p "$payload_dir/nested"
+printf 'nested\n' >"$payload_dir/nested/payload"
+# shellcheck disable=SC2086
+tar -czf "$release_dir/$archive" -C "$payload_dir" $executables nested
+write_checksum
+if run_installer --version "$version" --install-dir "$tmp_dir/nested-bin" \
+  >"$tmp_dir/nested.stdout" 2>"$tmp_dir/nested.stderr"; then
+  echo "installer accepted a nested archive entry" >&2
+  exit 1
+fi
+grep -q "archive contains unexpected entry" "$tmp_dir/nested.stderr"
+test ! -e "$tmp_dir/nested-bin/nested"
 
 cp "$tmp_dir/valid.tar.gz" "$release_dir/$archive"
 cp "$tmp_dir/valid-checksums.txt" "$release_dir/checksums.txt"
