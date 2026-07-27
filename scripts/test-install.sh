@@ -63,6 +63,7 @@ cp "$release_dir/checksums.txt" "$tmp_dir/valid-checksums.txt"
 run_installer --version "$version" --install-dir "$install_dir"
 for executable in $executables; do
   test -x "$install_dir/$executable"
+  cmp "$payload_dir/$executable" "$install_dir/$executable"
 done
 
 printf '0%s  %s\n' "${checksum#?}" "$archive" > "$release_dir/checksums.txt"

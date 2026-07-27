@@ -69,8 +69,8 @@ func TestInstallStandaloneDownloadsVerifiesAndReplacesExecutables(t *testing.T) 
 		if err != nil {
 			t.Fatalf("read installed %s: %v", name, err)
 		}
-		if bytes.HasPrefix(data, []byte("old-")) {
-			t.Fatalf("%s was not replaced", name)
+		if !bytes.Equal(data, files[name]) {
+			t.Fatalf("%s bytes changed during standalone installation", name)
 		}
 	}
 }
