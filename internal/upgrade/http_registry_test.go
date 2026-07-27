@@ -9,15 +9,25 @@ import (
 )
 
 func TestHTTPRegistry(t *testing.T) {
+	// The real registry answers 406 when a per-version request asks for the
+	// abbreviated packument media type, so assert the header per endpoint.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Accept"); got != "application/vnd.npm.install-v1+json" {
-			t.Errorf("Accept = %q", got)
-		}
+		accept := r.Header.Get("Accept")
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.EscapedPath() {
 		case "/%40aadijo%2Fturnal":
+			if accept != "application/vnd.npm.install-v1+json" {
+				t.Errorf("packument Accept = %q", accept)
+			}
 			_, _ = w.Write([]byte(`{"dist-tags":{"latest":"0.4.2","nightly":"0.4.3-nightly.1"}}`))
 		case "/%40aadijo%2Fturnal/nightly":
+			if accept == "application/vnd.npm.install-v1+json" {
+				http.Error(w, "Not Acceptable", http.StatusNotAcceptable)
+				return
+			}
+			if accept != "application/json" {
+				t.Errorf("version Accept = %q", accept)
+			}
 			_, _ = w.Write([]byte(`{"version":"0.4.3-nightly.1"}`))
 		default:
 			http.NotFound(w, r)

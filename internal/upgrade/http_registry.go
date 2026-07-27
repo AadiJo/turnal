@@ -14,6 +14,13 @@ import (
 const defaultRegistryURL = "https://registry.npmjs.org"
 const defaultRegistryTimeout = 30 * time.Second
 
+// The abbreviated packument media type is only valid for the package document.
+// Per-version endpoints reject it with 406, so they use the standard JSON type.
+const (
+	abbreviatedPackumentMediaType = "application/vnd.npm.install-v1+json"
+	registryVersionMediaType      = "application/json"
+)
+
 type HTTPRegistry struct {
 	BaseURL string
 	Client  *http.Client
@@ -23,7 +30,7 @@ func (r HTTPRegistry) DistTags(ctx context.Context) (map[string]string, error) {
 	var payload struct {
 		DistTags map[string]string `json:"dist-tags"`
 	}
-	if err := r.getJSON(ctx, encodedPackagePath(), &payload); err != nil {
+	if err := r.getJSON(ctx, encodedPackagePath(), abbreviatedPackumentMediaType, &payload); err != nil {
 		return nil, fmt.Errorf("query npm dist-tags: %w", err)
 	}
 	return payload.DistTags, nil
@@ -34,13 +41,13 @@ func (r HTTPRegistry) Version(ctx context.Context, npmTag string) (string, error
 		Version string `json:"version"`
 	}
 	path := encodedPackagePath() + "/" + url.PathEscape(npmTag)
-	if err := r.getJSON(ctx, path, &payload); err != nil {
+	if err := r.getJSON(ctx, path, registryVersionMediaType, &payload); err != nil {
 		return "", fmt.Errorf("query npm %s version: %w", npmTag, err)
 	}
 	return strings.TrimSpace(payload.Version), nil
 }
 
-func (r HTTPRegistry) getJSON(ctx context.Context, path string, target any) error {
+func (r HTTPRegistry) getJSON(ctx context.Context, path string, accept string, target any) error {
 	baseURL := strings.TrimRight(r.BaseURL, "/")
 	if baseURL == "" {
 		baseURL = defaultRegistryURL
@@ -49,7 +56,7 @@ func (r HTTPRegistry) getJSON(ctx context.Context, path string, target any) erro
 	if err != nil {
 		return err
 	}
-	request.Header.Set("Accept", "application/vnd.npm.install-v1+json")
+	request.Header.Set("Accept", accept)
 	client := r.Client
 	if client == nil {
 		client = &http.Client{Timeout: defaultRegistryTimeout}
