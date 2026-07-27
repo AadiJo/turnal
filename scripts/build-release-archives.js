@@ -33,11 +33,33 @@ function isWithin(root, candidate) {
   return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
+const buildMarkerName = '.turnal-release-output';
+
 function validateOutputRoot() {
-  const allowedRoots = [packageRoot, os.tmpdir(), '/tmp'].map((value) => path.resolve(value));
+  // Inside the repository only dist/ is a build output. Allowing any repository
+  // path would let a typo point the recursive delete below at a source tree.
+  const allowedRoots = [path.join(packageRoot, 'dist'), os.tmpdir(), '/tmp'].map((value) => path.resolve(value));
   if (!allowedRoots.some((root) => isWithin(root, outputRoot))) {
-    throw new Error(`TURNAL_RELEASE_OUTPUT must be inside the repository or a temporary directory`);
+    throw new Error('TURNAL_RELEASE_OUTPUT must be inside dist/ or a temporary directory');
   }
+}
+
+function resetOutputRoot() {
+  // Only reuse a directory this script created; never recursively delete a
+  // directory that holds anything else.
+  if (fs.existsSync(outputRoot)) {
+    if (!fs.existsSync(path.join(outputRoot, buildMarkerName))) {
+      const entries = fs.readdirSync(outputRoot);
+      if (entries.length > 0) {
+        throw new Error(
+          `refusing to delete ${outputRoot}: it is not empty and was not created by this script`,
+        );
+      }
+    }
+    fs.rmSync(outputRoot, { recursive: true, force: true });
+  }
+  fs.mkdirSync(outputRoot, { recursive: true });
+  fs.writeFileSync(path.join(outputRoot, buildMarkerName), '');
 }
 
 function inferChannel(version) {
@@ -161,8 +183,7 @@ function checksum(filePath) {
 }
 
 validateOutputRoot();
-fs.rmSync(outputRoot, { recursive: true, force: true });
-fs.mkdirSync(outputRoot, { recursive: true });
+resetOutputRoot();
 const stagingRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'turnal-release-'));
 
 try {
