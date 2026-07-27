@@ -66,7 +66,15 @@ for executable in $executables; do
   cmp "$payload_dir/$executable" "$install_dir/$executable"
 done
 
-printf '0%s  %s\n' "${checksum#?}" "$archive" > "$release_dir/checksums.txt"
+case "$checksum" in
+  0*) bad_checksum="1${checksum#?}" ;;
+  *) bad_checksum="0${checksum#?}" ;;
+esac
+[ "$bad_checksum" != "$checksum" ] || {
+  echo "installer fixture could not construct a mismatched checksum" >&2
+  exit 1
+}
+printf '%s  %s\n' "$bad_checksum" "$archive" > "$release_dir/checksums.txt"
 if run_installer --version "$version" --install-dir "$install_dir" \
   >"$tmp_dir/tampered.stdout" 2>"$tmp_dir/tampered.stderr"; then
   echo "installer accepted a bad checksum" >&2
