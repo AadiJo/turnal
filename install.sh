@@ -49,6 +49,7 @@ main() {
   active=""
   active_had_original=0
   completed=0
+  cleaned=0
 
   rollback_active() {
     [ -n "$active" ] || return 0
@@ -74,6 +75,8 @@ main() {
   }
 
   cleanup() {
+    [ "$cleaned" -eq 0 ] || return 0
+    cleaned=1
     if [ "$completed" -ne 1 ]; then
       rollback_active
       rollback_installed
@@ -81,7 +84,14 @@ main() {
     [ -z "$transaction_dir" ] || rm -rf "$transaction_dir"
     [ -z "$tmp_dir" ] || rm -rf "$tmp_dir"
   }
-  trap cleanup EXIT HUP INT TERM
+
+  interrupted() {
+    cleanup
+    exit 1
+  }
+
+  trap cleanup EXIT
+  trap interrupted HUP INT TERM
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -210,6 +220,16 @@ main() {
     if path_exists "$target"; then
       mv "$target" "$backup" || fail "could not back up $executable"
       active_had_original=1
+    fi
+
+    if [ "${TURNAL_INSTALLER_TESTING:-}" = "1" ] &&
+      [ "${TURNAL_TEST_PAUSE_INSTALL:-}" = "$executable" ]; then
+      : >"$transaction_dir/paused"
+      pause_ticks=0
+      while [ "$pause_ticks" -lt 100 ]; do
+        sleep 0.1
+        pause_ticks=$((pause_ticks + 1))
+      done
     fi
 
     if [ "${TURNAL_INSTALLER_TESTING:-}" = "1" ] &&

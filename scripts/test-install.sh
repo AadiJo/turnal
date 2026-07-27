@@ -150,6 +150,60 @@ done
 test -L "$rollback_dir/turnal-adapter-opencode"
 grep -q '^old-turnal-adapter-opencode$' "$rollback_dir/turnal-adapter-opencode"
 
+signal_dir="$tmp_dir/signal-bin"
+mkdir -p "$signal_dir"
+for executable in $executables; do
+  printf 'old-%s\n' "$executable" >"$signal_dir/$executable"
+  chmod 755 "$signal_dir/$executable"
+done
+
+TURNAL_INSTALLER_TESTING=1 \
+  TURNAL_TEST_PAUSE_INSTALL=turnal-adapter-gemini-cli \
+  TURNAL_ALLOW_INSECURE_TRANSPORT=1 \
+  TURNAL_RELEASE_BASE_URL="file://$tmp_dir/releases" \
+  sh "$repo_root/install.sh" --version "$version" --install-dir "$signal_dir" \
+  >"$tmp_dir/signal.stdout" 2>"$tmp_dir/signal.stderr" &
+signal_pid=$!
+
+signal_waits=0
+while [ "$signal_waits" -lt 300 ]; do
+  if ls "$signal_dir"/.turnal-install.*/paused >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.1
+  signal_waits=$((signal_waits + 1))
+done
+if [ "$signal_waits" -ge 300 ]; then
+  kill -TERM "$signal_pid" 2>/dev/null || true
+  wait "$signal_pid" 2>/dev/null || true
+  echo "installer never reached the interrupt window" >&2
+  exit 1
+fi
+
+# A background job in a non-interactive shell ignores SIGINT, so signal the
+# installer with SIGTERM; both share the interrupt handler.
+kill -TERM "$signal_pid" 2>/dev/null || true
+wait "$signal_pid" 2>/dev/null && {
+  echo "interrupted installer reported success" >&2
+  exit 1
+}
+
+for executable in $executables; do
+  if [ ! -f "$signal_dir/$executable" ]; then
+    echo "interrupted installer deleted $executable" >&2
+    exit 1
+  fi
+  grep -q "^old-$executable\$" "$signal_dir/$executable" ||
+    {
+      echo "interrupted installer did not restore $executable" >&2
+      exit 1
+    }
+done
+if ls -d "$signal_dir"/.turnal-install.* >/dev/null 2>&1; then
+  echo "interrupted installer left a transaction directory behind" >&2
+  exit 1
+fi
+
 relative_root="$tmp_dir/relative"
 mkdir -p "$relative_root"
 (
