@@ -586,4 +586,7 @@ Workspace metadata can contain prompts, tool input/output, file history, and raw
 
 ## License
 
-Apache-2.0
+Turnal's original code and documentation are licensed under Apache-2.0.
+Third-party names, logos, and trademarks remain the property of their
+respective owners and are not licensed under Apache-2.0 by this project. See
+[NOTICE](NOTICE) for details.

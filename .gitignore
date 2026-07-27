@@ -4,3 +4,7 @@ apps/marketing/.astro/
 apps/marketing/.vercel/
 apps/marketing/.env*
 dist/
+
+.turnal/
+
+npm/bin/
