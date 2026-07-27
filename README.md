@@ -26,12 +26,14 @@ Turnal should be piloted before company-wide adoption. Pin a version and validat
 - Search recorded turns without making SQLite the source of truth.
 - Replay checkpoints in isolated worktrees.
 - Run repository-defined checks against the live workspace or a recorded checkpoint.
+- Promote recorded turns into immutable Cases, compare isolated Attempts, and apply a selected result.
 - Share one Turnal store across linked Git worktrees.
 
 ## Requirements
 
 - Git available on `PATH`. Turnal uses Git plumbing for its private checkpoint store.
 - Node.js 18 or newer when installing through npm.
+- Go 1.26.5 or newer when installing from source or developing Turnal.
 - Claude Code, Codex, OpenCode, Gemini CLI, or Copilot CLI for automatic agent capture. `turnal save` also works without an agent session.
 
 Turnal does not initialize a Git repository for your project. It works in both Git and non-Git directories.
@@ -349,7 +351,7 @@ The command exits `0` when every check passes and `3` after running every eligib
 
 Standalone verifier reports are printed or returned as JSON. Forked Case attempts also run the verifier contract frozen when the Case was created, and the report is stored with the durable attempt result so later comparisons retain the evidence used at execution time.
 
-## Fork readiness
+## Reproducibility and Cases
 
 Before rerunning a recorded task, inspect what Turnal can reconstruct:
 
@@ -385,6 +387,31 @@ verifier report as a durable Attempt. The temporary directory is removed by
 default; `--keep` preserves it for inspection. Bare `codex` and `codex exec`
 commands receive the captured instruction unless `--no-replay-instruction` is
 set; commands with explicit arguments are left unchanged.
+
+Create a Case without running an Attempt when you want to preserve the
+reproducibility contract first:
+
+```sh
+# The first Case creates its Task identity.
+turnal case create <session>:<turn>
+
+# Inspect the immutable Case or its evolving Task identity.
+turnal case show <case-id>
+turnal task show <task-id>
+
+# Create a sibling Case when another turn has the same Task instruction.
+turnal case create <other-session>:<turn> --task <task-id>
+```
+
+A Case freezes the source turn, Task revision, starting checkpoint, repository
+verifier contract, known limitations, and linked Attempts. Creating a sibling
+with `--task` succeeds only when the recorded instruction matches the applicable
+Task revision. Once a Case exists, use its ID to avoid ambiguity:
+
+```sh
+turnal fork <case-id> --dry-run
+turnal fork <case-id> -- codex exec
+```
 
 Compare every completed Attempt against the same Case base, record a choice,
 then preview or apply it:
@@ -425,6 +452,8 @@ Turnal does not merge or rewrite the project’s Git history.
 ## Retention and removal
 
 ```sh
+turnal case delete <case-id> --dry-run
+turnal case delete <case-id> --yes
 turnal session drop <session> --dry-run
 turnal session drop <session>
 turnal retention prune --dry-run
@@ -432,7 +461,11 @@ turnal retention prune
 turnal maintenance gc
 ```
 
-Dropping a session removes its durable event records and refs. Git objects are physically reclaimed only after refs are removed and explicit maintenance runs.
+Cases retain their source and Attempt sessions. Case deletion writes an
+irreversible tombstone that makes those sessions eligible for removal; it
+requires `--yes` and refuses while a linked Attempt is still running. Dropping
+a session then removes its durable event records and refs. Git objects are
+physically reclaimed only after refs are removed and explicit maintenance runs.
 
 To remove Turnal from a workspace:
 
