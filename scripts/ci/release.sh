@@ -127,6 +127,12 @@ case "${TURNAL_PUBLISH:-true}" in
     ;;
 esac
 
+npm_args=(publish --access public --tag "$RELEASE_NPM_TAG")
+if [[ "${NPM_PUBLISH_PROVENANCE:-false}" == true ]]; then
+  npm_args+=(--provenance)
+fi
+npm "${npm_args[@]}"
+
 if [[ -z "${GH_TOKEN:-}" ]]; then
   echo "release invariant failed: GH_TOKEN is required to create the GitHub release" >&2
   exit 1
@@ -136,45 +142,20 @@ if ! command -v gh >/dev/null 2>&1; then
   exit 1
 fi
 
-existing_release="$(mktemp)"
-trap 'rm -f "$existing_release"' EXIT
-if gh release view "$RELEASE_TAG" --json assets,isDraft,isPrerelease >"$existing_release" 2>/dev/null; then
-  node - "$existing_release" "$RELEASE_PRERELEASE" "${release_assets[@]}" <<'NODE'
-const fs = require('node:fs');
-const [, , manifestPath, expectedPrerelease, ...assetPaths] = process.argv;
-const release = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-const expected = assetPaths.map((value) => value.split('/').pop()).sort();
-const actual = release.assets.map((asset) => asset.name).sort();
-if (release.isDraft || String(release.isPrerelease) !== expectedPrerelease) {
-  throw new Error('existing GitHub release metadata does not match the resolved release');
-}
-if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-  throw new Error(`existing GitHub release assets do not match: expected ${expected.join(', ')}, got ${actual.join(', ')}`);
-}
-NODE
-  echo "verified existing GitHub release $RELEASE_TAG"
-else
-  gh_args=(
-    "$RELEASE_TAG"
-    "${release_assets[@]}"
-    --target "$sha"
-    --title "$RELEASE_NAME"
-    --generate-notes
-  )
-  if [[ "$RELEASE_PRERELEASE" == true ]]; then
-    gh_args+=(--prerelease)
-  fi
-  if [[ "$channel" == stable ]]; then
-    gh_args+=(--verify-tag)
-  fi
-  if [[ "$RELEASE_MAKE_LATEST" == false ]]; then
-    gh_args+=(--latest=false)
-  fi
-  gh release create "${gh_args[@]}"
+gh_args=(
+  "$RELEASE_TAG"
+  "${release_assets[@]}"
+  --target "$sha"
+  --title "$RELEASE_NAME"
+  --generate-notes
+)
+if [[ "$RELEASE_PRERELEASE" == true ]]; then
+  gh_args+=(--prerelease)
 fi
-
-npm_args=(publish --access public --tag "$RELEASE_NPM_TAG")
-if [[ "${NPM_PUBLISH_PROVENANCE:-false}" == true ]]; then
-  npm_args+=(--provenance)
+if [[ "$channel" == stable ]]; then
+  gh_args+=(--verify-tag)
 fi
-npm "${npm_args[@]}"
+if [[ "$RELEASE_MAKE_LATEST" == false ]]; then
+  gh_args+=(--latest=false)
+fi
+gh release create "${gh_args[@]}"

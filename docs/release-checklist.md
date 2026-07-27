@@ -6,7 +6,7 @@
 - Verify `.env`, nested credentials, symlinks, and custom deny globs do not enter checkpoint or git-sync captures.
 - Verify session deletion removes v2 raw data, redacts legacy payloads, invalidates search, and reports residual hidden-Git data.
 - Review the generated SBOM, package contents, changelog, support statement, and security disclosures. CircleCI token-based publishing deliberately omits npm provenance; the retained GitHub Actions fallback emits provenance when it is the active publisher.
-- Verify all four macOS/Linux standalone archives and `checksums.txt` are attached to the GitHub release before the npm dist-tag moves, and confirm installer fixtures pass on Linux and macOS.
+- Verify all four macOS/Linux standalone archives and `checksums.txt` are attached to the GitHub release, and confirm installer fixtures pass on Linux and macOS.
 - Test upgrade from the previous stable metadata version and confirm pre-manifest checkpoints still restore.
 
 ## Automated release gates
@@ -15,7 +15,7 @@
 - Nightly releases start from a manually triggered CircleCI pipeline on `main` with the `publish_nightly` boolean parameter set to `true`. The nightly workflow repeats every required gate before publishing.
 - Before enabling the first publisher, trigger a CircleCI pipeline on `main` with `rehearse_release` set to `true`. It repeats every gate, validates the protected release context and npm token, builds the package and SBOM, and exits before npm or GitHub publication.
 - Failed, cancelled, filtered, or missing prerequisite jobs prevent the corresponding publish job from starting. Do not add an independent publish workflow or attach release credentials to a validation job.
-- npm publication uses a granular `NPM_TOKEN` from the protected `turnal-release` context and sets provenance off for CircleCI. The publish job builds every supported npm binary and standalone macOS/Linux archive, performs a package dry run, generates an SPDX SBOM and SHA-256 checksums, creates or verifies the complete GitHub release, and only then moves the npm dist-tag.
+- npm publication uses a granular `NPM_TOKEN` from the protected `turnal-release` context and sets provenance off for CircleCI. The publish job builds every supported npm binary and standalone macOS/Linux archive, performs a package dry run, generates an SPDX SBOM and SHA-256 checksums, moves the npm dist-tag, and creates the GitHub release with the complete asset set.
 - The `turnal-release` context must be restricted to this project and disallow SSH reruns. Store a least-privilege `GH_TOKEN` capable of creating releases and a granular `NPM_TOKEN` restricted to read and write access for `@aadijo/turnal` with 2FA bypass enabled for CI publication.
 - GitHub Actions is retained as a manual-only fallback. It calls the same repository scripts and keeps GitHub OIDC provenance enabled; stable publication also requires the explicit `publish_stable` input. Do not enable that input until CircleCI publishing is disabled for the same refs.
 - Protect `main` with the exact CircleCI contexts `ci/circleci: Quality and race`, `ci/circleci: Test (linux)`, `ci/circleci: Test (macos)`, and `ci/circleci: Test (windows)` after all four have reported successfully at least once.
