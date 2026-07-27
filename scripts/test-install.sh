@@ -171,14 +171,15 @@ done
 mv "$rollback_dir/turnal-adapter-opencode" "$old_dir/opencode"
 ln -s "../old/opencode" "$rollback_dir/turnal-adapter-opencode"
 
-if TURNAL_INSTALLER_TESTING=1 \
-  TURNAL_TEST_FAIL_INSTALL=turnal-adapter-gemini-cli \
+if (
+  export TURNAL_INSTALLER_TESTING=1
+  export TURNAL_TEST_FAIL_INSTALL=turnal-adapter-gemini-cli
   run_installer --version "$version" --install-dir "$rollback_dir" \
-  >"$tmp_dir/rollback.stdout" 2>"$tmp_dir/rollback.stderr"; then
+    >"$tmp_dir/rollback.stdout" 2>"$tmp_dir/rollback.stderr"
+); then
   echo "installer test failure injection unexpectedly succeeded" >&2
   exit 1
 fi
-unset TURNAL_INSTALLER_TESTING TURNAL_TEST_FAIL_INSTALL
 grep -q "could not install turnal-adapter-gemini-cli" "$tmp_dir/rollback.stderr"
 for executable in turnal turnal-adapter-gemini-cli turnal-adapter-copilot-cli; do
   grep -q "^old-$executable\$" "$rollback_dir/$executable"
@@ -192,11 +193,13 @@ for executable in $executables; do
   printf 'old-%s\n' "$executable" >"$failed_rollback_dir/$executable"
   chmod 755 "$failed_rollback_dir/$executable"
 done
-if TURNAL_INSTALLER_TESTING=1 \
-  TURNAL_TEST_FAIL_INSTALL=turnal-adapter-gemini-cli \
-  TURNAL_TEST_FAIL_RESTORE=turnal-adapter-opencode \
+if (
+  export TURNAL_INSTALLER_TESTING=1
+  export TURNAL_TEST_FAIL_INSTALL=turnal-adapter-gemini-cli
+  export TURNAL_TEST_FAIL_RESTORE=turnal-adapter-opencode
   run_installer --version "$version" --install-dir "$failed_rollback_dir" \
-  >"$tmp_dir/failed-rollback.stdout" 2>"$tmp_dir/failed-rollback.stderr"; then
+    >"$tmp_dir/failed-rollback.stdout" 2>"$tmp_dir/failed-rollback.stderr"
+); then
   echo "installer rollback failure injection unexpectedly succeeded" >&2
   exit 1
 fi
