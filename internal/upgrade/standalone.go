@@ -85,7 +85,7 @@ func InstallStandalone(ctx context.Context, opts StandaloneInstallOptions) error
 	if err := extractStandaloneArchive(archive, stageDir); err != nil {
 		return err
 	}
-	if err := verifyStagedStandalone(ctx, filepath.Join(stageDir, "turnal"), version, opts.Channel); err != nil {
+	if err := verifyStagedStandalone(ctx, stageDir, version, opts.Channel); err != nil {
 		return err
 	}
 	if err := replaceStandaloneFiles(stageDir, installDir); err != nil {
@@ -232,22 +232,26 @@ func extractStandaloneArchive(archive []byte, destination string) error {
 	return nil
 }
 
-func verifyStagedStandalone(ctx context.Context, executable, version, channel string) error {
-	output, err := exec.CommandContext(ctx, executable, "version", "--json").Output()
-	if err != nil {
-		return fmt.Errorf("verify staged turnal executable: %w", err)
-	}
-	var metadata Metadata
-	if err := json.Unmarshal(output, &metadata); err != nil {
-		return fmt.Errorf("parse staged turnal metadata: %w", err)
-	}
-	if metadata.Version != version || metadata.Channel != channel || metadata.InstallSource != InstallSourceStandalone {
-		return fmt.Errorf(
-			"staged turnal metadata mismatch: got version=%q channel=%q install_source=%q",
-			metadata.Version,
-			metadata.Channel,
-			metadata.InstallSource,
-		)
+func verifyStagedStandalone(ctx context.Context, stageDir, version, channel string) error {
+	for _, name := range standaloneExecutables {
+		executable := filepath.Join(stageDir, name)
+		output, err := exec.CommandContext(ctx, executable, "version", "--json").Output()
+		if err != nil {
+			return fmt.Errorf("verify staged %s executable: %w", name, err)
+		}
+		var metadata Metadata
+		if err := json.Unmarshal(output, &metadata); err != nil {
+			return fmt.Errorf("parse staged %s metadata: %w", name, err)
+		}
+		if metadata.Version != version || metadata.Channel != channel || metadata.InstallSource != InstallSourceStandalone {
+			return fmt.Errorf(
+				"staged %s metadata mismatch: got version=%q channel=%q install_source=%q",
+				name,
+				metadata.Version,
+				metadata.Channel,
+				metadata.InstallSource,
+			)
+		}
 	}
 	return nil
 }

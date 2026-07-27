@@ -30,9 +30,8 @@ func TestInstallStandaloneDownloadsVerifiesAndReplacesExecutables(t *testing.T) 
 	archiveName := fmt.Sprintf("turnal_%s_%s.tar.gz", version, platform)
 	files := map[string][]byte{}
 	for _, name := range standaloneExecutables {
-		files[name] = []byte("#!/bin/sh\necho replacement-" + name + "\n")
+		files[name] = standaloneMetadataScript(version, ChannelStable, InstallSourceStandalone)
 	}
-	files["turnal"] = []byte("#!/bin/sh\nprintf '%s\\n' '{\"version\":\"0.4.2\",\"channel\":\"stable\",\"install_source\":\"standalone\"}'\n")
 	archive := standaloneTestArchive(t, files)
 	sum := sha256.Sum256(archive)
 	checksums := fmt.Sprintf("%x  %s\n", sum, archiveName)
@@ -178,15 +177,29 @@ func TestVerifyStagedStandaloneRejectsMetadataMismatch(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fixture uses a POSIX shell script")
 	}
-	executable := filepath.Join(t.TempDir(), "turnal")
-	body := "#!/bin/sh\nprintf '%s\\n' '{\"version\":\"9.9.9\",\"channel\":\"stable\",\"install_source\":\"standalone\"}'\n"
-	if err := os.WriteFile(executable, []byte(body), 0o755); err != nil {
-		t.Fatal(err)
+	stageDir := t.TempDir()
+	for _, name := range standaloneExecutables {
+		body := standaloneMetadataScript("1.2.3", ChannelStable, InstallSourceStandalone)
+		if name == "turnal-adapter-opencode" {
+			body = standaloneMetadataScript("9.9.9", ChannelStable, InstallSourceStandalone)
+		}
+		if err := os.WriteFile(filepath.Join(stageDir, name), body, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
-	err := verifyStagedStandalone(context.Background(), executable, "1.2.3", ChannelStable)
-	if err == nil || !strings.Contains(err.Error(), "metadata mismatch") {
-		t.Fatalf("verify error = %v", err)
+	err := verifyStagedStandalone(context.Background(), stageDir, "1.2.3", ChannelStable)
+	if err == nil || !strings.Contains(err.Error(), "turnal-adapter-opencode metadata mismatch") {
+		t.Fatalf("verify error = %v, want adapter metadata mismatch", err)
 	}
+}
+
+func standaloneMetadataScript(version, channel, installSource string) []byte {
+	return []byte(fmt.Sprintf(
+		"#!/bin/sh\nprintf '%%s\\n' '{\"version\":%q,\"channel\":%q,\"install_source\":%q}'\n",
+		version,
+		channel,
+		installSource,
+	))
 }
 
 func standaloneTestArchive(t *testing.T, files map[string][]byte) []byte {

@@ -8,7 +8,7 @@ import (
 )
 
 func main() {
-	if err := externaladapters.Run("opencode", os.Stdin, os.Stdout); err != nil {
+	if err := externaladapters.RunCommand("opencode", os.Args[1:], os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

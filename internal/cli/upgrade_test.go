@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/AadiJo/turnal/internal/buildinfo"
 	"github.com/AadiJo/turnal/internal/upgrade"
 )
 
@@ -246,19 +247,19 @@ func TestVersionJSONIncludesBuildMetadata(t *testing.T) {
 
 func setBuildMetadataForTest(t *testing.T, testVersion, testChannel, testCommit, testInstallSource string) {
 	t.Helper()
-	oldVersion := version
-	oldChannel := channel
-	oldCommit := commit
-	oldInstallSource := installSource
-	version = testVersion
-	channel = testChannel
-	commit = testCommit
-	installSource = testInstallSource
+	oldVersion := buildinfo.Version
+	oldChannel := buildinfo.Channel
+	oldCommit := buildinfo.Commit
+	oldInstallSource := buildinfo.InstallSource
+	buildinfo.Version = testVersion
+	buildinfo.Channel = testChannel
+	buildinfo.Commit = testCommit
+	buildinfo.InstallSource = testInstallSource
 	t.Cleanup(func() {
-		version = oldVersion
-		channel = oldChannel
-		commit = oldCommit
-		installSource = oldInstallSource
+		buildinfo.Version = oldVersion
+		buildinfo.Channel = oldChannel
+		buildinfo.Commit = oldCommit
+		buildinfo.InstallSource = oldInstallSource
 	})
 }
 

@@ -43,10 +43,10 @@ function ldflags() {
   return [
     '-s',
     '-w',
-    `-X github.com/AadiJo/turnal/internal/cli.version=${packageJson.version}`,
-    `-X github.com/AadiJo/turnal/internal/cli.channel=${buildChannel}`,
-    `-X github.com/AadiJo/turnal/internal/cli.commit=${buildCommit}`,
-    '-X github.com/AadiJo/turnal/internal/cli.installSource=npm',
+    `-X github.com/AadiJo/turnal/internal/buildinfo.Version=${packageJson.version}`,
+    `-X github.com/AadiJo/turnal/internal/buildinfo.Channel=${buildChannel}`,
+    `-X github.com/AadiJo/turnal/internal/buildinfo.Commit=${buildCommit}`,
+    '-X github.com/AadiJo/turnal/internal/buildinfo.InstallSource=npm',
   ].join(' ');
 }
 
@@ -62,11 +62,7 @@ function buildTarget(target) {
       '-trimpath',
       '-buildvcs=false',
     ];
-    if (command === 'turnal') {
-      args.push('-ldflags', ldflags());
-    } else {
-      args.push('-ldflags', '-s -w');
-    }
+    args.push('-ldflags', ldflags());
     args.push('-o', outputPath, `./cmd/${command}`);
     const result = spawnSync('go', args, {
       cwd: packageRoot,

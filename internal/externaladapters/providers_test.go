@@ -1,11 +1,43 @@
 package externaladapters
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 
+	"github.com/AadiJo/turnal/internal/buildinfo"
+	"github.com/AadiJo/turnal/internal/upgrade"
 	adaptersdk "github.com/AadiJo/turnal/sdk/adapter"
 )
+
+func TestRunCommandPrintsBuildMetadata(t *testing.T) {
+	oldVersion := buildinfo.Version
+	oldChannel := buildinfo.Channel
+	oldCommit := buildinfo.Commit
+	oldInstallSource := buildinfo.InstallSource
+	buildinfo.Version = "1.2.3"
+	buildinfo.Channel = upgrade.ChannelStable
+	buildinfo.Commit = "abc123"
+	buildinfo.InstallSource = upgrade.InstallSourceStandalone
+	t.Cleanup(func() {
+		buildinfo.Version = oldVersion
+		buildinfo.Channel = oldChannel
+		buildinfo.Commit = oldCommit
+		buildinfo.InstallSource = oldInstallSource
+	})
+
+	var output bytes.Buffer
+	if err := RunCommand("opencode", []string{"version", "--json"}, bytes.NewReader(nil), &output); err != nil {
+		t.Fatalf("RunCommand: %v", err)
+	}
+	var metadata upgrade.Metadata
+	if err := json.Unmarshal(output.Bytes(), &metadata); err != nil {
+		t.Fatalf("decode metadata: %v", err)
+	}
+	if metadata != buildinfo.Current() {
+		t.Fatalf("metadata = %+v, want %+v", metadata, buildinfo.Current())
+	}
+}
 
 func TestBundledProviderNormalization(t *testing.T) {
 	tests := []struct {

@@ -84,10 +84,10 @@ function ldflags() {
   return [
     '-s',
     '-w',
-    `-X github.com/AadiJo/turnal/internal/cli.version=${packageJson.version}`,
-    `-X github.com/AadiJo/turnal/internal/cli.channel=${buildChannel}`,
-    `-X github.com/AadiJo/turnal/internal/cli.commit=${buildCommit}`,
-    '-X github.com/AadiJo/turnal/internal/cli.installSource=standalone',
+    `-X github.com/AadiJo/turnal/internal/buildinfo.Version=${packageJson.version}`,
+    `-X github.com/AadiJo/turnal/internal/buildinfo.Channel=${buildChannel}`,
+    `-X github.com/AadiJo/turnal/internal/buildinfo.Commit=${buildCommit}`,
+    '-X github.com/AadiJo/turnal/internal/buildinfo.InstallSource=standalone',
   ].join(' ');
 }
 
@@ -112,7 +112,7 @@ function buildArchive(target, stagingRoot) {
   for (const command of commands) {
     const outputPath = path.join(stagingDir, command);
     const args = ['build', '-trimpath', '-buildvcs=false'];
-    args.push('-ldflags', command === 'turnal' ? ldflags() : '-s -w');
+    args.push('-ldflags', ldflags());
     args.push('-o', outputPath, `./cmd/${command}`);
     console.log(`building ${command} for ${target.name}`);
     run('go', args, {
