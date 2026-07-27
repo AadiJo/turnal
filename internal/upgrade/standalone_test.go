@@ -173,6 +173,52 @@ func TestReplaceStandaloneFilesRollsBackMidTransactionFailure(t *testing.T) {
 	}
 }
 
+func TestReplaceStandaloneFilesPreservesBackupsWhenRollbackFails(t *testing.T) {
+	stageDir := t.TempDir()
+	installDir := t.TempDir()
+	for _, name := range standaloneExecutables {
+		if err := os.WriteFile(filepath.Join(stageDir, name), []byte("new-"+name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(installDir, name), []byte("old-"+name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rename := func(source, destination string) error {
+		switch {
+		case strings.HasSuffix(source, "turnal-adapter-gemini-cli.new"):
+			return errors.New("injected replacement failure")
+		case strings.HasSuffix(source, "turnal-adapter-opencode.old"):
+			return errors.New("injected restore failure")
+		default:
+			return os.Rename(source, destination)
+		}
+	}
+	err := replaceStandaloneFilesWithRename(stageDir, installDir, rename)
+	if err == nil || !strings.Contains(err.Error(), "rollback failed") {
+		t.Fatalf("replace error = %v, want rollback failure", err)
+	}
+	transactions, globErr := filepath.Glob(filepath.Join(installDir, ".turnal-upgrade-*"))
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(transactions) != 1 {
+		t.Fatalf("transaction directories = %v, want preserved recovery directory", transactions)
+	}
+	backup := filepath.Join(transactions[0], "turnal-adapter-opencode.old")
+	data, readErr := os.ReadFile(backup)
+	if readErr != nil {
+		t.Fatalf("read preserved backup: %v", readErr)
+	}
+	if string(data) != "old-turnal-adapter-opencode" {
+		t.Fatalf("preserved backup = %q", data)
+	}
+	if !strings.Contains(err.Error(), transactions[0]) {
+		t.Fatalf("error %q does not name recovery directory %s", err, transactions[0])
+	}
+}
+
 func TestVerifyStagedStandaloneRejectsMetadataMismatch(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fixture uses a POSIX shell script")

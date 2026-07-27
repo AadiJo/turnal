@@ -46,20 +46,35 @@ main() {
   tmp_dir=""
   transaction_dir=""
   installed=""
+  backed_up=""
   active=""
   active_had_original=0
   completed=0
   cleaned=0
+  rollback_failed=0
 
   rollback_active() {
     [ -n "$active" ] || return 0
     target="$install_dir/$active"
     backup="$transaction_dir/$active.old"
     if [ "$active_had_original" -eq 1 ]; then
-      rm -f "$target"
-      if path_exists "$backup" && ! mv "$backup" "$target"; then
+      if ! rm -f "$target"; then
+        warn "could not remove partial $target during rollback"
+        rollback_failed=1
+      elif [ "${TURNAL_INSTALLER_TESTING:-}" = "1" ] &&
+        [ "${TURNAL_TEST_FAIL_RESTORE:-}" = "$active" ]; then
         warn "could not restore $target from $backup"
+        rollback_failed=1
+      elif ! path_exists "$backup"; then
+        warn "could not restore $target: backup $backup is missing"
+        rollback_failed=1
+      elif ! mv "$backup" "$target"; then
+        warn "could not restore $target from $backup"
+        rollback_failed=1
       fi
+    elif ! rm -f "$target"; then
+      warn "could not remove partial $target during rollback"
+      rollback_failed=1
     fi
   }
 
@@ -67,9 +82,25 @@ main() {
     for installed_name in $installed; do
       target="$install_dir/$installed_name"
       backup="$transaction_dir/$installed_name.old"
-      rm -f "$target"
-      if path_exists "$backup" && ! mv "$backup" "$target"; then
-        warn "could not restore $target from $backup"
+      if ! rm -f "$target"; then
+        warn "could not remove partial $target during rollback"
+        rollback_failed=1
+      else
+        case " $backed_up " in
+          *" $installed_name "*)
+            if [ "${TURNAL_INSTALLER_TESTING:-}" = "1" ] &&
+              [ "${TURNAL_TEST_FAIL_RESTORE:-}" = "$installed_name" ]; then
+              warn "could not restore $target from $backup"
+              rollback_failed=1
+            elif ! path_exists "$backup"; then
+              warn "could not restore $target: backup $backup is missing"
+              rollback_failed=1
+            elif ! mv "$backup" "$target"; then
+              warn "could not restore $target from $backup"
+              rollback_failed=1
+            fi
+            ;;
+        esac
       fi
     done
   }
@@ -81,7 +112,13 @@ main() {
       rollback_active
       rollback_installed
     fi
-    [ -z "$transaction_dir" ] || rm -rf "$transaction_dir"
+    if [ -n "$transaction_dir" ]; then
+      if [ "$rollback_failed" -eq 0 ]; then
+        rm -rf "$transaction_dir"
+      else
+        warn "rollback incomplete; backups preserved in $transaction_dir"
+      fi
+    fi
     [ -z "$tmp_dir" ] || rm -rf "$tmp_dir"
   }
 
@@ -223,6 +260,7 @@ main() {
     if path_exists "$target"; then
       mv "$target" "$backup" || fail "could not back up $executable"
       active_had_original=1
+      backed_up="$executable $backed_up"
     fi
 
     if [ "${TURNAL_INSTALLER_TESTING:-}" = "1" ] &&
@@ -244,6 +282,16 @@ main() {
       install_ok=0
     fi
     [ "$install_ok" -eq 1 ] || fail "could not install $executable"
+
+    if [ "${TURNAL_INSTALLER_TESTING:-}" = "1" ] &&
+      [ "${TURNAL_TEST_PAUSE_AFTER_INSTALL:-}" = "$executable" ]; then
+      : >"$transaction_dir/paused-after-install"
+      pause_ticks=0
+      while [ "$pause_ticks" -lt 100 ]; do
+        sleep 0.1
+        pause_ticks=$((pause_ticks + 1))
+      done
+    fi
 
     installed="$executable $installed" active="" active_had_original=0
   done

@@ -177,6 +177,25 @@ done
 test -L "$rollback_dir/turnal-adapter-opencode"
 grep -q '^old-turnal-adapter-opencode$' "$rollback_dir/turnal-adapter-opencode"
 
+failed_rollback_dir="$tmp_dir/failed-rollback-bin"
+mkdir -p "$failed_rollback_dir"
+for executable in $executables; do
+  printf 'old-%s\n' "$executable" >"$failed_rollback_dir/$executable"
+  chmod 755 "$failed_rollback_dir/$executable"
+done
+if TURNAL_INSTALLER_TESTING=1 \
+  TURNAL_TEST_FAIL_INSTALL=turnal-adapter-gemini-cli \
+  TURNAL_TEST_FAIL_RESTORE=turnal-adapter-opencode \
+  run_installer --version "$version" --install-dir "$failed_rollback_dir" \
+  >"$tmp_dir/failed-rollback.stdout" 2>"$tmp_dir/failed-rollback.stderr"; then
+  echo "installer rollback failure injection unexpectedly succeeded" >&2
+  exit 1
+fi
+grep -q "rollback incomplete; backups preserved in" "$tmp_dir/failed-rollback.stderr"
+set -- "$failed_rollback_dir"/.turnal-install.*
+[ "$#" -eq 1 ] && [ -d "$1" ]
+grep -q '^old-turnal-adapter-opencode$' "$1/turnal-adapter-opencode.old"
+
 signal_dir="$tmp_dir/signal-bin"
 mkdir -p "$signal_dir"
 for executable in $executables; do
@@ -228,6 +247,45 @@ for executable in $executables; do
 done
 if ls -d "$signal_dir"/.turnal-install.* >/dev/null 2>&1; then
   echo "interrupted installer left a transaction directory behind" >&2
+  exit 1
+fi
+
+new_signal_dir="$tmp_dir/new-signal-bin"
+mkdir -p "$new_signal_dir"
+TURNAL_INSTALLER_TESTING=1 \
+  TURNAL_TEST_PAUSE_AFTER_INSTALL=turnal \
+  TURNAL_ALLOW_INSECURE_TRANSPORT=1 \
+  TURNAL_RELEASE_BASE_URL="file://$tmp_dir/releases" \
+  sh "$repo_root/install.sh" --version "$version" --install-dir "$new_signal_dir" \
+  >"$tmp_dir/new-signal.stdout" 2>"$tmp_dir/new-signal.stderr" &
+new_signal_pid=$!
+
+signal_waits=0
+while [ "$signal_waits" -lt 300 ]; do
+  if ls "$new_signal_dir"/.turnal-install.*/paused-after-install >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.1
+  signal_waits=$((signal_waits + 1))
+done
+if [ "$signal_waits" -ge 300 ]; then
+  kill -TERM "$new_signal_pid" 2>/dev/null || true
+  wait "$new_signal_pid" 2>/dev/null || true
+  echo "installer never reached the post-install interrupt window" >&2
+  exit 1
+fi
+
+kill -TERM "$new_signal_pid" 2>/dev/null || true
+wait "$new_signal_pid" 2>/dev/null && {
+  echo "post-install interrupted installer reported success" >&2
+  exit 1
+}
+if [ -e "$new_signal_dir/turnal" ]; then
+  echo "post-install interrupt left a new executable without an original" >&2
+  exit 1
+fi
+if ls -d "$new_signal_dir"/.turnal-install.* >/dev/null 2>&1; then
+  echo "post-install interrupted installer left a transaction directory behind" >&2
   exit 1
 fi
 

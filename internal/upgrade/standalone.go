@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -268,7 +269,12 @@ func replaceStandaloneFilesWithRename(stageDir, installDir string, rename func(s
 	if err != nil {
 		return fmt.Errorf("prepare standalone upgrade in %s: %w", installDir, err)
 	}
-	defer os.RemoveAll(transactionDir)
+	removeTransaction := true
+	defer func() {
+		if removeTransaction {
+			_ = os.RemoveAll(transactionDir)
+		}
+	}()
 
 	for _, name := range standaloneExecutables {
 		if err := copyExecutable(filepath.Join(stageDir, name), filepath.Join(transactionDir, name+".new")); err != nil {
@@ -278,15 +284,33 @@ func replaceStandaloneFilesWithRename(stageDir, installDir string, rename func(s
 
 	replaced := make([]string, 0, len(standaloneExecutables))
 	hadOriginal := make(map[string]bool, len(standaloneExecutables))
-	rollback := func() {
+	rollback := func() error {
+		var rollbackErrors []error
 		for index := len(replaced) - 1; index >= 0; index-- {
 			name := replaced[index]
 			target := filepath.Join(installDir, name)
-			_ = os.Remove(target)
+			if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+				rollbackErrors = append(rollbackErrors, fmt.Errorf("remove partial %s: %w", name, err))
+			}
 			if hadOriginal[name] {
-				_ = rename(filepath.Join(transactionDir, name+".old"), target)
+				if err := rename(filepath.Join(transactionDir, name+".old"), target); err != nil {
+					rollbackErrors = append(rollbackErrors, fmt.Errorf("restore %s: %w", name, err))
+				}
 			}
 		}
+		return errors.Join(rollbackErrors...)
+	}
+	failWithRollback := func(primary error) error {
+		if rollbackErr := rollback(); rollbackErr != nil {
+			removeTransaction = false
+			return fmt.Errorf(
+				"%v; standalone rollback failed and backups were preserved in %s: %w",
+				primary,
+				transactionDir,
+				rollbackErr,
+			)
+		}
+		return primary
 	}
 
 	for _, name := range standaloneExecutables {
@@ -294,22 +318,16 @@ func replaceStandaloneFilesWithRename(stageDir, installDir string, rename func(s
 		backup := filepath.Join(transactionDir, name+".old")
 		if _, err := os.Lstat(target); err == nil {
 			if err := rename(target, backup); err != nil {
-				rollback()
-				return fmt.Errorf("back up installed %s: %w", name, err)
+				return failWithRollback(fmt.Errorf("back up installed %s: %w", name, err))
 			}
 			hadOriginal[name] = true
 		} else if !os.IsNotExist(err) {
-			rollback()
-			return fmt.Errorf("inspect installed %s: %w", name, err)
-		}
-		if err := rename(filepath.Join(transactionDir, name+".new"), target); err != nil {
-			if hadOriginal[name] {
-				_ = rename(backup, target)
-			}
-			rollback()
-			return fmt.Errorf("install %s: %w", name, err)
+			return failWithRollback(fmt.Errorf("inspect installed %s: %w", name, err))
 		}
 		replaced = append(replaced, name)
+		if err := rename(filepath.Join(transactionDir, name+".new"), target); err != nil {
+			return failWithRollback(fmt.Errorf("install %s: %w", name, err))
+		}
 	}
 	return nil
 }
