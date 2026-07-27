@@ -8,7 +8,7 @@ GitHub Actions runs `Quality and race`, `Test (linux)`, `Test (macos)`, and `Tes
 
 Before the first release:
 
-1. Configure npm trusted publishing for `@aadijo/turnal` with repository `AadiJo/turnal` and workflow filename `release.yml`.
+1. Configure npm trusted publishing for `@aadijo/turnal` with repository `AadiJo/turnal` and workflow filename `ci.yml`. npm validates the calling workflow when `workflow_call` delegates publication to `release.yml`.
 2. Require the four exact GitHub Actions checks listed in the release checklist on `main`, with current-branch checks and administrative enforcement enabled.
 3. Manually dispatch GitHub Actions on `main` with `rehearse_release` enabled, then verify the validation matrix and release rehearsal before creating the next release tag.
 
