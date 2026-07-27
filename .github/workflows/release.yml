@@ -13,10 +13,6 @@ on:
         default: true
         type: boolean
 
-permissions:
-  contents: write
-  id-token: write
-
 concurrency:
   group: publish-${{ inputs.channel }}
   cancel-in-progress: false
