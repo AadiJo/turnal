@@ -4,13 +4,13 @@ The repository keeps test and release behavior in `scripts/ci/`; GitHub Actions 
 
 ## GitHub Actions is active
 
-GitHub Actions runs `Quality and race`, `Test (linux)`, `Test (macos)`, and `Test (windows)` for pushes, pull requests, and tags. Stable publication is filtered to version tags, excludes nightly tags, and requires all four jobs. A manual nightly run must target `main`, set `publish_nightly` to `true`, and pass a second complete set of gates. A manual release rehearsal must target `main`, set `rehearse_release` to `true`, pass the same gates, and execute the release build with publication disabled.
+GitHub Actions runs `Quality and race`, `Test (linux)`, `Test (macos)`, and `Test (windows)` for pull requests, pushes to `main`, and version-like tags. Stable publication is filtered to valid version tags, excludes nightly tags, and requires all four jobs. A manual nightly run must target `main`, set `release_mode` to `nightly`, and pass a second complete set of gates. A manual release rehearsal must target `main`, set `release_mode` to `rehearse`, pass the same gates, and execute the release build with publication disabled.
 
 Before the first release:
 
 1. Configure npm trusted publishing for `@aadijo/turnal` with repository `AadiJo/turnal` and workflow filename `ci.yml`. npm validates the calling workflow when `workflow_call` delegates publication to `release.yml`.
 2. Require the four exact GitHub Actions checks listed in the release checklist on `main`, with current-branch checks and administrative enforcement enabled.
-3. Manually dispatch GitHub Actions on `main` with `rehearse_release` enabled, then verify the validation matrix and release rehearsal before creating the next release tag.
+3. Manually dispatch GitHub Actions on `main` with `release_mode` set to `rehearse`, then verify the validation matrix and release rehearsal before creating the next release tag.
 
 ## Provider differences
 
