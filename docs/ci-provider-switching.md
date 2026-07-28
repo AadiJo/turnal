@@ -1,28 +1,25 @@
 # CI provider switching
 
-The repository keeps test and release behavior in `scripts/ci/`; CircleCI and GitHub Actions supply only triggers, executors, dependency wiring, and credentials. A provider change should not alter release metadata, package contents, SBOM generation, or GitHub release arguments.
+The repository keeps test and release behavior in `scripts/ci/`; GitHub Actions supplies only triggers, executors, dependency wiring, and credentials. A provider change must not alter release metadata, package contents, SBOM generation, or GitHub release arguments.
 
-## CircleCI is active
+## GitHub Actions is active
 
-CircleCI automatically runs `Quality and race`, `Test (linux)`, `Test (macos)`, and `Test (windows)` on branch and tag pipelines. Stable publication is filtered to semver-shaped tags and requires all four jobs. A manual nightly pipeline must target `main`, set `publish_nightly` to `true`, and pass a second complete set of gates.
+GitHub Actions runs `Quality and race`, `Test (linux)`, `Test (macos)`, and `Test (windows)` for pull requests, pushes to `main`, and version-like tags. Stable publication is filtered to valid version tags, excludes nightly tags, and requires all four jobs. A manual nightly run must target `main`, set `release_mode` to `nightly`, and pass a second complete set of gates. A manual release rehearsal must target `main`, set `release_mode` to `rehearse`, pass the same gates, and execute the release build with publication disabled.
 
 Before the first release:
 
-1. Create a CircleCI context named `turnal-release`, restrict it to this project, and add the expression restriction `not job.ssh.enabled`.
-2. Add a least-privilege `GH_TOKEN` capable of creating releases in this repository to that context.
-3. Add an npm granular access token named `NPM_TOKEN` to the context. Restrict it to read and write access for `@aadijo/turnal`, enable bypass 2FA for CI publication, and keep package publishing access configured to allow tokens.
-4. Require the four exact CircleCI checks listed in the release checklist on `main`, with current-branch checks and administrative enforcement enabled.
+1. Configure npm trusted publishing for `@aadijo/turnal` with repository `AadiJo/turnal` and workflow filename `ci.yml`. npm validates the calling workflow when `workflow_call` delegates publication to `release.yml`.
+2. Require the four exact GitHub Actions checks listed in the release checklist on `main`, with current-branch checks and administrative enforcement enabled.
+3. Manually dispatch GitHub Actions on `main` with `release_mode` set to `rehearse`, then verify the validation matrix and release rehearsal before creating the next release tag.
 
-CircleCI publishing uses the granular access token stored as `NPM_TOKEN` in the `turnal-release` context and deliberately omits `--provenance` because npm provenance is not currently supported for this provider. The GitHub Actions fallback retains `NPM_PUBLISH_PROVENANCE=true` so provenance returns with that publisher.
+## Provider differences
 
-## Return to GitHub Actions
+The validation commands, platform coverage, release gates, package contents, SBOM generation, and GitHub release arguments remain the same. The provider boundary cannot be byte-for-byte identical:
 
-Make the cutover in one pull request so only one provider can publish a given ref:
+- GitHub-hosted Ubuntu, macOS, and Windows images replace CircleCI images and resource classes, so the operating-system revisions, CPU architecture or capacity, and preinstalled tools can differ.
+- GitHub Actions caches Go dependencies with `actions/setup-go`; cache keys and storage paths differ from CircleCI even though a cache miss still falls back to `go mod download`.
+- Pull requests have their own GitHub event and can also receive a branch push run, whereas CircleCI represented validation through branch and tag pipelines.
+- npm publication uses GitHub OIDC trusted publishing with provenance instead of a CircleCI `NPM_TOKEN` without provenance.
+- Nightly versions use the GitHub Actions run number, so their numeric suffix does not continue the CircleCI build-number sequence.
 
-1. Restore the `push` and `pull_request` triggers in `.github/workflows/ci.yml`; keep the existing `workflow_dispatch` trigger for rehearsals and nightlies.
-2. Disable the `Publish stable release` and `Publish nightly release` invocations in `.circleci/config.yml` before merging. CircleCI validation jobs may remain as redundant signals.
-3. Change npm trusted publishing from the CircleCI pipeline to the GitHub Actions `release.yml` workflow.
-4. Replace the four required CircleCI contexts with `Quality and race` plus the three GitHub platform contexts only after those GitHub jobs have completed successfully on the cutover commit.
-5. Manually dispatch GitHub Actions with both publication inputs disabled, then verify the validation matrix before creating the next release tag. Stable fallback publication requires selecting the tag and explicitly setting `publish_stable` to `true`.
-
-Never leave both stable publish paths enabled. Both are fail-closed behind their own gates, but concurrent publishers would race on the same immutable npm version and GitHub tag.
+Keep only one active publication provider. Concurrent publishers would race on the same immutable npm version and GitHub tag.
