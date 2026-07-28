@@ -11,14 +11,14 @@ Treat rollback as a live-workspace mutation. Diagnose and preview freely, but pe
 
 1. Run `turnal status`.
 2. If it reports a pending rollback journal, do not start another rollback. Follow [references/recovery.md](references/recovery.md).
-3. Find real session and turn identifiers with `turnal sessions --json` or `turnal log`. For a manual checkpoint, copy the `checkpoint_id` or `commit_sha` from `turnal save --json` output; never invent either value.
+3. Find real session and turn identifiers with `turnal sessions --json` or `turnal log`. For a manual checkpoint, copy the `checkpoint_id` or `commit_sha` from `turnal save --json` output.
 4. Read [references/rollback-arguments.md](references/rollback-arguments.md) before choosing a target or mode.
 
 ## Resolve the user's intent to a phase
 
 - Use `:pre` to restore the state before a turn or to undo that turn's captured file changes.
 - Use `:post` to restore the state after a turn.
-- Never omit the phase when translating natural-language intent. Turnal defaults an unphased rollback target to `:post`, which is wrong for requests such as “undo turn 7.”
+- Write the phase explicitly every time you translate natural-language intent. Turnal defaults an unphased rollback target to `:post`, which is wrong for requests such as “undo turn 7.”
 - If the requested before/after state is ambiguous and either choice could lose work, ask the user which state they mean before performing the rollback.
 
 ## Preview every rollback
@@ -31,7 +31,7 @@ turnal rollback --to <session>:<turn>:pre --dry-run
 
 Review the resolved target, worktree, mode, and every add/modify/delete action. Explain that ignored files and paths denied by current secret globs are left untouched, so checkpoint rollback restores the captured project surface rather than every byte under the workspace.
 
-If Turnal reports a cross-worktree or ambiguous target, copy one of the reported `wt_...` identifiers and retry with `--from-worktree <worktree-id>`. Do not guess a worktree ID.
+If Turnal reports a cross-worktree or ambiguous target, copy one of the reported `wt_...` identifiers and retry with `--from-worktree <worktree-id>`.
 
 ## Perform only the reviewed operation
 
