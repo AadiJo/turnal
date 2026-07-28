@@ -7,10 +7,11 @@ on:
         description: Release channel selected by the gated CI workflow
         required: true
         type: string
-
-permissions:
-  contents: write
-  id-token: write
+      publish:
+        description: Publish the prepared release
+        required: false
+        default: true
+        type: boolean
 
 concurrency:
   group: publish-${{ inputs.channel }}
@@ -40,9 +41,13 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Install publish tools
+        if: inputs.publish
+        run: npm install --global npm@11.16.0
+
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
           NPM_PUBLISH_PROVENANCE: "true"
-          TURNAL_PUBLISH: "true"
+          TURNAL_PUBLISH: ${{ inputs.publish }}
         run: scripts/ci/release.sh "${{ inputs.channel }}" "${{ github.ref_name }}" "${{ github.run_number }}" "${{ github.sha }}"
