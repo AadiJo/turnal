@@ -1,47 +1,35 @@
 ---
 name: turnal-inspect-history
-description: Inspect Turnal history before acting when a request may have been tried before, revisits existing work, refers to a prior decision without enough context, or touches unfamiliar code whose intent may be recorded. Use to recover exactly what the user previously asked for, what agents attempted, why an approach was chosen or abandoned, what files changed, whether checks passed, and which turn introduced a line. Also use for explicit history, diff, blame, replay, or recorded-state questions. Skip only when the task is clearly new and history cannot materially affect the approach.
+description: Search Turnal's recorded history for prior attempts at the current task. Requires an initialized Turnal workspace. Use when the prompt gives a lead into work not visible in this conversation — "we tried this", "again", "still failing", "why is it like this" — or when the user names a Turnal inspection command (log, show, diff, blame, search, replay, verify).
 ---
 
 # Inspect Turnal history
 
-Use Turnal's CLI as the interface to durable history. Treat the append-only event log as the explanation of why work happened and hidden Git checkpoints as the truth of what files looked like. Do not infer file state from provider-supplied diffs.
+Use Turnal's CLI as the interface to durable history. Treat the append-only event log as the explanation of why work happened and hidden Git checkpoints as the truth of what files looked like. Read file state from checkpoints rather than from provider-supplied diffs.
 
 ## Establish the workspace
 
-1. Run `turnal status` before querying history.
-2. If Turnal is not initialized, report that no Turnal history is available. Do not run `turnal init` unless the user asks to start recording.
-3. If the installed command rejects a documented flag, run `turnal <command> --help` and follow the installed CLI. Never guess a replacement flag.
-4. Do not read or modify `.turnal/` directly to bypass the CLI. Report integrity errors with the failed invariant intact.
+Run `turnal status` first. If it reports that Turnal is not initialized, say so in one line and stop — the rest of this skill has nothing to read. Start recording only when the user asks for `turnal init`.
 
-## Look back before editing when history may matter
+Once history exists, work through the CLI: when it rejects a documented flag, run `turnal <command> --help` and follow the installed binary. Report integrity errors with the failed invariant intact.
 
-Treat history as project context, not merely an audit tool. Check it before implementation when the request:
+## Recover the lead without over-reading
 
-- sounds like a retry or continuation, including “again,” “continue,” “revisit,” “still failing,” or “we tried this”;
-- asks why existing code, architecture, or behavior is the way it is;
-- refers to an earlier decision, implementation, conversation, or user preference that is absent from the current prompt;
-- changes unfamiliar or partially completed code where a recorded instruction may explain the intended outcome;
-- concerns a regression, recurring error, abandoned approach, or feature that may already have an Attempt;
-- would benefit from knowing whether a similar solution failed checks or was rejected before.
+The lead is the phrase in the prompt that points at work outside this conversation. Search for that, not for the whole task.
 
-Do not require the user to say “check history.” If past context could materially change the implementation, run one focused search before editing. Do not delay clearly greenfield work with speculative archaeology.
-
-## Recover relevant context without over-reading
-
-1. Build a narrow search query from the user's feature name, error text, file path, command, or distinctive terminology.
-2. Run `turnal search "<query>" --json`. If needed, try one alternate query using a filename or error string rather than broadening to the entire history.
+1. Build a narrow search query from the lead — the feature name, error text, file path, command, or distinctive terminology it names.
+2. Run `turnal search "<query>" --json`. If it misses, try one alternate query using a filename or error string rather than broadening to the entire history.
 3. Inspect plausible matches with `turnal show <session>:<turn> --json` to recover the recorded user instruction, normalized events, tools, and checkpoint metadata.
 4. Use `turnal diff <session>:<turn>` to see what that Attempt actually changed. Use `blame` first when the question starts from a particular line.
 5. Add `--transcript`, `--raw`, or `--full` only if normalized events do not establish the prior intent; recorded provider data may be sensitive.
 6. Compare prior instructions with the current request. The current user request wins when they conflict; history explains earlier intent but does not override new direction.
-7. Summarize only the relevant prior attempts, outcomes, and implications before proceeding with the present task. If no relevant history is found, say so briefly and continue normally.
+7. Summarize the prior attempts the lead reached, their outcomes, and their implications for the present task. When history holds nothing relevant, say so in one line and continue.
 
 ## Find identifiers before constructing a target
 
 Start with `turnal sessions --json` when another command will consume the result. Use `turnal log` for a readable graph, `turnal log --transcript` for captured conversation context, or `turnal search --json "<query>"` when the user describes content rather than an identifier.
 
-Copy session IDs and turn numbers from output. Never fabricate them. If search says the disposable index is missing or stale, run `turnal reindex` and retry; reindex rebuilds only the disposable lookup cache.
+Copy session IDs and turn numbers from that output. If search reports the disposable index is missing or stale, run `turnal reindex` and retry; reindex rebuilds only the disposable lookup cache.
 
 Read [references/target-syntax.md](references/target-syntax.md) before passing a target to `show`, `diff`, `verify`, or `replay`. These commands intentionally accept different target shapes.
 

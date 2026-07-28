@@ -98,7 +98,7 @@ Normal status is offline. The explicit capture probe starts Codex app-server onl
 
 Turnal includes three project-scoped agent skills. Accept the installation prompt from `turnal init` to make them available to the initialized agents. Compatible agents can select a skill from its description or invoke it explicitly:
 
-- [`$turnal-inspect-history`](.agents/skills/turnal-inspect-history/SKILL.md) searches recorded work before implementation when a request may have been tried before, revisits existing code, or depends on missing prior intent. It can recover what the user asked for, what earlier agents attempted, what changed, and whether checks passed.
+- [`$turnal-inspect-history`](.agents/skills/turnal-inspect-history/SKILL.md) searches recorded work when the prompt gives a lead into earlier attempts — "we tried this", "still failing", "why is it like this" — or when you name an inspection command directly. It can recover what the user asked for, what earlier agents attempted, what changed, and whether checks passed.
 - [`$turnal-fork-history`](.agents/skills/turnal-fork-history/SKILL.md) previews fork readiness, reruns a recorded task from its historical pre-turn workspace, and compares or selects isolated attempts.
 - [`$turnal-restore-history`](.agents/skills/turnal-restore-history/SKILL.md) resolves checkpoint arguments, previews rollback, and performs an explicitly requested restore or interrupted-rollback recovery safely.
 
