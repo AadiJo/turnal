@@ -3,6 +3,8 @@
 set -eu
 
 executables="turnal turnal-adapter-opencode turnal-adapter-gemini-cli turnal-adapter-copilot-cli"
+documentation="LICENSE NOTICE"
+archive_members="$executables $documentation"
 
 usage() {
   cat <<'EOF'
@@ -220,9 +222,21 @@ main() {
     [ "$member_count" -eq 1 ] ||
       fail "archive must contain exactly one regular candidate named $member"
   done
+  for member in $documentation; do
+    member_count="$(awk -v expected="$member" '
+      {
+        value = $0
+        sub(/^\.\//, "", value)
+        if (value == expected) count++
+      }
+      END { print count + 0 }
+    ' "$tmp_dir/members")"
+    [ "$member_count" -le 1 ] ||
+      fail "archive contains duplicate entry named $member"
+  done
   while IFS= read -r member; do
     normalized="${member#./}"
-    case " $executables " in
+    case " $archive_members " in
       *" $normalized "*) ;;
       *) fail "archive contains unexpected entry: $member" ;;
     esac
@@ -237,6 +251,13 @@ main() {
     [ -f "$stage_dir/$executable" ] && [ ! -L "$stage_dir/$executable" ] ||
       fail "archive entry $executable is not a regular file"
     chmod 755 "$stage_dir/$executable"
+  done
+  for document in $documentation; do
+    if path_exists "$stage_dir/$document"; then
+      [ -f "$stage_dir/$document" ] && [ ! -L "$stage_dir/$document" ] ||
+        fail "archive entry $document is not a regular file"
+      chmod 644 "$stage_dir/$document"
+    fi
   done
 
   mkdir -p "$install_dir" || fail "could not create $install_dir"

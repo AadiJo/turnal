@@ -30,6 +30,11 @@ var standaloneExecutables = []string{
 	"turnal-adapter-copilot-cli",
 }
 
+var standaloneDocumentation = []string{
+	"LICENSE",
+	"NOTICE",
+}
+
 type StandaloneInstallOptions struct {
 	Version        string
 	Channel        string
@@ -185,9 +190,15 @@ func extractStandaloneArchive(archive []byte, destination string) error {
 	}
 	defer gzipReader.Close()
 	reader := tar.NewReader(gzipReader)
-	expected := make(map[string]bool, len(standaloneExecutables))
+	seen := make(map[string]bool, len(standaloneExecutables)+len(standaloneDocumentation))
+	modes := make(map[string]os.FileMode, len(standaloneExecutables)+len(standaloneDocumentation))
 	for _, name := range standaloneExecutables {
-		expected[name] = false
+		seen[name] = false
+		modes[name] = 0o755
+	}
+	for _, name := range standaloneDocumentation {
+		seen[name] = false
+		modes[name] = 0o644
 	}
 	for {
 		header, err := reader.Next()
@@ -198,17 +209,18 @@ func extractStandaloneArchive(archive []byte, destination string) error {
 			return fmt.Errorf("read standalone archive: %w", err)
 		}
 		name := strings.TrimPrefix(filepath.ToSlash(header.Name), "./")
-		if _, ok := expected[name]; !ok || header.Typeflag != tar.TypeReg {
+		if _, ok := seen[name]; !ok || header.Typeflag != tar.TypeReg {
 			return fmt.Errorf("standalone archive contains unexpected entry %q", header.Name)
 		}
-		if expected[name] {
+		if seen[name] {
 			return fmt.Errorf("standalone archive contains duplicate entry %q", name)
 		}
 		if header.Size < 0 || header.Size > 128<<20 {
 			return fmt.Errorf("standalone archive entry %q has invalid size %d", name, header.Size)
 		}
 		target := filepath.Join(destination, name)
-		file, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o755)
+		mode := modes[name]
+		file, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
 		if err != nil {
 			return fmt.Errorf("create staged %s: %w", name, err)
 		}
@@ -220,13 +232,13 @@ func extractStandaloneArchive(archive []byte, destination string) error {
 		if closeErr != nil {
 			return fmt.Errorf("close staged %s: %w", name, closeErr)
 		}
-		if err := os.Chmod(target, 0o755); err != nil {
-			return fmt.Errorf("set staged %s executable mode: %w", name, err)
+		if err := os.Chmod(target, mode); err != nil {
+			return fmt.Errorf("set staged %s mode: %w", name, err)
 		}
-		expected[name] = true
+		seen[name] = true
 	}
-	for name, found := range expected {
-		if !found {
+	for _, name := range standaloneExecutables {
+		if !seen[name] {
 			return fmt.Errorf("standalone archive is missing %s", name)
 		}
 	}
