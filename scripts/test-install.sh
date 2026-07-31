@@ -24,6 +24,8 @@ release_dir="$tmp_dir/releases/v$version"
 payload_dir="$tmp_dir/payload"
 install_dir="$tmp_dir/bin"
 executables="turnal turnal-adapter-opencode turnal-adapter-gemini-cli turnal-adapter-copilot-cli"
+documentation="LICENSE NOTICE"
+archive_members="$executables $documentation"
 mkdir -p "$release_dir" "$payload_dir"
 
 archive_checksum() {
@@ -46,7 +48,10 @@ write_valid_payload() {
     printf '#!/bin/sh\necho new-%s\n' "$executable" >"$payload_dir/$executable"
     chmod 755 "$payload_dir/$executable"
   done
-  tar -czf "$release_dir/$archive" -C "$payload_dir" $executables
+  for document in $documentation; do
+    cp "$repo_root/$document" "$payload_dir/$document"
+  done
+  tar -czf "$release_dir/$archive" -C "$payload_dir" $archive_members
   write_checksum
 }
 
@@ -64,6 +69,9 @@ run_installer --version "$version" --install-dir "$install_dir"
 for executable in $executables; do
   test -x "$install_dir/$executable"
   cmp "$payload_dir/$executable" "$install_dir/$executable"
+done
+for document in $documentation; do
+  test ! -e "$install_dir/$document"
 done
 
 case "$checksum" in
@@ -103,8 +111,8 @@ test -x "$tmp_dir/latest-bin/turnal"
 
 write_valid_payload
 dot_members=""
-for executable in $executables; do
-  dot_members="$dot_members ./$executable"
+for member in $archive_members; do
+  dot_members="$dot_members ./$member"
 done
 # shellcheck disable=SC2086
 tar -czf "$release_dir/$archive" -C "$payload_dir" $dot_members
@@ -120,11 +128,14 @@ for executable in $executables; do
   printf '#!/bin/sh\necho safe\n' >"$payload_dir/$executable"
   chmod 755 "$payload_dir/$executable"
 done
+for document in $documentation; do
+  cp "$repo_root/$document" "$payload_dir/$document"
+done
 printf 'sensitive\n' >"$tmp_dir/victim"
 chmod 600 "$tmp_dir/victim"
 rm -f "$payload_dir/turnal"
 ln -s "$tmp_dir/victim" "$payload_dir/turnal"
-tar -czf "$release_dir/$archive" -C "$payload_dir" $executables
+tar -czf "$release_dir/$archive" -C "$payload_dir" $archive_members
 write_checksum
 if run_installer --version "$version" --install-dir "$tmp_dir/malicious-bin" \
   >"$tmp_dir/malicious.stdout" 2>"$tmp_dir/malicious.stderr"; then
@@ -136,7 +147,7 @@ test ! -x "$tmp_dir/victim"
 
 write_valid_payload
 printf 'unexpected\n' >"$payload_dir/unexpected"
-tar -czf "$release_dir/$archive" -C "$payload_dir" $executables unexpected
+tar -czf "$release_dir/$archive" -C "$payload_dir" $archive_members unexpected
 write_checksum
 if run_installer --version "$version" --install-dir "$tmp_dir/extra-bin" \
   >"$tmp_dir/extra.stdout" 2>"$tmp_dir/extra.stderr"; then
@@ -149,7 +160,7 @@ write_valid_payload
 mkdir -p "$payload_dir/nested"
 printf 'nested\n' >"$payload_dir/nested/payload"
 # shellcheck disable=SC2086
-tar -czf "$release_dir/$archive" -C "$payload_dir" $executables nested
+tar -czf "$release_dir/$archive" -C "$payload_dir" $archive_members nested
 write_checksum
 if run_installer --version "$version" --install-dir "$tmp_dir/nested-bin" \
   >"$tmp_dir/nested.stdout" 2>"$tmp_dir/nested.stderr"; then

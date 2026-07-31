@@ -69,7 +69,22 @@ npm run build
 
 export TURNAL_RELEASE_CHANNEL="$RELEASE_CHANNEL"
 export TURNAL_COMMIT="$sha"
-npm run pack:dry-run
+npm_pack_metadata="$(mktemp)"
+npm run build:npm-binaries
+npm pack --json --dry-run --ignore-scripts >"$npm_pack_metadata"
+node - "$npm_pack_metadata" <<'NODE'
+const fs = require('node:fs');
+
+const [artifact] = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const paths = new Set(artifact.files.map((file) => file.path));
+for (const required of ['LICENSE', 'NOTICE']) {
+  if (!paths.has(required)) {
+    console.error(`release invariant failed: npm package is missing '${required}'`);
+    process.exit(1);
+  }
+}
+NODE
+rm -f "$npm_pack_metadata"
 if [[ -n "${TURNAL_RELEASE_TARGETS:-}" ]]; then
   echo "release invariant failed: TURNAL_RELEASE_TARGETS must be unset for publication" >&2
   exit 1
@@ -89,6 +104,20 @@ for archive in "${expected_archives[@]}"; do
     echo "release invariant failed: missing standalone archive '$archive_path'" >&2
     exit 1
   fi
+  for document in LICENSE NOTICE; do
+    document_matches="$(tar -tzf "$archive_path" | awk -v name="$document" '
+      {
+        value = $0
+        sub(/^\.\//, "", value)
+        if (value == name) count++
+      }
+      END { print count + 0 }
+    ')"
+    if [[ "$document_matches" -ne 1 ]]; then
+      echo "release invariant failed: $archive_path must contain exactly one '$document'" >&2
+      exit 1
+    fi
+  done
   checksum_matches="$(awk -v name="$archive" '$2 == name { count++ } END { print count + 0 }' dist/releases/checksums.txt)"
   if [[ "$checksum_matches" -ne 1 ]]; then
     echo "release invariant failed: checksums.txt must contain exactly one entry for '$archive'" >&2

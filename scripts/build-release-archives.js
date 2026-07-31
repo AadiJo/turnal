@@ -28,6 +28,12 @@ const commands = [
   'turnal-adapter-copilot-cli',
 ];
 
+const documentationFiles = ['LICENSE', 'NOTICE'];
+const archiveEntries = [
+  ...commands.map((name) => ({ name, mode: 0o755 })),
+  ...documentationFiles.map((name) => ({ name, mode: 0o644 })),
+];
+
 function isWithin(root, candidate) {
   const relative = path.relative(root, candidate);
   return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
@@ -126,6 +132,12 @@ function buildArchive(target, stagingRoot) {
     fs.chmodSync(outputPath, 0o755);
   }
 
+  for (const name of documentationFiles) {
+    const outputPath = path.join(stagingDir, name);
+    fs.copyFileSync(path.join(packageRoot, name), outputPath);
+    fs.chmodSync(outputPath, 0o644);
+  }
+
   const archiveName = `turnal_${packageJson.version}_${target.name}.tar.gz`;
   const archivePath = path.join(outputRoot, archiveName);
   writeArchive(archivePath, stagingDir);
@@ -141,10 +153,10 @@ function writeOctal(header, offset, length, value) {
   header[offset + length - 1] = 0;
 }
 
-function tarHeader(name, size) {
+function tarHeader(name, size, mode) {
   const header = Buffer.alloc(512);
   header.write(name, 0, 100, 'utf8');
-  writeOctal(header, 100, 8, 0o755);
+  writeOctal(header, 100, 8, mode);
   writeOctal(header, 108, 8, 0);
   writeOctal(header, 116, 8, 0);
   writeOctal(header, 124, 12, size);
@@ -165,9 +177,9 @@ function tarHeader(name, size) {
 
 function writeArchive(archivePath, stagingDir) {
   const chunks = [];
-  for (const command of commands) {
-    const data = fs.readFileSync(path.join(stagingDir, command));
-    chunks.push(tarHeader(command, data.length), data);
+  for (const { name, mode } of archiveEntries) {
+    const data = fs.readFileSync(path.join(stagingDir, name));
+    chunks.push(tarHeader(name, data.length, mode), data);
     const padding = (512 - (data.length % 512)) % 512;
     if (padding > 0) {
       chunks.push(Buffer.alloc(padding));

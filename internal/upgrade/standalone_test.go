@@ -32,6 +32,9 @@ func TestInstallStandaloneDownloadsVerifiesAndReplacesExecutables(t *testing.T) 
 	for _, name := range standaloneExecutables {
 		files[name] = standaloneMetadataScript(version, ChannelStable, InstallSourceStandalone)
 	}
+	for _, name := range standaloneDocumentation {
+		files[name] = []byte("documentation-" + name)
+	}
 	archive := standaloneTestArchive(t, files)
 	sum := sha256.Sum256(archive)
 	checksums := fmt.Sprintf("%x  %s\n", sum, archiveName)
@@ -104,6 +107,17 @@ func TestExtractStandaloneArchiveRejectsUnexpectedEntry(t *testing.T) {
 	err := extractStandaloneArchive(archive, t.TempDir())
 	if err == nil {
 		t.Fatal("extractStandaloneArchive succeeded, want unexpected entry error")
+	}
+}
+
+func TestExtractStandaloneArchiveAllowsArchivesWithoutDocumentation(t *testing.T) {
+	files := make(map[string][]byte, len(standaloneExecutables))
+	for _, name := range standaloneExecutables {
+		files[name] = []byte("payload-" + name)
+	}
+	archive := standaloneTestArchive(t, files)
+	if err := extractStandaloneArchive(archive, t.TempDir()); err != nil {
+		t.Fatalf("extractStandaloneArchive: %v", err)
 	}
 }
 

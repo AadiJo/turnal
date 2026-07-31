@@ -16,6 +16,7 @@
     "go.mod",
     "go.sum",
     "LICENSE",
+    "NOTICE",
     "README.md",
     "SECURITY.md",
     "docs/"

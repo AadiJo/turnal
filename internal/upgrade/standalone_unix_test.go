@@ -31,9 +31,12 @@ func TestCopyExecutableOverridesRestrictiveUmask(t *testing.T) {
 }
 
 func TestExtractStandaloneArchiveOverridesRestrictiveUmask(t *testing.T) {
-	files := make(map[string][]byte, len(standaloneExecutables))
+	files := make(map[string][]byte, len(standaloneExecutables)+len(standaloneDocumentation))
 	for _, name := range standaloneExecutables {
 		files[name] = []byte("payload-" + name)
+	}
+	for _, name := range standaloneDocumentation {
+		files[name] = []byte("documentation-" + name)
 	}
 	archive := standaloneTestArchive(t, files)
 	destination := t.TempDir()
@@ -50,6 +53,15 @@ func TestExtractStandaloneArchiveOverridesRestrictiveUmask(t *testing.T) {
 		}
 		if got := info.Mode().Perm(); got != 0o755 {
 			t.Fatalf("%s mode = %#o, want 0755", name, got)
+		}
+	}
+	for _, name := range standaloneDocumentation {
+		info, err := os.Stat(filepath.Join(destination, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o644 {
+			t.Fatalf("%s mode = %#o, want 0644", name, got)
 		}
 	}
 }
