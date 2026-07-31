@@ -131,18 +131,7 @@ if [[ "$checksum_lines" -ne 4 ]]; then
   exit 1
 fi
 
-syft_bin="${SYFT_BIN:-}"
-if [[ -z "$syft_bin" ]]; then
-  if command -v syft >/dev/null 2>&1; then
-    syft_bin="$(command -v syft)"
-  else
-    tool_dir="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/turnal-ci-bin"
-    mkdir -p "$tool_dir"
-    GOBIN="$tool_dir" go install github.com/anchore/syft/cmd/syft@v1.33.0
-    syft_bin="$tool_dir/syft"
-  fi
-fi
-"$syft_bin" dir:. --output spdx-json=turnal.spdx.json
+scripts/ci/generate-release-sbom.sh turnal.spdx.json "$RELEASE_VERSION"
 
 case "${TURNAL_PUBLISH:-true}" in
   false)
