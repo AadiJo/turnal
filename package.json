@@ -28,6 +28,7 @@
     "test:installer": "sh scripts/test-install.sh",
     "build:release-archives": "node scripts/build-release-archives.js",
     "pack:dry-run": "npm pack --dry-run",
+    "test:release-sbom": "node --test scripts/validate-release-sbom.test.js",
     "prepack": "node scripts/build-npm-binaries.js",
     "prepublishOnly": "go test ./..."
   },

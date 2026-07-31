@@ -15,7 +15,7 @@
 - Nightly releases start from a manually dispatched GitHub Actions workflow on `main` with `release_mode` set to `nightly`. The nightly workflow repeats every required gate before publishing.
 - Before enabling the first publisher, manually dispatch GitHub Actions on `main` with `release_mode` set to `rehearse`. It repeats every gate, builds the package and SBOM, and exits before npm or GitHub publication.
 - Failed, cancelled, filtered, or missing prerequisite jobs prevent the corresponding publish job from starting. Do not add an independent publish workflow or attach release credentials to a validation job.
-- npm publication uses GitHub OIDC trusted publishing with provenance. The publish job builds every supported npm binary and standalone macOS/Linux archive, performs a package dry run, generates an SPDX SBOM and SHA-256 checksums, moves the npm dist-tag, and creates the GitHub release with the complete asset set.
+- npm publication uses GitHub OIDC trusted publishing with provenance. The publish job packs every supported npm binary, builds the standalone macOS/Linux archives, generates a named SPDX SBOM from those packed artifacts, validates the complete package inventory, generates SHA-256 checksums, moves the npm dist-tag, and creates the GitHub release with the complete asset set.
 - Configure npm trusted publishing for `@aadijo/turnal` with repository `AadiJo/turnal` and workflow filename `ci.yml`; npm validates the caller rather than the reusable `release.yml` workflow, and no long-lived npm token is stored in GitHub.
 - Protect `main` with the exact GitHub Actions contexts `Quality and race`, `Test (linux)`, `Test (macos)`, and `Test (windows)` after all four have reported successfully at least once.
 
