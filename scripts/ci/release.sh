@@ -96,6 +96,8 @@ expected_archives=(
   "turnal_${RELEASE_VERSION}_darwin_arm64.tar.gz"
   "turnal_${RELEASE_VERSION}_linux_amd64.tar.gz"
   "turnal_${RELEASE_VERSION}_linux_arm64.tar.gz"
+  "turnal_${RELEASE_VERSION}_windows_amd64.tar.gz"
+  "turnal_${RELEASE_VERSION}_windows_arm64.tar.gz"
 )
 release_assets=(turnal.spdx.json dist/releases/checksums.txt)
 for archive in "${expected_archives[@]}"; do
@@ -126,8 +128,8 @@ for archive in "${expected_archives[@]}"; do
   release_assets+=("$archive_path")
 done
 checksum_lines="$(awk 'NF { count++ } END { print count + 0 }' dist/releases/checksums.txt)"
-if [[ "$checksum_lines" -ne 4 ]]; then
-  echo "release invariant failed: checksums.txt contains $checksum_lines entries; expected 4" >&2
+if [[ "$checksum_lines" -ne 6 ]]; then
+  echo "release invariant failed: checksums.txt contains $checksum_lines entries; expected 6" >&2
   exit 1
 fi
 

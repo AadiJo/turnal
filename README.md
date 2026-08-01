@@ -46,14 +46,22 @@ With npm:
 npm install -g @aadijo/turnal
 ```
 
-On macOS or Linux, install the standalone binaries without Node.js:
+Install the standalone binaries without Node.js on macOS or Linux:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -fsSL \
   https://raw.githubusercontent.com/AadiJo/turnal/main/install.sh | sh
 ```
 
-The standalone installer detects x64 or arm64, verifies the archive against the SHA-256 checksum published with the same GitHub release, and installs `turnal` and its external adapter executables under `~/.local/bin`. Each release provides `turnal_<version>_darwin_amd64.tar.gz`, `turnal_<version>_darwin_arm64.tar.gz`, `turnal_<version>_linux_amd64.tar.gz`, `turnal_<version>_linux_arm64.tar.gz`, and `checksums.txt`. The checksum detects download corruption; it is not an independent signature if the GitHub release itself is compromised. Select a different directory or pin a version with installer arguments:
+On Windows, run the PowerShell installer:
+
+```powershell
+irm https://raw.githubusercontent.com/AadiJo/turnal/main/install.ps1 | iex
+```
+
+The standalone installers detect x64 or arm64, verify the archive against the SHA-256 checksum published with the same GitHub release, and install `turnal` plus its external adapter executables. The macOS and Linux default is `~/.local/bin`. The Windows default is `%LOCALAPPDATA%\Programs\Turnal\bin`, which the PowerShell installer adds to the user `PATH` without elevation.
+
+Each release provides `turnal_<version>_<platform>_<architecture>.tar.gz` for macOS, Linux, and Windows on x64 and arm64, plus `checksums.txt`. The checksum detects download corruption; it is not an independent signature if the GitHub release itself is compromised. Select a different directory or pin a version with installer arguments:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -fsSL \
@@ -61,9 +69,15 @@ curl --proto '=https' --tlsv1.2 -fsSL \
   sh -s -- --version 0.0.1 --install-dir "$HOME/bin"
 ```
 
-The installer never invokes `sudo`; the selected directory must already be writable.
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/AadiJo/turnal/main/install.ps1))) `
+  -Version 0.0.1 `
+  -InstallDir "$HOME\bin"
+```
 
-Turnal is supported on Linux, macOS, and Windows on x64 and arm64. The npm package ships prebuilt binaries for each, while standalone release archives cover macOS and Linux. Go is only needed when installing from source or using an unsupported npm platform. Isolated `turnal fork` execution is available only on those three platforms. On any other target it fails closed with an explicit error instead of running a child without process containment.
+The installers never invoke `sudo` or request elevation; the selected directory must already be writable. Pass `-NoPathUpdate` to the PowerShell installer to leave the user `PATH` unchanged.
+
+Turnal is supported on Linux, macOS, and Windows on x64 and arm64. The npm package and standalone release archives ship prebuilt binaries for each. Go is only needed when installing from source or using an unsupported npm platform. Isolated `turnal fork` execution is available only on those three platforms. On any other target it fails closed with an explicit error instead of running a child without process containment.
 
 From source:
 

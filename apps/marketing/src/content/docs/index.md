@@ -25,14 +25,20 @@ Install Turnal globally with npm. The package selects a prebuilt binary for macO
 npm install -g @aadijo/turnal
 ```
 
-On macOS or Linux, install standalone binaries without Node.js:
+Install standalone binaries without Node.js on macOS or Linux:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -fsSL \
   https://raw.githubusercontent.com/AadiJo/turnal/main/install.sh | sh
 ```
 
-The standalone installer verifies the archive against the SHA-256 checksum published with the same GitHub release and installs Turnal and its external adapters under `~/.local/bin`. Releases provide `turnal_<version>_darwin_amd64.tar.gz`, `turnal_<version>_darwin_arm64.tar.gz`, `turnal_<version>_linux_amd64.tar.gz`, `turnal_<version>_linux_arm64.tar.gz`, and `checksums.txt`. This detects download corruption but is not an independent signature if the release itself is compromised. Pass `--version VERSION` to pin a release or `--install-dir DIRECTORY` to select a writable destination. It never invokes `sudo`.
+On Windows, run the PowerShell installer:
+
+```powershell
+irm https://raw.githubusercontent.com/AadiJo/turnal/main/install.ps1 | iex
+```
+
+The standalone installers verify the archive against the SHA-256 checksum published with the same GitHub release and install Turnal plus its external adapters. macOS and Linux use `~/.local/bin`. Windows uses `%LOCALAPPDATA%\Programs\Turnal\bin` and adds it to the user `PATH`. Releases provide `turnal_<version>_<platform>_<architecture>.tar.gz` for macOS, Linux, and Windows on x64 and arm64, plus `checksums.txt`. This detects download corruption but is not an independent signature if the release itself is compromised. Both installers support a pinned version and custom writable destination without elevation.
 
 On an unsupported npm platform Turnal can fall back to a local Go build. Isolated `turnal fork` execution requires Linux, macOS, or Windows; elsewhere it fails closed rather than running an uncontained child.
 

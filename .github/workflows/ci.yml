@@ -70,13 +70,13 @@ jobs:
         include:
           - name: linux
             os: ubuntu-24.04
-            test-installer: true
+            installer: posix
           - name: macos
             os: macos-15
-            test-installer: true
+            installer: posix
           - name: windows
             os: windows-2025
-            test-installer: false
+            installer: windows
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -87,9 +87,13 @@ jobs:
           cache: true
       - name: Test
         run: go test ./...
-      - name: Test standalone installer
-        if: matrix.test-installer
+      - name: Test standalone installer (macOS/Linux)
+        if: matrix.installer == 'posix'
         run: sh scripts/test-install.sh
+      - name: Test standalone installer (Windows)
+        if: matrix.installer == 'windows'
+        shell: powershell
+        run: ./scripts/test-install.ps1
       - name: Build CLI
         run: go build ./cmd/turnal
 

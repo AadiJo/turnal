@@ -19,6 +19,8 @@ const allTargets = [
   { name: 'darwin_arm64', goos: 'darwin', goarch: 'arm64' },
   { name: 'linux_amd64', goos: 'linux', goarch: 'amd64' },
   { name: 'linux_arm64', goos: 'linux', goarch: 'arm64' },
+  { name: 'windows_amd64', goos: 'windows', goarch: 'amd64' },
+  { name: 'windows_arm64', goos: 'windows', goarch: 'arm64' },
 ];
 
 const commands = [
@@ -29,10 +31,16 @@ const commands = [
 ];
 
 const documentationFiles = ['LICENSE', 'NOTICE'];
-const archiveEntries = [
-  ...commands.map((name) => ({ name, mode: 0o755 })),
-  ...documentationFiles.map((name) => ({ name, mode: 0o644 })),
-];
+function executableName(target, command) {
+  return target.goos === 'windows' ? `${command}.exe` : command;
+}
+
+function archiveEntries(target) {
+  return [
+    ...commands.map((command) => ({ name: executableName(target, command), mode: 0o755 })),
+    ...documentationFiles.map((name) => ({ name, mode: 0o644 })),
+  ];
+}
 
 function isWithin(root, candidate) {
   const relative = path.relative(root, candidate);
@@ -116,7 +124,7 @@ function buildArchive(target, stagingRoot) {
   fs.mkdirSync(stagingDir, { recursive: true });
 
   for (const command of commands) {
-    const outputPath = path.join(stagingDir, command);
+    const outputPath = path.join(stagingDir, executableName(target, command));
     const args = ['build', '-trimpath', '-buildvcs=false'];
     args.push('-ldflags', ldflags());
     args.push('-o', outputPath, `./cmd/${command}`);
@@ -140,7 +148,7 @@ function buildArchive(target, stagingRoot) {
 
   const archiveName = `turnal_${packageJson.version}_${target.name}.tar.gz`;
   const archivePath = path.join(outputRoot, archiveName);
-  writeArchive(archivePath, stagingDir);
+  writeArchive(archivePath, stagingDir, target);
   return { archiveName, archivePath };
 }
 
@@ -175,9 +183,9 @@ function tarHeader(name, size, mode) {
   return header;
 }
 
-function writeArchive(archivePath, stagingDir) {
+function writeArchive(archivePath, stagingDir, target) {
   const chunks = [];
-  for (const { name, mode } of archiveEntries) {
+  for (const { name, mode } of archiveEntries(target)) {
     const data = fs.readFileSync(path.join(stagingDir, name));
     chunks.push(tarHeader(name, data.length, mode), data);
     const padding = (512 - (data.length % 512)) % 512;

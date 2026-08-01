@@ -45,7 +45,14 @@ if [[ "$packed_version" != "$release_version" ]]; then
   exit 1
 fi
 
-standalone_targets=(darwin_amd64 darwin_arm64 linux_amd64 linux_arm64)
+standalone_targets=(
+  darwin_amd64
+  darwin_arm64
+  linux_amd64
+  linux_arm64
+  windows_amd64
+  windows_arm64
+)
 for target in "${standalone_targets[@]}"; do
   archive="dist/releases/turnal_${release_version}_${target}.tar.gz"
   if [[ ! -f "$archive" ]]; then
