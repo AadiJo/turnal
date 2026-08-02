@@ -93,12 +93,31 @@ jobs:
       - name: Build CLI
         run: go build ./cmd/turnal
 
+  windows-npm-install:
+    name: Test npm install (windows)
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Test npm package lifecycle
+        shell: pwsh
+        run: ./scripts/test-npm-windows.ps1
+
   stable-release:
     name: Publish stable release
     if: needs.quality.outputs.stable_release == 'true'
     needs:
       - quality
       - platform-tests
+      - windows-npm-install
     permissions:
       contents: write
       id-token: write
@@ -114,6 +133,7 @@ jobs:
     needs:
       - quality
       - platform-tests
+      - windows-npm-install
     permissions:
       contents: write
       id-token: write
@@ -129,6 +149,7 @@ jobs:
     needs:
       - quality
       - platform-tests
+      - windows-npm-install
     permissions:
       contents: read
       id-token: write

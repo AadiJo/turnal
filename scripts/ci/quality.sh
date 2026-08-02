@@ -18,6 +18,7 @@ go mod tidy
 git diff --exit-code -- go.mod go.sum
 go vet ./...
 go test -race ./...
+npm run test:postinstall
 npm run test:release-sbom
 go build -o "$build_dir/turnal" ./cmd/turnal
 
