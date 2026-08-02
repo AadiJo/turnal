@@ -87,7 +87,10 @@ function Invoke-Installer([string]$Version, [string]$InstallDir) {
 
 try {
     New-Item -ItemType Directory -Path $tempRoot | Out-Null
-    $version = '9.8.7'
+    # Keep the fixture name distinct from install.ps1's public -Version parameter.
+    # Invoke-Expression evaluates that parameter block in this scope on Windows
+    # PowerShell, where an existing optimized $Version variable is not writable.
+    $fixtureVersion = '9.8.7'
     $architecture = Get-TestArchitecture
     $executables = @(
         'turnal.exe'
@@ -95,9 +98,9 @@ try {
         'turnal-adapter-gemini-cli.exe'
         'turnal-adapter-copilot-cli.exe'
     )
-    $releaseDirectory = Join-Path $tempRoot "releases\v$version"
+    $releaseDirectory = Join-Path $tempRoot "releases\v$fixtureVersion"
     New-Item -ItemType Directory -Path $releaseDirectory -Force | Out-Null
-    $archiveName = "turnal_${version}_windows_${architecture}.tar.gz"
+    $archiveName = "turnal_${fixtureVersion}_windows_${architecture}.tar.gz"
     $archivePath = Join-Path $releaseDirectory $archiveName
     Write-FixtureArchive $archivePath
 
@@ -110,7 +113,7 @@ try {
     $env:TURNAL_RELEASE_BASE_URL = ([Uri](Join-Path $tempRoot 'releases')).AbsoluteUri.TrimEnd('/')
 
     $installDirectory = Join-Path $tempRoot 'install directory with spaces'
-    Invoke-Installer $version $installDirectory
+    Invoke-Installer $fixtureVersion $installDirectory
     foreach ($name in $executables) {
         $installed = Join-Path $installDirectory $name
         Assert-True (Test-Path -LiteralPath $installed) "missing installed $name"
@@ -120,7 +123,7 @@ try {
     Assert-True ($pathEntries.Count -eq 2) "user PATH entries = $($pathEntries -join ', ')"
     Assert-True ($pathEntries[1] -eq $installDirectory) 'install directory was not added to the user PATH'
 
-    Invoke-Installer $version $installDirectory
+    Invoke-Installer $fixtureVersion $installDirectory
     $pathEntries = @([IO.File]::ReadAllText($pathFile) -split ';')
     Assert-True ($pathEntries.Count -eq 2) 'installer duplicated its user PATH entry'
 
@@ -129,13 +132,13 @@ try {
         (Join-Path $releaseDirectory 'checksums.txt'),
         ('0' * 64) + "  $archiveName`n"
     )
-    Assert-Throws { Invoke-Installer $version (Join-Path $tempRoot 'tampered') } 'checksum verification failed'
+    Assert-Throws { Invoke-Installer $fixtureVersion (Join-Path $tempRoot 'tampered') } 'checksum verification failed'
     [IO.File]::WriteAllText((Join-Path $releaseDirectory 'checksums.txt'), $validChecksum)
 
     Assert-Throws { Invoke-Installer '..' (Join-Path $tempRoot 'invalid') } 'invalid version'
 
     Write-FixtureArchive $archivePath -UnexpectedEntry
-    Assert-Throws { Invoke-Installer $version (Join-Path $tempRoot 'unexpected') } 'unexpected entry'
+    Assert-Throws { Invoke-Installer $fixtureVersion (Join-Path $tempRoot 'unexpected') } 'unexpected entry'
     Write-FixtureArchive $archivePath
 
     $rollbackDirectory = Join-Path $tempRoot 'rollback'
@@ -144,7 +147,7 @@ try {
         [IO.File]::WriteAllText((Join-Path $rollbackDirectory $name), "old-$name`n")
     }
     $env:TURNAL_TEST_FAIL_INSTALL = 'turnal-adapter-gemini-cli.exe'
-    Assert-Throws { Invoke-Installer $version $rollbackDirectory } 'injected failure'
+    Assert-Throws { Invoke-Installer $fixtureVersion $rollbackDirectory } 'injected failure'
     $env:TURNAL_TEST_FAIL_INSTALL = $null
     foreach ($name in $executables) {
         Assert-True ([IO.File]::ReadAllText((Join-Path $rollbackDirectory $name)) -eq "old-$name`n") "rollback did not restore $name"
@@ -158,7 +161,7 @@ try {
     }
     $env:TURNAL_TEST_FAIL_INSTALL = 'turnal-adapter-gemini-cli.exe'
     $env:TURNAL_TEST_FAIL_RESTORE = 'turnal-adapter-opencode.exe'
-    Assert-Throws { Invoke-Installer $version $failedRollbackDirectory } 'rollback incomplete; backups preserved in'
+    Assert-Throws { Invoke-Installer $fixtureVersion $failedRollbackDirectory } 'rollback incomplete; backups preserved in'
     $env:TURNAL_TEST_FAIL_INSTALL = $null
     $env:TURNAL_TEST_FAIL_RESTORE = $null
     $preservedTransactions = @(Get-ChildItem -LiteralPath $failedRollbackDirectory -Directory -Filter '.turnal-install-*')
@@ -168,17 +171,19 @@ try {
     ) 'failed rollback did not preserve the adapter backup'
 
     $latestPath = Join-Path $tempRoot 'latest.json'
-    [IO.File]::WriteAllText($latestPath, "{`"tag_name`":`"v$version`"}")
+    [IO.File]::WriteAllText($latestPath, "{`"tag_name`":`"v$fixtureVersion`"}")
     $env:TURNAL_LATEST_RELEASE_URL = ([Uri]$latestPath).AbsoluteUri
     $latestDirectory = Join-Path $tempRoot 'latest'
     Invoke-Installer '' $latestDirectory
     Assert-True (Test-Path -LiteralPath (Join-Path $latestDirectory 'turnal.exe')) 'latest release resolution did not install Turnal'
 
     $pipedDirectory = Join-Path $tempRoot 'piped'
-    $env:TURNAL_VERSION = $version
+    $env:TURNAL_VERSION = $fixtureVersion
     $env:TURNAL_INSTALL_DIR = $pipedDirectory
     [IO.File]::ReadAllText($installerPath) | Invoke-Expression
-    Assert-True (Test-Path -LiteralPath (Join-Path $pipedDirectory 'turnal.exe')) 'irm-style piped execution did not install Turnal'
+    $pipedTurnal = Join-Path $pipedDirectory 'turnal.exe'
+    Assert-True (Test-Path -LiteralPath $pipedTurnal) 'irm-style piped execution did not install Turnal'
+    Assert-True ([IO.File]::ReadAllText($pipedTurnal) -eq "new-turnal.exe`n") 'irm-style piped execution installed the wrong release'
 
     Write-Output 'Windows installer tests passed'
 }
