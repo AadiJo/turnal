@@ -40,6 +40,14 @@ func TestGraphCommandShowsCheckpointGraph(t *testing.T) {
 
 	if _, err := eventlog.Open(repo.MetadataDir).Append(eventlog.AppendInput{
 		SessionID: sessionID,
+		Type:      primitives.EventTypeSessionStart,
+		Adapter:   primitives.AdapterCodex,
+		Payload:   json.RawMessage(`{"provider_session_id":"demo","model":"gpt-5.6-sol"}`),
+	}); err != nil {
+		t.Fatalf("append session event: %v", err)
+	}
+	if _, err := eventlog.Open(repo.MetadataDir).Append(eventlog.AppendInput{
+		SessionID: sessionID,
 		TurnID:    &turnID,
 		Type:      primitives.EventTypePromptUser,
 		Adapter:   primitives.AdapterCodex,
@@ -66,7 +74,7 @@ func TestGraphCommandShowsCheckpointGraph(t *testing.T) {
 		"] turn 1      Prompt complete",
 		"1 file +1 -1",
 		"| session: demo",
-		"events: 1 event; codex",
+		"events: 1 event; codex; gpt-5.6-sol",
 		"Prompt: \"change app.txt\"",
 		"| pre:",
 		"| post:",

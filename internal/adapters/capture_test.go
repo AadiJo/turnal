@@ -219,6 +219,115 @@ func TestHandleClaudeHookPayloadCreatesAutomaticTurn(t *testing.T) {
 	}
 }
 
+func TestClaudePromptInheritsSessionModel(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+
+	handlePayload(t, primitives.AdapterClaudeCode, "SessionStart", map[string]any{
+		"cwd":             root.String(),
+		"session_id":      "claude-model-session",
+		"hook_event_name": "SessionStart",
+		"model":           "claude-sonnet-4-6",
+		"source":          "startup",
+	})
+	handlePayload(t, primitives.AdapterClaudeCode, "UserPromptSubmit", map[string]any{
+		"cwd":        root.String(),
+		"session_id": "claude-model-session",
+		"prompt":     "inspect the model",
+	})
+
+	prompt := promptEventPayload(t, readEvents(t, repo, sessionID(t, "claude-model-session")))
+	if prompt.Model != "claude-sonnet-4-6" {
+		t.Fatalf("prompt model = %q, want inherited Claude session model", prompt.Model)
+	}
+}
+
+func TestClaudeStopDerivesModelFromMatchingTranscript(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+
+	const session = "claude-transcript-model"
+	const response = "captured with transcript model"
+	transcriptPath := filepath.Join(root.String(), session+".jsonl")
+	matchingEntry, err := json.Marshal(map[string]any{
+		"type":      "assistant",
+		"sessionId": session,
+		"cwd":       root.String(),
+		"message": map[string]any{
+			"role":    "assistant",
+			"model":   "claude-opus-5",
+			"content": []map[string]string{{"type": "text", "text": response}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal transcript entry: %v", err)
+	}
+	writeFile(t, root, session+".jsonl", "malformed\n"+string(matchingEntry)+"\n")
+
+	handlePayload(t, primitives.AdapterClaudeCode, "UserPromptSubmit", map[string]any{
+		"cwd":             root.String(),
+		"session_id":      session,
+		"transcript_path": transcriptPath,
+		"prompt":          "inspect the completed model",
+	})
+	handlePayload(t, primitives.AdapterClaudeCode, "Stop", map[string]any{
+		"cwd":                    root.String(),
+		"session_id":             session,
+		"transcript_path":        transcriptPath,
+		"last_assistant_message": response,
+	})
+
+	assistant := assistantEventPayload(t, readEvents(t, repo, sessionID(t, session)))
+	if assistant.Model != "claude-opus-5" {
+		t.Fatalf("assistant model = %q, want transcript model", assistant.Model)
+	}
+}
+
+func TestClaudeTranscriptModelRejectsTraversalPath(t *testing.T) {
+	root := t.TempDir()
+	const session = "claude-traversal-model"
+	entry, err := json.Marshal(map[string]any{
+		"type":      "assistant",
+		"sessionId": session,
+		"cwd":       root,
+		"message": map[string]any{
+			"role":    "assistant",
+			"model":   "claude-sonnet-5",
+			"content": []map[string]string{{"type": "text", "text": "done"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal transcript entry: %v", err)
+	}
+	cleanPath := filepath.Join(root, session+".jsonl")
+	if err := os.WriteFile(cleanPath, append(entry, '\n'), 0o600); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+	uncleanPath := filepath.Join(root, "nested") + string(os.PathSeparator) + ".." + string(os.PathSeparator) + session + ".jsonl"
+
+	model := claudeCompletedTurnModel(hookPayload{
+		SessionID:            session,
+		TranscriptPath:       uncleanPath,
+		CWD:                  root,
+		LastAssistantMessage: "done",
+	})
+	if model != "" {
+		t.Fatalf("model = %q for traversal-bearing transcript path", model)
+	}
+}
+
 func TestHandleHookPayloadIsIdempotentForDuplicatePrompt(t *testing.T) {
 	requireGit(t)
 
@@ -405,6 +514,7 @@ func TestHandleCodexDocumentedHookPayloads(t *testing.T) {
 		"session_id":      "codex-session",
 		"hook_event_name": "UserPromptSubmit",
 		"turn_id":         "turn-1",
+		"model":           "gpt-5.6-sol",
 		"prompt":          "change app.txt",
 		"permission_mode": "default",
 	})
@@ -448,6 +558,9 @@ func TestHandleCodexDocumentedHookPayloads(t *testing.T) {
 	}
 	if countEvents(events, primitives.EventTypeSessionStart) != 1 {
 		t.Fatalf("session starts = %d, want 1", countEvents(events, primitives.EventTypeSessionStart))
+	}
+	if prompt := promptEventPayload(t, events); prompt.Model != "gpt-5.6-sol" {
+		t.Fatalf("prompt model = %q, want turn-scoped Codex model", prompt.Model)
 	}
 }
 
@@ -579,6 +692,38 @@ func countEvents(events []eventlog.Event, eventType primitives.EventType) int {
 		}
 	}
 	return count
+}
+
+func promptEventPayload(t *testing.T, events []eventlog.Event) promptPayload {
+	t.Helper()
+	for _, event := range events {
+		if event.Type != primitives.EventTypePromptUser {
+			continue
+		}
+		var payload promptPayload
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("unmarshal prompt payload: %v", err)
+		}
+		return payload
+	}
+	t.Fatal("missing prompt event")
+	return promptPayload{}
+}
+
+func assistantEventPayload(t *testing.T, events []eventlog.Event) assistantPayload {
+	t.Helper()
+	for _, event := range events {
+		if event.Type != primitives.EventTypeAssistantMessage {
+			continue
+		}
+		var payload assistantPayload
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("unmarshal assistant payload: %v", err)
+		}
+		return payload
+	}
+	t.Fatal("missing assistant event")
+	return assistantPayload{}
 }
 
 func checkpointPayloadForPhase(t *testing.T, events []eventlog.Event, phase primitives.CheckpointPhase) checkpointEventPayload {

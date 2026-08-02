@@ -59,6 +59,7 @@ func TestInstallClaudeHookPreservesExistingHooksAndIsIdempotent(t *testing.T) {
 		t.Fatalf("assistant hook count = %d, commands=%#v", countCommand(stopCommands, claudeAssistantHook("turnal")), stopCommands)
 	}
 	for eventName, command := range map[string]string{
+		"SessionStart":     claudeSessionHook("turnal"),
 		"UserPromptSubmit": claudeUserHook("turnal"),
 		"PostToolUse":      claudeToolUseHook("turnal"),
 	} {
@@ -244,7 +245,14 @@ func TestUninstallHooksRemovesTurnalCommandsAndPreservesOthers(t *testing.T) {
 	claudeSettings := filepath.Join(claudeDir, "settings.json")
 	if err := os.WriteFile(claudeSettings, []byte(`{
   "hooks": {
-    "Stop": [
+	"SessionStart": [
+	  {
+		"hooks": [
+		  {"type": "command", "command": "turnal claude-hook session"}
+		]
+	  }
+	],
+	"Stop": [
       {
         "matcher": "",
         "hooks": [
@@ -301,8 +309,8 @@ command = "turnal codex-hook"
 	if err != nil {
 		t.Fatalf("Uninstall: %v", err)
 	}
-	if len(results) != 2 || results[0].RemovedCommands != 2 || results[1].RemovedCommands != 2 {
-		t.Fatalf("uninstall results = %#v, want two removed commands per target", results)
+	if len(results) != 2 || results[0].RemovedCommands != 3 || results[1].RemovedCommands != 2 {
+		t.Fatalf("uninstall results = %#v, want three Claude and two Codex commands removed", results)
 	}
 
 	var settings map[string]any
@@ -317,6 +325,9 @@ command = "turnal codex-hook"
 	}
 	if _, ok := claudeHooks["UserPromptSubmit"]; ok {
 		t.Fatalf("empty Claude UserPromptSubmit hook group was preserved: %#v", claudeHooks["UserPromptSubmit"])
+	}
+	if _, ok := claudeHooks["SessionStart"]; ok {
+		t.Fatalf("empty Claude SessionStart hook group was preserved: %#v", claudeHooks["SessionStart"])
 	}
 
 	var config map[string]any

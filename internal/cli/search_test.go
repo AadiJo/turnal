@@ -19,7 +19,7 @@ func TestSearchCommandUsesRebuiltIndex(t *testing.T) {
 		TurnID:    &turnID,
 		Type:      primitives.EventTypePromptUser,
 		Adapter:   primitives.AdapterCodex,
-		Payload:   json.RawMessage(`{"text":"change app.txt with search command"}`),
+		Payload:   json.RawMessage(`{"text":"change app.txt with search command","model":"gpt-5.6-sol"}`),
 	}); err != nil {
 		t.Fatalf("append prompt event: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestSearchCommandUsesRebuiltIndex(t *testing.T) {
 	output := stripANSI(runRootStdout(t, "search", "app.txt"))
 	for _, want := range []string{
 		"demo:1",
-		"codex",
+		"codex / gpt-5.6-sol",
 		"prompt: change app.txt with search command",
 		"tools: apply_patch",
 		"files: app.txt",

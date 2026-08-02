@@ -53,6 +53,13 @@ func TestReadHookPayloadRejectsOversizeInput(t *testing.T) {
 	}
 }
 
+func TestClaudeSessionHookMapsToSessionStart(t *testing.T) {
+	name, err := claudeHookName("session")
+	if err != nil || name != "SessionStart" {
+		t.Fatalf("claudeHookName(session) = %q, %v", name, err)
+	}
+}
+
 func TestClaudeHookInvalidKindFailsOpenAndRecordsFailure(t *testing.T) {
 	rootPath := t.TempDir()
 	root, err := primitives.ParseWorkspaceRoot(rootPath)

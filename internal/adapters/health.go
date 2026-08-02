@@ -99,6 +99,7 @@ func inspectClaudeHooks(projectRoot string, command string) HookHealth {
 	}
 
 	for _, expected := range []struct{ eventName, command string }{
+		{"SessionStart", claudeSessionHook(command)},
 		{"UserPromptSubmit", claudeUserHook(command)},
 		{"PostToolUse", claudeToolUseHook(command)},
 		{"Stop", claudeAssistantHook(command)},

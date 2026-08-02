@@ -37,7 +37,7 @@ func TestSearchFindsPromptToolPathAndEventOnlyTurns(t *testing.T) {
 		Type:      primitives.EventTypePromptUser,
 		Adapter:   primitives.AdapterCodex,
 		Time:      timestamp(t, time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)),
-		Payload:   json.RawMessage(`{"text":"update the app file"}`),
+		Payload:   json.RawMessage(`{"text":"update the app file","model":"gpt-5.6-sol"}`),
 	})
 	appendEvent(t, repo.MetadataDir, eventlog.AppendInput{
 		SessionID: demoSession,
@@ -84,6 +84,13 @@ func TestSearchFindsPromptToolPathAndEventOnlyTurns(t *testing.T) {
 	}
 	if len(toolResults) != 1 || toolResults[0].TurnID != firstTurn || len(toolResults[0].ToolNames) != 1 || toolResults[0].ToolNames[0] != "apply_patch" {
 		t.Fatalf("tool results = %#v, want first turn using apply_patch", toolResults)
+	}
+	modelResults, err := store.Search(SearchQuery{Query: "gpt-5.6-sol"})
+	if err != nil {
+		t.Fatalf("Search model: %v", err)
+	}
+	if len(modelResults) != 1 || modelResults[0].TurnID != firstTurn || modelResults[0].Model != "gpt-5.6-sol" {
+		t.Fatalf("model results = %#v, want first turn using gpt-5.6-sol", modelResults)
 	}
 
 	eventOnlyResults, err := store.Search(SearchQuery{Query: "needle"})

@@ -626,11 +626,11 @@ func insertEvents(ctx context.Context, tx *sql.Tx, events []eventRecord) error {
 func insertTurns(ctx context.Context, tx *sql.Tx, turns []turnRecord) error {
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO turns (
-			stream_id, worktree_id, session_id, turn_id, status, event_count, adapter, prompt_preview, assistant_preview,
+			stream_id, worktree_id, session_id, turn_id, status, event_count, adapter, model, prompt_preview, assistant_preview,
 			tool_names_json, event_type_counts_json, events_first_at, events_last_at,
 			diff_loaded, diff_file_count, diff_additions, diff_deletions, diff_binary_files, warnings_json
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare turns insert: %w", err)
 	}
@@ -661,6 +661,7 @@ func insertTurns(ctx context.Context, tx *sql.Tx, turns []turnRecord) error {
 			turnStatus(turn),
 			turn.Events.Count,
 			nullableText(turn.Events.Adapter),
+			nullableText(turn.Events.Model),
 			nullableText(turn.Events.Prompt),
 			nullableText(turn.Events.Assistant),
 			toolNamesJSON,
@@ -745,8 +746,8 @@ func insertFileTouches(ctx context.Context, tx *sql.Tx, files []fileTouchRecord)
 
 func insertSearchDocuments(ctx context.Context, tx *sql.Tx, documents []searchDocumentRecord) error {
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO turn_search (stream_id, worktree_id, session_id, turn_id, first_at, last_at, adapter, prompt, assistant, tools, paths, event_text)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		INSERT INTO turn_search (stream_id, worktree_id, session_id, turn_id, first_at, last_at, adapter, model, prompt, assistant, tools, paths, event_text)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare search document insert: %w", err)
 	}
@@ -765,6 +766,7 @@ func insertSearchDocuments(ctx context.Context, tx *sql.Tx, documents []searchDo
 			nullableTime(document.Events.First),
 			nullableTime(document.Events.Last),
 			nullableText(document.Events.Adapter),
+			nullableText(document.Events.Model),
 			nullableText(document.Events.Prompt),
 			nullableText(document.Events.Assistant),
 			nullableText(strings.Join(document.Events.ToolNames, "\n")),
