@@ -43,6 +43,12 @@
   --row: 28px;
   --gutter: 108px;
 
+  /* Sticky offsets: chrome height plus tabs height. Anything that pins below
+     the page header derives its offset from this. */
+  --chrome-h: 52px;
+  --tabs-h: 44px;
+  --stick: 96px;
+
   --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: ui-monospace, "SFMono-Regular", "Cascadia Code", Consolas, monospace;
 
@@ -121,7 +127,7 @@ kbd {
   display: flex;
   align-items: center;
   gap: 14px;
-  height: 52px;
+  height: var(--chrome-h);
   padding: 0 18px;
   background: var(--rail);
   border-bottom: 1px solid var(--line);
@@ -243,11 +249,11 @@ kbd {
   align-items: stretch;
   gap: 2px;
   padding: 0 18px;
-  height: 44px;
+  height: var(--tabs-h);
   background: var(--rail);
   border-bottom: 1px solid var(--line);
   position: sticky;
-  top: 52px;
+  top: var(--chrome-h);
   z-index: 19;
 }
 
@@ -636,7 +642,9 @@ kbd {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--surface);
-  overflow: hidden;
+  /* No overflow clip. It would make this card the scrollport for the sticky
+     file header, which then offsets from the card instead of the page. Corners
+     are clipped on the first and last child instead. */
 }
 
 .fhead {
@@ -646,9 +654,11 @@ kbd {
   padding: 11px 15px;
   border-bottom: 1px solid var(--line);
   position: sticky;
-  top: 96px;
+  top: var(--stick);
   background: var(--surface);
-  z-index: 8;
+  /* Above the diff rows it labels, below the page chrome. */
+  z-index: 6;
+  border-radius: calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0 0;
 }
 
 .caret {
@@ -680,6 +690,7 @@ kbd {
   font-family: var(--mono);
   font-size: 12.5px;
   overflow-x: auto;
+  border-radius: 0 0 calc(var(--radius) - 1px) calc(var(--radius) - 1px);
 }
 
 .hunk {
@@ -944,7 +955,7 @@ kbd {
   background: var(--surface);
   overflow: hidden;
   position: sticky;
-  top: 112px;
+  top: calc(var(--stick) + 16px);
 }
 
 .tree-tabs {
@@ -1365,8 +1376,8 @@ kbd {
 .turnlist {
   border-right: 1px solid var(--line);
   position: sticky;
-  top: 96px;
-  height: calc(100dvh - 96px);
+  top: var(--stick);
+  height: calc(100dvh - var(--stick));
   overflow: auto;
   padding: 12px 10px 24px;
   background: var(--sidebar);

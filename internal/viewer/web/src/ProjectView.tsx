@@ -366,7 +366,25 @@ function FileBox({
   const [open, setOpen] = useState(true);
   const parts = file.path.split("/");
   const name = parts.pop();
-  const lines = useMemo(() => patch?.patch.split("\n") ?? [], [patch]);
+  // Drop the unified-diff preamble. "diff --git", "index", "---" and "+++"
+  // restate the path already shown in the file header, and rendering them as
+  // content makes every file open with four lines of noise.
+  const lines = useMemo(
+    () =>
+      (patch?.patch.split("\n") ?? []).filter(
+        (line) =>
+          !line.startsWith("diff --git ") &&
+          !line.startsWith("index ") &&
+          !line.startsWith("--- ") &&
+          !line.startsWith("+++ ") &&
+          !line.startsWith("new file mode ") &&
+          !line.startsWith("deleted file mode ") &&
+          !line.startsWith("similarity index ") &&
+          !line.startsWith("rename from ") &&
+          !line.startsWith("rename to "),
+      ),
+    [patch],
+  );
   const tools = turn?.tool_names?.slice(0, 3) ?? [];
 
   return (
@@ -395,8 +413,8 @@ function FileBox({
               </span>
             </div>
           )}
-          {lines.map((line, index) => (
-            <PatchLine key={`${index}-${line.slice(0, 10)}`} value={line} index={index} />
+          {numberPatch(lines).map((row, index) => (
+            <PatchLine key={`${index}-${row.value.slice(0, 10)}`} row={row} />
           ))}
           {patch?.truncated && (
             <div className="hunk">
@@ -414,30 +432,72 @@ function FileBox({
   );
 }
 
-function PatchLine({ value, index }: { value: string; index: number }) {
-  const kind =
-    value.startsWith("+") && !value.startsWith("+++")
-      ? "add"
-      : value.startsWith("-") && !value.startsWith("---")
-        ? "del"
-        : value.startsWith("@@")
-          ? "meta"
-          : "ctx";
-  if (kind === "meta") {
+type PatchRow = {
+  kind: "add" | "del" | "ctx" | "hunk";
+  value: string;
+  /** Line number in the pre-image, absent for additions. */
+  old?: number;
+  /** Line number in the post-image, absent for deletions. */
+  next?: number;
+};
+
+/** Walk a unified patch and assign real old and new line numbers, tracked from
+ * each @@ header. Numbering by array index would report the position in the
+ * patch text, which is a different and less useful fact than the line number in
+ * the file. */
+function numberPatch(lines: string[]): PatchRow[] {
+  const rows: PatchRow[] = [];
+  let oldLine = 0;
+  let newLine = 0;
+  for (const value of lines) {
+    if (value.startsWith("@@")) {
+      const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(value);
+      if (match) {
+        oldLine = Number(match[1]);
+        newLine = Number(match[2]);
+      }
+      rows.push({ kind: "hunk", value });
+      continue;
+    }
+    if (value.startsWith("+")) {
+      rows.push({ kind: "add", value: value.slice(1), next: newLine++ });
+      continue;
+    }
+    if (value.startsWith("-")) {
+      rows.push({ kind: "del", value: value.slice(1), old: oldLine++ });
+      continue;
+    }
+    if (value.startsWith("\\")) {
+      // "\ No newline at end of file" annotates the previous line.
+      rows.push({ kind: "ctx", value });
+      continue;
+    }
+    rows.push({
+      kind: "ctx",
+      value: value.startsWith(" ") ? value.slice(1) : value,
+      old: oldLine++,
+      next: newLine++,
+    });
+  }
+  return rows;
+}
+
+function PatchLine({ row }: { row: PatchRow }) {
+  if (row.kind === "hunk") {
     return (
       <div className="hunk">
         <span className="expand">↕</span>
-        <span className="range">{value}</span>
+        <span className="range">{row.value}</span>
         <span className="hmeta" />
       </div>
     );
   }
   return (
-    <div className={cx("ln", kind === "add" && "add", kind === "del" && "del")}>
-      <span className="g">{kind === "add" ? "" : index + 1}</span>
-      <span className="g">{kind === "del" ? "" : index + 1}</span>
-      <span className="sign">{kind === "add" ? "+" : kind === "del" ? "-" : ""}</span>
-      <code>{kind === "add" || kind === "del" ? value.slice(1) : value}</code>
+    <div className={cx("ln", row.kind === "add" && "add", row.kind === "del" && "del")}>
+      <span className="g">{row.old ?? ""}</span>
+      <span className="g">{row.next ?? ""}</span>
+      <span className="sign">{row.kind === "add" ? "+" : row.kind === "del" ? "-" : ""}</span>
+      <code>{row.value}</code>
     </div>
   );
 }
