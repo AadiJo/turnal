@@ -128,6 +128,15 @@ func writeSearchResults(w io.Writer, results []queryindex.SearchResult) error {
 				return err
 			}
 		}
+		if result.Model != "" {
+			separator := "  "
+			if result.Adapter != "" {
+				separator = " / "
+			}
+			if _, err := fmt.Fprintf(w, "%s%s", separator, result.Model); err != nil {
+				return err
+			}
+		}
 		if at := searchResultTime(result); !at.IsZero() {
 			if _, err := fmt.Fprintf(w, "  %s", at.UTC().Format("2006-01-02 15:04:05 UTC")); err != nil {
 				return err

@@ -14,7 +14,7 @@ import (
 
 func claudeHookCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:          "claude-hook [user|assistant|tool-use|tool-batch]",
+		Use:          "claude-hook [session|user|assistant|tool-use|tool-batch]",
 		Short:        "Internal: Claude Code hook adapter",
 		Hidden:       true,
 		SilenceUsage: true,
@@ -83,6 +83,8 @@ func reportHookFailure(cmd *cobra.Command, adapter primitives.AdapterName, hookN
 
 func claudeHookName(value string) (string, error) {
 	switch value {
+	case "session":
+		return "SessionStart", nil
 	case "user":
 		return "UserPromptSubmit", nil
 	case "assistant":
@@ -92,7 +94,7 @@ func claudeHookName(value string) (string, error) {
 	case "tool-batch":
 		return "PostToolBatch", nil
 	default:
-		return "", fmt.Errorf("invalid Claude hook %q; expected user, assistant, tool-use, or tool-batch", value)
+		return "", fmt.Errorf("invalid Claude hook %q; expected session, user, assistant, tool-use, or tool-batch", value)
 	}
 }
 

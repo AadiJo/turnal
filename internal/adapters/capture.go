@@ -86,12 +86,14 @@ type sessionPayload struct {
 type promptPayload struct {
 	Text           string `json:"text"`
 	ProviderTurnID string `json:"provider_turn_id,omitempty"`
+	Model          string `json:"model,omitempty"`
 	Redacted       bool   `json:"redacted"`
 }
 
 type assistantPayload struct {
 	Text           string `json:"text"`
 	ProviderTurnID string `json:"provider_turn_id,omitempty"`
+	Model          string `json:"model,omitempty"`
 }
 
 type toolCallPayload struct {
@@ -281,6 +283,11 @@ func processNormalizedEvent(log eventlog.Log, manager turns.Manager, adapter pri
 		if err := ensureSessionStarted(log, adapter, sessionID, rawRef, payload); err != nil {
 			return err
 		}
+		model, err := resolveTurnModel(log, adapter, sessionID, payload.Model)
+		if err != nil {
+			return err
+		}
+		payload.Model = model
 		turnID, err := startPromptTurn(log, manager, adapter, sessionID, rawRef, payload)
 		if err != nil {
 			return err
@@ -430,6 +437,11 @@ func processHook(log eventlog.Log, manager turns.Manager, adapter primitives.Ada
 		if err := ensureSessionStarted(log, adapter, sessionID, rawRef, payload); err != nil {
 			return err
 		}
+		model, err := resolveTurnModel(log, adapter, sessionID, payload.Model)
+		if err != nil {
+			return err
+		}
+		payload.Model = model
 		turnID, err := startPromptTurn(log, manager, adapter, sessionID, rawRef, payload)
 		if err != nil {
 			return err
@@ -454,6 +466,9 @@ func processHook(log eventlog.Log, manager turns.Manager, adapter primitives.Ada
 		}
 		if !ok {
 			return nil
+		}
+		if payload.Model = strings.TrimSpace(payload.Model); payload.Model == "" && adapter == primitives.AdapterClaudeCode {
+			payload.Model = claudeCompletedTurnModel(payload)
 		}
 		if err := appendAssistant(log, adapter, sessionID, active.TurnID, rawRef, sourceID, payload, secrets); err != nil {
 			return err
@@ -510,6 +525,32 @@ func appendSessionStart(log eventlog.Log, adapter primitives.AdapterName, sessio
 			TranscriptPath:    payload.TranscriptPath,
 		}),
 	})
+}
+
+// Codex reports the active model on each prompt hook. Claude Code may report it
+// on SessionStart, so prompt turns inherit the latest observed session model.
+func resolveTurnModel(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, reported string) (string, error) {
+	if reported = strings.TrimSpace(reported); reported != "" {
+		return reported, nil
+	}
+	events, err := log.Read(sessionID)
+	if err != nil {
+		return "", err
+	}
+	for index := len(events) - 1; index >= 0; index-- {
+		event := events[index]
+		if event.Type != primitives.EventTypeSessionStart || event.Adapter != adapter {
+			continue
+		}
+		var payload sessionPayload
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			return "", fmt.Errorf("decode session model for %s: %w", sessionID, err)
+		}
+		if model := strings.TrimSpace(payload.Model); model != "" {
+			return model, nil
+		}
+	}
+	return "", nil
 }
 
 func startPromptTurn(log eventlog.Log, manager turns.Manager, adapter primitives.AdapterName, sessionID primitives.SessionID, rawRef string, payload hookPayload) (primitives.TurnID, error) {
@@ -604,6 +645,7 @@ func appendPrompt(log eventlog.Log, adapter primitives.AdapterName, sessionID pr
 		Payload: mustJSON(promptPayload{
 			Text:           redactedText(payload.Prompt, secrets.StorePrompts),
 			ProviderTurnID: payload.TurnID,
+			Model:          payload.Model,
 			Redacted:       !secrets.StorePrompts,
 		}),
 	})
@@ -620,6 +662,7 @@ func appendAssistant(log eventlog.Log, adapter primitives.AdapterName, sessionID
 		Payload: mustJSON(assistantPayload{
 			Text:           redactedText(payload.LastAssistantMessage, secrets.StorePrompts),
 			ProviderTurnID: payload.TurnID,
+			Model:          payload.Model,
 		}),
 	})
 }

@@ -170,6 +170,7 @@ func InstallClaudeHookWithOptions(projectRoot string, opts InstallOptions) (Inst
 	}
 
 	command := opts.hookCommand()
+	mergeHookCommand(hooks, "SessionStart", claudeSessionHook(command))
 	mergeHookCommand(hooks, "UserPromptSubmit", claudeUserHook(command))
 	mergeHookCommand(hooks, "Stop", claudeAssistantHook(command))
 	mergeHookCommand(hooks, "PostToolUse", claudeToolUseHook(command))
@@ -567,6 +568,10 @@ func IsTurnalHookCommand(command string) bool {
 
 func HookCommandPrefix() string {
 	return hookcmd.Default()
+}
+
+func claudeSessionHook(commandPrefix string) string {
+	return commandPrefix + " claude-hook session"
 }
 
 func claudeUserHook(commandPrefix string) string {

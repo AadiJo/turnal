@@ -15,13 +15,21 @@ type StreamTurnKey struct {
 func SummarizeTurnEventsByStream(events []eventlog.Event) map[StreamTurnKey]TurnEventSummary {
 	summaries := make(map[StreamTurnKey]TurnEventSummary)
 	seenTools := make(map[StreamTurnKey]map[string]struct{})
+	models := make(map[streamAdapterKey]string)
 	for _, event := range events {
+		modelKey := streamAdapterKey{StreamID: event.StreamID, Adapter: event.Adapter}
+		if event.Type == primitives.EventTypeSessionStart {
+			if model := payloadString(event.Payload, "model"); model != "" {
+				models[modelKey] = model
+			}
+			continue
+		}
 		if event.TurnID == nil {
 			continue
 		}
 		key := StreamTurnKey{StreamID: event.StreamID, TurnID: event.TurnID.Uint64()}
 		summary := summaries[key]
-		applyEventSummary(&summary, event, seenTools[key])
+		applyEventSummary(&summary, event, models[modelKey], seenTools[key])
 		if seenTools[key] == nil {
 			seenTools[key] = make(map[string]struct{})
 		}
@@ -42,15 +50,22 @@ func SummarizeTurnEventsByStream(events []eventlog.Event) map[StreamTurnKey]Turn
 func SummarizeTurnEvents(events []eventlog.Event) map[uint64]TurnEventSummary {
 	summaries := make(map[uint64]TurnEventSummary)
 	seenTools := make(map[uint64]map[string]struct{})
+	models := make(map[primitives.AdapterName]string)
 
 	for _, event := range events {
+		if event.Type == primitives.EventTypeSessionStart {
+			if model := payloadString(event.Payload, "model"); model != "" {
+				models[event.Adapter] = model
+			}
+			continue
+		}
 		if event.TurnID == nil {
 			continue
 		}
 
 		turnKey := event.TurnID.Uint64()
 		summary := summaries[turnKey]
-		applyEventSummary(&summary, event, seenTools[turnKey])
+		applyEventSummary(&summary, event, models[event.Adapter], seenTools[turnKey])
 		if event.Type == primitives.EventTypeToolCall {
 			toolName := payloadString(event.Payload, "tool_name")
 			if toolName != "" {
@@ -70,7 +85,12 @@ func SummarizeTurnEvents(events []eventlog.Event) map[uint64]TurnEventSummary {
 	return summaries
 }
 
-func applyEventSummary(summary *TurnEventSummary, event eventlog.Event, _ map[string]struct{}) {
+type streamAdapterKey struct {
+	StreamID primitives.EventStreamID
+	Adapter  primitives.AdapterName
+}
+
+func applyEventSummary(summary *TurnEventSummary, event eventlog.Event, inheritedModel string, _ map[string]struct{}) {
 	summary.Count++
 	if summary.TypeCounts == nil {
 		summary.TypeCounts = make(map[primitives.EventType]int)
@@ -78,6 +98,11 @@ func applyEventSummary(summary *TurnEventSummary, event eventlog.Event, _ map[st
 	summary.TypeCounts[event.Type]++
 	if summary.Adapter == "" && event.Adapter != "" {
 		summary.Adapter = event.Adapter.String()
+	}
+	if model := payloadString(event.Payload, "model"); model != "" {
+		summary.Model = model
+	} else if summary.Model == "" {
+		summary.Model = inheritedModel
 	}
 	if summary.First.IsZero() || event.Time.Time.Before(summary.First) {
 		summary.First = event.Time.Time

@@ -1955,6 +1955,9 @@ func formatEventSummary(summary turnEventSummary, verbose bool) string {
 	if summary.Adapter != "" {
 		parts = append(parts, summary.Adapter)
 	}
+	if summary.Model != "" {
+		parts = append(parts, summary.Model)
+	}
 	if len(summary.ToolNames) > 0 {
 		parts = append(parts, "tools: "+strings.Join(summary.ToolNames, ", "))
 	}

@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	SchemaVersion = 4
+	SchemaVersion = 5
 	DBFileName    = "index.sqlite"
 )
 
@@ -65,6 +65,7 @@ type GraphTurn struct {
 type TurnEventSummary struct {
 	Count      int
 	Adapter    string
+	Model      string
 	Prompt     string
 	Assistant  string
 	ToolNames  []string
@@ -88,6 +89,7 @@ type SearchResult struct {
 	First      time.Time                `json:"first,omitempty"`
 	Last       time.Time                `json:"last,omitempty"`
 	Adapter    string                   `json:"adapter,omitempty"`
+	Model      string                   `json:"model,omitempty"`
 	Prompt     string                   `json:"prompt,omitempty"`
 	Assistant  string                   `json:"assistant,omitempty"`
 	ToolNames  []string                 `json:"tool_names,omitempty"`

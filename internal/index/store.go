@@ -134,7 +134,7 @@ func (s *Store) Search(query SearchQuery) ([]SearchResult, error) {
 
 	args := []any{match}
 	sqlText := `
-		SELECT stream_id, worktree_id, session_id, turn_id, first_at, last_at, adapter, prompt, assistant, tools, paths,
+		SELECT stream_id, worktree_id, session_id, turn_id, first_at, last_at, adapter, model, prompt, assistant, tools, paths,
 		       snippet(turn_search, -1, '[', ']', ' ... ', 16), bm25(turn_search) AS rank
 		FROM turn_search
 		WHERE turn_search MATCH ?`
@@ -167,6 +167,7 @@ func (s *Store) Search(query SearchQuery) ([]SearchResult, error) {
 		var firstText sql.NullString
 		var lastText sql.NullString
 		var adapter sql.NullString
+		var model sql.NullString
 		var prompt sql.NullString
 		var assistant sql.NullString
 		var tools sql.NullString
@@ -181,6 +182,7 @@ func (s *Store) Search(query SearchQuery) ([]SearchResult, error) {
 			&firstText,
 			&lastText,
 			&adapter,
+			&model,
 			&prompt,
 			&assistant,
 			&tools,
@@ -227,6 +229,7 @@ func (s *Store) Search(query SearchQuery) ([]SearchResult, error) {
 			First:      first,
 			Last:       last,
 			Adapter:    nullableString(adapter),
+			Model:      nullableString(model),
 			Prompt:     nullableString(prompt),
 			Assistant:  nullableString(assistant),
 			ToolNames:  splitSearchList(nullableString(tools)),
@@ -333,7 +336,7 @@ func (s *Store) loadGraphTurns(ctx context.Context, sessionID primitives.Session
 
 	args := []any{sessionID.String()}
 	query := `
-		SELECT stream_id, worktree_id, turn_id, event_count, adapter, prompt_preview, assistant_preview,
+		SELECT stream_id, worktree_id, turn_id, event_count, adapter, model, prompt_preview, assistant_preview,
 		       tool_names_json, event_type_counts_json, events_first_at, events_last_at,
 		       diff_loaded, diff_additions, diff_deletions, diff_binary_files, warnings_json
 		FROM turns
@@ -361,6 +364,7 @@ func (s *Store) loadGraphTurns(ctx context.Context, sessionID primitives.Session
 		var turnNumber int64
 		var eventCount int
 		var adapter sql.NullString
+		var model sql.NullString
 		var prompt sql.NullString
 		var assistant sql.NullString
 		var toolNamesJSON string
@@ -378,6 +382,7 @@ func (s *Store) loadGraphTurns(ctx context.Context, sessionID primitives.Session
 			&turnNumber,
 			&eventCount,
 			&adapter,
+			&model,
 			&prompt,
 			&assistant,
 			&toolNamesJSON,
@@ -444,6 +449,7 @@ func (s *Store) loadGraphTurns(ctx context.Context, sessionID primitives.Session
 			Events: TurnEventSummary{
 				Count:      eventCount,
 				Adapter:    nullableString(adapter),
+				Model:      nullableString(model),
 				Prompt:     nullableString(prompt),
 				Assistant:  nullableString(assistant),
 				ToolNames:  toolNames,

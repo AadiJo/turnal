@@ -37,6 +37,13 @@ func TestRebuildPopulatesGraphRows(t *testing.T) {
 
 	appendEvent(t, repo.MetadataDir, eventlog.AppendInput{
 		SessionID: sessionID,
+		Type:      primitives.EventTypeSessionStart,
+		Adapter:   primitives.AdapterCodex,
+		Time:      timestamp(t, time.Date(2026, 7, 6, 11, 59, 0, 0, time.UTC)),
+		Payload:   json.RawMessage(`{"provider_session_id":"demo","model":"gpt-5.6-sol"}`),
+	})
+	appendEvent(t, repo.MetadataDir, eventlog.AppendInput{
+		SessionID: sessionID,
 		TurnID:    &turnID,
 		Type:      primitives.EventTypePromptUser,
 		Adapter:   primitives.AdapterCodex,
@@ -64,8 +71,8 @@ func TestRebuildPopulatesGraphRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
-	if stats.Sessions != 1 || stats.Turns != 1 || stats.Events != 3 || stats.Checkpoints != 2 || stats.FileTouches != 2 || stats.SearchDocuments != 1 {
-		t.Fatalf("stats = %#v, want 1 session, 1 turn, 3 events, 2 checkpoints, 2 file touches, 1 search doc", stats)
+	if stats.Sessions != 1 || stats.Turns != 1 || stats.Events != 4 || stats.Checkpoints != 2 || stats.FileTouches != 2 || stats.SearchDocuments != 1 {
+		t.Fatalf("stats = %#v, want 1 session, 1 turn, 4 events, 2 checkpoints, 2 file touches, 1 search doc", stats)
 	}
 
 	store, err := Open(repo.MetadataDir)
@@ -85,8 +92,8 @@ func TestRebuildPopulatesGraphRows(t *testing.T) {
 	if err := store.db.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&eventRows); err != nil {
 		t.Fatalf("count events: %v", err)
 	}
-	if eventRows != 3 {
-		t.Fatalf("event rows = %d, want 3", eventRows)
+	if eventRows != 4 {
+		t.Fatalf("event rows = %d, want 4", eventRows)
 	}
 	var blameCacheRows int
 	if err := store.db.QueryRow(`SELECT COUNT(*) FROM blame_cache`).Scan(&blameCacheRows); err != nil {
@@ -110,7 +117,7 @@ func TestRebuildPopulatesGraphRows(t *testing.T) {
 	if len(turn.Diff.Files) != 2 || turn.Diff.Additions != 2 || turn.Diff.Deletions != 1 {
 		t.Fatalf("diff = %#v, want two files +2 -1", turn.Diff)
 	}
-	if turn.Events.Count != 3 || turn.Events.Adapter != "codex" || turn.Events.Prompt != "change files" || turn.Events.Assistant != "done" {
+	if turn.Events.Count != 3 || turn.Events.Adapter != "codex" || turn.Events.Model != "gpt-5.6-sol" || turn.Events.Prompt != "change files" || turn.Events.Assistant != "done" {
 		t.Fatalf("event summary = %#v", turn.Events)
 	}
 	if len(turn.Events.ToolNames) != 1 || turn.Events.ToolNames[0] != "apply_patch" {
