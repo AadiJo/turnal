@@ -5,7 +5,7 @@ description: Search Turnal's recorded history for prior attempts at the current 
 
 # Inspect Turnal history
 
-Use Turnal's CLI as the interface to durable history. Treat the append-only event log as the explanation of why work happened and hidden Git checkpoints as the truth of what files looked like. Read file state from checkpoints rather than from provider-supplied diffs.
+Use Turnal's CLI as the interface to durable history. Treat the append-only event log as a record of what the human and agent said, not proof of why a change was correct. Hidden Git checkpoints are the truth of what files looked like; read file state from them rather than from provider-supplied diffs.
 
 ## Establish the workspace
 
@@ -37,7 +37,7 @@ Read [references/target-syntax.md](references/target-syntax.md) before passing a
 
 - Use `turnal show <turn-ref> --json` for normalized events and checkpoint metadata. Add `--transcript`, `--raw`, or `--full` only when the question requires provider text or raw adapter records; these may expose recorded prompts, tool I/O, or secrets.
 - Use `turnal diff <session>:<turn>` for the durable pre-to-post patch. Use `--json` when reasoning about paths or contents programmatically.
-- Use `turnal blame <path>:<line> --json` for line provenance. Read `origin.intent` as the agent's explicit statement and `origin.prompt` as the separate human request. Check the intent status and confidence before relying on it; `late` and `out_of_scope` are recorded limitations, and a missing intent must not be inferred from the transcript. Here the final colon introduces a line number, not a checkpoint phase.
+- Use `turnal blame <path>:<line> --json` for line provenance. Read `origin.intent` as the agent's explicit statement and `origin.prompt` as the separate human request. Check the intent status and confidence before relying on it; `late`, `out_of_scope`, `late_out_of_scope`, and `redacted` are recorded limitations. An `ambiguous` or `concurrent` origin means no single intent can be assigned safely. A missing intent must not be inferred from the transcript. Here the final colon introduces a line number, not a checkpoint phase.
 - Use `turnal search "<query>" --json` to locate turns by indexed text, then confirm the result with `show` or `diff`.
 - `turnal log` reads durable logs and checkpoints by default. Pass `--index` only to opt into the disposable index; use `--durable` to force durable reads if index mode would otherwise be selected.
 

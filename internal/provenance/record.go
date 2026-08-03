@@ -16,9 +16,11 @@ import (
 
 type RecordInput struct {
 	SessionID primitives.SessionID
-	Problem   string
-	Scope     []string
-	Evidence  []string
+	// TurnID binds the stamp to the turn that requested it.
+	TurnID   primitives.TurnID
+	Problem  string
+	Scope    []string
+	Evidence []string
 }
 
 func Record(repo *checkpoint.Repo, input RecordInput) (eventlog.Event, error) {
@@ -40,6 +42,13 @@ func Record(repo *checkpoint.Repo, input RecordInput) (eventlog.Event, error) {
 	}
 	if !ok {
 		return eventlog.Event{}, fmt.Errorf("session %s has no active turn", sessionID)
+	}
+	expected, err := primitives.NewTurnID(input.TurnID.Uint64())
+	if err != nil {
+		return eventlog.Event{}, err
+	}
+	if active.TurnID != expected {
+		return eventlog.Event{}, fmt.Errorf("session %s active turn is %s, not requested turn %s", sessionID, active.TurnID, expected)
 	}
 
 	scope, err := normalizeScope(input.Scope)

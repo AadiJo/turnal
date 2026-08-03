@@ -8,25 +8,46 @@ import (
 	"github.com/AadiJo/turnal/internal/primitives"
 )
 
+type IntentStatus string
+
 const (
-	IntentStatusCaptured   = "captured"
-	IntentStatusLate       = "late"
-	IntentStatusOutOfScope = "out_of_scope"
+	IntentStatusCaptured       IntentStatus = "captured"
+	IntentStatusLate           IntentStatus = "late"
+	IntentStatusOutOfScope     IntentStatus = "out_of_scope"
+	IntentStatusLateOutOfScope IntentStatus = "late_out_of_scope"
+	IntentStatusRedacted       IntentStatus = "redacted"
+)
 
-	IntentTimingBefore = "before"
-	IntentTimingAfter  = "after"
+type IntentTiming string
 
-	IntentConfidenceHigh = "high"
-	IntentConfidenceLow  = "low"
+const (
+	IntentTimingBefore IntentTiming = "before"
+	IntentTimingAfter  IntentTiming = "after"
+)
+
+type IntentConfidence string
+
+const (
+	IntentConfidenceHigh IntentConfidence = "high"
+	IntentConfidenceLow  IntentConfidence = "low"
+)
+
+type ActionSnapshotPhase string
+
+const (
+	ActionSnapshotPhasePre  ActionSnapshotPhase = "pre"
+	ActionSnapshotPhasePost ActionSnapshotPhase = "post"
 )
 
 // IntentPayload is the agent's compact, explicit account of the problem an
 // upcoming change is meant to address. It is a statement, not inferred truth.
 type IntentPayload struct {
-	Problem  string   `json:"problem"`
-	Scope    []string `json:"scope,omitempty"`
-	Evidence []string `json:"evidence,omitempty"`
-	Redacted bool     `json:"redacted,omitempty"`
+	Problem   string   `json:"problem"`
+	Scope     []string `json:"scope,omitempty"`
+	Evidence  []string `json:"evidence,omitempty"`
+	Redacted  bool     `json:"redacted,omitempty"`
+	AgentID   string   `json:"agent_id,omitempty"`
+	AgentType string   `json:"agent_type,omitempty"`
 }
 
 // Attribution adds recorded timing and scope facts to an agent's statement.
@@ -36,9 +57,12 @@ type Attribution struct {
 	Scope      []string            `json:"scope,omitempty"`
 	Evidence   []string            `json:"evidence,omitempty"`
 	EventSeq   primitives.EventSeq `json:"event_seq"`
-	Status     string              `json:"status"`
-	Timing     string              `json:"timing"`
-	Confidence string              `json:"confidence"`
+	Status     IntentStatus        `json:"status"`
+	Timing     IntentTiming        `json:"timing"`
+	Confidence IntentConfidence    `json:"confidence"`
+	AgentID    string              `json:"agent_id,omitempty"`
+	AgentType  string              `json:"agent_type,omitempty"`
+	Redacted   bool                `json:"redacted,omitempty"`
 }
 
 type ActionSnapshot struct {
@@ -74,13 +98,31 @@ func ScopeMatches(scope []string, path string) bool {
 	return false
 }
 
-func Attribute(payload IntentPayload, seq primitives.EventSeq, timing string, path string) Attribution {
+func Attribute(payload IntentPayload, seq primitives.EventSeq, timing IntentTiming, paths ...string) Attribution {
 	status := IntentStatusCaptured
 	confidence := IntentConfidenceHigh
-	if timing == IntentTimingAfter {
+	inScope := false
+	if payload.Redacted {
+		status = IntentStatusRedacted
+		confidence = IntentConfidenceLow
+	} else {
+		inScope = len(payload.Scope) == 0
+		for _, path := range paths {
+			if ScopeMatches(payload.Scope, path) {
+				inScope = true
+				break
+			}
+		}
+	}
+	switch {
+	case payload.Redacted:
+	case timing == IntentTimingAfter && !inScope:
+		status = IntentStatusLateOutOfScope
+		confidence = IntentConfidenceLow
+	case timing == IntentTimingAfter:
 		status = IntentStatusLate
 		confidence = IntentConfidenceLow
-	} else if !ScopeMatches(payload.Scope, path) {
+	case !inScope:
 		status = IntentStatusOutOfScope
 		confidence = IntentConfidenceLow
 	}
@@ -92,5 +134,8 @@ func Attribute(payload IntentPayload, seq primitives.EventSeq, timing string, pa
 		Status:     status,
 		Timing:     timing,
 		Confidence: confidence,
+		AgentID:    payload.AgentID,
+		AgentType:  payload.AgentType,
+		Redacted:   payload.Redacted,
 	}
 }

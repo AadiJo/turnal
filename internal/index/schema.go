@@ -127,8 +127,10 @@ CREATE TABLE blame_cache (
 	origin_adapter         TEXT,
 	origin_prompt          TEXT,
 	origin_tool_names_json TEXT    NOT NULL DEFAULT '[]',
-	origin_action_tool     TEXT,
-	origin_intent_json     TEXT,
+	origin_action_tool       TEXT,
+	origin_action_agent_id   TEXT,
+	origin_action_agent_type TEXT,
+	origin_intent_json       TEXT,
 	cached_at              TEXT    NOT NULL,
 	PRIMARY KEY (scope_session_id, path, history_key, line_no)
 );

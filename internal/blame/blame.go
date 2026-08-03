@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
@@ -26,9 +27,18 @@ func (engine Engine) Compute(query Query) (Result, error) {
 		return Result{}, ErrInvalidLine
 	}
 
-	turns, err := engine.completeTurns(query.SessionID)
+	history, err := engine.observeHistory("")
 	if err != nil {
 		return Result{}, err
+	}
+	turns := history.Complete
+	if query.SessionID != "" {
+		turns = make([]completeTurn, 0, len(history.Complete))
+		for _, turn := range history.Complete {
+			if turn.SessionID == query.SessionID {
+				turns = append(turns, turn)
+			}
+		}
 	}
 	if len(turns) == 0 {
 		return Result{}, ErrNoHistory
@@ -36,7 +46,8 @@ func (engine Engine) Compute(query Query) (Result, error) {
 
 	path := query.Path.String()
 	latest := turns[len(turns)-1].Post
-	historyKey := blameHistoryKey(turns)
+	historyKey := blameHistoryKey(history.Complete, history.Incomplete)
+	concurrent := concurrentTurnAttributions(history.Complete, history.Incomplete)
 
 	store := engine.openBlameCache()
 	if store != nil {
@@ -51,11 +62,14 @@ func (engine Engine) Compute(query Query) (Result, error) {
 			Line:          query.Line,
 		})
 		if err == nil && found {
+			if err := engine.validateCachedEvidence(turns, concurrent); err != nil {
+				return Result{}, err
+			}
 			return engine.resultFromCache(query, cached, turns)
 		}
 	}
 
-	origins, currentExists, warnings, err := engine.replayPath(path, turns)
+	origins, replayedBytes, currentExists, warnings, err := engine.replayPath(path, turns, concurrent, query.SessionID == "")
 	if err != nil {
 		return Result{}, err
 	}
@@ -66,6 +80,9 @@ func (engine Engine) Compute(query Query) (Result, error) {
 	}
 	if !finalExists || !currentExists {
 		return Result{}, fmt.Errorf("%w: %s", ErrFileNotFound, path)
+	}
+	if !bytes.Equal(replayedBytes, finalBytes) {
+		return Result{}, fmt.Errorf("blame reconstruction for %s does not match the latest checkpoint", path)
 	}
 	if looksBinary(finalBytes) {
 		return Result{}, fmt.Errorf("%w: %s", ErrBinaryFile, path)
@@ -105,6 +122,62 @@ func (engine Engine) Compute(query Query) (Result, error) {
 		Warnings:      warnings,
 		CompleteTurns: len(turns),
 	}, nil
+}
+
+func (engine Engine) validateCachedEvidence(turns []completeTurn, concurrent concurrentTurnAttribution) error {
+	seen := make(map[primitives.CommitSHA]struct{})
+	validate := func(commit primitives.CommitSHA, description string) error {
+		if commit == "" {
+			return nil
+		}
+		if _, ok := seen[commit]; ok {
+			return nil
+		}
+		seen[commit] = struct{}{}
+		if err := engine.Repo.ValidateCommit(commit); err != nil {
+			return fmt.Errorf("validate cached %s at %s: %w", description, commit, err)
+		}
+		return nil
+	}
+	for _, turn := range turns {
+		turnLabel := fmt.Sprintf("checkpoint for %s:turn:%s", turn.SessionID, turn.TurnID)
+		if err := validate(turn.Pre.Commit, "pre "+turnLabel); err != nil {
+			return err
+		}
+		if err := validate(turn.Post.Commit, "post "+turnLabel); err != nil {
+			return err
+		}
+		if fact, ok := concurrent[completeTurnIdentity(turn)]; ok && fact.Baseline != nil {
+			if err := validate(fact.Baseline.Commit, "concurrent baseline checkpoint "+fact.Baseline.Ref.String()); err != nil {
+				return err
+			}
+		}
+		for _, event := range turn.Records {
+			switch event.Type {
+			case primitives.EventTypeToolCall:
+				var payload capturedToolCall
+				if json.Unmarshal(event.Payload, &payload) == nil {
+					if payload.PreSnapshot != nil {
+						description := fmt.Sprintf("action snapshot %s", payload.PreSnapshot.Ref)
+						if err := validate(payload.PreSnapshot.Commit, description); err != nil {
+							return err
+						}
+					}
+				}
+			case primitives.EventTypeToolResult:
+				var payload capturedToolResult
+				if json.Unmarshal(event.Payload, &payload) == nil {
+					if payload.PostSnapshot != nil {
+						description := fmt.Sprintf("action snapshot %s", payload.PostSnapshot.Ref)
+						if err := validate(payload.PostSnapshot.Commit, description); err != nil {
+							return err
+						}
+					}
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func (engine Engine) openBlameCache() *queryindex.Store {
@@ -214,6 +287,8 @@ func (engine Engine) hydrateCachedOrigin(origin Origin, turns []completeTurn) Or
 		if turn.SessionID == origin.SessionID && turn.TurnID == origin.TurnID {
 			hydrated := turnOrigin(turn)
 			hydrated.ActionTool = origin.ActionTool
+			hydrated.ActionAgentID = origin.ActionAgentID
+			hydrated.ActionAgentType = origin.ActionAgentType
 			hydrated.Intent = origin.Intent
 			if !origin.Time.IsZero() {
 				hydrated.Time = origin.Time
@@ -266,37 +341,41 @@ func cacheEntriesFromBlame(entries []Entry) []queryindex.BlameCacheEntry {
 
 func originToCache(origin Origin) queryindex.BlameCacheOrigin {
 	return queryindex.BlameCacheOrigin{
-		Kind:          origin.Kind,
-		SessionID:     origin.SessionID,
-		TurnID:        origin.TurnID,
-		CheckpointRef: origin.CheckpointRef,
-		Commit:        origin.Commit,
-		Time:          origin.Time,
-		Adapter:       origin.Adapter,
-		Prompt:        origin.Prompt,
-		ToolNames:     append([]string(nil), origin.ToolNames...),
-		ActionTool:    origin.ActionTool,
-		Intent:        origin.Intent,
+		Kind:            origin.Kind,
+		SessionID:       origin.SessionID,
+		TurnID:          origin.TurnID,
+		CheckpointRef:   origin.CheckpointRef,
+		Commit:          origin.Commit,
+		Time:            origin.Time,
+		Adapter:         origin.Adapter,
+		Prompt:          origin.Prompt,
+		ToolNames:       append([]string(nil), origin.ToolNames...),
+		ActionTool:      origin.ActionTool,
+		ActionAgentID:   origin.ActionAgentID,
+		ActionAgentType: origin.ActionAgentType,
+		Intent:          origin.Intent,
 	}
 }
 
 func originFromCache(origin queryindex.BlameCacheOrigin) Origin {
 	return Origin{
-		Kind:          origin.Kind,
-		SessionID:     origin.SessionID,
-		TurnID:        origin.TurnID,
-		CheckpointRef: origin.CheckpointRef,
-		Commit:        origin.Commit,
-		Time:          origin.Time,
-		Adapter:       origin.Adapter,
-		Prompt:        origin.Prompt,
-		ToolNames:     append([]string(nil), origin.ToolNames...),
-		ActionTool:    origin.ActionTool,
-		Intent:        origin.Intent,
+		Kind:            origin.Kind,
+		SessionID:       origin.SessionID,
+		TurnID:          origin.TurnID,
+		CheckpointRef:   origin.CheckpointRef,
+		Commit:          origin.Commit,
+		Time:            origin.Time,
+		Adapter:         origin.Adapter,
+		Prompt:          origin.Prompt,
+		ToolNames:       append([]string(nil), origin.ToolNames...),
+		ActionTool:      origin.ActionTool,
+		ActionAgentID:   origin.ActionAgentID,
+		ActionAgentType: origin.ActionAgentType,
+		Intent:          origin.Intent,
 	}
 }
 
-func blameHistoryKey(turns []completeTurn) string {
+func blameHistoryKey(turns []completeTurn, incomplete []incompleteTurn) string {
 	hash := sha256.New()
 	for _, turn := range turns {
 		writeHistoryField(hash, turn.SessionID.String())
@@ -310,6 +389,16 @@ func blameHistoryKey(turns []completeTurn) string {
 			writeHistoryField(hash, event.Hash.String())
 		}
 	}
+	for _, turn := range incomplete {
+		writeHistoryField(hash, "incomplete")
+		writeHistoryField(hash, turn.SessionID.String())
+		writeHistoryField(hash, turn.TurnID.String())
+		writeHistoryField(hash, turn.Pre.Ref.String())
+		writeHistoryField(hash, turn.Pre.Commit.String())
+		for _, event := range turn.Records {
+			writeHistoryField(hash, event.Hash.String())
+		}
+	}
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
@@ -318,77 +407,84 @@ func writeHistoryField(hash interface{ Write([]byte) (int, error) }, value strin
 	_, _ = hash.Write([]byte{0})
 }
 
-func (engine Engine) replayPath(path string, turns []completeTurn) ([]Origin, bool, []string, error) {
-	segments, warnings, err := engine.changeSegments(turns)
+func (engine Engine) replayPath(path string, turns []completeTurn, concurrent concurrentTurnAttribution, collapseConcurrent bool) ([]Origin, []byte, bool, []string, error) {
+	segments, warnings, err := engine.changeSegments(turns, concurrent, collapseConcurrent)
 	if err != nil {
-		return nil, false, warnings, err
+		return nil, nil, false, warnings, err
 	}
 	steps, err := engine.replaySteps(path, segments)
 	if err != nil {
-		return nil, false, warnings, err
+		return nil, nil, false, warnings, err
 	}
 
-	baseline := baselineOrigin(turns[0].Pre)
-	initialBytes, exists, err := engine.Repo.CommitFileBytesIfExists(turns[0].Pre.Commit, steps[0].PrePath)
+	baselineInfo := segments[0].baselineInfo()
+	baseline := baselineOrigin(baselineInfo)
+	initialBytes, exists, err := engine.Repo.CommitFileBytesIfExists(segments[0].PreCommit, steps[0].PrePath)
 	if err != nil {
-		return nil, false, warnings, err
+		return nil, nil, false, warnings, err
 	}
 	if exists && looksBinary(initialBytes) {
-		return nil, false, warnings, fmt.Errorf("%w: %s", ErrBinaryFile, steps[0].PrePath)
+		return nil, nil, false, warnings, fmt.Errorf("%w: %s", ErrBinaryFile, steps[0].PrePath)
 	}
 
 	origins := originsForLines(splitLines(initialBytes), baseline)
 	currentExists := exists
+	currentBytes := initialBytes
 
 	for _, step := range steps {
 		segment := step.Segment
+		preBytes, preExists, err := engine.Repo.CommitFileBytesIfExists(segment.PreCommit, step.PrePath)
+		if err != nil {
+			return nil, nil, false, warnings, err
+		}
+		if looksBinary(preBytes) {
+			return nil, nil, false, warnings, fmt.Errorf("%w: %s before %s", ErrBinaryFile, step.PrePath, segmentLabel(segment))
+		}
+
+		preLines := splitLines(preBytes)
+		if currentExists != preExists || !bytes.Equal(currentBytes, preBytes) {
+			warnings = append(warnings, fmt.Sprintf("history for %s was resynchronized before %s", step.PrePath, segmentLabel(segment)))
+			origins = originsForLines(preLines, baselineOrigin(segment.baselineInfo()))
+			currentExists = preExists
+			currentBytes = preBytes
+		}
 		if !step.Touched {
 			continue
 		}
 
-		preBytes, preExists, err := engine.Repo.CommitFileBytesIfExists(segment.PreCommit, step.PrePath)
-		if err != nil {
-			return nil, false, warnings, err
-		}
 		postBytes, postExists, err := engine.Repo.CommitFileBytesIfExists(segment.PostCommit, step.PostPath)
 		if err != nil {
-			return nil, false, warnings, err
+			return nil, nil, false, warnings, err
 		}
-		if looksBinary(preBytes) || looksBinary(postBytes) {
-			return nil, false, warnings, fmt.Errorf("%w: %s touched by %s", ErrBinaryFile, step.PostPath, segmentLabel(segment))
-		}
-
-		preLines := splitLines(preBytes)
-		if currentExists != preExists || len(origins) != len(preLines) {
-			warnings = append(warnings, fmt.Sprintf("history for %s was resynchronized before %s", step.PrePath, segmentLabel(segment)))
-			origins = originsForLines(preLines, baselineOrigin(segment.Turn.Pre))
-			currentExists = preExists
+		if looksBinary(postBytes) {
+			return nil, nil, false, warnings, fmt.Errorf("%w: %s touched by %s", ErrBinaryFile, step.PostPath, segmentLabel(segment))
 		}
 
 		patch, err := engine.Repo.DiffCommitsPathWithRenames(segment.PreCommit, segment.PostCommit, step.PrePath, step.PostPath)
 		if err != nil {
-			return nil, false, warnings, err
+			return nil, nil, false, warnings, err
 		}
 		if patchLooksBinary(patch) {
-			return nil, false, warnings, fmt.Errorf("%w: %s touched by %s", ErrBinaryFile, step.PostPath, segmentLabel(segment))
+			return nil, nil, false, warnings, fmt.Errorf("%w: %s touched by %s", ErrBinaryFile, step.PostPath, segmentLabel(segment))
 		}
 		hunks, err := parseUnifiedHunks(patch)
 		if err != nil {
-			return nil, false, warnings, err
+			return nil, nil, false, warnings, err
 		}
-		origins, err = applyHunks(origins, hunks, segment.origin(step.PostPath))
+		origins, err = applyHunks(origins, hunks, segment.origin(step.PrePath, step.PostPath))
 		if err != nil {
-			return nil, false, warnings, fmt.Errorf("apply blame diff for %s at %s: %w", step.PostPath, segmentLabel(segment), err)
+			return nil, nil, false, warnings, fmt.Errorf("apply blame diff for %s at %s: %w", step.PostPath, segmentLabel(segment), err)
 		}
 
 		postLines := splitLines(postBytes)
 		if len(origins) != len(postLines) {
-			return nil, false, warnings, fmt.Errorf("blame diff for %s at %s produced %d lines, post snapshot has %d", step.PostPath, segmentLabel(segment), len(origins), len(postLines))
+			return nil, nil, false, warnings, fmt.Errorf("blame diff for %s at %s produced %d lines, post snapshot has %d", step.PostPath, segmentLabel(segment), len(origins), len(postLines))
 		}
 		currentExists = postExists
+		currentBytes = postBytes
 	}
 
-	return origins, currentExists, warnings, nil
+	return origins, currentBytes, currentExists, warnings, nil
 }
 
 type replayStep struct {
@@ -447,6 +543,9 @@ func (engine Engine) prePathForSegment(segment changeSegment, postPath string) (
 }
 
 func segmentLabel(segment changeSegment) string {
+	if segment.Concurrent {
+		return "concurrent agent turns"
+	}
 	label := fmt.Sprintf("%s:turn:%s", segment.Turn.SessionID, segment.Turn.TurnID)
 	if segment.Action != nil && segment.Action.ToolName != "" {
 		return label + " " + segment.Action.ToolName

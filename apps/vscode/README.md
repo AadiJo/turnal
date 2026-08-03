@@ -22,7 +22,7 @@ Recording, replay, verification, search, retention, worktree management, and con
 
 ### Inline blame and turn details
 
-Hover the current line to see the agent's stated problem, evidence, human request, timing confidence, action, session, turn, and links to the recorded changes. A missing, late, or out-of-scope intent is shown explicitly rather than reconstructed from the prompt.
+Hover the current line to see the agent's stated problem, evidence, human request, timing confidence, action, session, turn, and links to the recorded changes. Missing, late, out-of-scope, or redacted intent is shown explicitly rather than reconstructed from the prompt. Redacted intent remains low confidence because its original scope is unavailable. When action boundaries or agent turns overlap, the annotation explains that no single intent can be assigned safely.
 
 ![Inline blame hover showing the provenance behind the current line, with links to its diff, details, and rollback.](https://i.imgur.com/eMnXYM9.png)
 

@@ -47,17 +47,19 @@ type Entry struct {
 }
 
 type Origin struct {
-	Kind          string                   `json:"kind"`
-	SessionID     primitives.SessionID     `json:"session_id,omitempty"`
-	TurnID        primitives.TurnID        `json:"turn_id,omitempty"`
-	CheckpointRef primitives.CheckpointRef `json:"checkpoint_ref,omitempty"`
-	Commit        primitives.CommitSHA     `json:"commit,omitempty"`
-	Time          time.Time                `json:"time,omitempty"`
-	Adapter       string                   `json:"adapter,omitempty"`
-	Prompt        string                   `json:"prompt,omitempty"`
-	ToolNames     []string                 `json:"tool_names,omitempty"`
-	ActionTool    string                   `json:"action_tool,omitempty"`
-	Intent        *provenance.Attribution  `json:"intent,omitempty"`
+	Kind            string                   `json:"kind"`
+	SessionID       primitives.SessionID     `json:"session_id,omitempty"`
+	TurnID          primitives.TurnID        `json:"turn_id,omitempty"`
+	CheckpointRef   primitives.CheckpointRef `json:"checkpoint_ref,omitempty"`
+	Commit          primitives.CommitSHA     `json:"commit,omitempty"`
+	Time            time.Time                `json:"time,omitempty"`
+	Adapter         string                   `json:"adapter,omitempty"`
+	Prompt          string                   `json:"prompt,omitempty"`
+	ToolNames       []string                 `json:"tool_names,omitempty"`
+	ActionTool      string                   `json:"action_tool,omitempty"`
+	ActionAgentID   string                   `json:"action_agent_id,omitempty"`
+	ActionAgentType string                   `json:"action_agent_type,omitempty"`
+	Intent          *provenance.Attribution  `json:"intent,omitempty"`
 }
 
 type Engine struct {

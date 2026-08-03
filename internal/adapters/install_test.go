@@ -59,10 +59,11 @@ func TestInstallClaudeHookPreservesExistingHooksAndIsIdempotent(t *testing.T) {
 		t.Fatalf("assistant hook count = %d, commands=%#v", countCommand(stopCommands, claudeAssistantHook("turnal")), stopCommands)
 	}
 	for eventName, command := range map[string]string{
-		"SessionStart":     claudeSessionHook("turnal"),
-		"UserPromptSubmit": claudeUserHook("turnal"),
-		"PreToolUse":       claudePreToolUseHook("turnal"),
-		"PostToolUse":      claudeToolUseHook("turnal"),
+		"SessionStart":       claudeSessionHook("turnal"),
+		"UserPromptSubmit":   claudeUserHook("turnal"),
+		"PreToolUse":         claudePreToolUseHook("turnal"),
+		"PostToolUse":        claudeToolUseHook("turnal"),
+		"PostToolUseFailure": claudeToolFailureHook("turnal"),
 	} {
 		commands := hookCommands(t, hooks[eventName])
 		if countCommand(commands, command) != 1 {

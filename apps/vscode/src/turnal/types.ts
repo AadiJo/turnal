@@ -89,8 +89,10 @@ export interface BlameEntry {
   origin: BlameOrigin;
 }
 
+export type BlameOriginKind = "baseline" | "turn" | "ambiguous" | "concurrent";
+
 export interface BlameOrigin {
-  kind: string;
+  kind: BlameOriginKind;
   session_id?: string;
   turn_id?: number;
   checkpoint_ref?: string;
@@ -100,6 +102,8 @@ export interface BlameOrigin {
   prompt?: string;
   tool_names?: string[];
   action_tool?: string;
+  action_agent_id?: string;
+  action_agent_type?: string;
   intent?: BlameIntent;
 }
 
@@ -108,9 +112,12 @@ export interface BlameIntent {
   scope?: string[];
   evidence?: string[];
   event_seq: number;
-  status: "captured" | "late" | "out_of_scope";
+  status: "captured" | "late" | "out_of_scope" | "late_out_of_scope" | "redacted";
   timing: "before" | "after";
   confidence: "high" | "low";
+  agent_id?: string;
+  agent_type?: string;
+  redacted?: boolean;
 }
 
 export interface RollbackChange {
@@ -300,11 +307,15 @@ function parseSessionRollback(value: unknown, name: string): SessionRollback {
 function parseBlameEntry(value: unknown, index: number): BlameEntry {
   const item = record(value, `entries[${index}]`);
   const origin = record(item.origin, `entries[${index}].origin`);
+  const kind = string(origin.kind, `entries[${index}].origin.kind`);
+  if (kind !== "baseline" && kind !== "turn" && kind !== "ambiguous" && kind !== "concurrent") {
+    throw new TypeError(`entries[${index}].origin.kind is not supported`);
+  }
   return {
     line: number(item.line, `entries[${index}].line`),
     text: string(item.text, `entries[${index}].text`),
     origin: {
-      kind: string(origin.kind, `entries[${index}].origin.kind`),
+      kind,
       session_id: optionalString(origin.session_id, "origin.session_id"),
       turn_id: optionalNumber(origin.turn_id, "origin.turn_id"),
       checkpoint_ref: optionalString(origin.checkpoint_ref, "origin.checkpoint_ref"),
@@ -314,6 +325,8 @@ function parseBlameEntry(value: unknown, index: number): BlameEntry {
       prompt: optionalString(origin.prompt, "origin.prompt"),
       tool_names: optionalStrings(origin.tool_names, "origin.tool_names"),
       action_tool: optionalString(origin.action_tool, "origin.action_tool"),
+      action_agent_id: optionalString(origin.action_agent_id, "origin.action_agent_id"),
+      action_agent_type: optionalString(origin.action_agent_type, "origin.action_agent_type"),
       intent: origin.intent === undefined ? undefined : parseBlameIntent(origin.intent),
     },
   };
@@ -322,7 +335,7 @@ function parseBlameEntry(value: unknown, index: number): BlameEntry {
 function parseBlameIntent(value: unknown): BlameIntent {
   const intent = record(value, "origin.intent");
   const status = string(intent.status, "origin.intent.status");
-  if (status !== "captured" && status !== "late" && status !== "out_of_scope") {
+  if (status !== "captured" && status !== "late" && status !== "out_of_scope" && status !== "late_out_of_scope" && status !== "redacted") {
     throw new TypeError("origin.intent.status is not supported");
   }
   const timing = string(intent.timing, "origin.intent.timing");
@@ -341,6 +354,9 @@ function parseBlameIntent(value: unknown): BlameIntent {
     status,
     timing,
     confidence,
+    agent_id: optionalString(intent.agent_id, "origin.intent.agent_id"),
+    agent_type: optionalString(intent.agent_type, "origin.intent.agent_type"),
+    redacted: optionalBoolean(intent.redacted, "origin.intent.redacted"),
   };
 }
 

@@ -10,7 +10,7 @@
   A local-first flight recorder for AI coding agents.
 </p>
 
-Turnal records what an agent did, why it did it, what the workspace looked like before and after each turn, and how to get back safely.
+Turnal records what an agent did, the problem it said it was trying to solve, what the workspace looked like before and after each turn, and how to get back safely.
 
 It combines an append-only activity log with private Git checkpoints. Your project history stays local, normal recording never commits to or modifies your existing `.git/`, and SQLite is only a disposable search index. The optional workspace-Git rollback mode is the explicit exception: it can restore a previously captured HEAD and index.
 
@@ -192,9 +192,9 @@ Checkpoint refs live under `refs/agent-vcs/...`. Hidden Git operations use expli
 By default Turnal records:
 
 - User prompts and assistant messages exposed by agent hooks.
-- Compact agent intent statements: the problem, expected scope, and evidence references supplied before an edit.
+- For Claude Code and Codex, compact agent intent statements: the problem, expected scope, and evidence references supplied before an edit.
 - Tool names, inputs, and results exposed by agent hooks.
-- Before/after workspace snapshots around potentially mutating tool actions, so separate edits in one turn can carry separate intent.
+- For Claude Code and Codex, before/after workspace snapshots around potentially mutating tool actions, so separate edits in one turn can carry separate intent. External adapters currently retain turn-level checkpoints and tool events without per-action snapshots.
 - Raw adapter payloads, including malformed payloads when they can be preserved.
 - Byte-exact contents and executable bits for checkpointed files.
 - Symlinks as symlinks, without following their targets.
@@ -285,7 +285,7 @@ turnal blame src/auth.go:42              # Agent intent behind a line
 turnal blame src/auth.go:42 --verbose    # Intent, evidence, human request, and action facts
 ```
 
-`blame` reports the agent's stated problem first and keeps the human request as separate context. Its confidence label is derived from recorded timing and scope: a statement captured before the action is high confidence, while a late statement or a change outside the stated scope is labeled accordingly. When no intent was recorded, Turnal says so instead of inferring one from the transcript.
+`blame` reports the agent's stated problem first and keeps the human request as separate context. Its confidence label is derived from recorded timing and scope: an available statement captured before the action is high confidence, while a late statement or a change outside the stated scope is labeled accordingly. Redacted intent is explicit and remains low confidence because its scope is unavailable. A normal turn with no intent says that none was recorded. When a recorded statement cannot be tied safely to one action, or when turns overlap, Turnal uses explicit `ambiguous` or `concurrent` origins instead of borrowing an agent's statement.
 
 The checkpoint graph packs non-overlapping or timestamp-touching session spans into reusable lanes and caps the display at eight columns by default. When more lanes are needed, the most recently active spans keep dedicated lanes and the eighth becomes an overflow lane with turn markers but no connecting line; each inline session label and session-derived true color continues to identify the turn. Graph summaries always include the displayed lane count and disclose overflow or session/turn filtering. Use `--verbose` to print the full session legend.
 

@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -34,12 +36,17 @@ func TestClaudeAndCodexPromptHooksInjectIntentCommand(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("TURNAL_HOOK_COMMAND", "")
 			rootPath := t.TempDir()
 			root, err := primitives.ParseWorkspaceRoot(rootPath)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := checkpoint.Init(root); err != nil {
+			repo, err := checkpoint.Init(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(repo.MetadataDir, "config.toml"), []byte("version = 1\n\n[hooks]\ncommand = '/opt/turnal-wrapper'\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			t.Chdir(rootPath)
@@ -60,7 +67,7 @@ func TestClaudeAndCodexPromptHooksInjectIntentCommand(t *testing.T) {
 			if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 				t.Fatalf("decode hook output: %v\n%s", err, stdout.String())
 			}
-			if output.HookSpecificOutput.HookEventName != "UserPromptSubmit" || !strings.Contains(output.HookSpecificOutput.AdditionalContext, "turnal intent --session") || !strings.Contains(output.HookSpecificOutput.AdditionalContext, "not edit steps or hidden reasoning") {
+			if output.HookSpecificOutput.HookEventName != "UserPromptSubmit" || !strings.Contains(output.HookSpecificOutput.AdditionalContext, "/opt/turnal-wrapper intent --session") || !strings.Contains(output.HookSpecificOutput.AdditionalContext, "--turn 1") || !strings.Contains(output.HookSpecificOutput.AdditionalContext, "not edit steps or hidden reasoning") {
 				t.Fatalf("hook output = %#v", output)
 			}
 		})
@@ -113,6 +120,13 @@ func TestClaudeSessionHookMapsToSessionStart(t *testing.T) {
 	name, err := claudeHookName("session")
 	if err != nil || name != "SessionStart" {
 		t.Fatalf("claudeHookName(session) = %q, %v", name, err)
+	}
+}
+
+func TestClaudeToolFailureHookMapsToPostToolUseFailure(t *testing.T) {
+	name, err := claudeHookName("tool-failure")
+	if err != nil || name != "PostToolUseFailure" {
+		t.Fatalf("claudeHookName(tool-failure) = %q, %v", name, err)
 	}
 }
 

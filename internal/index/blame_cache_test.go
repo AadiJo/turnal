@@ -55,11 +55,13 @@ func TestBlameCacheRoundTripsActionIntent(t *testing.T) {
 			Line: 1,
 			Text: "changed",
 			Origin: BlameCacheOrigin{
-				Kind:       "turn",
-				SessionID:  sessionID,
-				TurnID:     turnID,
-				ActionTool: "apply_patch",
-				Intent:     intent,
+				Kind:            "turn",
+				SessionID:       sessionID,
+				TurnID:          turnID,
+				ActionTool:      "apply_patch",
+				ActionAgentID:   "agent-a",
+				ActionAgentType: "worker",
+				Intent:          intent,
 			},
 		}},
 	}
@@ -78,7 +80,7 @@ func TestBlameCacheRoundTripsActionIntent(t *testing.T) {
 		t.Fatalf("loaded = %#v, ok=%v, err=%v", loaded, ok, err)
 	}
 	origin := loaded.Entries[0].Origin
-	if origin.ActionTool != "apply_patch" || origin.Intent == nil || origin.Intent.Problem != intent.Problem || origin.Intent.Confidence != provenance.IntentConfidenceHigh {
+	if origin.ActionTool != "apply_patch" || origin.ActionAgentID != "agent-a" || origin.ActionAgentType != "worker" || origin.Intent == nil || origin.Intent.Problem != intent.Problem || origin.Intent.Confidence != provenance.IntentConfidenceHigh {
 		t.Fatalf("cached origin = %#v", origin)
 	}
 }

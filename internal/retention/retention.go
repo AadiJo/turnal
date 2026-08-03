@@ -118,6 +118,12 @@ func PruneOrphanRefs(repo *checkpoint.Repo, dryRun bool) (Result, error) {
 				return err
 			}
 		}
+		removedManifests, err := repo.PruneModeManifestsLocked()
+		if err != nil {
+			return err
+		}
+		result.DeletedFiles = append(result.DeletedFiles, removedManifests...)
+		sort.Strings(result.DeletedFiles)
 		return nil
 	})
 	return result, err
@@ -158,7 +164,6 @@ func planDropSession(repo *checkpoint.Repo, sessionID primitives.SessionID, dryR
 	refPrefixes := []string{
 		fmt.Sprintf("%s/%s/turn", primitives.CheckpointRefsPrefix(), sessionID),
 		fmt.Sprintf("%s/%s/turn", primitives.GitSyncRefsPrefix(), sessionID),
-		fmt.Sprintf("refs/agent-vcs/actions/%s", sessionID),
 		fmt.Sprintf("refs/agent-vcs/rollback-safety/%s", sessionID),
 		fmt.Sprintf("refs/agent-vcs/git-sync-safety/rollback/%s", sessionID),
 	}
@@ -194,8 +199,9 @@ func planDropSession(repo *checkpoint.Repo, sessionID primitives.SessionID, dryR
 		return Result{}, err
 	}
 	needle := "/" + sessionID.String() + "/turn/"
+	actionNeedle := "/actions/" + sessionID.String() + "/"
 	for _, ref := range allRefs {
-		if strings.Contains(ref, needle) {
+		if strings.Contains(ref, needle) || strings.Contains(ref, actionNeedle) {
 			seenRefs[ref] = struct{}{}
 		}
 	}

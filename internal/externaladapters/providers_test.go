@@ -71,6 +71,9 @@ func TestBundledProviderNormalization(t *testing.T) {
 					t.Fatalf("event %d invalid: %v", index, err)
 				}
 			}
+			if len(events) == 2 && len(events[0].Input) > 0 && !bytes.Equal(events[1].Input, events[0].Input) {
+				t.Fatalf("tool result did not retain paired call input: call=%s result=%s", events[0].Input, events[1].Input)
+			}
 		})
 	}
 }

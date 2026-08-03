@@ -10,6 +10,7 @@ import (
 	"github.com/AadiJo/turnal/internal/blame"
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/provenance"
 	"github.com/spf13/cobra"
 )
 
@@ -102,11 +103,33 @@ func writeBlameText(w io.Writer, result blame.Result, verbose bool) error {
 			if err := writeBlameOriginDetails(w, entry.Origin); err != nil {
 				return err
 			}
-		} else if entry.Origin.Intent != nil {
-			if _, err := fmt.Fprintf(w, "  Intent: %s\n", truncateText(entry.Origin.Intent.Problem, 140)); err != nil {
-				return err
+		} else {
+			if entry.Origin.Intent != nil {
+				if _, err := fmt.Fprintf(w, "  Intent: %s\n", truncateText(entry.Origin.Intent.Problem, 140)); err != nil {
+					return err
+				}
+				if entry.Origin.Intent.Status != provenance.IntentStatusCaptured {
+					if _, err := fmt.Fprintf(w, "  Intent note: %s\n", blameIntentConfidence(entry.Origin)); err != nil {
+						return err
+					}
+				}
+			} else if entry.Origin.Kind == "ambiguous" {
+				if _, err := fmt.Fprintln(w, "  Intent: unavailable because no recorded intent could be safely tied to this change"); err != nil {
+					return err
+				}
+			} else if entry.Origin.Kind == "concurrent" {
+				if _, err := fmt.Fprintln(w, "  Intent: unavailable because concurrent agent turns overlapped"); err != nil {
+					return err
+				}
+			} else if entry.Origin.Kind == "turn" {
+				if _, err := fmt.Fprintln(w, "  Intent: no agent intent recorded for this change"); err != nil {
+					return err
+				}
 			}
-		} else if request := truncateText(entry.Origin.Prompt, 140); request != "" {
+			request := truncateText(entry.Origin.Prompt, 140)
+			if request == "" {
+				continue
+			}
 			if _, err := fmt.Fprintf(w, "  Human request: %q\n", request); err != nil {
 				return err
 			}
@@ -136,6 +159,14 @@ func writeBlameOriginDetails(w io.Writer, origin blame.Origin) error {
 			}
 		}
 		if _, err := fmt.Fprintf(w, "  confidence: %s\n", blameIntentConfidence(origin)); err != nil {
+			return err
+		}
+	} else if origin.Kind == "ambiguous" {
+		if _, err := fmt.Fprintln(w, "  problem: unavailable because no recorded intent could be safely tied to this change"); err != nil {
+			return err
+		}
+	} else if origin.Kind == "concurrent" {
+		if _, err := fmt.Fprintln(w, "  problem: unavailable because concurrent agent turns overlapped"); err != nil {
 			return err
 		}
 	} else if origin.Kind == "turn" {
@@ -178,6 +209,15 @@ func writeBlameOriginDetails(w io.Writer, origin blame.Origin) error {
 			return err
 		}
 	}
+	if origin.ActionAgentID != "" {
+		agent := origin.ActionAgentID
+		if origin.ActionAgentType != "" {
+			agent = origin.ActionAgentType + " (" + agent + ")"
+		}
+		if _, err := fmt.Fprintf(w, "  action agent: %s\n", agent); err != nil {
+			return err
+		}
+	}
 	if origin.CheckpointRef != "" {
 		if _, err := fmt.Fprintf(w, "  checkpoint: %s\n", origin.CheckpointRef); err != nil {
 			return err
@@ -196,18 +236,31 @@ func blameIntentConfidence(origin blame.Origin) string {
 		return "unavailable"
 	}
 	switch origin.Intent.Status {
-	case "late":
-		return origin.Intent.Confidence + " (stated after edit)"
-	case "out_of_scope":
-		return origin.Intent.Confidence + " (outside stated scope)"
+	case provenance.IntentStatusCaptured:
+		return string(origin.Intent.Confidence) + " (stated before edit)"
+	case provenance.IntentStatusLate:
+		return string(origin.Intent.Confidence) + " (stated after edit)"
+	case provenance.IntentStatusOutOfScope:
+		return string(origin.Intent.Confidence) + " (outside stated scope)"
+	case provenance.IntentStatusLateOutOfScope:
+		return string(origin.Intent.Confidence) + " (stated after edit; outside stated scope)"
+	case provenance.IntentStatusRedacted:
+		if origin.Intent.Timing == provenance.IntentTimingAfter {
+			return string(origin.Intent.Confidence) + " (intent redacted; stated after edit)"
+		}
+		return string(origin.Intent.Confidence) + " (intent redacted)"
 	default:
-		return origin.Intent.Confidence + " (stated before edit)"
+		return fmt.Sprintf("%s (unknown intent status %q)", origin.Intent.Confidence, origin.Intent.Status)
 	}
 }
 
 func originLabel(origin blame.Origin, sessionLabels map[primitives.SessionID]string) string {
-	if origin.Kind == "turn" && origin.SessionID != "" && origin.TurnID != 0 {
-		return fmt.Sprintf("%s %s turn %s", formatBlameDisplayTime(origin.Time), blameOriginSessionLabel(origin, sessionLabels), origin.TurnID)
+	if (origin.Kind == "turn" || origin.Kind == "ambiguous") && origin.SessionID != "" && origin.TurnID != 0 {
+		label := fmt.Sprintf("%s %s turn %s", formatBlameDisplayTime(origin.Time), blameOriginSessionLabel(origin, sessionLabels), origin.TurnID)
+		if origin.Kind == "ambiguous" {
+			label += " (ambiguous)"
+		}
+		return label
 	}
 	if origin.Kind != "" {
 		return origin.Kind

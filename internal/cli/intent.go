@@ -11,6 +11,7 @@ import (
 
 func intentCmd() *cobra.Command {
 	var session string
+	var turn string
 	var problem string
 	var scope []string
 	var evidence []string
@@ -30,6 +31,10 @@ references such as event:12, path:src/retry.go:42, or test:TestRetryReset.`,
 			if err != nil {
 				return err
 			}
+			turnID, err := primitives.ParseTurnID(turn)
+			if err != nil {
+				return err
+			}
 			repo, err := openCheckpointRepo()
 			if err != nil {
 				return err
@@ -42,6 +47,7 @@ references such as event:12, path:src/retry.go:42, or test:TestRetryReset.`,
 
 			event, err := provenance.Record(repo, provenance.RecordInput{
 				SessionID: sessionID,
+				TurnID:    turnID,
 				Problem:   problem,
 				Scope:     scope,
 				Evidence:  evidence,
@@ -54,10 +60,12 @@ references such as event:12, path:src/retry.go:42, or test:TestRetryReset.`,
 		},
 	}
 	cmd.Flags().StringVar(&session, "session", "", "Active agent session id")
+	cmd.Flags().StringVar(&turn, "turn", "", "Turn number from the hook instruction")
 	cmd.Flags().StringVar(&problem, "problem", "", "Defect or goal the upcoming change addresses")
 	cmd.Flags().StringArrayVar(&scope, "scope", nil, "Expected repository path (repeatable)")
 	cmd.Flags().StringArrayVar(&evidence, "evidence", nil, "Evidence reference (repeatable)")
 	_ = cmd.MarkFlagRequired("session")
+	_ = cmd.MarkFlagRequired("turn")
 	_ = cmd.MarkFlagRequired("problem")
 	return cmd
 }

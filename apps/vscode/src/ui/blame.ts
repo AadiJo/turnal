@@ -110,12 +110,13 @@ export class BlameController implements vscode.HoverProvider, vscode.Disposable 
     }
     const line = editor.selection.active.line;
     const entry = result.entries[line];
-    if (!entry || entry.line !== line + 1 || entry.origin.kind !== "turn") {
+    if (!entry || entry.line !== line + 1 || entry.origin.kind === "baseline") {
       editor.setDecorations(this.decoration, []);
       return;
     }
     const title = blameTitle(entry.origin, 52);
-    const annotation = `${displayAgent(entry.origin.adapter)} · ${title} · ${relativeTime(entry.origin.time)}`;
+    const actor = entry.origin.kind === "concurrent" ? "Concurrent agents" : displayAgent(entry.origin.adapter);
+    const annotation = `${actor} · ${title} · ${relativeTime(entry.origin.time)}`;
     editor.setDecorations(this.decoration, [
       {
         range: editor.document.lineAt(line).range,
@@ -179,7 +180,15 @@ export function matchesRecordedFile(document: vscode.TextDocument, result: Blame
 
 function blameHover(entry: BlameEntry, folder: vscode.WorkspaceFolder): vscode.MarkdownString | undefined {
   const origin = entry.origin;
-  if (origin.kind !== "turn" || !origin.session_id || !origin.turn_id) {
+  if (origin.kind === "concurrent") {
+    const markdown = new vscode.MarkdownString();
+    markdown.appendMarkdown("**Turnal: concurrent agent changes**\n\n");
+    markdown.appendText("More than one agent turn overlapped, so Turnal cannot safely assign this line to one intent.");
+    markdown.appendMarkdown("\n\n**Confidence**\n\n");
+    markdown.appendText(intentConfidence(origin));
+    return markdown;
+  }
+  if ((origin.kind !== "turn" && origin.kind !== "ambiguous") || !origin.session_id || !origin.turn_id) {
     return undefined;
   }
   const target: TurnTarget = {
@@ -199,7 +208,9 @@ function blameHover(entry: BlameEntry, folder: vscode.WorkspaceFolder): vscode.M
   markdown.appendMarkdown(`**Turnal: ${escapeMarkdown(target.title)}**\n\n`);
   markdown.appendMarkdown(`${displayAgent(origin.adapter)} · ${formatTimestamp(origin.time)} · ${relativeTime(origin.time)}\n\n`);
   markdown.appendMarkdown("**Problem**\n\n");
-  markdown.appendText(origin.intent?.problem ?? "No agent intent was recorded for this change.");
+  markdown.appendText(origin.intent?.problem ?? (origin.kind === "ambiguous"
+    ? "No recorded intent could be safely tied to this change."
+    : "No agent intent was recorded for this change."));
   markdown.appendMarkdown("\n\n**Evidence**\n\n");
   markdown.appendText(origin.intent?.evidence?.length ? origin.intent.evidence.join(" · ") : "None recorded");
   markdown.appendMarkdown("\n\n**Human request**\n\n");

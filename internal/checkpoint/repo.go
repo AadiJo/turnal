@@ -103,6 +103,7 @@ type Checkpoint struct {
 	Ref          primitives.CheckpointRef
 	CanonicalRef primitives.CheckpointRef
 	Commit       primitives.CommitSHA
+	CapturedAt   time.Time
 	WorktreeID   primitives.WorktreeID
 	StreamID     primitives.EventStreamID
 }
@@ -483,7 +484,7 @@ func (repo *Repo) createManualCheckpoint() (Checkpoint, error) {
 	if err := repo.installCheckpointRefsAtomic(canonicalRef, ref, commit); err != nil {
 		return Checkpoint{}, err
 	}
-	return Checkpoint{ID: checkpointID, Ref: ref, CanonicalRef: canonicalRef, Commit: commit, WorktreeID: repo.WorktreeID}, nil
+	return Checkpoint{ID: checkpointID, Ref: ref, CanonicalRef: canonicalRef, Commit: commit, CapturedAt: time.Now().UTC(), WorktreeID: repo.WorktreeID}, nil
 }
 
 func (repo *Repo) installCheckpointRefsAtomic(canonicalRef, friendlyRef primitives.CheckpointRef, commit primitives.CommitSHA) error {
@@ -541,6 +542,7 @@ func (repo *Repo) createCheckpoint(sessionID primitives.SessionID, turnID primit
 		Ref:          ref,
 		CanonicalRef: canonicalRef,
 		Commit:       commit,
+		CapturedAt:   time.Now().UTC(),
 		WorktreeID:   repo.WorktreeID,
 		StreamID:     streamID,
 	}, nil
@@ -614,6 +616,27 @@ func (repo *Repo) CreateSnapshotRef(ref string, message string) (Snapshot, error
 		return err
 	})
 	return snapshot, err
+}
+
+// CreateSnapshotRefIfAbsentLocked reuses or creates a snapshot while the
+// caller holds the workspace lock.
+func (repo *Repo) CreateSnapshotRefIfAbsentLocked(ref string, message string) (Snapshot, error) {
+	parsedRef, err := repo.validatePrivateRef(ref)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	output, err := runHiddenGitReadOnly(repo, "for-each-ref", "--format=%(objectname)", "--count=1", parsedRef)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if commitText := strings.TrimSpace(output); commitText != "" {
+		commit, err := primitives.ParseCommitSHA(commitText)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		return Snapshot{Ref: parsedRef, Commit: commit}, nil
+	}
+	return repo.createSnapshotRef(parsedRef, message)
 }
 
 // CreateSnapshotRefLocked creates a snapshot while the caller holds the
@@ -1395,6 +1418,19 @@ func (repo *Repo) RefCommit(ref string) (primitives.CommitSHA, error) {
 		return "", err
 	}
 	return primitives.ParseCommitSHA(strings.TrimSpace(output))
+}
+
+// ValidateCommit verifies that a captured commit still exists in the hidden
+// repository without relying on the ref name that originally published it.
+func (repo *Repo) ValidateCommit(commit primitives.CommitSHA) error {
+	parsedCommit, err := primitives.ParseCommitSHA(commit.String())
+	if err != nil {
+		return err
+	}
+	if _, err := runHiddenGitReadOnly(repo, "cat-file", "-e", parsedCommit.String()+"^{commit}"); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (repo *Repo) CommitFileBytes(commit primitives.CommitSHA, repoPath string) ([]byte, error) {

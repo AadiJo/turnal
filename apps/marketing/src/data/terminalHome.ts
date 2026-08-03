@@ -167,10 +167,14 @@ const searchLines = [
 
 const blameLines = [
   `${label('14:48 [claude 14:42] turn 4')}     24 |   if (!claimed) return res.sendStatus(200)`,
-  `  ${muted('Prompt:')} "Make the webhook idempotency claim transactional and release it only on retryable failures."`,
+  `  ${muted('problem:')} duplicate webhook claims could escape the fulfillment transaction`,
+  `  ${muted('expected scope:')} src/webhooks/stripe.ts`,
+  `  ${muted('confidence:')} high (stated before edit)`,
+  `  ${muted('human request:')} Make the webhook idempotency claim transactional and release it only on retryable failures.`,
   `  ${muted('session:')} claude-a13f`,
   `  ${muted('adapter:')} claude-code`,
   `  ${muted('tools:')} Read, Edit, Bash`,
+  `  ${muted('action tool:')} Edit`,
   `  ${muted('checkpoint:')} refs/agent-vcs/checkpoints/claude-a13f/turn/000004/post`,
   `  ${muted('id:')} 9df3a1e9c54b`,
 ];
@@ -256,7 +260,7 @@ export const commandPanels: CommandPanel[] = [
     id: 'blame',
     label: 'turnal blame',
     command: 'turnal blame src/webhooks/stripe.ts:24 --verbose',
-    description: 'Trace the line under investigation to the completed turn, prompt, tools, and checkpoint that produced it.',
+    description: 'Trace the line to the action, agent’s stated intent, human request, and checkpoint that produced it.',
     output: blameLines.join('\n'),
   },
   {
@@ -328,7 +332,7 @@ export const workflowScenes: WorkflowScene[] = [
   },
   {
     id: 'blame',
-    title: 'Trace a line to its prompt',
+    title: 'Trace a line to stated intent',
     command: 'turnal blame src/webhooks/stripe.ts:24 --verbose',
     output: blameLines,
     durationMs: 7000,

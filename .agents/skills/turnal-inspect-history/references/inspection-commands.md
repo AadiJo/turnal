@@ -35,7 +35,7 @@ turnal blame <path>[:line] [--session <session>] [--verbose] [--json]
 ```
 
 - `diff` recomputes the pre-to-post change from hidden Git checkpoints. With `--json`, a target is required and file contents are base64 fields; binary or files larger than the document limit may be marked binary/truncated instead of carrying contents.
-- `blame` uses the latest completed post checkpoint, not uncheckpointed workspace edits. Without `:line`, it reports every line. `--session` scopes both replay history and the latest checkpoint. JSON keeps the agent's stated problem under `origin.intent` and the human request under `origin.prompt`; inspect `status`, `timing`, and `confidence` rather than treating the statement as verified truth.
+- `blame` uses the latest completed post checkpoint, not uncheckpointed workspace edits. Without `:line`, it reports every line. `--session` scopes replay history and the latest checkpoint while still checking other same-worktree turns for overlap. JSON keeps the agent's stated problem under `origin.intent` and the human request under `origin.prompt`; inspect `kind`, `status`, `timing`, and `confidence` rather than treating the statement as verified truth. `ambiguous` and `concurrent` origins intentionally omit a single agent intent.
 
 ## Replay historical files
 

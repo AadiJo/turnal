@@ -20,7 +20,7 @@ test("suppresses attribution when the live file has drifted", () => {
 
 test("puts the stated problem first and labels recorded limitations", () => {
   const origin = {
-    kind: "turn",
+    kind: "turn" as const,
     turn_id: 3,
     prompt: "fix flaky retries",
     intent: {
@@ -37,5 +37,22 @@ test("puts the stated problem first and labels recorded limitations", () => {
     ...origin,
     intent: { ...origin.intent, status: "late", timing: "after", confidence: "low" },
   }), "low · stated after edit");
+  assert.equal(intentConfidence({
+    ...origin,
+    intent: { ...origin.intent, status: "late_out_of_scope", timing: "after", confidence: "low" },
+  }), "low · stated after edit · outside stated scope");
+  assert.equal(intentConfidence({
+    ...origin,
+    intent: { ...origin.intent, status: "redacted", confidence: "low", redacted: true },
+  }), "low · intent redacted");
+  assert.equal(blameTitle({
+    ...origin,
+    intent: { ...origin.intent, status: "redacted", confidence: "low", redacted: true },
+  }), "agent intent redacted");
   assert.equal(intentConfidence({ ...origin, intent: undefined }), "Unavailable · no agent intent recorded");
+  assert.equal(blameTitle({ ...origin, intent: undefined }), "no agent intent recorded");
+  assert.equal(blameTitle({ kind: "ambiguous" }), "intent attribution unavailable");
+  assert.equal(intentConfidence({ kind: "ambiguous" }), "Unavailable · no recorded intent could be safely tied to this change");
+  assert.equal(blameTitle({ kind: "concurrent" }), "concurrent agent changes");
+  assert.equal(intentConfidence({ kind: "concurrent" }), "Unavailable · concurrent agent turns overlapped");
 });

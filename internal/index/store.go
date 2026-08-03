@@ -693,7 +693,8 @@ func (s *Store) LoadBlameCache(query BlameCacheQuery) (BlameCacheSnapshot, bool,
 	rowsQuery := `
 		SELECT line_no, line_text, origin_kind, origin_session_id, origin_turn_id,
 		       origin_checkpoint_ref, origin_commit_sha, origin_time, origin_adapter,
-		       origin_prompt, origin_tool_names_json, origin_action_tool, origin_intent_json
+		       origin_prompt, origin_tool_names_json, origin_action_tool,
+		       origin_action_agent_id, origin_action_agent_type, origin_intent_json
 		FROM blame_cache
 		WHERE scope_session_id = ?
 		  AND path = ?
@@ -785,9 +786,10 @@ func (s *Store) SaveBlameCache(snapshot BlameCacheSnapshot) error {
 			scope_session_id, path, history_key, latest_ref, latest_commit_sha, latest_committed_at,
 			complete_turn_count, line_count, line_no, line_text, warnings_json, origin_kind,
 			origin_session_id, origin_turn_id, origin_checkpoint_ref, origin_commit_sha, origin_time,
-			origin_adapter, origin_prompt, origin_tool_names_json, origin_action_tool, origin_intent_json, cached_at
+			origin_adapter, origin_prompt, origin_tool_names_json, origin_action_tool,
+			origin_action_agent_id, origin_action_agent_type, origin_intent_json, cached_at
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare blame cache insert: %w", err)
 	}
@@ -836,6 +838,8 @@ func scanBlameCacheEntry(scanner blameCacheScanner, path string) (BlameCacheEntr
 	var originPrompt sql.NullString
 	var originToolNamesJSON string
 	var originActionTool sql.NullString
+	var originActionAgentID sql.NullString
+	var originActionAgentType sql.NullString
 	var originIntentJSON sql.NullString
 	if err := scanner.Scan(
 		&lineNumber,
@@ -850,16 +854,20 @@ func scanBlameCacheEntry(scanner blameCacheScanner, path string) (BlameCacheEntr
 		&originPrompt,
 		&originToolNamesJSON,
 		&originActionTool,
+		&originActionAgentID,
+		&originActionAgentType,
 		&originIntentJSON,
 	); err != nil {
 		return BlameCacheEntry{}, fmt.Errorf("scan blame cache line for %s: %w", path, err)
 	}
 
 	origin := BlameCacheOrigin{
-		Kind:       originKind,
-		Adapter:    nullableString(originAdapter),
-		Prompt:     nullableString(originPrompt),
-		ActionTool: nullableString(originActionTool),
+		Kind:            originKind,
+		Adapter:         nullableString(originAdapter),
+		Prompt:          nullableString(originPrompt),
+		ActionTool:      nullableString(originActionTool),
+		ActionAgentID:   nullableString(originActionAgentID),
+		ActionAgentType: nullableString(originActionAgentType),
 	}
 	if originSessionText.Valid && originSessionText.String != "" {
 		sessionID, err := primitives.ParseSessionID(originSessionText.String)
@@ -956,6 +964,8 @@ func insertBlameCacheEntry(ctx context.Context, stmt *sql.Stmt, snapshot BlameCa
 		nullableText(origin.Prompt),
 		toolNamesJSON,
 		nullableText(origin.ActionTool),
+		nullableText(origin.ActionAgentID),
+		nullableText(origin.ActionAgentType),
 		intentJSON,
 		cachedAt,
 	); err != nil {

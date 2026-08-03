@@ -103,6 +103,7 @@ func inspectClaudeHooks(projectRoot string, command string) HookHealth {
 		{"UserPromptSubmit", claudeUserHook(command)},
 		{"PreToolUse", claudePreToolUseHook(command)},
 		{"PostToolUse", claudeToolUseHook(command)},
+		{"PostToolUseFailure", claudeToolFailureHook(command)},
 		{"Stop", claudeAssistantHook(command)},
 	} {
 		inspectHookEvent(&health, "claude", hooks, expected.eventName, expected.command)

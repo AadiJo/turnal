@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	SchemaVersion = 6
+	SchemaVersion = 7
 	DBFileName    = "index.sqlite"
 )
 
@@ -129,15 +129,17 @@ type BlameCacheEntry struct {
 }
 
 type BlameCacheOrigin struct {
-	Kind          string
-	SessionID     primitives.SessionID
-	TurnID        primitives.TurnID
-	CheckpointRef primitives.CheckpointRef
-	Commit        primitives.CommitSHA
-	Time          time.Time
-	Adapter       string
-	Prompt        string
-	ToolNames     []string
-	ActionTool    string
-	Intent        *provenance.Attribution
+	Kind            string
+	SessionID       primitives.SessionID
+	TurnID          primitives.TurnID
+	CheckpointRef   primitives.CheckpointRef
+	Commit          primitives.CommitSHA
+	Time            time.Time
+	Adapter         string
+	Prompt          string
+	ToolNames       []string
+	ActionTool      string
+	ActionAgentID   string
+	ActionAgentType string
+	Intent          *provenance.Attribution
 }

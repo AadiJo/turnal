@@ -22,6 +22,18 @@ func TestAttributeDerivesConfidenceFromRecordedFacts(t *testing.T) {
 	if late.Status != IntentStatusLate || late.Confidence != IntentConfidenceLow {
 		t.Fatalf("late attribution = %#v", late)
 	}
+	lateOutOfScope := Attribute(payload, seq, IntentTimingAfter, "internal/http/client.go")
+	if lateOutOfScope.Status != IntentStatusLateOutOfScope || lateOutOfScope.Timing != IntentTimingAfter || lateOutOfScope.Confidence != IntentConfidenceLow {
+		t.Fatalf("late out-of-scope attribution = %#v", lateOutOfScope)
+	}
+	renamed := Attribute(IntentPayload{Problem: "rename retry code", Scope: []string{"internal/retry/old.go"}}, seq, IntentTimingBefore, "internal/retry/old.go", "internal/retry/new.go")
+	if renamed.Status != IntentStatusCaptured || renamed.Confidence != IntentConfidenceHigh {
+		t.Fatalf("renamed attribution = %#v", renamed)
+	}
+	redacted := Attribute(IntentPayload{Problem: primitives.SecretsRedactionText, Redacted: true}, seq, IntentTimingBefore, "internal/retry/reset.go")
+	if redacted.Status != IntentStatusRedacted || redacted.Confidence != IntentConfidenceLow || !redacted.Redacted {
+		t.Fatalf("redacted attribution = %#v", redacted)
+	}
 }
 
 func TestNormalizeScopeAcceptsWorkspaceRootAsBroadScope(t *testing.T) {

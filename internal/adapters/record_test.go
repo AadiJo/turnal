@@ -79,6 +79,33 @@ func TestRecordExternalHookPayloadRedactsProviderAliases(t *testing.T) {
 	}
 }
 
+func TestRecordExternalHookPayloadTreatsIntentToolIOAsPromptData(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	config := []byte("version = 1\n\n[hooks]\ncommand = \"workspace-turnal\"\n\n[secrets]\nstore_prompts = false\nstore_tool_io = true\n")
+	if err := os.WriteFile(filepath.Join(repo.MetadataDir, "config.toml"), config, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	sessionID, _ := primitives.ParseSessionID("external-intent")
+	raw := []byte(`{"sessionId":"external-intent","toolName":"shell","toolArgs":{"command":"workspace-turnal intent --problem customer-secret"},"toolResult":{"textResultForLlm":"result-secret"}}`)
+	ref, err := RecordExternalHookPayload("copilot-cli", "postToolUse", raw, root.String(), sessionID)
+	if err != nil {
+		t.Fatalf("RecordExternalHookPayload: %v", err)
+	}
+	record, err := ReadRawHookRecord(repo.MetadataDir, ref)
+	if err != nil {
+		t.Fatalf("ReadRawHookRecord: %v", err)
+	}
+	stored := string(record.Payload)
+	if strings.Contains(stored, "customer-secret") || strings.Contains(stored, "result-secret") || !strings.Contains(stored, "agent.intent") {
+		t.Fatalf("external intent payload was not redacted as prompt data: %s", stored)
+	}
+}
+
 func TestRecordHookPayloadPreservesMalformedPayload(t *testing.T) {
 	requireGit(t)
 
