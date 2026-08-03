@@ -2,18 +2,45 @@ package viewer
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/AadiJo/turnal/internal/checkpoint"
+	"github.com/AadiJo/turnal/internal/projects"
 )
 
-func TestServerRequiresBootstrapAndScopesViewerSession(t *testing.T) {
-	server, err := NewServer(newViewerTestRepo(t))
+// newViewerTestServer builds a viewer over an isolated project index. The state
+// directory is redirected so tests never read or write the developer's registry.
+func newViewerTestServer(t *testing.T) (*Server, *checkpoint.Repo) {
+	t.Helper()
+	t.Setenv("TURNAL_STATE_DIR", t.TempDir())
+	repo := newViewerTestRepo(t)
+	// The temp workspace is not a Git repo, so it is not auto-registered.
+	// Adopt it explicitly, the same way turnal init and the add flow do.
+	if err := repo.RegisterStore(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := projects.Open()
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = db.Close() })
+	server, err := NewServer(db, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.registry.refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	return server, repo
+}
+
+func TestServerRequiresBootstrapAndScopesViewerSession(t *testing.T) {
+	server, repo := newViewerTestServer(t)
 	server.expectedHost = "127.0.0.1:41731"
 	server.expectedBase = "http://" + server.expectedHost
 	prefix := "/" + server.launchPath + "/"
@@ -32,7 +59,8 @@ func TestServerRequiresBootstrapAndScopesViewerSession(t *testing.T) {
 		t.Fatal("runtime asset base was not installed in the HTML response")
 	}
 
-	unauthorized := httptest.NewRequest(http.MethodGet, server.expectedBase+prefix+"api/v1/workspace", nil)
+	scopedWorkspace := "api/v1/projects/" + repo.StoreID.String() + "/workspace"
+	unauthorized := httptest.NewRequest(http.MethodGet, server.expectedBase+prefix+scopedWorkspace, nil)
 	unauthorized.Host = server.expectedHost
 	unauthorized.Header.Set(viewerHeader, "1")
 	unauthorizedResponse := httptest.NewRecorder()
@@ -56,7 +84,7 @@ func TestServerRequiresBootstrapAndScopesViewerSession(t *testing.T) {
 		t.Fatalf("bootstrap cookie = %#v", cookies)
 	}
 
-	workspaceRequest := httptest.NewRequest(http.MethodGet, server.expectedBase+prefix+"api/v1/workspace", nil)
+	workspaceRequest := httptest.NewRequest(http.MethodGet, server.expectedBase+prefix+scopedWorkspace, nil)
 	workspaceRequest.Host = server.expectedHost
 	workspaceRequest.Header.Set(viewerHeader, "1")
 	workspaceRequest.AddCookie(cookies[0])

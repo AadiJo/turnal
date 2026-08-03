@@ -61,6 +61,12 @@ func initCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// Bootstrap auto-registers Git workspaces only; turnal init is an
+			// explicit adoption, so non-Git projects are registered here too and
+			// show up in the machine-wide project index.
+			if err := result.Repo.RegisterStore(); err != nil {
+				return err
+			}
 			if result.Attached {
 				fmt.Fprintf(cmd.OutOrStdout(), "initialized worktree: %s\n", result.Repo.WorkspaceRoot)
 				fmt.Fprintf(cmd.OutOrStdout(), "attached turnal store: %s\n", result.Repo.MetadataDir)

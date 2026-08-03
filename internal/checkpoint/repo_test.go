@@ -976,6 +976,9 @@ func TestRestoreCommitPreservesGitignoredFiles(t *testing.T) {
 
 func workspaceRoot(t *testing.T) primitives.WorkspaceRoot {
 	t.Helper()
+	// Redirect machine-wide state: initializing a store registers it, and a
+	// throwaway temp workspace must not land in the developer's real registry.
+	t.Setenv("TURNAL_STATE_DIR", t.TempDir())
 	root, err := primitives.ParseWorkspaceRoot(t.TempDir())
 	if err != nil {
 		t.Fatalf("ParseWorkspaceRoot: %v", err)

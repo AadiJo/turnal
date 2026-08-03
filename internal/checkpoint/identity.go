@@ -625,9 +625,14 @@ func registryCandidates(gitCommonDir string) ([]registryStore, error) {
 		return nil, err
 	}
 	common := cleanIdentityPath(gitCommonDir)
+	if common == "" {
+		// Non-Git workspaces are registered too, but they share no Git common
+		// dir, so two of them must never resolve to each other's store.
+		return nil, nil
+	}
 	var candidates []registryStore
 	for _, store := range registryValue.Stores {
-		if sameIdentityPath(store.GitCommonDir, common) {
+		if store.GitCommonDir != "" && sameIdentityPath(store.GitCommonDir, common) {
 			if info, err := os.Stat(filepath.Join(store.StorePath, gitDirName)); err == nil && info.IsDir() {
 				candidates = append(candidates, store)
 			}

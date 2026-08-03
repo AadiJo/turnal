@@ -26,10 +26,15 @@ import (
 	"time"
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
+	"github.com/AadiJo/turnal/internal/projects"
 )
 
 const (
-	viewerHeader       = "X-Turnal-Viewer"
+	viewerHeader = "X-Turnal-Viewer"
+	// viewerWriteHeader carries the session token on state-changing requests.
+	// A cross-origin page cannot read the HttpOnly cookie, so it cannot forge
+	// this header even if a browser attaches the cookie.
+	viewerWriteHeader  = "X-Turnal-Write"
 	viewerCookie       = "turnal_viewer_session"
 	viewerSessionTTL   = 8 * time.Hour
 	viewerReadTimeout  = 15 * time.Second
@@ -37,6 +42,8 @@ const (
 )
 
 type Options struct {
+	// Repo is optional. When turnal ui runs inside a recorded project that
+	// project is preselected; from anywhere else the global index opens.
 	Repo           *checkpoint.Repo
 	Port           int
 	NoOpen         bool
@@ -45,7 +52,8 @@ type Options struct {
 }
 
 type Server struct {
-	service      *Service
+	registry     *registry
+	currentStore string
 	assets       fs.FS
 	launchPath   string
 	launchSecret string
@@ -55,12 +63,14 @@ type Server struct {
 	sessionUntil time.Time
 	expectedHost string
 	expectedBase string
+	startedAt    time.Time
 }
 
-func NewServer(repo *checkpoint.Repo) (*Server, error) {
-	service, err := NewService(repo)
-	if err != nil {
-		return nil, err
+// NewServer builds a viewer over every registered project. The optional repo
+// only preselects a project; the server is never scoped to it.
+func NewServer(db *projects.DB, current *checkpoint.Repo) (*Server, error) {
+	if db == nil {
+		return nil, fmt.Errorf("viewer requires an open project index")
 	}
 	assets, err := productionAssets()
 	if err != nil {
@@ -78,23 +88,38 @@ func NewServer(repo *checkpoint.Repo) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{
-		service: service, assets: assets, launchPath: launchPath,
+	server := &Server{
+		registry: newRegistry(db), assets: assets, launchPath: launchPath,
 		launchSecret: launchSecret, sessionToken: sessionToken,
-	}, nil
+		startedAt: time.Now().UTC(),
+	}
+	if current != nil {
+		server.currentStore = current.StoreID.String()
+	}
+	return server, nil
 }
 
 func Run(ctx context.Context, options Options) error {
-	if options.Repo == nil {
-		return fmt.Errorf("turnal ui requires an open checkpoint repository")
-	}
 	if options.Port < 0 || options.Port > 65535 {
 		return fmt.Errorf("viewer port must be between 0 and 65535")
 	}
 	if options.Out == nil {
 		options.Out = os.Stdout
 	}
-	server, err := NewServer(options.Repo)
+	db, err := projects.Open()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	server, err := NewServer(db, options.Repo)
+	if err != nil {
+		return err
+	}
+	// Populate the index before serving so the first page load is not empty.
+	if err := server.registry.refresh(ctx); err != nil {
+		return fmt.Errorf("index recorded projects: %w", err)
+	}
+	indexed, err := db.Projects(ctx)
 	if err != nil {
 		return err
 	}
@@ -107,8 +132,19 @@ func Run(ctx context.Context, options Options) error {
 	server.expectedBase = "http://" + server.expectedHost
 
 	launchURL := server.expectedBase + "/" + server.launchPath + "/"
+	query := url.Values{}
+	if server.currentStore != "" {
+		query.Set("project", server.currentStore)
+	}
 	if strings.TrimSpace(options.InitialSession) != "" {
-		sessions, err := server.service.Sessions(ctx)
+		if options.Repo == nil {
+			return fmt.Errorf("--session requires running inside a recorded project")
+		}
+		service, err := server.registry.service(ctx, server.currentStore)
+		if err != nil {
+			return fmt.Errorf("resolve initial viewer session: %w", err)
+		}
+		sessions, err := service.Sessions(ctx)
 		if err != nil {
 			return fmt.Errorf("resolve initial viewer session: %w", err)
 		}
@@ -116,12 +152,19 @@ func Run(ctx context.Context, options Options) error {
 		if err != nil {
 			return err
 		}
-		launchURL += "?session=" + url.QueryEscape(initialKey)
+		query.Set("session", initialKey)
+	}
+	if encoded := query.Encode(); encoded != "" {
+		launchURL += "?" + encoded
 	}
 	launchURL += "#token=" + url.QueryEscape(server.launchSecret)
 
 	fmt.Fprintf(options.Out, "Turnal Prism:  %s\n", launchURL)
-	fmt.Fprintf(options.Out, "Workspace:     %s\n", options.Repo.WorkspaceRoot)
+	fmt.Fprintf(options.Out, "Projects:      %d indexed\n", len(indexed))
+	if options.Repo != nil {
+		fmt.Fprintf(options.Out, "Workspace:     %s\n", options.Repo.WorkspaceRoot)
+	}
+	fmt.Fprintf(options.Out, "Index:         %s\n", db.Path())
 	fmt.Fprintf(options.Out, "PID:           %d\n", os.Getpid())
 	fmt.Fprintln(options.Out, "Stop:          press Ctrl-C")
 
@@ -211,10 +254,6 @@ func (server *Server) serveAPI(response http.ResponseWriter, request *http.Reque
 		server.bootstrap(response, request)
 		return
 	}
-	if request.Method != http.MethodGet {
-		server.writeError(response, http.StatusMethodNotAllowed, "method_not_allowed", "This viewer endpoint is read-only.")
-		return
-	}
 	if !server.originAllowed(request) || request.Header.Get(viewerHeader) != "1" || !server.authenticated(request) {
 		server.writeError(response, http.StatusUnauthorized, "viewer_locked", "Relaunch the viewer from the Turnal CLI.")
 		return
@@ -223,42 +262,181 @@ func (server *Server) serveAPI(response http.ResponseWriter, request *http.Reque
 	ctx := request.Context()
 	segments := strings.Split(strings.Trim(route, "/"), "/")
 
+	// Adding and removing projects are the only write routes. They are state
+	// changing, so they additionally require the session token echoed in a
+	// header, which a cross-origin caller cannot read from the cookie.
+	if request.Method == http.MethodPost && route == "projects" {
+		server.addProject(response, request)
+		return
+	}
+	if request.Method == http.MethodDelete && len(segments) == 2 && segments[0] == "projects" {
+		server.removeProject(response, request, segments[1])
+		return
+	}
+	if request.Method != http.MethodGet {
+		server.writeError(response, http.StatusMethodNotAllowed, "method_not_allowed", "This viewer endpoint is read-only.")
+		return
+	}
+
+	// Global routes come first; everything else is scoped to one project so a
+	// key minted for one store can never resolve inside another.
+	switch route {
+	case "index":
+		server.writeIndex(response, request)
+		return
+	case "projects":
+		list, err := server.registry.db.Projects(ctx)
+		if err != nil {
+			server.failRead(response, err)
+			return
+		}
+		server.writeJSON(response, http.StatusOK, projectViews(list))
+		return
+	case "activity":
+		limit := 0
+		if value := request.URL.Query().Get("limit"); value != "" {
+			parsed, err := strconv.Atoi(value)
+			if err != nil {
+				server.writeError(response, http.StatusBadRequest, "invalid_limit", "Activity limit must be an integer.")
+				return
+			}
+			limit = parsed
+		}
+		list, err := server.registry.db.Activity(ctx, limit)
+		if err != nil {
+			server.failRead(response, err)
+			return
+		}
+		server.writeJSON(response, http.StatusOK, activityViews(list))
+		return
+	case "refresh":
+		if err := server.registry.refresh(ctx); err != nil {
+			server.failRead(response, err)
+			return
+		}
+		server.writeIndex(response, request)
+		return
+	}
+
+	if len(segments) < 3 || segments[0] != "projects" {
+		server.writeError(response, http.StatusNotFound, "not_found", "Viewer resource not found.")
+		return
+	}
+	storeID := segments[1]
+	service, err := server.registry.service(ctx, storeID)
+	if err != nil {
+		server.writeError(response, http.StatusNotFound, "unknown_project", err.Error())
+		return
+	}
+	scoped := segments[2:]
+	query := request.URL.Query()
+
 	var result any
-	var err error
 	switch {
-	case route == "workspace":
-		result, err = server.service.Workspace(ctx)
-	case route == "sessions":
-		result, err = server.service.Sessions(ctx)
-	case len(segments) == 3 && segments[0] == "sessions" && segments[2] == "turns":
-		result, err = server.service.SessionTurns(ctx, segments[1])
-	case len(segments) == 2 && segments[0] == "turns":
-		result, err = server.service.Turn(ctx, segments[1])
-	case len(segments) == 2 && segments[0] == "diffs":
-		result, err = server.service.Diff(ctx, segments[1])
-	case len(segments) == 3 && segments[0] == "diffs" && segments[2] == "file":
-		result, err = server.service.Patch(ctx, segments[1], request.URL.Query().Get("path"))
-	case len(segments) == 2 && segments[0] == "blame":
+	case len(scoped) == 1 && scoped[0] == "workspace":
+		result, err = service.Workspace(ctx)
+	case len(scoped) == 1 && scoped[0] == "sessions":
+		result, err = service.Sessions(ctx)
+	case len(scoped) == 3 && scoped[0] == "sessions" && scoped[2] == "turns":
+		result, err = service.SessionTurns(ctx, scoped[1])
+	case len(scoped) == 2 && scoped[0] == "turns":
+		result, err = service.Turn(ctx, scoped[1])
+	case len(scoped) == 2 && scoped[0] == "diffs":
+		result, err = service.Diff(ctx, scoped[1])
+	case len(scoped) == 3 && scoped[0] == "diffs" && scoped[2] == "file":
+		result, err = service.Patch(ctx, scoped[1], query.Get("path"))
+	case len(scoped) == 2 && scoped[0] == "blame":
 		line := 0
-		if value := request.URL.Query().Get("line"); value != "" {
+		if value := query.Get("line"); value != "" {
 			line, err = strconv.Atoi(value)
 		}
 		if err == nil {
-			result, err = server.service.Blame(ctx, segments[1], request.URL.Query().Get("path"), line)
+			result, err = service.Blame(ctx, scoped[1], query.Get("path"), line)
 		}
 	default:
 		server.writeError(response, http.StatusNotFound, "not_found", "Viewer resource not found.")
 		return
 	}
 	if err != nil {
-		status := http.StatusBadRequest
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			status = http.StatusRequestTimeout
-		}
-		server.writeError(response, status, "viewer_read_failed", err.Error())
+		server.failRead(response, err)
 		return
 	}
 	server.writeJSON(response, http.StatusOK, result)
+}
+
+func (server *Server) failRead(response http.ResponseWriter, err error) {
+	status := http.StatusBadRequest
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		status = http.StatusRequestTimeout
+	}
+	server.writeError(response, status, "viewer_read_failed", err.Error())
+}
+
+func (server *Server) writeIndex(response http.ResponseWriter, request *http.Request) {
+	list, err := server.registry.db.Projects(request.Context())
+	if err != nil {
+		server.failRead(response, err)
+		return
+	}
+	registryFile, err := checkpoint.RegistryPath()
+	if err != nil {
+		server.failRead(response, err)
+		return
+	}
+	server.writeJSON(response, http.StatusOK, IndexView{
+		Projects:        projectViews(list),
+		DBPath:          server.registry.db.Path(),
+		RegistryPath:    registryFile,
+		ReadOnly:        true,
+		NetworkSilent:   true,
+		ViewerStartedAt: server.startedAt,
+		CurrentStoreID:  server.currentStore,
+	})
+}
+
+// writeAllowed gates the two state-changing routes. The session cookie alone is
+// not enough: a state change also requires the token echoed in a header, which
+// only same-origin script that completed bootstrap can supply.
+func (server *Server) writeAllowed(request *http.Request) bool {
+	server.authMu.Lock()
+	token := server.sessionToken
+	server.authMu.Unlock()
+	return subtle.ConstantTimeCompare([]byte(request.Header.Get(viewerWriteHeader)), []byte(token)) == 1
+}
+
+func (server *Server) addProject(response http.ResponseWriter, request *http.Request) {
+	if !server.writeAllowed(request) {
+		server.writeError(response, http.StatusForbidden, "write_rejected", "This request is missing the viewer write token.")
+		return
+	}
+	request.Body = http.MaxBytesReader(response, request.Body, 8192)
+	defer request.Body.Close()
+	var input AddProjectRequest
+	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+		server.writeError(response, http.StatusBadRequest, "invalid_request", "Add project payload is invalid.")
+		return
+	}
+	result, err := server.registry.addProject(request.Context(), input)
+	if err != nil {
+		server.writeError(response, http.StatusBadRequest, "add_project_failed", err.Error())
+		return
+	}
+	server.writeJSON(response, http.StatusOK, result)
+}
+
+func (server *Server) removeProject(response http.ResponseWriter, request *http.Request, storeID string) {
+	if !server.writeAllowed(request) {
+		server.writeError(response, http.StatusForbidden, "write_rejected", "This request is missing the viewer write token.")
+		return
+	}
+	if err := server.registry.db.Deregister(request.Context(), storeID); err != nil {
+		server.writeError(response, http.StatusBadRequest, "remove_project_failed", err.Error())
+		return
+	}
+	server.registry.forget(storeID)
+	server.writeJSON(response, http.StatusOK, map[string]any{
+		"ok": true, "store_id": storeID, "history_kept": true,
+	})
 }
 
 func (server *Server) bootstrap(response http.ResponseWriter, request *http.Request) {
@@ -291,7 +469,11 @@ func (server *Server) bootstrap(response http.ResponseWriter, request *http.Requ
 		Name: viewerCookie, Value: server.sessionToken, Path: "/" + server.launchPath + "/",
 		HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: int(viewerSessionTTL.Seconds()),
 	})
-	server.writeJSON(response, http.StatusOK, map[string]any{"ok": true, "expires_at": server.sessionUntil})
+	// The write token is returned once, to same-origin script that proved it
+	// holds the launch secret. It never travels in a URL or a readable cookie.
+	server.writeJSON(response, http.StatusOK, map[string]any{
+		"ok": true, "expires_at": server.sessionUntil, "write_token": server.sessionToken,
+	})
 }
 
 func (server *Server) authenticated(request *http.Request) bool {

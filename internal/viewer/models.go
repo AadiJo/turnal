@@ -2,6 +2,86 @@ package viewer
 
 import "time"
 
+// ProjectView is one recorded project in the global index. Present is false
+// when the store directory is gone; the project stays listed because its
+// recorded history outlives the working tree.
+type ProjectView struct {
+	StoreID      string                `json:"store_id"`
+	RepoID       string                `json:"repo_id,omitempty"`
+	Name         string                `json:"name"`
+	Root         string                `json:"root"`
+	StorePath    string                `json:"store_path"`
+	Branch       string                `json:"branch,omitempty"`
+	Present      bool                  `json:"present"`
+	IndexState   string                `json:"index_state,omitempty"`
+	HistoryState string                `json:"history_state,omitempty"`
+	SessionCount int                   `json:"session_count"`
+	TurnCount    int                   `json:"turn_count"`
+	Additions    int                   `json:"additions"`
+	Deletions    int                   `json:"deletions"`
+	LastActivity time.Time             `json:"last_activity,omitempty"`
+	LastPrompt   string                `json:"last_prompt,omitempty"`
+	LastAdapter  string                `json:"last_adapter,omitempty"`
+	AddedAt      time.Time             `json:"added_at,omitempty"`
+	Worktrees    []ProjectWorktreeView `json:"worktrees,omitempty"`
+}
+
+type ProjectWorktreeView struct {
+	Root       string `json:"root"`
+	GitDir     string `json:"git_dir,omitempty"`
+	LastSeenAt string `json:"last_seen_at,omitempty"`
+}
+
+// ActivityView is one session in the cross-project feed. It carries the owning
+// store so a click can route back into that project.
+type ActivityView struct {
+	StoreID     string    `json:"store_id"`
+	ProjectName string    `json:"project_name"`
+	SessionKey  string    `json:"session_key"`
+	SessionID   string    `json:"session_id"`
+	Title       string    `json:"title,omitempty"`
+	Adapter     string    `json:"adapter,omitempty"`
+	Model       string    `json:"model,omitempty"`
+	Branch      string    `json:"branch,omitempty"`
+	Status      string    `json:"status,omitempty"`
+	TurnCount   int       `json:"turn_count"`
+	FileCount   int       `json:"file_count"`
+	Additions   int       `json:"additions"`
+	Deletions   int       `json:"deletions"`
+	StartedAt   time.Time `json:"started_at,omitempty"`
+	FinishedAt  time.Time `json:"finished_at,omitempty"`
+}
+
+// IndexView is the payload for the global landing page.
+type IndexView struct {
+	Projects        []ProjectView `json:"projects"`
+	DBPath          string        `json:"db_path"`
+	RegistryPath    string        `json:"registry_path"`
+	ReadOnly        bool          `json:"read_only"`
+	NetworkSilent   bool          `json:"network_silent"`
+	ViewerStartedAt time.Time     `json:"viewer_started_at"`
+	CurrentStoreID  string        `json:"current_store_id,omitempty"`
+}
+
+// AddProjectRequest initializes recording in a directory. This mirrors the
+// flags turnal init accepts.
+type AddProjectRequest struct {
+	Directory       string `json:"directory"`
+	Agent           string `json:"agent,omitempty"`
+	UpdateGitignore bool   `json:"update_gitignore"`
+	GitSync         bool   `json:"git_sync"`
+}
+
+// AddProjectResult reports what the add flow changed on disk.
+type AddProjectResult struct {
+	StoreID          string   `json:"store_id"`
+	Root             string   `json:"root"`
+	StorePath        string   `json:"store_path"`
+	Attached         bool     `json:"attached"`
+	GitignoreUpdated bool     `json:"gitignore_updated"`
+	Hooks            []string `json:"hooks,omitempty"`
+}
+
 type WorkspaceView struct {
 	Name            string    `json:"name"`
 	Root            string    `json:"root"`
