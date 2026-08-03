@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	"github.com/AadiJo/turnal/internal/projects"
@@ -208,6 +209,33 @@ func TestUnknownProjectIsRejected(t *testing.T) {
 	}
 	if !strings.Contains(response.Body.String(), "unknown_project") {
 		t.Fatalf("unknown project body = %s", response.Body.String())
+	}
+}
+
+// A wrapped agent run records two sessions for one piece of work: the wrapper's
+// own session and the provider's hook session. They share a checkpoint pair, so
+// counting both doubles the change totals and puts a promptless twin in the
+// activity feed. Only the prompted session should survive.
+func TestRedundantWrapperSessionsAreDropped(t *testing.T) {
+	finished := time.Date(2026, 8, 3, 18, 13, 46, 0, time.UTC)
+	sessions := []SessionSummaryView{
+		// The wrapper: same change shape, finishes a few seconds later, no prompt.
+		{Key: "wrapper", Adapter: "codex", Additions: 11, FileCount: 1, FinishedAt: finished.Add(4 * time.Second)},
+		// The provider session that actually carries the prompt.
+		{Key: "hooks", Adapter: "codex", Model: "gpt-5.6-sol", PromptPreview: "Add a Usage section", Additions: 11, FileCount: 1, FinishedAt: finished},
+		// An unrelated manual checkpoint: promptless, but nothing matches it.
+		{Key: "manual", Adapter: "manual", Additions: 3, FileCount: 1, FinishedAt: finished.Add(-time.Hour)},
+	}
+
+	redundant := redundantWrapperSessions(sessions)
+	if _, dropped := redundant["wrapper"]; !dropped {
+		t.Fatal("the promptless wrapper twin was kept")
+	}
+	if _, dropped := redundant["hooks"]; dropped {
+		t.Fatal("the prompted session was dropped")
+	}
+	if _, dropped := redundant["manual"]; dropped {
+		t.Fatal("an unmatched manual checkpoint was dropped; it is the only record of that work")
 	}
 }
 

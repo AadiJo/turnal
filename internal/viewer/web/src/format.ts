@@ -10,9 +10,17 @@ export function shortID(value?: string, length = 8) {
   return value.length <= length ? value : value.slice(0, length);
 }
 
+/** Go marshals an unset time.Time as year one, so an absent timestamp arrives as
+ * a real-looking string. Treat anything before 1971 as unset. */
+export function isRealTime(value?: string): boolean {
+  if (!value) return false;
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) && parsed > 31536000000;
+}
+
 export function displayTime(value?: string) {
-  if (!value) return "No timestamp";
-  const date = new Date(value);
+  if (!isRealTime(value)) return "No timestamp";
+  const date = new Date(value!);
   const sameDay = date.toDateString() === new Date().toDateString();
   return new Intl.DateTimeFormat(undefined, {
     ...(sameDay ? {} : { month: "short", day: "numeric" }),
@@ -21,10 +29,12 @@ export function displayTime(value?: string) {
   }).format(date);
 }
 
-/** Compact relative time for dense rows: 4m, 3h, 2d. */
+/** Compact relative time for dense rows: 4m, 3h, 2d. A project with no recorded
+ * activity has a zero timestamp, which must read as absent rather than as an age
+ * measured from year one. */
 export function shortAge(value?: string) {
-  if (!value) return "";
-  const seconds = Math.round((Date.now() - new Date(value).getTime()) / 1000);
+  if (!isRealTime(value)) return "";
+  const seconds = Math.round((Date.now() - new Date(value!).getTime()) / 1000);
   if (seconds < 60) return "now";
   const minutes = Math.round(seconds / 60);
   if (minutes < 60) return `${minutes}m`;

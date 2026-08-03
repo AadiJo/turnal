@@ -124,11 +124,20 @@ func (r *registry) summarize(ctx context.Context, store checkpoint.RegisteredSto
 	summary := projects.Summary{
 		IndexState:   workspace.IndexState,
 		HistoryState: workspace.HistoryState,
-		SessionCount: workspace.SessionCount,
 		TurnCount:    workspace.TurnCount,
 		LastActivity: workspace.LastActivity,
 	}
+	// A wrapped run records two sessions for the same work: the wrapper's own
+	// session and the provider's hook session. They share a checkpoint pair, so
+	// listing both double-counts the change and shows a promptless twin in the
+	// feed. Keep the one carrying prompt text.
+	redundant := redundantWrapperSessions(sessions)
+
 	for _, session := range sessions {
+		if _, skip := redundant[session.Key]; skip {
+			continue
+		}
+		summary.SessionCount++
 		summary.Additions += session.Additions
 		summary.Deletions += session.Deletions
 		summary.Sessions = append(summary.Sessions, projects.Activity{
@@ -148,17 +157,82 @@ func (r *registry) summarize(ctx context.Context, store checkpoint.RegisteredSto
 			FinishedAt: session.FinishedAt,
 		})
 	}
-	// Newest session supplies the branch and headline shown on the project row.
+	// The newest session supplies the branch and headline on the project row.
+	// Prefer the newest session that actually carries a prompt: a wrapped run
+	// records both a wrapper session and the provider's hook session, and only
+	// the latter has prompt text. Falling back to the plain newest session keeps
+	// manual checkpoints, which never carry a prompt, from blanking the row.
 	sorted := append([]SessionSummaryView(nil), sessions...)
 	sort.Slice(sorted, func(i, j int) bool {
 		return sessionRecency(sorted[i]).After(sessionRecency(sorted[j]))
 	})
 	if len(sorted) > 0 {
-		summary.Branch = sorted[0].Branch
-		summary.LastPrompt = sorted[0].PromptPreview
-		summary.LastAdapter = sorted[0].Adapter
+		headline := sorted[0]
+		for _, session := range sorted {
+			if strings.TrimSpace(session.PromptPreview) != "" {
+				headline = session
+				break
+			}
+		}
+		summary.Branch = headline.Branch
+		summary.LastPrompt = headline.PromptPreview
+		summary.LastAdapter = headline.Adapter
+		if headline.Model != "" {
+			summary.LastAdapter = headline.Adapter + " · " + headline.Model
+		}
 	}
 	return summary, nil
+}
+
+// redundantWrapperSessions finds sessions that describe the same work as
+// another session but carry no prompt. `turnal run` opens its own session for
+// wrapper checkpoints while the provider's hooks open a second session for the
+// same turn; both end up with identical change counts and finish times. Only the
+// hook session has the prompt, so the promptless twin is the redundant one.
+//
+// Sessions are matched on their change shape and finish time rather than on any
+// id, because the two sessions are deliberately independent event streams.
+func redundantWrapperSessions(sessions []SessionSummaryView) map[string]struct{} {
+	var prompted []SessionSummaryView
+	for _, session := range sessions {
+		if strings.TrimSpace(session.PromptPreview) != "" {
+			prompted = append(prompted, session)
+		}
+	}
+	redundant := make(map[string]struct{})
+	for _, session := range sessions {
+		if strings.TrimSpace(session.PromptPreview) != "" {
+			continue
+		}
+		for _, twin := range prompted {
+			// The wrapper opens slightly before and closes slightly after the
+			// provider session it wraps, so finish times differ by seconds
+			// rather than matching exactly.
+			if session.Additions == twin.Additions &&
+				session.Deletions == twin.Deletions &&
+				session.FileCount == twin.FileCount &&
+				withinWrapperSkew(session.FinishedAt, twin.FinishedAt) {
+				redundant[session.Key] = struct{}{}
+				break
+			}
+		}
+	}
+	return redundant
+}
+
+// wrapperSkew bounds how far apart a wrapper session and the provider session
+// it wraps may finish while still describing the same work.
+const wrapperSkew = 30 * time.Second
+
+func withinWrapperSkew(left, right time.Time) bool {
+	if left.IsZero() || right.IsZero() {
+		return false
+	}
+	delta := left.Sub(right)
+	if delta < 0 {
+		delta = -delta
+	}
+	return delta <= wrapperSkew
 }
 
 func sessionRecency(session SessionSummaryView) time.Time {

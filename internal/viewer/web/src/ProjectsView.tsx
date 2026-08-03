@@ -1,7 +1,7 @@
 import { useState } from "preact/hooks";
 import { api, APIError, canWrite } from "./api";
 import { Chrome, Delta, Glyph, Note, Section, Tabs } from "./Chrome";
-import { cleanAdapter, cx, displayTime, initials, shortAge } from "./format";
+import { cleanAdapter, cx, displayTime, initials, isRealTime, shortAge } from "./format";
 import type { ActivityItem, Project, ViewerIndex } from "./types";
 
 const AGENTS = [
@@ -32,10 +32,7 @@ export function ProjectsView({
   const [error, setError] = useState<string | null>(null);
 
   const writable = canWrite();
-  const working = index.projects.filter(
-    (project) =>
-      project.last_activity && Date.now() - new Date(project.last_activity).getTime() < WORKING_WINDOW,
-  );
+  const working = index.projects.filter(isRecent);
   const rest = index.projects.filter((project) => !working.includes(project));
 
   const submitAdd = async (directory: string, agent: string, gitignore: boolean, gitSync: boolean) => {
@@ -243,7 +240,7 @@ function ProjectRows({
             if (project.present) onOpen(project);
           }}
         >
-          <span className={cx("status", project.last_activity && isRecent(project) && "active")}>
+          <span className={cx("status", isRecent(project) && "active")}>
             {project.present ? "●" : "○"}
           </span>
           <span className="row-main">
@@ -282,10 +279,12 @@ function ProjectRows({
   );
 }
 
+/** A project counts as working when an agent touched it inside the window. A
+ * project with no recorded activity has a zero timestamp, which must not read as
+ * ancient. */
 function isRecent(project: Project) {
-  return Boolean(
-    project.last_activity && Date.now() - new Date(project.last_activity).getTime() < WORKING_WINDOW,
-  );
+  if (!isRealTime(project.last_activity)) return false;
+  return Date.now() - new Date(project.last_activity!).getTime() < WORKING_WINDOW;
 }
 
 function healthClass(project: Project) {
