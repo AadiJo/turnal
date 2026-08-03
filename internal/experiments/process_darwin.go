@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -22,17 +23,24 @@ var killDarwinForkProcessGroup = syscall.Kill
 
 const darwinZombieProcessState = 5
 
-var darwinForkProcessGroupHasLiveMembers = func(processGroupID int) (bool, error) {
+var darwinForkProcessGroupHasLiveMembers = func(processGroupID, ignoredProcessID int) (bool, error) {
 	processes, err := unix.SysctlKinfoProcSlice("kern.proc.pgrp", processGroupID)
 	if err != nil {
 		return false, err
 	}
+	return darwinProcessListHasLiveMember(processes, ignoredProcessID), nil
+}
+
+func darwinProcessListHasLiveMember(processes []unix.KinfoProc, ignoredProcessID int) bool {
 	for _, process := range processes {
+		if int(process.Proc.P_pid) == ignoredProcessID {
+			continue
+		}
 		if process.Proc.P_stat != darwinZombieProcessState {
-			return true, nil
+			return true
 		}
 	}
-	return false, nil
+	return false
 }
 
 func init() {
@@ -113,6 +121,7 @@ type darwinForkProcessController struct {
 	targetEnvironment []byte
 	queue             int
 	immediateExit     bool
+	mainExitObserved  atomic.Bool
 	terminateOnce     sync.Once
 	terminateErr      error
 	closeOnce         sync.Once
@@ -295,6 +304,7 @@ func (controller *darwinForkProcessController) WaitMain() error {
 			}
 		}
 	}
+	controller.mainExitObserved.Store(true)
 	return controller.readHelperStatus()
 }
 
@@ -362,7 +372,13 @@ func (controller *darwinForkProcessController) terminate() error {
 		processGroupID := controller.cmd.Process.Pid
 		controller.terminateErr = killDarwinForkProcessGroup(-processGroupID, syscall.SIGKILL)
 		if errors.Is(controller.terminateErr, syscall.EPERM) {
-			hasLiveMembers, inspectErr := darwinForkProcessGroupHasLiveMembers(processGroupID)
+			ignoredProcessID := 0
+			if controller.mainExitObserved.Load() {
+				// NOTE_EXIT can arrive just before Darwin reports the leader as a
+				// zombie. It is already exiting and is not a live descendant.
+				ignoredProcessID = processGroupID
+			}
+			hasLiveMembers, inspectErr := darwinForkProcessGroupHasLiveMembers(processGroupID, ignoredProcessID)
 			if inspectErr != nil {
 				controller.terminateErr = errors.Join(controller.terminateErr, fmt.Errorf("inspect fork process group after permission failure: %w", inspectErr))
 			} else if !hasLiveMembers {

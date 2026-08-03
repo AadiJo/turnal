@@ -147,6 +147,20 @@ func TestValidateDarwinForkExitRejectsRegistrationError(t *testing.T) {
 	}
 }
 
+func TestDarwinProcessListIgnoresOnlyObservedExit(t *testing.T) {
+	processes := []unix.KinfoProc{
+		{Proc: unix.ExternProc{P_pid: 4242, P_stat: 1}},
+		{Proc: unix.ExternProc{P_pid: 4243, P_stat: darwinZombieProcessState}},
+	}
+	if darwinProcessListHasLiveMember(processes, 4242) {
+		t.Fatal("observed exiting leader was treated as a live process")
+	}
+	processes = append(processes, unix.KinfoProc{Proc: unix.ExternProc{P_pid: 4244, P_stat: 1}})
+	if !darwinProcessListHasLiveMember(processes, 4242) {
+		t.Fatal("live descendant was ignored with the observed exiting leader")
+	}
+}
+
 func TestDarwinProcessControllerAcceptsZombieOnlyGroup(t *testing.T) {
 	originalKill := killDarwinForkProcessGroup
 	originalHasLiveMembers := darwinForkProcessGroupHasLiveMembers
@@ -160,9 +174,12 @@ func TestDarwinProcessControllerAcceptsZombieOnlyGroup(t *testing.T) {
 		}
 		return syscall.EPERM
 	}
-	darwinForkProcessGroupHasLiveMembers = func(processGroupID int) (bool, error) {
+	darwinForkProcessGroupHasLiveMembers = func(processGroupID, ignoredProcessID int) (bool, error) {
 		if processGroupID != 4242 {
 			t.Fatalf("process group = %d, want 4242", processGroupID)
+		}
+		if ignoredProcessID != 0 {
+			t.Fatalf("ignored process = %d, want none", ignoredProcessID)
 		}
 		return false, nil
 	}
@@ -181,10 +198,32 @@ func TestDarwinProcessControllerRejectsPermissionFailureWithLiveMembers(t *testi
 		darwinForkProcessGroupHasLiveMembers = originalHasLiveMembers
 	})
 	killDarwinForkProcessGroup = func(int, syscall.Signal) error { return syscall.EPERM }
-	darwinForkProcessGroupHasLiveMembers = func(int) (bool, error) { return true, nil }
+	darwinForkProcessGroupHasLiveMembers = func(int, int) (bool, error) { return true, nil }
 
 	controller := &darwinForkProcessController{cmd: &exec.Cmd{Process: &os.Process{Pid: 4242}}, queue: -1}
 	if err := controller.Close(); !errors.Is(err, syscall.EPERM) {
 		t.Fatalf("Close error = %v, want EPERM", err)
+	}
+}
+
+func TestDarwinProcessControllerIgnoresLeaderAfterObservingExit(t *testing.T) {
+	originalKill := killDarwinForkProcessGroup
+	originalHasLiveMembers := darwinForkProcessGroupHasLiveMembers
+	t.Cleanup(func() {
+		killDarwinForkProcessGroup = originalKill
+		darwinForkProcessGroupHasLiveMembers = originalHasLiveMembers
+	})
+	killDarwinForkProcessGroup = func(int, syscall.Signal) error { return syscall.EPERM }
+	darwinForkProcessGroupHasLiveMembers = func(processGroupID, ignoredProcessID int) (bool, error) {
+		if processGroupID != 4242 || ignoredProcessID != 4242 {
+			t.Fatalf("process group inspection = (%d, %d), want (4242, 4242)", processGroupID, ignoredProcessID)
+		}
+		return false, nil
+	}
+
+	controller := &darwinForkProcessController{cmd: &exec.Cmd{Process: &os.Process{Pid: 4242}}, queue: -1}
+	controller.mainExitObserved.Store(true)
+	if err := controller.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 }
