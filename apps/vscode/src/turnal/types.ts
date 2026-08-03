@@ -99,6 +99,18 @@ export interface BlameOrigin {
   adapter?: string;
   prompt?: string;
   tool_names?: string[];
+  action_tool?: string;
+  intent?: BlameIntent;
+}
+
+export interface BlameIntent {
+  problem: string;
+  scope?: string[];
+  evidence?: string[];
+  event_seq: number;
+  status: "captured" | "late" | "out_of_scope";
+  timing: "before" | "after";
+  confidence: "high" | "low";
 }
 
 export interface RollbackChange {
@@ -301,7 +313,34 @@ function parseBlameEntry(value: unknown, index: number): BlameEntry {
       adapter: optionalString(origin.adapter, "origin.adapter"),
       prompt: optionalString(origin.prompt, "origin.prompt"),
       tool_names: optionalStrings(origin.tool_names, "origin.tool_names"),
+      action_tool: optionalString(origin.action_tool, "origin.action_tool"),
+      intent: origin.intent === undefined ? undefined : parseBlameIntent(origin.intent),
     },
+  };
+}
+
+function parseBlameIntent(value: unknown): BlameIntent {
+  const intent = record(value, "origin.intent");
+  const status = string(intent.status, "origin.intent.status");
+  if (status !== "captured" && status !== "late" && status !== "out_of_scope") {
+    throw new TypeError("origin.intent.status is not supported");
+  }
+  const timing = string(intent.timing, "origin.intent.timing");
+  if (timing !== "before" && timing !== "after") {
+    throw new TypeError("origin.intent.timing must be before or after");
+  }
+  const confidence = string(intent.confidence, "origin.intent.confidence");
+  if (confidence !== "high" && confidence !== "low") {
+    throw new TypeError("origin.intent.confidence must be high or low");
+  }
+  return {
+    problem: string(intent.problem, "origin.intent.problem"),
+    scope: optionalStrings(intent.scope, "origin.intent.scope"),
+    evidence: optionalStrings(intent.evidence, "origin.intent.evidence"),
+    event_seq: number(intent.event_seq, "origin.intent.event_seq"),
+    status,
+    timing,
+    confidence,
   };
 }
 

@@ -846,6 +846,24 @@ func (repo *Repo) DiffRefsPath(preRef, postRef primitives.CheckpointRef, repoPat
 }
 
 func (repo *Repo) DiffRefsPathWithRenames(preRef, postRef primitives.CheckpointRef, prePath, postPath string) ([]byte, error) {
+	return repo.diffCommitsPathWithRenames(preRef.String(), postRef.String(), prePath, postPath)
+}
+
+// DiffCommitsPathWithRenames returns a zero-context patch between two durable
+// snapshots while following a rename of the selected file.
+func (repo *Repo) DiffCommitsPathWithRenames(preCommit, postCommit primitives.CommitSHA, prePath, postPath string) ([]byte, error) {
+	parsedPre, err := primitives.ParseCommitSHA(preCommit.String())
+	if err != nil {
+		return nil, err
+	}
+	parsedPost, err := primitives.ParseCommitSHA(postCommit.String())
+	if err != nil {
+		return nil, err
+	}
+	return repo.diffCommitsPathWithRenames(parsedPre.String(), parsedPost.String(), prePath, postPath)
+}
+
+func (repo *Repo) diffCommitsPathWithRenames(preRevision, postRevision, prePath, postPath string) ([]byte, error) {
 	parsedPrePath, err := primitives.ParseRepoPath(prePath)
 	if err != nil {
 		return nil, err
@@ -869,8 +887,8 @@ func (repo *Repo) DiffRefsPathWithRenames(preRef, postRef primitives.CheckpointR
 		"--no-color",
 		"--no-ext-diff",
 		"--no-textconv",
-		preRef.String() + "^{commit}",
-		postRef.String() + "^{commit}",
+		preRevision + "^{commit}",
+		postRevision + "^{commit}",
 		"--",
 		parsedPrePath.String(),
 	}
@@ -1128,6 +1146,22 @@ func (repo *Repo) DiffStatRefs(preRef, postRef primitives.CheckpointRef) (DiffSu
 }
 
 func (repo *Repo) DiffNameStatusRefs(preRef, postRef primitives.CheckpointRef) ([]DiffFileChange, error) {
+	return repo.diffNameStatusRevisions(preRef.String(), postRef.String())
+}
+
+func (repo *Repo) DiffNameStatusCommits(preCommit, postCommit primitives.CommitSHA) ([]DiffFileChange, error) {
+	parsedPre, err := primitives.ParseCommitSHA(preCommit.String())
+	if err != nil {
+		return nil, err
+	}
+	parsedPost, err := primitives.ParseCommitSHA(postCommit.String())
+	if err != nil {
+		return nil, err
+	}
+	return repo.diffNameStatusRevisions(parsedPre.String(), parsedPost.String())
+}
+
+func (repo *Repo) diffNameStatusRevisions(preRevision, postRevision string) ([]DiffFileChange, error) {
 	output, err := runHiddenGit(repo, "",
 		"diff",
 		"--name-status",
@@ -1135,8 +1169,8 @@ func (repo *Repo) DiffNameStatusRefs(preRef, postRef primitives.CheckpointRef) (
 		"-M",
 		"--no-ext-diff",
 		"--no-textconv",
-		preRef.String()+"^{commit}",
-		postRef.String()+"^{commit}",
+		preRevision+"^{commit}",
+		postRevision+"^{commit}",
 	)
 	if err != nil {
 		return nil, err

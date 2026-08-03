@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"strconv"
 	"strings"
 	"testing"
@@ -10,6 +11,61 @@ import (
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	"github.com/AadiJo/turnal/internal/primitives"
 )
+
+func TestClaudeAndCodexPromptHooksInjectIntentCommand(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		args    []string
+		payload func(string) string
+	}{
+		{
+			name: "claude code",
+			args: []string{"claude-hook", "user"},
+			payload: func(root string) string {
+				return `{"cwd":` + strconvQuote(root) + `,"session_id":"claude-intent","prompt":"fix it"}`
+			},
+		},
+		{
+			name: "codex",
+			args: []string{"codex-hook"},
+			payload: func(root string) string {
+				return `{"cwd":` + strconvQuote(root) + `,"session_id":"codex-intent","hook_event_name":"UserPromptSubmit","prompt":"fix it"}`
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			rootPath := t.TempDir()
+			root, err := primitives.ParseWorkspaceRoot(rootPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := checkpoint.Init(root); err != nil {
+				t.Fatal(err)
+			}
+			t.Chdir(rootPath)
+			var stdout bytes.Buffer
+			cmd := NewRootCmd()
+			cmd.SetArgs(test.args)
+			cmd.SetIn(strings.NewReader(test.payload(rootPath)))
+			cmd.SetOut(&stdout)
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("prompt hook: %v", err)
+			}
+			var output struct {
+				HookSpecificOutput struct {
+					HookEventName     string `json:"hookEventName"`
+					AdditionalContext string `json:"additionalContext"`
+				} `json:"hookSpecificOutput"`
+			}
+			if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+				t.Fatalf("decode hook output: %v\n%s", err, stdout.String())
+			}
+			if output.HookSpecificOutput.HookEventName != "UserPromptSubmit" || !strings.Contains(output.HookSpecificOutput.AdditionalContext, "turnal intent --session") || !strings.Contains(output.HookSpecificOutput.AdditionalContext, "not edit steps or hidden reasoning") {
+				t.Fatalf("hook output = %#v", output)
+			}
+		})
+	}
+}
 
 func TestCodexHookFailsOpenButRecordsVisibleFailure(t *testing.T) {
 	rootPath := t.TempDir()

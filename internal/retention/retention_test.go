@@ -47,6 +47,10 @@ func TestDropSessionDeletesEventLogAndPrivateRefs(t *testing.T) {
 		t.Fatalf("CreateCheckpoint: %v", err)
 	}
 	appendCheckpointEvent(t, repo, sessionID, turnID, created)
+	action, err := repo.CreateSnapshotRef("refs/agent-vcs/actions/demo/worktree/"+repo.WorktreeID.String()+"/turn/000001/action/pre", "action snapshot")
+	if err != nil {
+		t.Fatalf("CreateSnapshotRef: %v", err)
+	}
 
 	result, err := DropSession(repo, sessionID, false)
 	if err != nil {
@@ -61,6 +65,9 @@ func TestDropSessionDeletesEventLogAndPrivateRefs(t *testing.T) {
 	}
 	if len(refs) != 0 {
 		t.Fatalf("checkpoint refs after drop = %#v, want none", refs)
+	}
+	if _, err := repo.RefCommit(action.Ref); err == nil {
+		t.Fatal("action snapshot ref remains after drop")
 	}
 	sessions, err := eventlog.Open(repo.MetadataDir).ListSessions()
 	if err != nil {

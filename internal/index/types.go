@@ -6,10 +6,11 @@ import (
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/provenance"
 )
 
 const (
-	SchemaVersion = 5
+	SchemaVersion = 6
 	DBFileName    = "index.sqlite"
 )
 
@@ -137,4 +138,6 @@ type BlameCacheOrigin struct {
 	Adapter       string
 	Prompt        string
 	ToolNames     []string
+	ActionTool    string
+	Intent        *provenance.Attribution
 }

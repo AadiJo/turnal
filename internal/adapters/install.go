@@ -173,6 +173,7 @@ func InstallClaudeHookWithOptions(projectRoot string, opts InstallOptions) (Inst
 	mergeHookCommand(hooks, "SessionStart", claudeSessionHook(command))
 	mergeHookCommand(hooks, "UserPromptSubmit", claudeUserHook(command))
 	mergeHookCommand(hooks, "Stop", claudeAssistantHook(command))
+	mergeHookCommand(hooks, "PreToolUse", claudePreToolUseHook(command))
 	mergeHookCommand(hooks, "PostToolUse", claudeToolUseHook(command))
 
 	output, err := json.MarshalIndent(settings, "", "  ")
@@ -306,7 +307,7 @@ func InstallCodexHookWithOptions(projectRoot string, opts InstallOptions) (Insta
 	}
 
 	command := opts.hookCommand()
-	for _, eventName := range []string{"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"} {
+	for _, eventName := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"} {
 		mergeHookCommand(hooks, eventName, codexHookCommand(command))
 	}
 	if err := enableCodexHooksFeature(config); err != nil {
@@ -584,6 +585,10 @@ func claudeAssistantHook(commandPrefix string) string {
 
 func claudeToolUseHook(commandPrefix string) string {
 	return commandPrefix + " claude-hook tool-use"
+}
+
+func claudePreToolUseHook(commandPrefix string) string {
+	return commandPrefix + " claude-hook pre-tool"
 }
 
 func codexHookCommand(commandPrefix string) string {

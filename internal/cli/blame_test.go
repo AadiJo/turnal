@@ -63,7 +63,8 @@ func TestBlameCommandShowsLineAttribution(t *testing.T) {
 		"] turn 1",
 		"1 | after",
 		"adapter: codex",
-		"Prompt: \"change app.txt\"",
+		"problem: no agent intent recorded for this change",
+		"human request: change app.txt",
 		"tools: apply_patch",
 	} {
 		if !strings.Contains(textOutput, want) {
@@ -110,7 +111,7 @@ func TestBlameTextUsesLogStyleTurnLabelAndPrompt(t *testing.T) {
 	output := out.String()
 	for _, want := range []string{
 		"03:15 [codex 03:12] turn 2      2 |     for _ in range(5):",
-		"Prompt: \"make a python script to say hello world\"",
+		"Human request: \"make a python script to say hello world\"",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("blame text missing %q:\n%s", want, output)

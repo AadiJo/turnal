@@ -2,8 +2,8 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import { TurnTarget } from "../model";
 import { BlameEntry, BlameResult } from "../turnal/types";
-import { displayAgent, formatTimestamp, relativeTime, truncate, turnTitle } from "../utils/format";
-import { recordedTextMatches } from "../utils/blame";
+import { displayAgent, formatTimestamp, relativeTime, truncate } from "../utils/format";
+import { blameTitle, intentConfidence, recordedTextMatches } from "../utils/blame";
 import { cliForFolder } from "../workspaces";
 
 interface BlameControllerOptions {
@@ -114,7 +114,7 @@ export class BlameController implements vscode.HoverProvider, vscode.Disposable 
       editor.setDecorations(this.decoration, []);
       return;
     }
-    const title = turnTitle(entry.origin.prompt, entry.origin.turn_id ?? 0, 52);
+    const title = blameTitle(entry.origin, 52);
     const annotation = `${displayAgent(entry.origin.adapter)} · ${title} · ${relativeTime(entry.origin.time)}`;
     editor.setDecorations(this.decoration, [
       {
@@ -187,7 +187,7 @@ function blameHover(entry: BlameEntry, folder: vscode.WorkspaceFolder): vscode.M
     folderName: folder.name,
     sessionId: origin.session_id,
     turnId: origin.turn_id,
-    title: turnTitle(origin.prompt, origin.turn_id),
+    title: blameTitle(origin),
     status: "complete",
     adapter: origin.adapter,
     time: origin.time,
@@ -198,19 +198,29 @@ function blameHover(entry: BlameEntry, folder: vscode.WorkspaceFolder): vscode.M
   };
   markdown.appendMarkdown(`**Turnal: ${escapeMarkdown(target.title)}**\n\n`);
   markdown.appendMarkdown(`${displayAgent(origin.adapter)} · ${formatTimestamp(origin.time)} · ${relativeTime(origin.time)}\n\n`);
-  markdown.appendMarkdown("Session: ");
+  markdown.appendMarkdown("**Problem**\n\n");
+  markdown.appendText(origin.intent?.problem ?? "No agent intent was recorded for this change.");
+  markdown.appendMarkdown("\n\n**Evidence**\n\n");
+  markdown.appendText(origin.intent?.evidence?.length ? origin.intent.evidence.join(" · ") : "None recorded");
+  markdown.appendMarkdown("\n\n**Human request**\n\n");
+  markdown.appendText(origin.prompt ? truncate(origin.prompt, 800) : "Not recorded");
+  markdown.appendMarkdown("\n\n**Confidence**\n\n");
+  markdown.appendText(intentConfidence(origin));
+  if (origin.intent?.scope?.length) {
+    markdown.appendMarkdown("\n\nExpected scope: ");
+    markdown.appendText(origin.intent.scope.join(", "));
+  }
+  markdown.appendMarkdown("\n\nSession: ");
   markdown.appendText(origin.session_id);
-  markdown.appendMarkdown(` · Turn ${origin.turn_id}\n\n`);
-  if (origin.prompt) {
-    markdown.appendMarkdown("Prompt: ");
-    markdown.appendText(truncate(origin.prompt, 800));
-    markdown.appendMarkdown("\n\n");
-  }
-  if (origin.tool_names?.length) {
-    markdown.appendMarkdown("Tools: ");
+  markdown.appendMarkdown(` · Turn ${origin.turn_id}`);
+  if (origin.action_tool) {
+    markdown.appendMarkdown(" · Action: ");
+    markdown.appendText(origin.action_tool);
+  } else if (origin.tool_names?.length) {
+    markdown.appendMarkdown(" · Tools: ");
     markdown.appendText(origin.tool_names.join(", "));
-    markdown.appendMarkdown("\n\n");
   }
+  markdown.appendMarkdown("\n\n");
   markdown.appendMarkdown(
     `[$(diff) Open turn diff](${commandUri("turnal.openTurnDiff", target)}) · ` +
       `[$(info) Details](${commandUri("turnal.showTurnDetails", target)}) · ` +

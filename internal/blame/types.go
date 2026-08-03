@@ -6,6 +6,7 @@ import (
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/provenance"
 )
 
 var (
@@ -55,6 +56,8 @@ type Origin struct {
 	Adapter       string                   `json:"adapter,omitempty"`
 	Prompt        string                   `json:"prompt,omitempty"`
 	ToolNames     []string                 `json:"tool_names,omitempty"`
+	ActionTool    string                   `json:"action_tool,omitempty"`
+	Intent        *provenance.Attribution  `json:"intent,omitempty"`
 }
 
 type Engine struct {

@@ -212,7 +212,13 @@ func (engine Engine) hydrateCachedOrigin(origin Origin, turns []completeTurn) Or
 	}
 	for _, turn := range turns {
 		if turn.SessionID == origin.SessionID && turn.TurnID == origin.TurnID {
-			return turnOrigin(turn)
+			hydrated := turnOrigin(turn)
+			hydrated.ActionTool = origin.ActionTool
+			hydrated.Intent = origin.Intent
+			if !origin.Time.IsZero() {
+				hydrated.Time = origin.Time
+			}
+			return hydrated
 		}
 	}
 	return origin
@@ -269,6 +275,8 @@ func originToCache(origin Origin) queryindex.BlameCacheOrigin {
 		Adapter:       origin.Adapter,
 		Prompt:        origin.Prompt,
 		ToolNames:     append([]string(nil), origin.ToolNames...),
+		ActionTool:    origin.ActionTool,
+		Intent:        origin.Intent,
 	}
 }
 
@@ -283,6 +291,8 @@ func originFromCache(origin queryindex.BlameCacheOrigin) Origin {
 		Adapter:       origin.Adapter,
 		Prompt:        origin.Prompt,
 		ToolNames:     append([]string(nil), origin.ToolNames...),
+		ActionTool:    origin.ActionTool,
+		Intent:        origin.Intent,
 	}
 }
 
@@ -296,6 +306,9 @@ func blameHistoryKey(turns []completeTurn) string {
 		writeHistoryField(hash, turn.Post.Ref.String())
 		writeHistoryField(hash, turn.Post.Commit.String())
 		writeHistoryField(hash, turn.Post.Time.UTC().Format(time.RFC3339Nano))
+		for _, event := range turn.Records {
+			writeHistoryField(hash, event.Hash.String())
+		}
 	}
 	return hex.EncodeToString(hash.Sum(nil))
 }
@@ -306,68 +319,71 @@ func writeHistoryField(hash interface{ Write([]byte) (int, error) }, value strin
 }
 
 func (engine Engine) replayPath(path string, turns []completeTurn) ([]Origin, bool, []string, error) {
-	steps, err := engine.replaySteps(path, turns)
+	segments, warnings, err := engine.changeSegments(turns)
 	if err != nil {
-		return nil, false, nil, err
+		return nil, false, warnings, err
+	}
+	steps, err := engine.replaySteps(path, segments)
+	if err != nil {
+		return nil, false, warnings, err
 	}
 
 	baseline := baselineOrigin(turns[0].Pre)
 	initialBytes, exists, err := engine.Repo.CommitFileBytesIfExists(turns[0].Pre.Commit, steps[0].PrePath)
 	if err != nil {
-		return nil, false, nil, err
+		return nil, false, warnings, err
 	}
 	if exists && looksBinary(initialBytes) {
-		return nil, false, nil, fmt.Errorf("%w: %s", ErrBinaryFile, steps[0].PrePath)
+		return nil, false, warnings, fmt.Errorf("%w: %s", ErrBinaryFile, steps[0].PrePath)
 	}
 
 	origins := originsForLines(splitLines(initialBytes), baseline)
 	currentExists := exists
-	var warnings []string
 
 	for _, step := range steps {
-		turn := step.Turn
+		segment := step.Segment
 		if !step.Touched {
 			continue
 		}
 
-		preBytes, preExists, err := engine.Repo.CommitFileBytesIfExists(turn.Pre.Commit, step.PrePath)
+		preBytes, preExists, err := engine.Repo.CommitFileBytesIfExists(segment.PreCommit, step.PrePath)
 		if err != nil {
 			return nil, false, warnings, err
 		}
-		postBytes, postExists, err := engine.Repo.CommitFileBytesIfExists(turn.Post.Commit, step.PostPath)
+		postBytes, postExists, err := engine.Repo.CommitFileBytesIfExists(segment.PostCommit, step.PostPath)
 		if err != nil {
 			return nil, false, warnings, err
 		}
 		if looksBinary(preBytes) || looksBinary(postBytes) {
-			return nil, false, warnings, fmt.Errorf("%w: %s touched by %s:turn:%s", ErrBinaryFile, step.PostPath, turn.SessionID, turn.TurnID)
+			return nil, false, warnings, fmt.Errorf("%w: %s touched by %s", ErrBinaryFile, step.PostPath, segmentLabel(segment))
 		}
 
 		preLines := splitLines(preBytes)
 		if currentExists != preExists || len(origins) != len(preLines) {
-			warnings = append(warnings, fmt.Sprintf("history for %s was resynchronized at %s:turn:%s pre checkpoint", step.PrePath, turn.SessionID, turn.TurnID))
-			origins = originsForLines(preLines, baselineOrigin(turn.Pre))
+			warnings = append(warnings, fmt.Sprintf("history for %s was resynchronized before %s", step.PrePath, segmentLabel(segment)))
+			origins = originsForLines(preLines, baselineOrigin(segment.Turn.Pre))
 			currentExists = preExists
 		}
 
-		patch, err := engine.Repo.DiffRefsPathWithRenames(turn.Pre.Ref, turn.Post.Ref, step.PrePath, step.PostPath)
+		patch, err := engine.Repo.DiffCommitsPathWithRenames(segment.PreCommit, segment.PostCommit, step.PrePath, step.PostPath)
 		if err != nil {
 			return nil, false, warnings, err
 		}
 		if patchLooksBinary(patch) {
-			return nil, false, warnings, fmt.Errorf("%w: %s touched by %s:turn:%s", ErrBinaryFile, step.PostPath, turn.SessionID, turn.TurnID)
+			return nil, false, warnings, fmt.Errorf("%w: %s touched by %s", ErrBinaryFile, step.PostPath, segmentLabel(segment))
 		}
 		hunks, err := parseUnifiedHunks(patch)
 		if err != nil {
 			return nil, false, warnings, err
 		}
-		origins, err = applyHunks(origins, hunks, turnOrigin(turn))
+		origins, err = applyHunks(origins, hunks, segment.origin(step.PostPath))
 		if err != nil {
-			return nil, false, warnings, fmt.Errorf("apply blame diff for %s at %s:turn:%s: %w", step.PostPath, turn.SessionID, turn.TurnID, err)
+			return nil, false, warnings, fmt.Errorf("apply blame diff for %s at %s: %w", step.PostPath, segmentLabel(segment), err)
 		}
 
 		postLines := splitLines(postBytes)
 		if len(origins) != len(postLines) {
-			return nil, false, warnings, fmt.Errorf("blame diff for %s at %s:turn:%s produced %d lines, post checkpoint has %d", step.PostPath, turn.SessionID, turn.TurnID, len(origins), len(postLines))
+			return nil, false, warnings, fmt.Errorf("blame diff for %s at %s produced %d lines, post snapshot has %d", step.PostPath, segmentLabel(segment), len(origins), len(postLines))
 		}
 		currentExists = postExists
 	}
@@ -376,23 +392,23 @@ func (engine Engine) replayPath(path string, turns []completeTurn) ([]Origin, bo
 }
 
 type replayStep struct {
-	Turn     completeTurn
+	Segment  changeSegment
 	PrePath  string
 	PostPath string
 	Touched  bool
 }
 
-func (engine Engine) replaySteps(finalPath string, turns []completeTurn) ([]replayStep, error) {
-	steps := make([]replayStep, len(turns))
+func (engine Engine) replaySteps(finalPath string, segments []changeSegment) ([]replayStep, error) {
+	steps := make([]replayStep, len(segments))
 	postPath := finalPath
-	for index := len(turns) - 1; index >= 0; index-- {
-		turn := turns[index]
-		prePath, touched, err := engine.prePathForTurn(turn, postPath)
+	for index := len(segments) - 1; index >= 0; index-- {
+		segment := segments[index]
+		prePath, touched, err := engine.prePathForSegment(segment, postPath)
 		if err != nil {
 			return nil, err
 		}
 		steps[index] = replayStep{
-			Turn:     turn,
+			Segment:  segment,
 			PrePath:  prePath,
 			PostPath: postPath,
 			Touched:  touched,
@@ -402,8 +418,8 @@ func (engine Engine) replaySteps(finalPath string, turns []completeTurn) ([]repl
 	return steps, nil
 }
 
-func (engine Engine) prePathForTurn(turn completeTurn, postPath string) (string, bool, error) {
-	changes, err := engine.Repo.DiffNameStatusRefs(turn.Pre.Ref, turn.Post.Ref)
+func (engine Engine) prePathForSegment(segment changeSegment, postPath string) (string, bool, error) {
+	changes, err := engine.Repo.DiffNameStatusCommits(segment.PreCommit, segment.PostCommit)
 	if err != nil {
 		return "", false, err
 	}
@@ -428,6 +444,14 @@ func (engine Engine) prePathForTurn(turn completeTurn, postPath string) (string,
 		}
 	}
 	return postPath, false, nil
+}
+
+func segmentLabel(segment changeSegment) string {
+	label := fmt.Sprintf("%s:turn:%s", segment.Turn.SessionID, segment.Turn.TurnID)
+	if segment.Action != nil && segment.Action.ToolName != "" {
+		return label + " " + segment.Action.ToolName
+	}
+	return label
 }
 
 func baselineOrigin(info checkpoint.CheckpointRefInfo) Origin {

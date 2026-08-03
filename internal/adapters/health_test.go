@@ -18,20 +18,20 @@ func TestInspectClaudeHookStates(t *testing.T) {
 	}{
 		{
 			name:       "configured",
-			settings:   `{"hooks":{"SessionStart":[{"hooks":[{"command":"turnal claude-hook session"}]}],"UserPromptSubmit":[{"hooks":[{"command":"turnal claude-hook user"}]}],"PostToolUse":[{"hooks":[{"command":"turnal claude-hook tool-use"}]}],"Stop":[{"hooks":[{"command":"turnal claude-hook assistant"}]}]}}`,
+			settings:   `{"hooks":{"SessionStart":[{"hooks":[{"command":"turnal claude-hook session"}]}],"UserPromptSubmit":[{"hooks":[{"command":"turnal claude-hook user"}]}],"PreToolUse":[{"hooks":[{"command":"turnal claude-hook pre-tool"}]}],"PostToolUse":[{"hooks":[{"command":"turnal claude-hook tool-use"}]}],"Stop":[{"hooks":[{"command":"turnal claude-hook assistant"}]}]}}`,
 			wantStatus: HookConfigurationConfigured,
 			wantEvent:  HookEventConfigured,
 		},
 		{
 			name:       "different command",
-			settings:   `{"hooks":{"SessionStart":[{"hooks":[{"command":"other-tool"}]}],"UserPromptSubmit":[{"hooks":[{"command":"turnal claude-hook user"}]}],"PostToolUse":[{"hooks":[{"command":"turnal claude-hook tool-use"}]}],"Stop":[{"hooks":[{"command":"turnal claude-hook assistant"}]}]}}`,
+			settings:   `{"hooks":{"SessionStart":[{"hooks":[{"command":"other-tool"}]}],"UserPromptSubmit":[{"hooks":[{"command":"turnal claude-hook user"}]}],"PreToolUse":[{"hooks":[{"command":"turnal claude-hook pre-tool"}]}],"PostToolUse":[{"hooks":[{"command":"turnal claude-hook tool-use"}]}],"Stop":[{"hooks":[{"command":"turnal claude-hook assistant"}]}]}}`,
 			wantStatus: HookConfigurationIncomplete,
 			wantEvent:  HookEventDifferentCommand,
 			wantText:   "uses a different command",
 		},
 		{
 			name:       "missing event",
-			settings:   `{"hooks":{"UserPromptSubmit":[{"hooks":[{"command":"turnal claude-hook user"}]}],"PostToolUse":[{"hooks":[{"command":"turnal claude-hook tool-use"}]}],"Stop":[{"hooks":[{"command":"turnal claude-hook assistant"}]}]}}`,
+			settings:   `{"hooks":{"UserPromptSubmit":[{"hooks":[{"command":"turnal claude-hook user"}]}],"PreToolUse":[{"hooks":[{"command":"turnal claude-hook pre-tool"}]}],"PostToolUse":[{"hooks":[{"command":"turnal claude-hook tool-use"}]}],"Stop":[{"hooks":[{"command":"turnal claude-hook assistant"}]}]}}`,
 			wantStatus: HookConfigurationIncomplete,
 			wantEvent:  HookEventMissing,
 			wantText:   "has no hook definition",
@@ -46,7 +46,7 @@ func TestInspectClaudeHookStates(t *testing.T) {
 			if health.Status != test.wantStatus {
 				t.Fatalf("status = %q, want %q; problems=%v", health.Status, test.wantStatus, health.Problems)
 			}
-			if len(health.Events) != 4 || health.Events[0].Status != test.wantEvent {
+			if len(health.Events) != 5 || health.Events[0].Status != test.wantEvent {
 				t.Fatalf("events = %#v, want first status %q", health.Events, test.wantEvent)
 			}
 			if test.wantText != "" && !strings.Contains(strings.Join(health.Problems, "\n"), test.wantText) {
@@ -67,9 +67,9 @@ func TestInspectClaudeHooksReportsMalformedSettings(t *testing.T) {
 
 func TestInspectClaudeHooksTreatsEmptyEventAsMissing(t *testing.T) {
 	root := t.TempDir()
-	writeHealthFile(t, filepath.Join(root, ".claude", "settings.json"), `{"hooks":{"SessionStart":[],"UserPromptSubmit":[{"hooks":[{"command":"turnal claude-hook user"}]}],"PostToolUse":[{"hooks":[{"command":"turnal claude-hook tool-use"}]}],"Stop":[{"hooks":[{"command":"turnal claude-hook assistant"}]}]}}`)
+	writeHealthFile(t, filepath.Join(root, ".claude", "settings.json"), `{"hooks":{"SessionStart":[],"UserPromptSubmit":[{"hooks":[{"command":"turnal claude-hook user"}]}],"PreToolUse":[{"hooks":[{"command":"turnal claude-hook pre-tool"}]}],"PostToolUse":[{"hooks":[{"command":"turnal claude-hook tool-use"}]}],"Stop":[{"hooks":[{"command":"turnal claude-hook assistant"}]}]}}`)
 	health := inspectClaudeHooks(root, "turnal")
-	if health.Status != HookConfigurationIncomplete || len(health.Events) != 4 || health.Events[0].Status != HookEventMissing {
+	if health.Status != HookConfigurationIncomplete || len(health.Events) != 5 || health.Events[0].Status != HookEventMissing {
 		t.Fatalf("health = %#v, want missing SessionStart", health)
 	}
 	if strings.Contains(strings.Join(health.Problems, "\n"), "uses a different command") {
@@ -89,6 +89,9 @@ hooks = ` + map[bool]string{true: "true", false: "false"}[hooksFeature] + `
 command = "` + sessionStart + `"
 [[hooks.UserPromptSubmit]]
 [[hooks.UserPromptSubmit.hooks]]
+command = "turnal codex-hook"
+[[hooks.PreToolUse]]
+[[hooks.PreToolUse.hooks]]
 command = "turnal codex-hook"
 [[hooks.PostToolUse]]
 [[hooks.PostToolUse.hooks]]
@@ -115,7 +118,7 @@ command = "turnal codex-hook"
 			root := t.TempDir()
 			writeHealthFile(t, filepath.Join(root, ".codex", "config.toml"), test.config)
 			health := inspectCodexHooks(root, "turnal")
-			if health.Status != test.wantStatus || len(health.Events) != 4 || health.Events[0].Status != test.wantEvent {
+			if health.Status != test.wantStatus || len(health.Events) != 5 || health.Events[0].Status != test.wantEvent {
 				t.Fatalf("health = %#v", health)
 			}
 			if test.wantText != "" && !strings.Contains(strings.Join(health.Problems, "\n"), test.wantText) {
@@ -129,7 +132,7 @@ func TestInspectCodexHooksReportsMissingEventAndMalformedConfig(t *testing.T) {
 	root := t.TempDir()
 	writeHealthFile(t, filepath.Join(root, ".codex", "config.toml"), "[features]\nhooks = true\n[hooks]\n")
 	health := inspectCodexHooks(root, "turnal")
-	if health.Status != HookConfigurationIncomplete || len(health.Events) != 4 || health.Events[0].Status != HookEventMissing {
+	if health.Status != HookConfigurationIncomplete || len(health.Events) != 5 || health.Events[0].Status != HookEventMissing {
 		t.Fatalf("missing event health = %#v", health)
 	}
 
@@ -168,7 +171,7 @@ func TestInspectCodexHooksReportsInvalidSectionsAsMalformed(t *testing.T) {
 func TestInspectHooksIgnoresOtherCommandsWithoutModifyingConfig(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, ".claude", "settings.json")
-	settings := `{"hooks":{"SessionStart":[{"hooks":[{"command":"turnal claude-hook session"}]}],"UserPromptSubmit":[{"hooks":[{"command":"other-tool"},{"command":"turnal claude-hook user"}]}],"PostToolUse":[{"hooks":[{"command":"turnal claude-hook tool-use"}]}],"Stop":[{"hooks":[{"command":"turnal claude-hook assistant"}]}]}}`
+	settings := `{"hooks":{"SessionStart":[{"hooks":[{"command":"turnal claude-hook session"}]}],"UserPromptSubmit":[{"hooks":[{"command":"other-tool"},{"command":"turnal claude-hook user"}]}],"PreToolUse":[{"hooks":[{"command":"turnal claude-hook pre-tool"}]}],"PostToolUse":[{"hooks":[{"command":"turnal claude-hook tool-use"}]}],"Stop":[{"hooks":[{"command":"turnal claude-hook assistant"}]}]}}`
 	writeHealthFile(t, path, settings)
 	if health := inspectClaudeHooks(root, "turnal"); !health.OK() {
 		t.Fatalf("health problems = %v", health.Problems)

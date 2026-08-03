@@ -14,7 +14,7 @@ import (
 
 func claudeHookCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:          "claude-hook [session|user|assistant|tool-use|tool-batch]",
+		Use:          "claude-hook [session|user|assistant|pre-tool|tool-use|tool-batch]",
 		Short:        "Internal: Claude Code hook adapter",
 		Hidden:       true,
 		SilenceUsage: true,
@@ -30,7 +30,10 @@ func claudeHookCmd() *cobra.Command {
 				reportHookFailure(cmd, primitives.AdapterClaudeCode, "UnknownClaudeHook", raw, err)
 				return nil
 			}
-			handleHookFailure(cmd, primitives.AdapterClaudeCode, hookName, raw)
+			captured := handleHookFailure(cmd, primitives.AdapterClaudeCode, hookName, raw)
+			if captured && hookName == "UserPromptSubmit" {
+				writeIntentHookOutput(cmd, raw)
+			}
 			return nil
 		},
 	}
@@ -49,7 +52,11 @@ func codexHookCmd() *cobra.Command {
 				reportHookFailure(cmd, primitives.AdapterCodex, codexHookName(raw), raw, err)
 				return nil
 			}
-			handleHookFailure(cmd, primitives.AdapterCodex, codexHookName(raw), raw)
+			hookName := codexHookName(raw)
+			captured := handleHookFailure(cmd, primitives.AdapterCodex, hookName, raw)
+			if captured && hookName == "UserPromptSubmit" {
+				writeIntentHookOutput(cmd, raw)
+			}
 			return nil
 		},
 	}
@@ -66,12 +73,21 @@ func readHookPayload(reader io.Reader) ([]byte, error) {
 	return raw, nil
 }
 
-func handleHookFailure(cmd *cobra.Command, adapter primitives.AdapterName, hookName string, raw []byte) {
+func handleHookFailure(cmd *cobra.Command, adapter primitives.AdapterName, hookName string, raw []byte) bool {
 	err := adapters.HandleHookPayloadWithRunID(adapter, hookName, raw, os.Getenv(runs.EnvRunID))
 	if err == nil {
-		return
+		return true
 	}
 	reportHookFailure(cmd, adapter, hookName, raw, err)
+	return false
+}
+
+func writeIntentHookOutput(cmd *cobra.Command, raw []byte) {
+	output, ok := adapters.IntentHookOutput(raw)
+	if !ok {
+		return
+	}
+	_, _ = cmd.OutOrStdout().Write(output)
 }
 
 func reportHookFailure(cmd *cobra.Command, adapter primitives.AdapterName, hookName string, raw []byte, err error) {
@@ -91,10 +107,12 @@ func claudeHookName(value string) (string, error) {
 		return "Stop", nil
 	case "tool-use":
 		return "PostToolUse", nil
+	case "pre-tool":
+		return "PreToolUse", nil
 	case "tool-batch":
 		return "PostToolBatch", nil
 	default:
-		return "", fmt.Errorf("invalid Claude hook %q; expected session, user, assistant, tool-use, or tool-batch", value)
+		return "", fmt.Errorf("invalid Claude hook %q; expected session, user, assistant, pre-tool, tool-use, or tool-batch", value)
 	}
 }
 

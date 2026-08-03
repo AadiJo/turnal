@@ -61,6 +61,7 @@ func TestInstallClaudeHookPreservesExistingHooksAndIsIdempotent(t *testing.T) {
 	for eventName, command := range map[string]string{
 		"SessionStart":     claudeSessionHook("turnal"),
 		"UserPromptSubmit": claudeUserHook("turnal"),
+		"PreToolUse":       claudePreToolUseHook("turnal"),
 		"PostToolUse":      claudeToolUseHook("turnal"),
 	} {
 		commands := hookCommands(t, hooks[eventName])
@@ -114,7 +115,7 @@ command = "echo keep"
 	}
 
 	hooks := config["hooks"].(map[string]any)
-	for _, eventName := range []string{"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"} {
+	for _, eventName := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"} {
 		commands := hookCommands(t, hooks[eventName])
 		if countCommand(commands, codexHookCommand("turnal")) != 1 {
 			t.Fatalf("%s hook count = %d, commands=%#v", eventName, countCommand(commands, codexHookCommand("turnal")), commands)
@@ -148,7 +149,7 @@ func TestCodexHookLifecycleUsesRootCheckoutFromLinkedWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("uninstall linked-worktree Codex hooks: %v", err)
 	}
-	if !fsidentity.Same(removed.ConfigPath, rootConfig) || removed.RemovedCommands != 4 {
+	if !fsidentity.Same(removed.ConfigPath, rootConfig) || removed.RemovedCommands != 5 {
 		t.Fatalf("uninstall result = %#v", removed)
 	}
 	data, err := os.ReadFile(rootConfig)
@@ -544,7 +545,7 @@ func TestConcurrentCodexHookInstallsRemainValidAndDeduplicated(t *testing.T) {
 	var config map[string]any
 	readTOMLFile(t, filepath.Join(root, ".codex", "config.toml"), &config)
 	hooks := config["hooks"].(map[string]any)
-	for _, eventName := range []string{"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"} {
+	for _, eventName := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"} {
 		commands := hookCommands(t, hooks[eventName])
 		if countCommand(commands, codexHookCommand("turnal")) != 1 {
 			t.Fatalf("%s commands after concurrent install = %#v", eventName, commands)

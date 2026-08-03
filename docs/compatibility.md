@@ -10,6 +10,8 @@ Metadata readers remain backward compatible with v1 global raw references (`adap
 
 Agent hook formats are external integration points and may change with Claude Code or Codex releases. `turnal status` checks project hook files offline, while `turnal status --probe-agent-capture` also asks Codex app-server which Turnal hooks it discovered and whether it will execute them. The probe performs no agent turn, sends no prompt, changes no workspace files, and never changes provider project or hook trust.
 
+Intent-aware line provenance requires `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, and `Stop` hooks. Turnal still records a turn when an older installation supplies only post-tool events, but it cannot claim action-level intent timing without the pre-tool snapshot and reports the missing attribution honestly.
+
 Installed hooks do not prove that every host will load or run them. Claude Code loads project hooks from `.claude/settings.json`. A Claude Agent SDK host must omit `settingSources` or include `"project"`; `settingSources: []` excludes project hooks, and Turnal cannot infer an arbitrary host's choice from workspace state. Turnal does not currently consume the SDK message stream directly.
 
 Turnal records Codex's turn-scoped model slug directly. Claude Code may expose its model on `SessionStart`; when it does not, Turnal derives the completed turn's model from the matching final assistant entry in the bounded tail of Claude's session transcript. If neither source is available, the model is omitted rather than guessed.

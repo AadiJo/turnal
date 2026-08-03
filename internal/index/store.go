@@ -693,7 +693,7 @@ func (s *Store) LoadBlameCache(query BlameCacheQuery) (BlameCacheSnapshot, bool,
 	rowsQuery := `
 		SELECT line_no, line_text, origin_kind, origin_session_id, origin_turn_id,
 		       origin_checkpoint_ref, origin_commit_sha, origin_time, origin_adapter,
-		       origin_prompt, origin_tool_names_json
+		       origin_prompt, origin_tool_names_json, origin_action_tool, origin_intent_json
 		FROM blame_cache
 		WHERE scope_session_id = ?
 		  AND path = ?
@@ -785,9 +785,9 @@ func (s *Store) SaveBlameCache(snapshot BlameCacheSnapshot) error {
 			scope_session_id, path, history_key, latest_ref, latest_commit_sha, latest_committed_at,
 			complete_turn_count, line_count, line_no, line_text, warnings_json, origin_kind,
 			origin_session_id, origin_turn_id, origin_checkpoint_ref, origin_commit_sha, origin_time,
-			origin_adapter, origin_prompt, origin_tool_names_json, cached_at
+			origin_adapter, origin_prompt, origin_tool_names_json, origin_action_tool, origin_intent_json, cached_at
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare blame cache insert: %w", err)
 	}
@@ -835,6 +835,8 @@ func scanBlameCacheEntry(scanner blameCacheScanner, path string) (BlameCacheEntr
 	var originAdapter sql.NullString
 	var originPrompt sql.NullString
 	var originToolNamesJSON string
+	var originActionTool sql.NullString
+	var originIntentJSON sql.NullString
 	if err := scanner.Scan(
 		&lineNumber,
 		&lineText,
@@ -847,14 +849,17 @@ func scanBlameCacheEntry(scanner blameCacheScanner, path string) (BlameCacheEntr
 		&originAdapter,
 		&originPrompt,
 		&originToolNamesJSON,
+		&originActionTool,
+		&originIntentJSON,
 	); err != nil {
 		return BlameCacheEntry{}, fmt.Errorf("scan blame cache line for %s: %w", path, err)
 	}
 
 	origin := BlameCacheOrigin{
-		Kind:    originKind,
-		Adapter: nullableString(originAdapter),
-		Prompt:  nullableString(originPrompt),
+		Kind:       originKind,
+		Adapter:    nullableString(originAdapter),
+		Prompt:     nullableString(originPrompt),
+		ActionTool: nullableString(originActionTool),
 	}
 	if originSessionText.Valid && originSessionText.String != "" {
 		sessionID, err := primitives.ParseSessionID(originSessionText.String)
@@ -894,6 +899,11 @@ func scanBlameCacheEntry(scanner blameCacheScanner, path string) (BlameCacheEntr
 		return BlameCacheEntry{}, fmt.Errorf("decode blame cache origin tools for %s:%d: %w", path, lineNumber, err)
 	}
 	origin.ToolNames = toolNames
+	if originIntentJSON.Valid && originIntentJSON.String != "" {
+		if err := json.Unmarshal([]byte(originIntentJSON.String), &origin.Intent); err != nil {
+			return BlameCacheEntry{}, fmt.Errorf("decode blame cache origin intent for %s:%d: %w", path, lineNumber, err)
+		}
+	}
 
 	return BlameCacheEntry{
 		Line:   lineNumber,
@@ -916,6 +926,14 @@ func insertBlameCacheEntry(ctx context.Context, stmt *sql.Stmt, snapshot BlameCa
 	if err != nil {
 		return fmt.Errorf("encode blame cache origin tools for %s:%d: %w", snapshot.Path, entry.Line, err)
 	}
+	var intentJSON any
+	if origin.Intent != nil {
+		data, err := json.Marshal(origin.Intent)
+		if err != nil {
+			return fmt.Errorf("encode blame cache origin intent for %s:%d: %w", snapshot.Path, entry.Line, err)
+		}
+		intentJSON = string(data)
+	}
 	if _, err := stmt.ExecContext(ctx,
 		snapshot.ScopeSession.String(),
 		snapshot.Path.String(),
@@ -937,6 +955,8 @@ func insertBlameCacheEntry(ctx context.Context, stmt *sql.Stmt, snapshot BlameCa
 		nullableText(origin.Adapter),
 		nullableText(origin.Prompt),
 		toolNamesJSON,
+		nullableText(origin.ActionTool),
+		intentJSON,
 		cachedAt,
 	); err != nil {
 		return fmt.Errorf("insert blame cache line %s:%d: %w", snapshot.Path, entry.Line, err)

@@ -132,6 +132,7 @@ const (
 	EventTypeSessionStart      EventType = "session.start"
 	EventTypeTurnStart         EventType = "turn.start"
 	EventTypePromptUser        EventType = "prompt.user"
+	EventTypeAgentIntent       EventType = "agent.intent"
 	EventTypeAssistantMessage  EventType = "assistant.message"
 	EventTypeToolCall          EventType = "tool.call"
 	EventTypeToolResult        EventType = "tool.result"
@@ -158,6 +159,7 @@ var validEventTypes = map[EventType]struct{}{
 	EventTypeSessionStart:      {},
 	EventTypeTurnStart:         {},
 	EventTypePromptUser:        {},
+	EventTypeAgentIntent:       {},
 	EventTypeAssistantMessage:  {},
 	EventTypeToolCall:          {},
 	EventTypeToolResult:        {},

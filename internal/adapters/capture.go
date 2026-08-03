@@ -8,12 +8,14 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	agentconfig "github.com/AadiJo/turnal/internal/config"
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/filelock"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/provenance"
 	"github.com/AadiJo/turnal/internal/runs"
 	"github.com/AadiJo/turnal/internal/turnevents"
 	"github.com/AadiJo/turnal/internal/turns"
@@ -97,22 +99,70 @@ type assistantPayload struct {
 }
 
 type toolCallPayload struct {
-	ToolName       string          `json:"tool_name"`
-	ToolUseID      string          `json:"tool_use_id,omitempty"`
-	ProviderTurnID string          `json:"provider_turn_id,omitempty"`
-	Input          json.RawMessage `json:"input"`
+	ToolName       string                     `json:"tool_name"`
+	ToolUseID      string                     `json:"tool_use_id,omitempty"`
+	ProviderTurnID string                     `json:"provider_turn_id,omitempty"`
+	Input          json.RawMessage            `json:"input"`
+	PreSnapshot    *provenance.ActionSnapshot `json:"pre_snapshot,omitempty"`
+	IntentEventSeq *primitives.EventSeq       `json:"intent_event_seq,omitempty"`
 }
 
 type toolResultPayload struct {
-	ToolName       string          `json:"tool_name"`
-	ToolUseID      string          `json:"tool_use_id,omitempty"`
-	ProviderTurnID string          `json:"provider_turn_id,omitempty"`
-	Output         json.RawMessage `json:"output"`
+	ToolName       string                     `json:"tool_name"`
+	ToolUseID      string                     `json:"tool_use_id,omitempty"`
+	ProviderTurnID string                     `json:"provider_turn_id,omitempty"`
+	Output         json.RawMessage            `json:"output"`
+	PostSnapshot   *provenance.ActionSnapshot `json:"post_snapshot,omitempty"`
 }
 
 type errorPayload struct {
 	Hook    string `json:"hook"`
 	Message string `json:"message"`
+}
+
+type intentHookOutput struct {
+	HookSpecificOutput intentHookSpecificOutput `json:"hookSpecificOutput"`
+}
+
+type intentHookSpecificOutput struct {
+	HookEventName     string `json:"hookEventName"`
+	AdditionalContext string `json:"additionalContext"`
+}
+
+// IntentHookOutput gives supported agents a turn-scoped instruction for
+// recording operative intent before they mutate the workspace.
+func IntentHookOutput(raw []byte) ([]byte, bool) {
+	sessionID := sessionIDFromRawPayload(raw)
+	if sessionID == "" {
+		return nil, false
+	}
+	cwd, err := hookWorkspaceCWD(raw)
+	if err != nil {
+		return nil, false
+	}
+	root, err := checkpoint.FindRoot(cwd)
+	if err != nil {
+		return nil, false
+	}
+	repo, err := checkpoint.Open(root)
+	if err != nil {
+		return nil, false
+	}
+	active, ok, err := turns.NewManager(repo).Active(sessionID)
+	if err != nil || !ok {
+		return nil, false
+	}
+	context := fmt.Sprintf(`Turnal records why each file change was made. Before the first file-changing tool call, and whenever the problem changes, run:
+%s intent --session %s --problem "<code problem or goal>" [--scope <repo-relative file or directory, e.g. src/retry.go>] [--evidence <event:seq|path:path:line|test:name>]
+Describe the defect or goal, not edit steps or hidden reasoning. Repeat --scope and --evidence when needed. This instruction applies to Turnal turn %s.`, HookCommandPrefix(), sessionID, active.TurnID)
+	output, err := json.Marshal(intentHookOutput{HookSpecificOutput: intentHookSpecificOutput{
+		HookEventName:     "UserPromptSubmit",
+		AdditionalContext: context,
+	}})
+	if err != nil {
+		return nil, false
+	}
+	return append(output, '\n'), true
 }
 
 func HandleHookPayload(adapter primitives.AdapterName, hookName string, raw []byte) error {
@@ -302,9 +352,9 @@ func processNormalizedEvent(log eventlog.Log, manager turns.Manager, adapter pri
 			return err
 		}
 		if event.Type == adaptersdk.EventToolCall {
-			return appendToolCall(log, adapter, sessionID, turnID, rawRef, sourceID, payload, secrets)
+			return appendToolCall(log, adapter, sessionID, turnID, rawRef, sourceID, payload, secrets, nil, nil)
 		}
-		return appendToolResult(log, adapter, sessionID, turnID, rawRef, sourceID, payload, secrets)
+		return appendToolResult(log, adapter, sessionID, turnID, rawRef, sourceID, payload, secrets, nil)
 	case adaptersdk.EventAssistantMessage, adaptersdk.EventTurnFinish:
 		active, ok, err := manager.Active(sessionID)
 		if err != nil || !ok {
@@ -447,6 +497,26 @@ func processHook(log eventlog.Log, manager turns.Manager, adapter primitives.Ada
 			return err
 		}
 		return appendPrompt(log, adapter, sessionID, turnID, rawRef, sourceID, payload, secrets)
+	case "pretooluse":
+		if err := ensureSessionStarted(log, adapter, sessionID, rawRef, payload); err != nil {
+			return err
+		}
+		turnID, err := ensureActiveTurn(log, manager, adapter, sessionID, rawRef)
+		if err != nil {
+			return err
+		}
+		var snapshot *provenance.ActionSnapshot
+		if shouldCaptureAction(payload.ToolName) {
+			snapshot, err = captureActionSnapshot(manager.Repo, sessionID, turnID, payload.ToolUseID, "pre")
+			if err != nil {
+				return err
+			}
+		}
+		intentSeq, err := latestIntentEventSeq(log, sessionID, turnID)
+		if err != nil {
+			return err
+		}
+		return appendToolCall(log, adapter, sessionID, turnID, rawRef, sourceID, payload, secrets, snapshot, intentSeq)
 	case "posttooluse":
 		if err := ensureSessionStarted(log, adapter, sessionID, rawRef, payload); err != nil {
 			return err
@@ -455,7 +525,23 @@ func processHook(log eventlog.Log, manager turns.Manager, adapter primitives.Ada
 		if err != nil {
 			return err
 		}
-		return appendToolUse(log, adapter, sessionID, turnID, rawRef, sourceID, payload, secrets)
+		var snapshot *provenance.ActionSnapshot
+		if shouldCaptureAction(payload.ToolName) {
+			snapshot, err = captureActionSnapshot(manager.Repo, sessionID, turnID, payload.ToolUseID, "post")
+			if err != nil {
+				return err
+			}
+		}
+		events, err := log.Read(sessionID)
+		if err != nil {
+			return err
+		}
+		if !turnHasToolCall(events, turnID, payload.ToolUseID) {
+			if err := appendToolCall(log, adapter, sessionID, turnID, rawRef, sourceID+":call", payload, secrets, nil, nil); err != nil {
+				return err
+			}
+		}
+		return appendToolResult(log, adapter, sessionID, turnID, rawRef, sourceID, payload, secrets, snapshot)
 	case "stop":
 		if err := ensureSessionStarted(log, adapter, sessionID, rawRef, payload); err != nil {
 			return err
@@ -667,14 +753,7 @@ func appendAssistant(log eventlog.Log, adapter primitives.AdapterName, sessionID
 	})
 }
 
-func appendToolUse(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, rawRef, sourceID string, payload hookPayload, secrets agentconfig.Secrets) error {
-	if err := appendToolCall(log, adapter, sessionID, turnID, rawRef, sourceID+":call", payload, secrets); err != nil {
-		return err
-	}
-	return appendToolResult(log, adapter, sessionID, turnID, rawRef, sourceID+":result", payload, secrets)
-}
-
-func appendToolCall(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, rawRef, sourceID string, payload hookPayload, secrets agentconfig.Secrets) error {
+func appendToolCall(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, rawRef, sourceID string, payload hookPayload, secrets agentconfig.Secrets, preSnapshot *provenance.ActionSnapshot, intentSeq *primitives.EventSeq) error {
 	return appendPayloadEvent(log, eventlog.AppendInput{
 		SessionID: sessionID,
 		TurnID:    &turnID,
@@ -686,12 +765,14 @@ func appendToolCall(log eventlog.Log, adapter primitives.AdapterName, sessionID 
 			ToolName:       payload.ToolName,
 			ToolUseID:      payload.ToolUseID,
 			ProviderTurnID: payload.TurnID,
-			Input:          redactedJSON(payload.ToolInput, secrets.StoreToolIO),
+			Input:          redactedToolInput(payload.ToolInput, secrets),
+			PreSnapshot:    preSnapshot,
+			IntentEventSeq: intentSeq,
 		}),
 	})
 }
 
-func appendToolResult(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, rawRef, sourceID string, payload hookPayload, secrets agentconfig.Secrets) error {
+func appendToolResult(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, rawRef, sourceID string, payload hookPayload, secrets agentconfig.Secrets, postSnapshot *provenance.ActionSnapshot) error {
 	return appendPayloadEvent(log, eventlog.AppendInput{
 		SessionID: sessionID,
 		TurnID:    &turnID,
@@ -704,8 +785,68 @@ func appendToolResult(log eventlog.Log, adapter primitives.AdapterName, sessionI
 			ToolUseID:      payload.ToolUseID,
 			ProviderTurnID: payload.TurnID,
 			Output:         redactedJSON(payload.ToolResponse, secrets.StoreToolIO),
+			PostSnapshot:   postSnapshot,
 		}),
 	})
+}
+
+func captureActionSnapshot(repo *checkpoint.Repo, sessionID primitives.SessionID, turnID primitives.TurnID, toolUseID, phase string) (*provenance.ActionSnapshot, error) {
+	toolUseID = strings.TrimSpace(toolUseID)
+	if toolUseID == "" {
+		return nil, nil
+	}
+	digest := sha256.Sum256([]byte(repo.WorktreeID.String() + "\x00" + sessionID.String() + "\x00" + turnID.String() + "\x00" + toolUseID))
+	actionID := hex.EncodeToString(digest[:12])
+	ref := fmt.Sprintf("refs/agent-vcs/actions/%s/worktree/%s/turn/%s/%s/%s", sessionID, repo.WorktreeID, turnID.RefSegment(), actionID, phase)
+	snapshot, err := repo.CreateSnapshotRef(ref, fmt.Sprintf("turnal action %s turn %s %s", sessionID, turnID, phase))
+	if err != nil {
+		return nil, err
+	}
+	return &provenance.ActionSnapshot{Ref: snapshot.Ref, Commit: snapshot.Commit}, nil
+}
+
+func latestIntentEventSeq(log eventlog.Log, sessionID primitives.SessionID, turnID primitives.TurnID) (*primitives.EventSeq, error) {
+	events, err := log.Read(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	for index := len(events) - 1; index >= 0; index-- {
+		event := events[index]
+		if event.TurnID != nil && *event.TurnID == turnID && event.Type == primitives.EventTypeAgentIntent {
+			seq := event.Seq
+			return &seq, nil
+		}
+	}
+	return nil, nil
+}
+
+func turnHasToolCall(events []eventlog.Event, turnID primitives.TurnID, toolUseID string) bool {
+	if strings.TrimSpace(toolUseID) == "" {
+		return false
+	}
+	for _, event := range events {
+		if event.TurnID == nil || *event.TurnID != turnID || event.Type != primitives.EventTypeToolCall {
+			continue
+		}
+		var payload toolCallPayload
+		if json.Unmarshal(event.Payload, &payload) == nil && payload.ToolUseID == toolUseID {
+			return true
+		}
+	}
+	return false
+}
+
+func shouldCaptureAction(toolName string) bool {
+	name := strings.ToLower(strings.TrimSpace(toolName))
+	if index := strings.LastIndexAny(name, ".:/"); index >= 0 {
+		name = name[index+1:]
+	}
+	switch name {
+	case "read", "grep", "glob", "ls", "find", "open", "search_query", "image_query", "screenshot", "view_image", "webfetch", "websearch", "finance", "weather", "sports", "time":
+		return false
+	default:
+		return true
+	}
 }
 
 func appendAdapterRawEvent(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, rawRef, sourceID, hookName string) error {
@@ -807,6 +948,16 @@ func redactedJSON(value json.RawMessage, store bool) json.RawMessage {
 	return json.RawMessage(`{"redacted":true,"policy":"turnal.secrets"}`)
 }
 
+func redactedToolInput(value json.RawMessage, secrets agentconfig.Secrets) json.RawMessage {
+	if !secrets.StoreToolIO {
+		return redactedJSON(value, false)
+	}
+	if !secrets.StorePrompts && rawContainsIntentCommand(value) {
+		return json.RawMessage(`{"redacted":true,"policy":"turnal.secrets","content":"agent.intent"}`)
+	}
+	return defaultRawJSON(value)
+}
+
 func redactRawHookPayload(raw []byte, secrets agentconfig.Secrets) []byte {
 	if secrets.StorePrompts && secrets.StoreToolIO {
 		return raw
@@ -824,6 +975,9 @@ func redactRawHookPayload(raw []byte, secrets agentconfig.Secrets) []byte {
 				payload[key] = redactedText("", false)
 			}
 		}
+		if value, ok := payload["tool_input"]; ok && valueContainsIntentCommand(value) {
+			payload["tool_input"] = map[string]any{"redacted": true, "policy": "turnal.secrets", "content": "agent.intent"}
+		}
 	}
 	if !secrets.StoreToolIO {
 		for _, key := range []string{"tool_input", "tool_response"} {
@@ -837,4 +991,29 @@ func redactRawHookPayload(raw []byte, secrets agentconfig.Secrets) []byte {
 		return raw
 	}
 	return redacted
+}
+
+func rawContainsIntentCommand(value json.RawMessage) bool {
+	return textContainsIntentCommand(string(defaultRawJSON(value)))
+}
+
+func valueContainsIntentCommand(value any) bool {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return false
+	}
+	return textContainsIntentCommand(string(data))
+
+}
+
+func textContainsIntentCommand(value string) bool {
+	tokens := strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '.' && r != '_' && r != '-'
+	})
+	for index := 0; index+1 < len(tokens); index++ {
+		if (tokens[index] == "turnal" || tokens[index] == "turnal.exe") && tokens[index+1] == "intent" {
+			return true
+		}
+	}
+	return false
 }

@@ -151,7 +151,7 @@ func TestStatusProbeReportsUntrustedCodexHooksAndFails(t *testing.T) {
 		t.Fatalf("probe calls = %d, want 1", probe.calls)
 	}
 	for _, want := range []string{
-		"Codex app-server", "discovery:           4/4 Turnal hooks", "trusted:             0/4",
+		"Codex app-server", "discovery:           5/5 Turnal hooks", "trusted:             0/5",
 		"expected capture:    unavailable", "certainty:           confirmed",
 		"Codex app-server will skip untrusted hooks", "state:      needs attention",
 		"Codex app-server capture unavailable: execution is untrusted",
@@ -253,7 +253,7 @@ func (probe *recordingCodexProbe) Probe(ctx context.Context, root, command strin
 		trust = "trusted"
 	}
 	var hooks []compatibility.CodexHook
-	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"} {
+	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"} {
 		hooks = append(hooks, compatibility.CodexHook{
 			CWD: root, EventName: event, Command: command, Source: "project",
 			SourcePath: filepath.Join(root, ".codex", "config.toml"), Enabled: true,

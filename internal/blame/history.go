@@ -16,6 +16,7 @@ type completeTurn struct {
 	Pre       checkpoint.CheckpointRefInfo
 	Post      checkpoint.CheckpointRefInfo
 	Events    queryindex.TurnEventSummary
+	Records   []eventlog.Event
 }
 
 type partialTurn struct {
@@ -61,6 +62,7 @@ func (engine Engine) completeTurns(sessionFilter primitives.SessionID) ([]comple
 	}
 
 	summaries := make(map[string]map[queryindex.StreamTurnKey]queryindex.TurnEventSummary)
+	records := make(map[string]map[queryindex.StreamTurnKey][]eventlog.Event)
 	log := eventlog.Open(engine.Repo.MetadataDir)
 	for _, sessionID := range sessionSet {
 		events, err := log.Read(sessionID)
@@ -68,6 +70,14 @@ func (engine Engine) completeTurns(sessionFilter primitives.SessionID) ([]comple
 			return nil, err
 		}
 		summaries[sessionID.String()] = queryindex.SummarizeTurnEventsByStream(events)
+		records[sessionID.String()] = make(map[queryindex.StreamTurnKey][]eventlog.Event)
+		for _, event := range events {
+			if event.TurnID == nil {
+				continue
+			}
+			key := queryindex.StreamTurnKey{StreamID: event.StreamID, TurnID: event.TurnID.Uint64()}
+			records[sessionID.String()][key] = append(records[sessionID.String()][key], event)
+		}
 	}
 
 	turns := make([]completeTurn, 0, len(turnsByKey))
@@ -77,12 +87,14 @@ func (engine Engine) completeTurns(sessionFilter primitives.SessionID) ([]comple
 		}
 		pre := *partial.pre
 		post := *partial.post
+		key := queryindex.StreamTurnKey{StreamID: pre.StreamID, TurnID: pre.TurnID.Uint64()}
 		turns = append(turns, completeTurn{
 			SessionID: pre.SessionID,
 			TurnID:    pre.TurnID,
 			Pre:       pre,
 			Post:      post,
-			Events:    summaries[pre.SessionID.String()][queryindex.StreamTurnKey{StreamID: pre.StreamID, TurnID: pre.TurnID.Uint64()}],
+			Events:    summaries[pre.SessionID.String()][key],
+			Records:   records[pre.SessionID.String()][key],
 		})
 	}
 

@@ -1,0 +1,102 @@
+package cli
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/AadiJo/turnal/internal/checkpoint"
+	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/provenance"
+	"github.com/AadiJo/turnal/internal/turns"
+)
+
+func TestIntentCommandRecordsExplicitAgentStatement(t *testing.T) {
+	requireGit(t)
+	rootPath := t.TempDir()
+	root, err := primitives.ParseWorkspaceRoot(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := sessionID(t, "intent-command")
+	if _, err := turns.NewManager(repo).Start(sessionID, 0); err != nil {
+		t.Fatalf("start turn: %v", err)
+	}
+	t.Chdir(rootPath)
+
+	output := runRootStdout(t,
+		"intent",
+		"--session", sessionID.String(),
+		"--problem", "retry delay survives a successful request",
+		"--scope", "internal/retry.go",
+		"--evidence", "test:TestRetryReset",
+	)
+	if !strings.Contains(output, "recorded intent") {
+		t.Fatalf("output = %q", output)
+	}
+	events, err := repo.EventLog().Read(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Type != primitives.EventTypeAgentIntent {
+		t.Fatalf("events = %#v", events)
+	}
+	var payload provenance.IntentPayload
+	if err := json.Unmarshal(events[0].Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Problem != "retry delay survives a successful request" || len(payload.Scope) != 1 || payload.Evidence[0] != "test:TestRetryReset" {
+		t.Fatalf("payload = %#v", payload)
+	}
+}
+
+func TestIntentCommandRedactsAllPromptLikeFields(t *testing.T) {
+	requireGit(t)
+	rootPath := t.TempDir()
+	root, err := primitives.ParseWorkspaceRoot(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo.MetadataDir, "config.toml"), []byte(`version = 1
+
+[secrets]
+store_prompts = false
+store_tool_io = true
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sessionID := sessionID(t, "private-intent-command")
+	if _, err := turns.NewManager(repo).Start(sessionID, 0); err != nil {
+		t.Fatalf("start turn: %v", err)
+	}
+	t.Chdir(rootPath)
+
+	runRootStdout(t,
+		"intent",
+		"--session", sessionID.String(),
+		"--problem", "private customer retry failure",
+		"--scope", "customers/private/retry.go",
+		"--evidence", "test:PrivateCustomerRetry",
+	)
+	events, err := repo.EventLog().Read(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload provenance.IntentPayload
+	if len(events) != 1 || json.Unmarshal(events[0].Payload, &payload) != nil {
+		t.Fatalf("events = %#v", events)
+	}
+	if !payload.Redacted || payload.Problem != primitives.SecretsRedactionText || len(payload.Scope) != 0 || len(payload.Evidence) != 0 {
+		t.Fatalf("redacted payload = %#v", payload)
+	}
+}

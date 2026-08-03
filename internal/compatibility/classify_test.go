@@ -98,7 +98,7 @@ func TestDiagnoseUsesRootCheckoutCodexConfigurationForLinkedWorktree(t *testing.
 	if cli.Configuration != adapters.HookConfigurationConfigured || cli.Expectation != CaptureAvailable {
 		t.Fatalf("Codex CLI = %#v", cli)
 	}
-	if appServer.Configuration != adapters.HookConfigurationConfigured || appServer.Discovered != 4 || appServer.Enabled != 4 || appServer.Trusted != 0 || appServer.Execution != ExecutionUntrusted || appServer.Certainty != CertaintyConfirmed {
+	if appServer.Configuration != adapters.HookConfigurationConfigured || appServer.Discovered != 5 || appServer.Enabled != 5 || appServer.Trusted != 0 || appServer.Execution != ExecutionUntrusted || appServer.Certainty != CertaintyConfirmed {
 		t.Fatalf("Codex app-server = %#v", appServer)
 	}
 }
@@ -110,6 +110,7 @@ func configuredCodexHealth() adapters.HookHealth {
 		Events: []adapters.HookEventHealth{
 			{Name: "SessionStart", Status: adapters.HookEventConfigured},
 			{Name: "UserPromptSubmit", Status: adapters.HookEventConfigured},
+			{Name: "PreToolUse", Status: adapters.HookEventConfigured},
 			{Name: "PostToolUse", Status: adapters.HookEventConfigured},
 			{Name: "Stop", Status: adapters.HookEventConfigured},
 		},
@@ -125,6 +126,7 @@ func TestClassifyCodexHooks(t *testing.T) {
 		projectCodexHook(root, "post_tool_use", expected),
 		projectCodexHook(root, "sessionStart", expected),
 		projectCodexHook(root, "user-prompt-submit", expected),
+		projectCodexHook(root, "preToolUse", expected),
 	}
 
 	tests := []struct {
@@ -135,7 +137,7 @@ func TestClassifyCodexHooks(t *testing.T) {
 	}{
 		{"trusted in arbitrary order", all, ExecutionConfirmed, CaptureAvailable},
 		{"untrusted", replaceHook(all, 0, func(hook *CodexHook) { hook.TrustStatus = "untrusted" }), ExecutionUntrusted, CaptureUnavailable},
-		{"missing", all[:3], ExecutionUnavailable, CaptureUnavailable},
+		{"missing", all[:4], ExecutionUnavailable, CaptureUnavailable},
 		{"disabled", replaceHook(all, 1, func(hook *CodexHook) { hook.Enabled = false }), ExecutionDisabled, CaptureUnavailable},
 		{"different command", replaceHook(all, 2, func(hook *CodexHook) { hook.Command = "other-tool" }), ExecutionUnavailable, CaptureUnavailable},
 	}
@@ -155,6 +157,7 @@ func TestClassifyCodexHooksIgnoresUnrelatedHooksAndPreservesWarnings(t *testing.
 	hooks := []CodexHook{
 		projectCodexHook(root, "SessionStart", "turnal codex-hook"),
 		projectCodexHook(root, "UserPromptSubmit", "turnal codex-hook"),
+		projectCodexHook(root, "PreToolUse", "turnal codex-hook"),
 		projectCodexHook(root, "PostToolUse", "turnal codex-hook"),
 		projectCodexHook(root, "Stop", "turnal codex-hook"),
 		{CWD: root, EventName: "Stop", Command: "plugin-tool", Source: "plugin", Enabled: false, TrustStatus: "untrusted"},
@@ -162,7 +165,7 @@ func TestClassifyCodexHooksIgnoresUnrelatedHooksAndPreservesWarnings(t *testing.
 		projectCodexHook(t.TempDir(), "Stop", "turnal codex-hook"),
 	}
 	result := ClassifyCodexHooks(root, "turnal codex-hook", health, CodexHooksResult{Hooks: hooks, Warnings: []string{"project warning"}})
-	if result.Expectation != CaptureAvailable || result.Discovered != 4 || result.Enabled != 4 || result.Trusted != 4 {
+	if result.Expectation != CaptureAvailable || result.Discovered != 5 || result.Enabled != 5 || result.Trusted != 5 {
 		t.Fatalf("result = %#v", result)
 	}
 	if len(result.Warnings) != 1 || result.Warnings[0] != "project warning" {
@@ -188,7 +191,7 @@ func TestClassifyCodexHooksAcceptsRootCheckoutSourceForLinkedWorktree(t *testing
 		hooks = append(hooks, hook)
 	}
 	result := ClassifyCodexHooks(linkedWorktree, "turnal codex-hook", configuredCodexHealth(), CodexHooksResult{Hooks: hooks})
-	if result.Discovered != 4 || result.Enabled != 4 || result.Trusted != 0 || result.Execution != ExecutionUntrusted {
+	if result.Discovered != 5 || result.Enabled != 5 || result.Trusted != 0 || result.Execution != ExecutionUntrusted {
 		t.Fatalf("linked-worktree result = %#v", result)
 	}
 }
@@ -239,7 +242,7 @@ func TestClassifyCodexHooksStillRequiresAllEventsWhenStaticConfigIsMissing(t *te
 		Target: adapters.TargetCodex,
 		Status: adapters.HookConfigurationMissing,
 	}, CodexHooksResult{})
-	if result.Expected != 4 || result.Discovered != 0 || result.Expectation != CaptureUnavailable {
+	if result.Expected != 5 || result.Discovered != 0 || result.Expectation != CaptureUnavailable {
 		t.Fatalf("result = %#v", result)
 	}
 }
@@ -252,11 +255,12 @@ func TestClassifyCodexHooksKeepsStaticDisabledStateAuthoritative(t *testing.T) {
 	hooks := []CodexHook{
 		projectCodexHook(root, "SessionStart", "turnal codex-hook"),
 		projectCodexHook(root, "UserPromptSubmit", "turnal codex-hook"),
+		projectCodexHook(root, "PreToolUse", "turnal codex-hook"),
 		projectCodexHook(root, "PostToolUse", "turnal codex-hook"),
 		projectCodexHook(root, "Stop", "turnal codex-hook"),
 	}
 	result := ClassifyCodexHooks(root, "turnal codex-hook", health, CodexHooksResult{Hooks: hooks})
-	if result.Discovered != 4 || result.Enabled != 4 || result.Trusted != 4 {
+	if result.Discovered != 5 || result.Enabled != 5 || result.Trusted != 5 {
 		t.Fatalf("live discovery details were lost: %#v", result)
 	}
 	if result.Execution != ExecutionDisabled || result.Expectation != CaptureUnavailable || result.Certainty != CertaintyIncompatible {
