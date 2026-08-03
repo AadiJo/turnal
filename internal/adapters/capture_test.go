@@ -1188,7 +1188,9 @@ func TestHandleNormalizedEventsKeepsDurabilityInCore(t *testing.T) {
 	t.Chdir(root.String())
 	writeFile(t, root, "app.txt", "before\n")
 
-	rawPrompt := []byte(`{"sessionId":"external-session","cwd":"` + root.String() + `","prompt":"change app.txt"}`)
+	rawPrompt := rawPayload(t, map[string]any{
+		"sessionId": "external-session", "cwd": root.String(), "prompt": "change app.txt",
+	})
 	err = HandleNormalizedEvents("gemini-cli", "BeforeAgent", rawPrompt, []adaptersdk.Event{{
 		Type: adaptersdk.EventPromptUser, SessionID: "external-session", CWD: root.String(), Text: "change app.txt",
 	}})
@@ -1196,7 +1198,9 @@ func TestHandleNormalizedEventsKeepsDurabilityInCore(t *testing.T) {
 		t.Fatalf("prompt: %v", err)
 	}
 	writeFile(t, root, "app.txt", "after\n")
-	rawFinish := []byte(`{"session_id":"external-session","cwd":"` + root.String() + `","prompt_response":"done"}`)
+	rawFinish := rawPayload(t, map[string]any{
+		"session_id": "external-session", "cwd": root.String(), "prompt_response": "done",
+	})
 	err = HandleNormalizedEvents("gemini-cli", "AfterAgent", rawFinish, []adaptersdk.Event{{
 		Type: adaptersdk.EventAssistantMessage, SessionID: "external-session", CWD: root.String(), Text: "done",
 	}})
@@ -1239,13 +1243,18 @@ command = "workspace-turnal"
 store_prompts = false
 store_tool_io = true
 `)
-	promptRaw := []byte(`{"sessionId":"external-intent-result","cwd":"` + root.String() + `","prompt":"private request"}`)
+	promptRaw := rawPayload(t, map[string]any{
+		"sessionId": "external-intent-result", "cwd": root.String(), "prompt": "private request",
+	})
 	if err := HandleNormalizedEvents("custom-adapter", "prompt", promptRaw, []adaptersdk.Event{{
 		Type: adaptersdk.EventPromptUser, SessionID: "external-intent-result", CWD: root.String(), Text: "private request",
 	}}); err != nil {
 		t.Fatalf("prompt: %v", err)
 	}
-	toolRaw := []byte(`{"sessionId":"external-intent-result","cwd":"` + root.String() + `","invocation":"workspace-turnal intent --problem customer-secret","result":"result-secret"}`)
+	toolRaw := rawPayload(t, map[string]any{
+		"sessionId": "external-intent-result", "cwd": root.String(),
+		"invocation": "workspace-turnal intent --problem customer-secret", "result": "result-secret",
+	})
 	if err := HandleNormalizedEvents("custom-adapter", "tool", toolRaw, []adaptersdk.Event{
 		{Type: adaptersdk.EventToolCall, SessionID: "external-intent-result", CWD: root.String(), ToolName: "shell", ToolUseID: "intent-1", Input: json.RawMessage(`{"problem":"customer-secret"}`)},
 		{Type: adaptersdk.EventToolResult, SessionID: "external-intent-result", CWD: root.String(), ToolName: "shell", ToolUseID: "intent-1", Input: json.RawMessage(`{"normalized":"partial"}`), Output: json.RawMessage(`{"message":"result-secret"}`)},
@@ -1290,32 +1299,43 @@ store_prompts = false
 store_tool_io = true
 `)
 	const session = "external-intent-separate-result"
-	promptRaw := []byte(`{"sessionId":"` + session + `","cwd":"` + root.String() + `","prompt":"private request"}`)
+	promptRaw := rawPayload(t, map[string]any{
+		"sessionId": session, "cwd": root.String(), "prompt": "private request",
+	})
 	if err := HandleNormalizedEvents("custom-adapter", "prompt", promptRaw, []adaptersdk.Event{{
 		Type: adaptersdk.EventPromptUser, SessionID: session, CWD: root.String(), Text: "private request",
 	}}); err != nil {
 		t.Fatalf("prompt: %v", err)
 	}
-	callRaw := []byte(`{"sessionId":"` + session + `","cwd":"` + root.String() + `","invocation":"workspace-turnal intent --problem customer-secret"}`)
+	callRaw := rawPayload(t, map[string]any{
+		"sessionId": session, "cwd": root.String(),
+		"invocation": "workspace-turnal intent --problem customer-secret",
+	})
 	if err := HandleNormalizedEvents("custom-adapter", "tool-call", callRaw, []adaptersdk.Event{{
 		Type: adaptersdk.EventToolCall, SessionID: session, CWD: root.String(), ToolName: "shell", ToolUseID: "intent-1",
 		ProviderTurnID: "provider-turn-1", Input: json.RawMessage(`{"command":"workspace-turnal intent --problem customer-secret"}`),
 	}}); err != nil {
 		t.Fatalf("tool call: %v", err)
 	}
-	finishRaw := []byte(`{"sessionId":"` + session + `","cwd":"` + root.String() + `","finished":true}`)
+	finishRaw := rawPayload(t, map[string]any{
+		"sessionId": session, "cwd": root.String(), "finished": true,
+	})
 	if err := HandleNormalizedEvents("custom-adapter", "finish", finishRaw, []adaptersdk.Event{{
 		Type: adaptersdk.EventTurnFinish, SessionID: session, CWD: root.String(), ProviderTurnID: "provider-turn-1",
 	}}); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
-	nextPromptRaw := []byte(`{"sessionId":"` + session + `","cwd":"` + root.String() + `","prompt":"next private request"}`)
+	nextPromptRaw := rawPayload(t, map[string]any{
+		"sessionId": session, "cwd": root.String(), "prompt": "next private request",
+	})
 	if err := HandleNormalizedEvents("custom-adapter", "next-prompt", nextPromptRaw, []adaptersdk.Event{{
 		Type: adaptersdk.EventPromptUser, SessionID: session, CWD: root.String(), ProviderTurnID: "provider-turn-2", Text: "next private request",
 	}}); err != nil {
 		t.Fatalf("next prompt: %v", err)
 	}
-	resultRaw := []byte(`{"sessionId":"` + session + `","cwd":"` + root.String() + `","result":"result-secret"}`)
+	resultRaw := rawPayload(t, map[string]any{
+		"sessionId": session, "cwd": root.String(), "result": "result-secret",
+	})
 	if err := HandleNormalizedEvents("custom-adapter", "tool-result", resultRaw, []adaptersdk.Event{{
 		Type: adaptersdk.EventToolResult, SessionID: session, CWD: root.String(), ToolName: "shell", ToolUseID: "intent-1",
 		ProviderTurnID: "provider-turn-1", Output: json.RawMessage(`{"message":"result-secret"}`),
@@ -2104,13 +2124,19 @@ func TestNextPromptFinishesStaleActiveTurn(t *testing.T) {
 
 func handlePayload(t *testing.T, adapter primitives.AdapterName, hookName string, payload map[string]any) {
 	t.Helper()
+	raw := rawPayload(t, payload)
+	if err := HandleHookPayload(adapter, hookName, raw); err != nil {
+		t.Fatalf("HandleHookPayload %s: %v", hookName, err)
+	}
+}
+
+func rawPayload(t *testing.T, payload map[string]any) []byte {
+	t.Helper()
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
 	}
-	if err := HandleHookPayload(adapter, hookName, raw); err != nil {
-		t.Fatalf("HandleHookPayload %s: %v", hookName, err)
-	}
+	return raw
 }
 
 func readEvents(t *testing.T, repo *checkpoint.Repo, sessionID primitives.SessionID) []eventlog.Event {
