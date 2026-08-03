@@ -49,6 +49,14 @@ func TestSearchFindsPromptToolPathAndEventOnlyTurns(t *testing.T) {
 	})
 	appendEvent(t, repo.MetadataDir, eventlog.AppendInput{
 		SessionID: demoSession,
+		TurnID:    &firstTurn,
+		Type:      primitives.EventTypeAgentIntent,
+		Adapter:   primitives.AdapterCodex,
+		Time:      timestamp(t, time.Date(2026, 7, 6, 12, 1, 30, 0, time.UTC)),
+		Payload:   json.RawMessage(`{"problem":"retry delay survives a successful request"}`),
+	})
+	appendEvent(t, repo.MetadataDir, eventlog.AppendInput{
+		SessionID: demoSession,
 		TurnID:    &secondTurn,
 		Type:      primitives.EventTypePromptUser,
 		Adapter:   primitives.AdapterCodex,
@@ -91,6 +99,14 @@ func TestSearchFindsPromptToolPathAndEventOnlyTurns(t *testing.T) {
 	}
 	if len(modelResults) != 1 || modelResults[0].TurnID != firstTurn || modelResults[0].Model != "gpt-5.6-sol" {
 		t.Fatalf("model results = %#v, want first turn using gpt-5.6-sol", modelResults)
+	}
+
+	intentResults, err := store.Search(SearchQuery{Query: "retry delay"})
+	if err != nil {
+		t.Fatalf("Search intent: %v", err)
+	}
+	if len(intentResults) != 1 || intentResults[0].TurnID != firstTurn {
+		t.Fatalf("intent results = %#v, want first turn with matching agent intent", intentResults)
 	}
 
 	eventOnlyResults, err := store.Search(SearchQuery{Query: "needle"})

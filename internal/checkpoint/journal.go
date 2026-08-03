@@ -28,6 +28,7 @@ type CheckpointJournal struct {
 	Ref              primitives.CheckpointRef   `json:"ref,omitempty"`
 	CanonicalRef     primitives.CheckpointRef   `json:"canonical_ref,omitempty"`
 	CommitSHA        primitives.CommitSHA       `json:"commit_sha,omitempty"`
+	CapturedAt       string                     `json:"captured_at,omitempty"`
 	GitSyncRef       string                     `json:"git_sync_ref,omitempty"`
 	GitSyncCommitSHA string                     `json:"git_sync_commit_sha,omitempty"`
 	EventSeq         primitives.EventSeq        `json:"event_seq,omitempty"`
@@ -69,6 +70,9 @@ func (repo *Repo) MarkCheckpointJournalCommitted(sessionID primitives.SessionID,
 	journal.Ref = created.Ref
 	journal.CanonicalRef = created.CanonicalRef
 	journal.CommitSHA = created.Commit
+	if !created.CapturedAt.IsZero() {
+		journal.CapturedAt = created.CapturedAt.UTC().Format(time.RFC3339Nano)
+	}
 	return repo.writeCheckpointJournal(journal)
 }
 
@@ -312,6 +316,11 @@ func validateCheckpointJournal(journal CheckpointJournal) error {
 	if journal.CommitSHA != "" {
 		if _, err := primitives.ParseCommitSHA(journal.CommitSHA.String()); err != nil {
 			return err
+		}
+	}
+	if journal.CapturedAt != "" {
+		if _, err := time.Parse(time.RFC3339Nano, journal.CapturedAt); err != nil {
+			return fmt.Errorf("captured_at: %w", err)
 		}
 	}
 	if journal.EventSeq != 0 {

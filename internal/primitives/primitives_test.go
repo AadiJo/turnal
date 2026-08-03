@@ -212,6 +212,7 @@ func TestEventType(t *testing.T) {
 		EventTypeSessionStart,
 		EventTypeTurnStart,
 		EventTypePromptUser,
+		EventTypeAgentIntent,
 		EventTypeAssistantMessage,
 		EventTypeToolCall,
 		EventTypeToolResult,

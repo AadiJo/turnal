@@ -10,6 +10,7 @@ import (
 	blameengine "github.com/AadiJo/turnal/internal/blame"
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/provenance"
 )
 
 func TestBlameCommandShowsLineAttribution(t *testing.T) {
@@ -63,7 +64,8 @@ func TestBlameCommandShowsLineAttribution(t *testing.T) {
 		"] turn 1",
 		"1 | after",
 		"adapter: codex",
-		"Prompt: \"change app.txt\"",
+		"problem: no agent intent recorded for this change",
+		"human request: change app.txt",
 		"tools: apply_patch",
 	} {
 		if !strings.Contains(textOutput, want) {
@@ -110,10 +112,61 @@ func TestBlameTextUsesLogStyleTurnLabelAndPrompt(t *testing.T) {
 	output := out.String()
 	for _, want := range []string{
 		"03:15 [codex 03:12] turn 2      2 |     for _ in range(5):",
-		"Prompt: \"make a python script to say hello world\"",
+		"Intent: no agent intent recorded for this change",
+		"Human request: \"make a python script to say hello world\"",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("blame text missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestBlameIntentConfidenceLabelsUnknownStatusHonestly(t *testing.T) {
+	origin := blameengine.Origin{Intent: &provenance.Attribution{
+		Status:     provenance.IntentStatus("future-status"),
+		Confidence: provenance.IntentConfidenceLow,
+	}}
+	got := blameIntentConfidence(origin)
+	if !strings.Contains(got, `unknown intent status "future-status"`) || strings.Contains(got, "stated before edit") {
+		t.Fatalf("confidence = %q", got)
+	}
+}
+
+func TestBlameTextShowsLowConfidenceIntentWithoutVerbose(t *testing.T) {
+	seq, _ := primitives.NewEventSeq(4)
+	var out bytes.Buffer
+	err := writeBlameText(&out, blameengine.Result{Entries: []blameengine.Entry{{
+		Line: 1,
+		Text: "changed",
+		Origin: blameengine.Origin{Kind: "turn", Intent: &provenance.Attribution{
+			Problem: "retry state was stale", EventSeq: seq,
+			Status: provenance.IntentStatusLateOutOfScope, Timing: provenance.IntentTimingAfter, Confidence: provenance.IntentConfidenceLow,
+		}},
+	}}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output := out.String(); !strings.Contains(output, "Intent: retry state was stale") || !strings.Contains(output, "Intent note: low (stated after edit; outside stated scope)") {
+		t.Fatalf("blame output = %q", output)
+	}
+}
+
+func TestBlameTextDistinguishesMissingAndAmbiguousIntent(t *testing.T) {
+	var out bytes.Buffer
+	err := writeBlameText(&out, blameengine.Result{Entries: []blameengine.Entry{
+		{Line: 1, Text: "one", Origin: blameengine.Origin{Kind: "ambiguous"}},
+		{Line: 2, Text: "two", Origin: blameengine.Origin{Kind: "concurrent"}},
+	}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := out.String()
+	for _, want := range []string{
+		"Intent: unavailable because no recorded intent could be safely tied to this change",
+		"Intent: unavailable because concurrent agent turns overlapped",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("blame output missing %q: %s", want, output)
 		}
 	}
 }

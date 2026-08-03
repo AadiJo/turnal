@@ -103,6 +103,7 @@ type Checkpoint struct {
 	Ref          primitives.CheckpointRef
 	CanonicalRef primitives.CheckpointRef
 	Commit       primitives.CommitSHA
+	CapturedAt   time.Time
 	WorktreeID   primitives.WorktreeID
 	StreamID     primitives.EventStreamID
 }
@@ -483,7 +484,7 @@ func (repo *Repo) createManualCheckpoint() (Checkpoint, error) {
 	if err := repo.installCheckpointRefsAtomic(canonicalRef, ref, commit); err != nil {
 		return Checkpoint{}, err
 	}
-	return Checkpoint{ID: checkpointID, Ref: ref, CanonicalRef: canonicalRef, Commit: commit, WorktreeID: repo.WorktreeID}, nil
+	return Checkpoint{ID: checkpointID, Ref: ref, CanonicalRef: canonicalRef, Commit: commit, CapturedAt: time.Now().UTC(), WorktreeID: repo.WorktreeID}, nil
 }
 
 func (repo *Repo) installCheckpointRefsAtomic(canonicalRef, friendlyRef primitives.CheckpointRef, commit primitives.CommitSHA) error {
@@ -541,6 +542,7 @@ func (repo *Repo) createCheckpoint(sessionID primitives.SessionID, turnID primit
 		Ref:          ref,
 		CanonicalRef: canonicalRef,
 		Commit:       commit,
+		CapturedAt:   time.Now().UTC(),
 		WorktreeID:   repo.WorktreeID,
 		StreamID:     streamID,
 	}, nil
@@ -614,6 +616,27 @@ func (repo *Repo) CreateSnapshotRef(ref string, message string) (Snapshot, error
 		return err
 	})
 	return snapshot, err
+}
+
+// CreateSnapshotRefIfAbsentLocked reuses or creates a snapshot while the
+// caller holds the workspace lock.
+func (repo *Repo) CreateSnapshotRefIfAbsentLocked(ref string, message string) (Snapshot, error) {
+	parsedRef, err := repo.validatePrivateRef(ref)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	output, err := runHiddenGitReadOnly(repo, "for-each-ref", "--format=%(objectname)", "--count=1", parsedRef)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if commitText := strings.TrimSpace(output); commitText != "" {
+		commit, err := primitives.ParseCommitSHA(commitText)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		return Snapshot{Ref: parsedRef, Commit: commit}, nil
+	}
+	return repo.createSnapshotRef(parsedRef, message)
 }
 
 // CreateSnapshotRefLocked creates a snapshot while the caller holds the
@@ -846,6 +869,24 @@ func (repo *Repo) DiffRefsPath(preRef, postRef primitives.CheckpointRef, repoPat
 }
 
 func (repo *Repo) DiffRefsPathWithRenames(preRef, postRef primitives.CheckpointRef, prePath, postPath string) ([]byte, error) {
+	return repo.diffCommitsPathWithRenames(preRef.String(), postRef.String(), prePath, postPath)
+}
+
+// DiffCommitsPathWithRenames returns a zero-context patch between two durable
+// snapshots while following a rename of the selected file.
+func (repo *Repo) DiffCommitsPathWithRenames(preCommit, postCommit primitives.CommitSHA, prePath, postPath string) ([]byte, error) {
+	parsedPre, err := primitives.ParseCommitSHA(preCommit.String())
+	if err != nil {
+		return nil, err
+	}
+	parsedPost, err := primitives.ParseCommitSHA(postCommit.String())
+	if err != nil {
+		return nil, err
+	}
+	return repo.diffCommitsPathWithRenames(parsedPre.String(), parsedPost.String(), prePath, postPath)
+}
+
+func (repo *Repo) diffCommitsPathWithRenames(preRevision, postRevision, prePath, postPath string) ([]byte, error) {
 	parsedPrePath, err := primitives.ParseRepoPath(prePath)
 	if err != nil {
 		return nil, err
@@ -869,8 +910,8 @@ func (repo *Repo) DiffRefsPathWithRenames(preRef, postRef primitives.CheckpointR
 		"--no-color",
 		"--no-ext-diff",
 		"--no-textconv",
-		preRef.String() + "^{commit}",
-		postRef.String() + "^{commit}",
+		preRevision + "^{commit}",
+		postRevision + "^{commit}",
 		"--",
 		parsedPrePath.String(),
 	}
@@ -1128,6 +1169,22 @@ func (repo *Repo) DiffStatRefs(preRef, postRef primitives.CheckpointRef) (DiffSu
 }
 
 func (repo *Repo) DiffNameStatusRefs(preRef, postRef primitives.CheckpointRef) ([]DiffFileChange, error) {
+	return repo.diffNameStatusRevisions(preRef.String(), postRef.String())
+}
+
+func (repo *Repo) DiffNameStatusCommits(preCommit, postCommit primitives.CommitSHA) ([]DiffFileChange, error) {
+	parsedPre, err := primitives.ParseCommitSHA(preCommit.String())
+	if err != nil {
+		return nil, err
+	}
+	parsedPost, err := primitives.ParseCommitSHA(postCommit.String())
+	if err != nil {
+		return nil, err
+	}
+	return repo.diffNameStatusRevisions(parsedPre.String(), parsedPost.String())
+}
+
+func (repo *Repo) diffNameStatusRevisions(preRevision, postRevision string) ([]DiffFileChange, error) {
 	output, err := runHiddenGit(repo, "",
 		"diff",
 		"--name-status",
@@ -1135,8 +1192,8 @@ func (repo *Repo) DiffNameStatusRefs(preRef, postRef primitives.CheckpointRef) (
 		"-M",
 		"--no-ext-diff",
 		"--no-textconv",
-		preRef.String()+"^{commit}",
-		postRef.String()+"^{commit}",
+		preRevision+"^{commit}",
+		postRevision+"^{commit}",
 	)
 	if err != nil {
 		return nil, err
@@ -1361,6 +1418,19 @@ func (repo *Repo) RefCommit(ref string) (primitives.CommitSHA, error) {
 		return "", err
 	}
 	return primitives.ParseCommitSHA(strings.TrimSpace(output))
+}
+
+// ValidateCommit verifies that a captured commit still exists in the hidden
+// repository without relying on the ref name that originally published it.
+func (repo *Repo) ValidateCommit(commit primitives.CommitSHA) error {
+	parsedCommit, err := primitives.ParseCommitSHA(commit.String())
+	if err != nil {
+		return err
+	}
+	if _, err := runHiddenGitReadOnly(repo, "cat-file", "-e", parsedCommit.String()+"^{commit}"); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (repo *Repo) CommitFileBytes(commit primitives.CommitSHA, repoPath string) ([]byte, error) {

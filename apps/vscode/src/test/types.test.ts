@@ -90,6 +90,64 @@ test("rejects malformed blame json at the boundary", () => {
   );
 });
 
+test("parses intent-first blame provenance", () => {
+  const result = parseBlameResult({
+    path: "app.ts",
+    latest_ref: "refs/agent-vcs/checkpoints/demo/turn/000001/post",
+    latest_commit: "abc123",
+    latest_time: "2026-07-13T10:00:00Z",
+    complete_turns: 1,
+    entries: [
+      {
+        line: 1,
+        text: "resetDelay();",
+        origin: {
+          kind: "turn",
+          session_id: "demo",
+          turn_id: 1,
+          prompt: "fix flaky retries",
+          action_tool: "apply_patch",
+          action_agent_id: "agent-a",
+          action_agent_type: "worker",
+          intent: {
+            problem: "retry delay was not reset after success",
+            scope: ["app.ts"],
+            evidence: ["test:TestRetryReset"],
+            event_seq: 5,
+            status: "captured",
+            timing: "before",
+            confidence: "high",
+            agent_id: "agent-a",
+            agent_type: "worker",
+            redacted: false,
+          },
+        },
+      },
+    ],
+  });
+  assert.equal(result.entries[0].origin.intent?.problem, "retry delay was not reset after success");
+  assert.equal(result.entries[0].origin.action_tool, "apply_patch");
+  assert.equal(result.entries[0].origin.action_agent_id, "agent-a");
+  assert.equal(result.entries[0].origin.intent?.agent_id, "agent-a");
+  assert.equal(result.entries[0].origin.intent?.redacted, false);
+  assert.deepEqual(result.entries[0].origin.intent?.evidence, ["test:TestRetryReset"]);
+});
+
+test("parses explicit ambiguous blame origins", () => {
+  const result = parseBlameResult({
+    path: "app.ts",
+    latest_ref: "ref",
+    latest_commit: "commit",
+    latest_time: "2026-07-13T10:00:00Z",
+    complete_turns: 2,
+    entries: [
+      { line: 1, text: "one", origin: { kind: "ambiguous", session_id: "demo", turn_id: 1 } },
+      { line: 2, text: "two", origin: { kind: "concurrent" } },
+    ],
+  });
+  assert.deepEqual(result.entries.map((entry) => entry.origin.kind), ["ambiguous", "concurrent"]);
+});
+
 test("extracts affected files from rollback dry-run text", () => {
   const preview = parseRollbackPreview(`Dry-run rollback
   target: demo:turn:2:pre

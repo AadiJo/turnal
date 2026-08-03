@@ -33,7 +33,7 @@ export const docsNav: DocsNavGroup[] = [
     items: [
       { id: 'history-and-turns', label: 'History and turns' },
       { id: 'search', label: 'Search' },
-      { id: 'prompt-aware-blame', label: 'Prompt-aware blame' },
+      { id: 'intent-aware-blame', label: 'Intent-aware blame' },
     ],
   },
   {

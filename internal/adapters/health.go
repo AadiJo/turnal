@@ -101,7 +101,9 @@ func inspectClaudeHooks(projectRoot string, command string) HookHealth {
 	for _, expected := range []struct{ eventName, command string }{
 		{"SessionStart", claudeSessionHook(command)},
 		{"UserPromptSubmit", claudeUserHook(command)},
+		{"PreToolUse", claudePreToolUseHook(command)},
 		{"PostToolUse", claudeToolUseHook(command)},
+		{"PostToolUseFailure", claudeToolFailureHook(command)},
 		{"Stop", claudeAssistantHook(command)},
 	} {
 		inspectHookEvent(&health, "claude", hooks, expected.eventName, expected.command)
@@ -157,7 +159,7 @@ func inspectCodexHooks(projectRoot string, command string) HookHealth {
 	}
 
 	expected := codexHookCommand(command)
-	for _, eventName := range []string{"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"} {
+	for _, eventName := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"} {
 		inspectHookEvent(&health, "codex", hooks, eventName, expected)
 	}
 	return health

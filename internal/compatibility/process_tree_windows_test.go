@@ -48,7 +48,7 @@ func TestCodexHookCWDComparisonIgnoresWindowsPathCasing(t *testing.T) {
 	}
 	health := adapters.HookHealth{Target: adapters.TargetCodex, Status: adapters.HookConfigurationConfigured}
 	classified := ClassifyCodexHooks(root, "turnal codex-hook", health, CodexHooksResult{Hooks: hooks})
-	if classified.Discovered != 4 || classified.Expectation != CaptureAvailable {
+	if classified.Discovered != 5 || classified.Expectation != CaptureAvailable {
 		t.Fatalf("classified hooks = %#v", classified)
 	}
 }

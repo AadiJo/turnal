@@ -9,13 +9,1093 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/AadiJo/turnal/internal/blame"
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
+	queryindex "github.com/AadiJo/turnal/internal/index"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/provenance"
 	"github.com/AadiJo/turnal/internal/runs"
 	"github.com/AadiJo/turnal/internal/turns"
 	adaptersdk "github.com/AadiJo/turnal/sdk/adapter"
 )
+
+func TestClaudeAndCodexHooksAttributeEditsToStatedIntent(t *testing.T) {
+	requireGit(t)
+	for _, adapter := range []primitives.AdapterName{primitives.AdapterClaudeCode, primitives.AdapterCodex} {
+		t.Run(adapter.String(), func(t *testing.T) {
+			root := workspaceRoot(t)
+			repo, err := checkpoint.Init(root)
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			t.Chdir(root.String())
+			writeFile(t, root, "app.txt", "before\n")
+
+			sessionText := adapter.String() + "-intent"
+			send := func(eventName string, fields map[string]any) {
+				fields["cwd"] = root.String()
+				fields["session_id"] = sessionText
+				hookName := eventName
+				if adapter == primitives.AdapterCodex {
+					fields["hook_event_name"] = eventName
+					hookName = "CodexHook"
+				}
+				handlePayload(t, adapter, hookName, fields)
+			}
+
+			send("UserPromptSubmit", map[string]any{"prompt": "fix retry reset", "turn_id": "provider-turn-1"})
+			sessionID := sessionID(t, sessionText)
+			if _, err := provenance.Record(repo, provenance.RecordInput{
+				SessionID: sessionID,
+				TurnID:    1,
+				Problem:   "retry delay was not reset after success",
+				Scope:     []string{"app.txt"},
+				Evidence:  []string{"test:TestRetryReset"},
+			}); err != nil {
+				t.Fatalf("Record intent: %v", err)
+			}
+
+			tool := map[string]any{
+				"turn_id":     "provider-turn-1",
+				"tool_name":   "Write",
+				"tool_use_id": "tool-1",
+				"tool_input":  map[string]any{"file_path": "app.txt"},
+			}
+			send("PreToolUse", tool)
+			writeFile(t, root, "app.txt", "after\n")
+			tool["tool_response"] = map[string]any{"ok": true}
+			send("PostToolUse", tool)
+			send("Stop", map[string]any{"turn_id": "provider-turn-1", "last_assistant_message": "done"})
+
+			path, _ := primitives.ParseRepoPath("app.txt")
+			result, err := blame.New(repo).Compute(blame.Query{Path: path, Line: 1})
+			if err != nil {
+				t.Fatalf("Blame: %v", err)
+			}
+			origin := result.Entries[0].Origin
+			if origin.Intent == nil || origin.Intent.Problem != "retry delay was not reset after success" || origin.Intent.Status != provenance.IntentStatusCaptured || origin.Intent.Confidence != provenance.IntentConfidenceHigh {
+				t.Fatalf("intent attribution = %#v", origin.Intent)
+			}
+			if origin.ActionTool != "Write" || origin.Prompt != "fix retry reset" || origin.Adapter != adapter.String() {
+				t.Fatalf("origin = %#v", origin)
+			}
+			refs, err := repo.ListPrivateRefs("refs/agent-vcs/actions/" + sessionID.String())
+			if err != nil || len(refs) != 2 {
+				t.Fatalf("action refs = %#v, err=%v", refs, err)
+			}
+		})
+	}
+}
+
+func TestRetriedActionHooksReuseDurableSnapshots(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+	writeFile(t, root, "app.txt", "before\n")
+	sessionID := sessionID(t, "codex-action-retry")
+
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "UserPromptSubmit", "prompt": "fix app",
+	})
+	if _, err := provenance.Record(repo, provenance.RecordInput{
+		SessionID: sessionID,
+		TurnID:    1,
+		Problem:   "app contains the stale value",
+		Scope:     []string{"app.txt"},
+	}); err != nil {
+		t.Fatalf("Record intent: %v", err)
+	}
+	tool := map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "PreToolUse",
+		"tool_name": "apply_patch", "tool_use_id": "tool-retried",
+	}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", tool)
+	writeFile(t, root, "app.txt", "after\n")
+	tool["hook_event_name"] = "PostToolUse"
+	tool["tool_response"] = map[string]any{"ok": true}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", tool)
+
+	eventsBeforeRetry := readEvents(t, repo, sessionID)
+	var pre, post provenance.ActionSnapshot
+	for _, event := range eventsBeforeRetry {
+		switch event.Type {
+		case primitives.EventTypeToolCall:
+			var payload toolCallPayload
+			if err := json.Unmarshal(event.Payload, &payload); err != nil || payload.PreSnapshot == nil {
+				t.Fatalf("decode pre snapshot: payload=%s err=%v", event.Payload, err)
+			}
+			pre = *payload.PreSnapshot
+		case primitives.EventTypeToolResult:
+			var payload toolResultPayload
+			if err := json.Unmarshal(event.Payload, &payload); err != nil || payload.PostSnapshot == nil {
+				t.Fatalf("decode post snapshot: payload=%s err=%v", event.Payload, err)
+			}
+			post = *payload.PostSnapshot
+		}
+	}
+	if pre.Ref == "" || post.Ref == "" {
+		t.Fatalf("action snapshots = pre=%#v post=%#v", pre, post)
+	}
+
+	// Providers can retry a delivered hook with a differently serialized raw
+	// payload. The action identity, and therefore its original snapshots, stay
+	// the same.
+	tool["hook_event_name"] = "PreToolUse"
+	tool["retry_metadata"] = map[string]any{"attempt": 2}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", tool)
+	tool["hook_event_name"] = "PostToolUse"
+	tool["retry_metadata"] = map[string]any{"attempt": 3}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", tool)
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "Stop", "last_assistant_message": "done",
+	})
+	tool["hook_event_name"] = "PreToolUse"
+	tool["retry_metadata"] = map[string]any{"attempt": 4, "delivered_after_stop": true}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", tool)
+	tool["hook_event_name"] = "PostToolUse"
+	tool["retry_metadata"] = map[string]any{"attempt": 5, "delivered_after_stop": true}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", tool)
+
+	eventsAfterRetry := readEvents(t, repo, sessionID)
+	if got := countEvents(eventsAfterRetry, primitives.EventTypeToolCall); got != 1 {
+		t.Fatalf("tool calls after retry = %d, want 1", got)
+	}
+	if got := countEvents(eventsAfterRetry, primitives.EventTypeToolResult); got != 1 {
+		t.Fatalf("tool results after retry = %d, want 1", got)
+	}
+	if active, ok, err := turns.NewManager(repo).Active(sessionID); err != nil || ok {
+		t.Fatalf("active turn after stopped-turn retry = %#v ok=%v err=%v", active, ok, err)
+	}
+	if err := repo.RunHiddenGitGC(); err != nil {
+		t.Fatalf("RunHiddenGitGC: %v", err)
+	}
+	for _, snapshot := range []provenance.ActionSnapshot{pre, post} {
+		if got, err := repo.RefCommit(snapshot.Ref); err != nil || got != snapshot.Commit {
+			t.Fatalf("snapshot %s after gc = %s, %v; want %s", snapshot.Ref, got, err, snapshot.Commit)
+		}
+	}
+
+	path, _ := primitives.ParseRepoPath("app.txt")
+	result, err := blame.New(repo).Compute(blame.Query{Path: path, Line: 1})
+	if err != nil {
+		t.Fatalf("Blame after gc: %v", err)
+	}
+	intent := result.Entries[0].Origin.Intent
+	if intent == nil || intent.Problem != "app contains the stale value" {
+		t.Fatalf("intent after retry and gc = %#v", intent)
+	}
+}
+
+func TestRedactedIntentNeverClaimsHighConfidence(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+	writeFile(t, root, ".turnal/config.toml", "version = 1\n\n[secrets]\nstore_prompts = false\n")
+	writeFile(t, root, "app.txt", "before\n")
+	sessionID := sessionID(t, "codex-redacted-intent")
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "UserPromptSubmit", "prompt": "private request",
+	})
+	if _, err := provenance.Record(repo, provenance.RecordInput{
+		SessionID: sessionID,
+		TurnID:    1,
+		Problem:   "private problem",
+		Scope:     []string{"app.txt"},
+	}); err != nil {
+		t.Fatalf("Record intent: %v", err)
+	}
+	tool := map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "PreToolUse",
+		"tool_name": "apply_patch", "tool_use_id": "redacted-tool",
+	}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", tool)
+	writeFile(t, root, "app.txt", "after\n")
+	tool["hook_event_name"] = "PostToolUse"
+	tool["tool_response"] = map[string]any{"ok": true}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", tool)
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "Stop", "last_assistant_message": "private response",
+	})
+
+	path, _ := primitives.ParseRepoPath("app.txt")
+	result, err := blame.New(repo).Compute(blame.Query{Path: path, Line: 1})
+	if err != nil {
+		t.Fatalf("Blame: %v", err)
+	}
+	intent := result.Entries[0].Origin.Intent
+	if intent == nil || intent.Status != provenance.IntentStatusRedacted || intent.Confidence != provenance.IntentConfidenceLow || !intent.Redacted {
+		t.Fatalf("redacted blame intent = %#v", intent)
+	}
+	if intent.Problem != primitives.SecretsRedactionText || len(intent.Scope) != 0 || len(intent.Evidence) != 0 {
+		t.Fatalf("redacted blame payload = %#v", intent)
+	}
+}
+
+func TestConcurrentSessionsDoNotBorrowIntent(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+	writeFile(t, root, "app.txt", "one\ntwo\n")
+	sessionA := sessionID(t, "codex-concurrent-a")
+	sessionB := sessionID(t, "codex-concurrent-b")
+
+	for _, session := range []primitives.SessionID{sessionA, sessionB} {
+		handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+			"cwd": root.String(), "session_id": session.String(), "hook_event_name": "UserPromptSubmit", "prompt": "change app",
+		})
+		if _, err := provenance.Record(repo, provenance.RecordInput{
+			SessionID: session,
+			TurnID:    1,
+			Problem:   "problem for " + session.String(),
+			Scope:     []string{"app.txt"},
+		}); err != nil {
+			t.Fatalf("Record intent for %s: %v", session, err)
+		}
+		handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+			"cwd": root.String(), "session_id": session.String(), "hook_event_name": "PreToolUse",
+			"tool_name": "apply_patch", "tool_use_id": "tool-" + session.String(),
+		})
+	}
+
+	writeFile(t, root, "app.txt", "ONE\ntwo\n")
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionA.String(), "hook_event_name": "PostToolUse",
+		"tool_name": "apply_patch", "tool_use_id": "tool-" + sessionA.String(), "tool_response": map[string]any{"ok": true},
+	})
+	writeFile(t, root, "app.txt", "ONE\nTWO\n")
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionB.String(), "hook_event_name": "PostToolUse",
+		"tool_name": "apply_patch", "tool_use_id": "tool-" + sessionB.String(), "tool_response": map[string]any{"ok": true},
+	})
+	for _, session := range []primitives.SessionID{sessionA, sessionB} {
+		handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+			"cwd": root.String(), "session_id": session.String(), "hook_event_name": "Stop", "last_assistant_message": "done",
+		})
+	}
+
+	path, _ := primitives.ParseRepoPath("app.txt")
+	for name, query := range map[string]blame.Query{
+		"global":           {Path: path},
+		"session-scoped-a": {Path: path, SessionID: sessionA},
+	} {
+		t.Run(name, func(t *testing.T) {
+			result, err := blame.New(repo).Compute(query)
+			if err != nil {
+				t.Fatalf("Blame: %v", err)
+			}
+			if len(result.Entries) != 2 {
+				t.Fatalf("entries = %#v", result.Entries)
+			}
+			for _, entry := range result.Entries {
+				if entry.Origin.Kind != "concurrent" || entry.Origin.Intent != nil || entry.Origin.SessionID != "" || entry.Origin.ActionTool != "" {
+					t.Fatalf("concurrent entry borrowed attribution: %#v", entry)
+				}
+			}
+			if len(result.Warnings) == 0 || !strings.Contains(strings.Join(result.Warnings, "\n"), sessionB.String()) {
+				t.Fatalf("warnings = %#v", result.Warnings)
+			}
+		})
+	}
+}
+
+func TestSessionScopedBlameIncludesChangesBeforeOverlappingTurnPreSnapshot(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+	writeFile(t, root, "app.txt", "one\ntwo\n")
+	sessionA := sessionID(t, "codex-scoped-overlap-a")
+	sessionB := sessionID(t, "codex-scoped-overlap-b")
+
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionA.String(), "hook_event_name": "UserPromptSubmit", "prompt": "change first line",
+	})
+	actionA := map[string]any{
+		"cwd": root.String(), "session_id": sessionA.String(), "hook_event_name": "PreToolUse",
+		"tool_name": "apply_patch", "tool_use_id": "edit-a",
+	}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", actionA)
+	writeFile(t, root, "app.txt", "ONE\ntwo\n")
+
+	// B's pre snapshot already contains A's uncompleted edit.
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionB.String(), "hook_event_name": "UserPromptSubmit", "prompt": "change second line",
+	})
+	actionB := map[string]any{
+		"cwd": root.String(), "session_id": sessionB.String(), "hook_event_name": "PreToolUse",
+		"tool_name": "apply_patch", "tool_use_id": "edit-b",
+	}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", actionB)
+	writeFile(t, root, "app.txt", "ONE\nTWO\n")
+	actionB["hook_event_name"] = "PostToolUse"
+	actionB["tool_response"] = map[string]any{"ok": true}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", actionB)
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionB.String(), "hook_event_name": "Stop", "last_assistant_message": "done",
+	})
+	actionA["hook_event_name"] = "PostToolUse"
+	actionA["tool_response"] = map[string]any{"ok": true}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", actionA)
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionA.String(), "hook_event_name": "Stop", "last_assistant_message": "done",
+	})
+
+	path, _ := primitives.ParseRepoPath("app.txt")
+	result, err := blame.New(repo).Compute(blame.Query{Path: path, SessionID: sessionB})
+	if err != nil {
+		t.Fatalf("Blame: %v", err)
+	}
+	for _, entry := range result.Entries {
+		if entry.Origin.Kind != "concurrent" || entry.Origin.Intent != nil {
+			t.Fatalf("scoped overlapping entry = %#v, want concurrent", entry)
+		}
+	}
+	warnings := strings.Join(result.Warnings, "\n")
+	if !strings.Contains(warnings, sessionA.String()) || strings.Contains(warnings, "sessions "+sessionB.String()) {
+		t.Fatalf("warnings = %#v, want only the other participant", result.Warnings)
+	}
+}
+
+func TestActiveConcurrentSessionMakesCompletedIntentAmbiguous(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+	writeFile(t, root, "app.txt", "one\ntwo\n")
+	activeSession := sessionID(t, "codex-active-neighbor")
+	completedSession := sessionID(t, "codex-completed-neighbor")
+
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": activeSession.String(), "hook_event_name": "UserPromptSubmit", "prompt": "change second line",
+	})
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": activeSession.String(), "hook_event_name": "PreToolUse",
+		"tool_name": "apply_patch", "tool_use_id": "active-tool",
+	})
+	// This edit lands before the completed turn's pre snapshot and must not be
+	// mistaken for that turn's baseline in session-scoped blame.
+	writeFile(t, root, "app.txt", "one\nTWO\n")
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": completedSession.String(), "hook_event_name": "UserPromptSubmit", "prompt": "change first line",
+	})
+	if _, err := provenance.Record(repo, provenance.RecordInput{
+		SessionID: completedSession,
+		TurnID:    1,
+		Problem:   "first line is stale",
+		Scope:     []string{"app.txt"},
+	}); err != nil {
+		t.Fatalf("Record intent: %v", err)
+	}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": completedSession.String(), "hook_event_name": "PreToolUse",
+		"tool_name": "apply_patch", "tool_use_id": "completed-tool",
+	})
+
+	// The active session never delivers its result. The completed session's
+	// post snapshot therefore observes both agents.
+	writeFile(t, root, "app.txt", "ONE\nTWO\n")
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": completedSession.String(), "hook_event_name": "PostToolUse",
+		"tool_name": "apply_patch", "tool_use_id": "completed-tool", "tool_response": map[string]any{"ok": true},
+	})
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": completedSession.String(), "hook_event_name": "Stop", "last_assistant_message": "done",
+	})
+
+	path, _ := primitives.ParseRepoPath("app.txt")
+	result, err := blame.New(repo).Compute(blame.Query{Path: path, SessionID: completedSession})
+	if err != nil {
+		t.Fatalf("Blame: %v", err)
+	}
+	for _, entry := range result.Entries {
+		if entry.Origin.Kind != "concurrent" || entry.Origin.Intent != nil {
+			t.Fatalf("entry borrowed completed-session intent: %#v", entry)
+		}
+	}
+	if !strings.Contains(strings.Join(result.Warnings, "\n"), activeSession.String()) {
+		t.Fatalf("warnings = %#v", result.Warnings)
+	}
+}
+
+func TestIntentScopeFollowsActionRename(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+	writeFile(t, root, "old.txt", "one\ntwo\nthree\nfour\nfive\n")
+	sessionID := sessionID(t, "codex-rename-scope")
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "UserPromptSubmit", "prompt": "rename and fix the file",
+	})
+	if _, err := provenance.Record(repo, provenance.RecordInput{
+		SessionID: sessionID,
+		TurnID:    1,
+		Problem:   "the old file has a stale second line",
+		Scope:     []string{"old.txt"},
+	}); err != nil {
+		t.Fatalf("Record intent: %v", err)
+	}
+	tool := map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "PreToolUse",
+		"tool_name": "apply_patch", "tool_use_id": "rename-tool",
+	}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", tool)
+	if err := os.Rename(filepath.Join(root.String(), "old.txt"), filepath.Join(root.String(), "new.txt")); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	writeFile(t, root, "new.txt", "one\nTWO\nthree\nfour\nfive\n")
+	tool["hook_event_name"] = "PostToolUse"
+	tool["tool_response"] = map[string]any{"ok": true}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", tool)
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "Stop", "last_assistant_message": "done",
+	})
+
+	path, _ := primitives.ParseRepoPath("new.txt")
+	result, err := blame.New(repo).Compute(blame.Query{Path: path, Line: 2})
+	if err != nil {
+		t.Fatalf("Blame: %v", err)
+	}
+	intent := result.Entries[0].Origin.Intent
+	if intent == nil || intent.Status != provenance.IntentStatusCaptured || intent.Confidence != provenance.IntentConfidenceHigh {
+		t.Fatalf("renamed-path intent = %#v", intent)
+	}
+}
+
+func TestIntentRecordedAfterAnEditIsLabeledLate(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+	writeFile(t, root, "app.txt", "before\n")
+	sessionID := sessionID(t, "codex-late-intent")
+
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "UserPromptSubmit", "prompt": "fix retry reset",
+	})
+	tool := map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "turn_id": "provider-turn-1",
+		"hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_use_id": "tool-1",
+	}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", tool)
+	writeFile(t, root, "app.txt", "after\n")
+	tool["hook_event_name"] = "PostToolUse"
+	tool["tool_response"] = map[string]any{"ok": true}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", tool)
+	if _, err := provenance.Record(repo, provenance.RecordInput{
+		SessionID: sessionID,
+		TurnID:    1,
+		Problem:   "retry delay was not reset after success",
+		Scope:     []string{"app.txt"},
+	}); err != nil {
+		t.Fatalf("Record late intent: %v", err)
+	}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "Stop", "last_assistant_message": "done",
+	})
+
+	path, _ := primitives.ParseRepoPath("app.txt")
+	result, err := blame.New(repo).Compute(blame.Query{Path: path, Line: 1})
+	if err != nil {
+		t.Fatalf("Blame: %v", err)
+	}
+	intent := result.Entries[0].Origin.Intent
+	if intent == nil || intent.Status != provenance.IntentStatusLate || intent.Timing != provenance.IntentTimingAfter || intent.Confidence != provenance.IntentConfidenceLow {
+		t.Fatalf("late intent = %#v", intent)
+	}
+}
+
+func TestLaterAgentsActionDoesNotConsumeEarlierAgentsLateIntent(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+	writeFile(t, root, "app.txt", "one\ntwo\n")
+	sessionID := sessionID(t, "codex-interleaved-actors")
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "UserPromptSubmit", "prompt": "delegate two edits",
+	})
+
+	editA := map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "PreToolUse",
+		"tool_name": "apply_patch", "tool_use_id": "edit-a", "agent_id": "agent-a", "agent_type": "worker",
+	}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", editA)
+	writeFile(t, root, "app.txt", "ONE\ntwo\n")
+	editA["hook_event_name"] = "PostToolUse"
+	editA["tool_response"] = map[string]any{"ok": true}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", editA)
+
+	intentA := map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "PreToolUse",
+		"tool_name": "Bash", "tool_use_id": "intent-a", "agent_id": "agent-a", "agent_type": "worker",
+		"tool_input": map[string]any{"command": "turnal intent --session " + sessionID.String() + " --turn 1 --problem stale-first-line"},
+	}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", intentA)
+	if _, err := provenance.Record(repo, provenance.RecordInput{
+		SessionID: sessionID,
+		TurnID:    1,
+		Problem:   "agent A found the stale first line",
+		Scope:     []string{"app.txt"},
+	}); err != nil {
+		t.Fatalf("Record late agent A intent: %v", err)
+	}
+	intentA["hook_event_name"] = "PostToolUse"
+	intentA["tool_response"] = map[string]any{"ok": true}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", intentA)
+
+	// B sees A's stamp as the latest turn intent, but actor mismatch means B
+	// must not claim it and hide its valid late association with A's edit.
+	editB := map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "PreToolUse",
+		"tool_name": "apply_patch", "tool_use_id": "edit-b", "agent_id": "agent-b", "agent_type": "worker",
+	}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", editB)
+	writeFile(t, root, "app.txt", "ONE\nTWO\n")
+	editB["hook_event_name"] = "PostToolUse"
+	editB["tool_response"] = map[string]any{"ok": true}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", editB)
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "Stop", "last_assistant_message": "done",
+	})
+
+	path, _ := primitives.ParseRepoPath("app.txt")
+	result, err := blame.New(repo).Compute(blame.Query{Path: path, Line: 1})
+	if err != nil {
+		t.Fatalf("Blame: %v", err)
+	}
+	intent := result.Entries[0].Origin.Intent
+	if intent == nil || intent.Problem != "agent A found the stale first line" || intent.AgentID != "agent-a" || intent.Status != provenance.IntentStatusLate {
+		t.Fatalf("agent A late intent = %#v", intent)
+	}
+}
+
+func TestIntentForNextActionIsNotBackAttributedToEarlierEdit(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+	writeFile(t, root, "app.txt", "one\ntwo\n")
+	sessionID := sessionID(t, "codex-future-intent")
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "UserPromptSubmit", "prompt": "fix both values",
+	})
+
+	first := map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "PreToolUse",
+		"tool_name": "apply_patch", "tool_use_id": "tool-1",
+	}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", first)
+	writeFile(t, root, "app.txt", "ONE\ntwo\n")
+	first["hook_event_name"] = "PostToolUse"
+	first["tool_response"] = map[string]any{"ok": true}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", first)
+
+	if _, err := provenance.Record(repo, provenance.RecordInput{
+		SessionID: sessionID,
+		TurnID:    1,
+		Problem:   "second value is not normalized",
+		Scope:     []string{"app.txt"},
+	}); err != nil {
+		t.Fatalf("Record intent: %v", err)
+	}
+	second := map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "PreToolUse",
+		"tool_name": "apply_patch", "tool_use_id": "tool-2",
+	}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", second)
+	writeFile(t, root, "app.txt", "ONE\nTWO\n")
+	second["hook_event_name"] = "PostToolUse"
+	second["tool_response"] = map[string]any{"ok": true}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", second)
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "Stop", "last_assistant_message": "done",
+	})
+
+	path, _ := primitives.ParseRepoPath("app.txt")
+	result, err := blame.New(repo).Compute(blame.Query{Path: path})
+	if err != nil {
+		t.Fatalf("Blame: %v", err)
+	}
+	if len(result.Entries) != 2 {
+		t.Fatalf("entries = %#v", result.Entries)
+	}
+	if result.Entries[0].Origin.Intent != nil {
+		t.Fatalf("earlier line inherited future intent: %#v", result.Entries[0].Origin.Intent)
+	}
+	if intent := result.Entries[1].Origin.Intent; intent == nil || intent.Problem != "second value is not normalized" || intent.Status != provenance.IntentStatusCaptured {
+		t.Fatalf("next action intent = %#v", intent)
+	}
+}
+
+func TestPostOnlyActionWithRecordedIntentIsAmbiguous(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+	writeFile(t, root, "app.txt", "before\n")
+	sessionID := sessionID(t, "codex-post-only-intent")
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "UserPromptSubmit", "prompt": "change app",
+	})
+	if _, err := provenance.Record(repo, provenance.RecordInput{
+		SessionID: sessionID,
+		TurnID:    1,
+		Problem:   "the value is stale",
+		Scope:     []string{"app.txt"},
+	}); err != nil {
+		t.Fatalf("Record intent: %v", err)
+	}
+
+	// The pre hook is missing, so Turnal observes only the post boundary.
+	writeFile(t, root, "app.txt", "after\n")
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "PostToolUse",
+		"tool_name": "apply_patch", "tool_use_id": "post-only", "tool_response": map[string]any{"ok": true},
+	})
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "Stop", "last_assistant_message": "done",
+	})
+
+	path, _ := primitives.ParseRepoPath("app.txt")
+	result, err := blame.New(repo).Compute(blame.Query{Path: path, Line: 1})
+	if err != nil {
+		t.Fatalf("Blame: %v", err)
+	}
+	origin := result.Entries[0].Origin
+	if origin.Kind != "ambiguous" || origin.Intent != nil {
+		t.Fatalf("post-only intent attribution = %#v, want explicit ambiguity", origin)
+	}
+}
+
+func TestPostOnlyNextActionDoesNotBackAttributeItsIntent(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+	writeFile(t, root, "app.txt", "one\ntwo\n")
+	sessionID := sessionID(t, "codex-post-only-future-intent")
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "UserPromptSubmit", "prompt": "change both values",
+	})
+
+	first := map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "PreToolUse",
+		"tool_name": "apply_patch", "tool_use_id": "first-edit",
+	}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", first)
+	writeFile(t, root, "app.txt", "ONE\ntwo\n")
+	first["hook_event_name"] = "PostToolUse"
+	first["tool_response"] = map[string]any{"ok": true}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", first)
+
+	if _, err := provenance.Record(repo, provenance.RecordInput{
+		SessionID: sessionID,
+		TurnID:    1,
+		Problem:   "the second value is stale",
+		Scope:     []string{"app.txt"},
+	}); err != nil {
+		t.Fatalf("Record second-action intent: %v", err)
+	}
+	writeFile(t, root, "app.txt", "ONE\nTWO\n")
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "PostToolUse",
+		"tool_name": "apply_patch", "tool_use_id": "post-only-second", "tool_response": map[string]any{"ok": true},
+	})
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "Stop", "last_assistant_message": "done",
+	})
+
+	path, _ := primitives.ParseRepoPath("app.txt")
+	result, err := blame.New(repo).Compute(blame.Query{Path: path})
+	if err != nil {
+		t.Fatalf("Blame: %v", err)
+	}
+	if len(result.Entries) != 2 {
+		t.Fatalf("entries = %#v", result.Entries)
+	}
+	for _, entry := range result.Entries {
+		if entry.Origin.Intent != nil || entry.Origin.Kind != "ambiguous" {
+			t.Fatalf("future post-only intent leaked backward: %#v", entry.Origin)
+		}
+	}
+}
+
+func TestOverlappingIntentCommandsDoNotLeakUnresolvedActorIntent(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+	writeFile(t, root, "app.txt", "before\n")
+	sessionID := sessionID(t, "codex-unresolved-intent-actor")
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "UserPromptSubmit", "prompt": "delegate work",
+	})
+
+	intentTool := func(toolUseID, agentID string) map[string]any {
+		return map[string]any{
+			"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "PreToolUse",
+			"tool_name": "Bash", "tool_use_id": toolUseID, "agent_id": agentID, "agent_type": "worker",
+			"tool_input": map[string]any{"command": "turnal intent --session " + sessionID.String() + " --turn 1 --problem delegated"},
+		}
+	}
+	intentA := intentTool("intent-a", "agent-a")
+	intentB := intentTool("intent-b", "agent-b")
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", intentA)
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", intentB)
+	if _, err := provenance.Record(repo, provenance.RecordInput{
+		SessionID: sessionID,
+		TurnID:    1,
+		Problem:   "one worker found a stale value",
+		Scope:     []string{"app.txt"},
+	}); err != nil {
+		t.Fatalf("Record unresolved intent: %v", err)
+	}
+	for _, tool := range []map[string]any{intentA, intentB} {
+		tool["hook_event_name"] = "PostToolUse"
+		tool["tool_response"] = map[string]any{"ok": true}
+		handlePayload(t, primitives.AdapterCodex, "CodexHook", tool)
+	}
+
+	mainEdit := map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "PreToolUse",
+		"tool_name": "apply_patch", "tool_use_id": "main-edit",
+	}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", mainEdit)
+	writeFile(t, root, "app.txt", "after\n")
+	mainEdit["hook_event_name"] = "PostToolUse"
+	mainEdit["tool_response"] = map[string]any{"ok": true}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", mainEdit)
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "Stop", "last_assistant_message": "done",
+	})
+
+	path, _ := primitives.ParseRepoPath("app.txt")
+	result, err := blame.New(repo).Compute(blame.Query{Path: path, Line: 1})
+	if err != nil {
+		t.Fatalf("Blame: %v", err)
+	}
+	origin := result.Entries[0].Origin
+	if origin.Kind != "ambiguous" || origin.Intent != nil || origin.ActionTool != "apply_patch" {
+		t.Fatalf("unresolved actor intent leaked to main action: %#v", origin)
+	}
+	if !strings.Contains(strings.Join(result.Warnings, "\n"), "overlapping intent commands") {
+		t.Fatalf("warnings = %#v", result.Warnings)
+	}
+}
+
+func TestOverlappingActionsFallBackToTurnAttribution(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+	writeFile(t, root, "app.txt", "one\ntwo\n")
+	sessionID := sessionID(t, "codex-overlapping-actions")
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "UserPromptSubmit", "prompt": "fix both values",
+	})
+	if _, err := provenance.Record(repo, provenance.RecordInput{SessionID: sessionID, TurnID: 1, Problem: "first value is wrong", Scope: []string{"app.txt"}}); err != nil {
+		t.Fatalf("Record first intent: %v", err)
+	}
+	first := map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "PreToolUse",
+		"tool_name": "apply_patch", "tool_use_id": "tool-1",
+	}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", first)
+	if _, err := provenance.Record(repo, provenance.RecordInput{SessionID: sessionID, TurnID: 1, Problem: "second value is wrong", Scope: []string{"app.txt"}}); err != nil {
+		t.Fatalf("Record second intent: %v", err)
+	}
+	second := map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "PreToolUse",
+		"tool_name": "apply_patch", "tool_use_id": "tool-2",
+	}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", second)
+
+	writeFile(t, root, "app.txt", "ONE\ntwo\n")
+	first["hook_event_name"] = "PostToolUse"
+	first["tool_response"] = map[string]any{"ok": true}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", first)
+	writeFile(t, root, "app.txt", "ONE\nTWO\n")
+	second["hook_event_name"] = "PostToolUse"
+	second["tool_response"] = map[string]any{"ok": true}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", second)
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "Stop", "last_assistant_message": "done",
+	})
+
+	path, _ := primitives.ParseRepoPath("app.txt")
+	result, err := blame.New(repo).Compute(blame.Query{Path: path})
+	if err != nil {
+		t.Fatalf("Blame: %v", err)
+	}
+	if len(result.Entries) != 2 {
+		t.Fatalf("entries = %#v", result.Entries)
+	}
+	for _, entry := range result.Entries {
+		if entry.Origin.Kind != "ambiguous" || entry.Origin.Intent != nil || entry.Origin.ActionTool != "" {
+			t.Fatalf("overlapping action received individual attribution: %#v", entry.Origin)
+		}
+	}
+	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], "overlapping actions") {
+		t.Fatalf("warnings = %#v", result.Warnings)
+	}
+}
+
+func TestIncompleteOverlappingActionFallsBackToTurnAttribution(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+	writeFile(t, root, "app.txt", "before\n")
+	sessionID := sessionID(t, "codex-incomplete-overlap")
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "UserPromptSubmit", "prompt": "change value",
+	})
+	if _, err := provenance.Record(repo, provenance.RecordInput{SessionID: sessionID, TurnID: 1, Problem: "first action intent", Scope: []string{"app.txt"}}); err != nil {
+		t.Fatalf("Record intent: %v", err)
+	}
+	first := map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "PreToolUse",
+		"tool_name": "apply_patch", "tool_use_id": "tool-1",
+	}
+	second := map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "PreToolUse",
+		"tool_name": "apply_patch", "tool_use_id": "tool-2",
+	}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", first)
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", second)
+	writeFile(t, root, "app.txt", "after\n")
+	first["hook_event_name"] = "PostToolUse"
+	first["tool_response"] = map[string]any{"ok": true}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", first)
+	// tool-2 never reports a result, so its interval is still open.
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "Stop", "last_assistant_message": "done",
+	})
+
+	path, _ := primitives.ParseRepoPath("app.txt")
+	result, err := blame.New(repo).Compute(blame.Query{Path: path, Line: 1})
+	if err != nil {
+		t.Fatalf("Blame: %v", err)
+	}
+	origin := result.Entries[0].Origin
+	if origin.Kind != "ambiguous" || origin.Intent != nil || origin.ActionTool != "" {
+		t.Fatalf("incomplete overlap received individual attribution: %#v", origin)
+	}
+	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], "incomplete or overlapping actions") {
+		t.Fatalf("warnings = %#v", result.Warnings)
+	}
+}
+
+func TestClaudeFailedToolUseStillCapturesActionIntent(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+	writeFile(t, root, "app.txt", "before\n")
+	sessionID := sessionID(t, "claude-failed-tool")
+	handlePayload(t, primitives.AdapterClaudeCode, "UserPromptSubmit", map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "prompt": "fix generated output",
+	})
+	if _, err := provenance.Record(repo, provenance.RecordInput{SessionID: sessionID, TurnID: 1, Problem: "generated output is stale", Scope: []string{"app.txt"}}); err != nil {
+		t.Fatalf("Record intent: %v", err)
+	}
+	tool := map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "PreToolUse",
+		"tool_name": "Bash", "tool_use_id": "tool-1", "tool_input": map[string]any{"command": "generate app.txt"},
+	}
+	handlePayload(t, primitives.AdapterClaudeCode, "PreToolUse", tool)
+	writeFile(t, root, "app.txt", "partial output\n")
+	tool["hook_event_name"] = "PostToolUseFailure"
+	tool["error"] = "command exited with status 1"
+	tool["duration_ms"] = 25
+	handlePayload(t, primitives.AdapterClaudeCode, "PostToolUseFailure", tool)
+	handlePayload(t, primitives.AdapterClaudeCode, "Stop", map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "last_assistant_message": "generation failed",
+	})
+
+	path, _ := primitives.ParseRepoPath("app.txt")
+	result, err := blame.New(repo).Compute(blame.Query{Path: path, Line: 1})
+	if err != nil {
+		t.Fatalf("Blame: %v", err)
+	}
+	origin := result.Entries[0].Origin
+	if origin.ActionTool != "Bash" || origin.Intent == nil || origin.Intent.Problem != "generated output is stale" {
+		t.Fatalf("failed action attribution = %#v", origin)
+	}
+	refs, err := repo.ListPrivateRefs("refs/agent-vcs/actions/" + sessionID.String())
+	if err != nil || len(refs) != 2 {
+		t.Fatalf("action refs = %#v, err=%v", refs, err)
+	}
+}
+
+func TestBlameKeepsDistinctIntentsForMultipleEditsInOneTurn(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+	writeFile(t, root, "app.txt", "one\ntwo\n")
+	sessionID := sessionID(t, "codex-two-intents")
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "UserPromptSubmit", "prompt": "fix both regressions",
+	})
+
+	edit := func(toolUseID, problem, contents string) {
+		t.Helper()
+		if _, err := provenance.Record(repo, provenance.RecordInput{SessionID: sessionID, TurnID: 1, Problem: problem, Scope: []string{"app.txt"}}); err != nil {
+			t.Fatalf("Record intent: %v", err)
+		}
+		tool := map[string]any{
+			"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "PreToolUse",
+			"tool_name": "apply_patch", "tool_use_id": toolUseID,
+		}
+		handlePayload(t, primitives.AdapterCodex, "CodexHook", tool)
+		writeFile(t, root, "app.txt", contents)
+		tool["hook_event_name"] = "PostToolUse"
+		tool["tool_response"] = map[string]any{"ok": true}
+		handlePayload(t, primitives.AdapterCodex, "CodexHook", tool)
+	}
+	edit("tool-1", "first value is not normalized", "ONE\ntwo\n")
+	edit("tool-2", "second value is not normalized", "ONE\nTWO\n")
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "Stop", "last_assistant_message": "done",
+	})
+
+	path, _ := primitives.ParseRepoPath("app.txt")
+	result, err := blame.New(repo).Compute(blame.Query{Path: path})
+	if err != nil {
+		t.Fatalf("Blame: %v", err)
+	}
+	if len(result.Entries) != 2 || result.Entries[0].Origin.Intent == nil || result.Entries[1].Origin.Intent == nil {
+		t.Fatalf("entries = %#v", result.Entries)
+	}
+	if result.Entries[0].Origin.Intent.Problem != "first value is not normalized" || result.Entries[1].Origin.Intent.Problem != "second value is not normalized" {
+		t.Fatalf("line intents = %#v, %#v", result.Entries[0].Origin.Intent, result.Entries[1].Origin.Intent)
+	}
+}
+
+func TestCodexSubagentActionUsesThatAgentsIntent(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+	writeFile(t, root, "app.txt", "before\n")
+	sessionID := sessionID(t, "codex-subagent-intent")
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "UserPromptSubmit", "prompt": "delegate two investigations",
+	})
+
+	recordForAgent := func(agentID, problem string) {
+		t.Helper()
+		toolUseID := "intent-" + agentID
+		tool := map[string]any{
+			"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "PreToolUse",
+			"tool_name": "Bash", "tool_use_id": toolUseID, "agent_id": agentID, "agent_type": "worker",
+			"tool_input": map[string]any{"command": "turnal intent --session " + sessionID.String() + " --turn 1 --problem " + problem},
+		}
+		handlePayload(t, primitives.AdapterCodex, "CodexHook", tool)
+		if _, err := provenance.Record(repo, provenance.RecordInput{SessionID: sessionID, TurnID: 1, Problem: problem, Scope: []string{"app.txt"}}); err != nil {
+			t.Fatalf("Record intent: %v", err)
+		}
+		tool["hook_event_name"] = "PostToolUse"
+		tool["tool_response"] = map[string]any{"ok": true}
+		handlePayload(t, primitives.AdapterCodex, "CodexHook", tool)
+	}
+	recordForAgent("agent-a", "agent A found the stale value")
+	recordForAgent("agent-b", "agent B found an unrelated issue")
+
+	action := map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "PreToolUse",
+		"tool_name": "apply_patch", "tool_use_id": "edit-a", "agent_id": "agent-a", "agent_type": "worker",
+	}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", action)
+	writeFile(t, root, "app.txt", "after\n")
+	action["hook_event_name"] = "PostToolUse"
+	action["tool_response"] = map[string]any{"ok": true}
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", action)
+	handlePayload(t, primitives.AdapterCodex, "CodexHook", map[string]any{
+		"cwd": root.String(), "session_id": sessionID.String(), "hook_event_name": "Stop", "last_assistant_message": "done",
+	})
+	if _, err := queryindex.Rebuild(repo); err != nil {
+		t.Fatalf("Rebuild index: %v", err)
+	}
+
+	path, _ := primitives.ParseRepoPath("app.txt")
+	result, err := blame.New(repo).Compute(blame.Query{Path: path, Line: 1})
+	if err != nil {
+		t.Fatalf("Blame: %v", err)
+	}
+	origin := result.Entries[0].Origin
+	if origin.Intent == nil || origin.Intent.Problem != "agent A found the stale value" || origin.Intent.AgentID != "agent-a" {
+		t.Fatalf("subagent intent = %#v", origin.Intent)
+	}
+	if origin.ActionAgentID != "agent-a" || origin.ActionAgentType != "worker" {
+		t.Fatalf("subagent action origin = %#v", origin)
+	}
+	cached, err := blame.New(repo).Compute(blame.Query{Path: path, Line: 1})
+	if err != nil {
+		t.Fatalf("Cached blame: %v", err)
+	}
+	cachedOrigin := cached.Entries[0].Origin
+	if cachedOrigin.ActionAgentID != "agent-a" || cachedOrigin.ActionAgentType != "worker" || cachedOrigin.Intent == nil || cachedOrigin.Intent.AgentID != "agent-a" {
+		t.Fatalf("cached subagent origin = %#v", cachedOrigin)
+	}
+}
 
 func TestCodexHookReconcilesProviderTurnsWithWrapperRun(t *testing.T) {
 	requireGit(t)
@@ -108,7 +1188,9 @@ func TestHandleNormalizedEventsKeepsDurabilityInCore(t *testing.T) {
 	t.Chdir(root.String())
 	writeFile(t, root, "app.txt", "before\n")
 
-	rawPrompt := []byte(`{"sessionId":"external-session","cwd":"` + root.String() + `","prompt":"change app.txt"}`)
+	rawPrompt := rawPayload(t, map[string]any{
+		"sessionId": "external-session", "cwd": root.String(), "prompt": "change app.txt",
+	})
 	err = HandleNormalizedEvents("gemini-cli", "BeforeAgent", rawPrompt, []adaptersdk.Event{{
 		Type: adaptersdk.EventPromptUser, SessionID: "external-session", CWD: root.String(), Text: "change app.txt",
 	}})
@@ -116,7 +1198,9 @@ func TestHandleNormalizedEventsKeepsDurabilityInCore(t *testing.T) {
 		t.Fatalf("prompt: %v", err)
 	}
 	writeFile(t, root, "app.txt", "after\n")
-	rawFinish := []byte(`{"session_id":"external-session","cwd":"` + root.String() + `","prompt_response":"done"}`)
+	rawFinish := rawPayload(t, map[string]any{
+		"session_id": "external-session", "cwd": root.String(), "prompt_response": "done",
+	})
 	err = HandleNormalizedEvents("gemini-cli", "AfterAgent", rawFinish, []adaptersdk.Event{{
 		Type: adaptersdk.EventAssistantMessage, SessionID: "external-session", CWD: root.String(), Text: "done",
 	}})
@@ -138,6 +1222,307 @@ func TestHandleNormalizedEventsKeepsDurabilityInCore(t *testing.T) {
 	diff, err := repo.DiffTurn(sessionID, turnID)
 	if err != nil || !containsAll(string(diff), "-before", "+after") {
 		t.Fatalf("DiffTurn = %q, err=%v", diff, err)
+	}
+}
+
+func TestExternalIntentPrivacyUsesRawPayloadWhenNormalizedInputIsPartial(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+	writeFile(t, root, ".turnal/config.toml", `
+version = 1
+
+[hooks]
+command = "workspace-turnal"
+
+[secrets]
+store_prompts = false
+store_tool_io = true
+`)
+	promptRaw := rawPayload(t, map[string]any{
+		"sessionId": "external-intent-result", "cwd": root.String(), "prompt": "private request",
+	})
+	if err := HandleNormalizedEvents("custom-adapter", "prompt", promptRaw, []adaptersdk.Event{{
+		Type: adaptersdk.EventPromptUser, SessionID: "external-intent-result", CWD: root.String(), Text: "private request",
+	}}); err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+	toolRaw := rawPayload(t, map[string]any{
+		"sessionId": "external-intent-result", "cwd": root.String(),
+		"invocation": "workspace-turnal intent --problem customer-secret", "result": "result-secret",
+	})
+	if err := HandleNormalizedEvents("custom-adapter", "tool", toolRaw, []adaptersdk.Event{
+		{Type: adaptersdk.EventToolCall, SessionID: "external-intent-result", CWD: root.String(), ToolName: "shell", ToolUseID: "intent-1", Input: json.RawMessage(`{"problem":"customer-secret"}`)},
+		{Type: adaptersdk.EventToolResult, SessionID: "external-intent-result", CWD: root.String(), ToolName: "shell", ToolUseID: "intent-1", Input: json.RawMessage(`{"normalized":"partial"}`), Output: json.RawMessage(`{"message":"result-secret"}`)},
+	}); err != nil {
+		t.Fatalf("tool: %v", err)
+	}
+
+	events := readEvents(t, repo, sessionID(t, "external-intent-result"))
+	for _, event := range events {
+		if event.Type != primitives.EventTypeToolCall && event.Type != primitives.EventTypeToolResult {
+			continue
+		}
+		if strings.Contains(string(event.Payload), "customer-secret") || strings.Contains(string(event.Payload), "result-secret") || !strings.Contains(string(event.Payload), "agent.intent") {
+			t.Fatalf("external intent event was not redacted: %s", event.Payload)
+		}
+		rawRecord, err := ReadRawHookRecord(repo.MetadataDir, event.RawRef)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(rawRecord.Payload), "customer-secret") || strings.Contains(string(rawRecord.Payload), "result-secret") || !strings.Contains(string(rawRecord.Payload), "agent.intent") {
+			t.Fatalf("external raw intent was not redacted: %s", rawRecord.Payload)
+		}
+	}
+}
+
+func TestExternalDelayedIntentResultOnlyBatchUsesPriorCallForRedaction(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+	writeFile(t, root, ".turnal/config.toml", `
+version = 1
+
+[hooks]
+command = "workspace-turnal"
+
+[secrets]
+store_prompts = false
+store_tool_io = true
+`)
+	const session = "external-intent-separate-result"
+	promptRaw := rawPayload(t, map[string]any{
+		"sessionId": session, "cwd": root.String(), "prompt": "private request",
+	})
+	if err := HandleNormalizedEvents("custom-adapter", "prompt", promptRaw, []adaptersdk.Event{{
+		Type: adaptersdk.EventPromptUser, SessionID: session, CWD: root.String(), Text: "private request",
+	}}); err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+	callRaw := rawPayload(t, map[string]any{
+		"sessionId": session, "cwd": root.String(),
+		"invocation": "workspace-turnal intent --problem customer-secret",
+	})
+	if err := HandleNormalizedEvents("custom-adapter", "tool-call", callRaw, []adaptersdk.Event{{
+		Type: adaptersdk.EventToolCall, SessionID: session, CWD: root.String(), ToolName: "shell", ToolUseID: "intent-1",
+		ProviderTurnID: "provider-turn-1", Input: json.RawMessage(`{"command":"workspace-turnal intent --problem customer-secret"}`),
+	}}); err != nil {
+		t.Fatalf("tool call: %v", err)
+	}
+	finishRaw := rawPayload(t, map[string]any{
+		"sessionId": session, "cwd": root.String(), "finished": true,
+	})
+	if err := HandleNormalizedEvents("custom-adapter", "finish", finishRaw, []adaptersdk.Event{{
+		Type: adaptersdk.EventTurnFinish, SessionID: session, CWD: root.String(), ProviderTurnID: "provider-turn-1",
+	}}); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	nextPromptRaw := rawPayload(t, map[string]any{
+		"sessionId": session, "cwd": root.String(), "prompt": "next private request",
+	})
+	if err := HandleNormalizedEvents("custom-adapter", "next-prompt", nextPromptRaw, []adaptersdk.Event{{
+		Type: adaptersdk.EventPromptUser, SessionID: session, CWD: root.String(), ProviderTurnID: "provider-turn-2", Text: "next private request",
+	}}); err != nil {
+		t.Fatalf("next prompt: %v", err)
+	}
+	resultRaw := rawPayload(t, map[string]any{
+		"sessionId": session, "cwd": root.String(), "result": "result-secret",
+	})
+	if err := HandleNormalizedEvents("custom-adapter", "tool-result", resultRaw, []adaptersdk.Event{{
+		Type: adaptersdk.EventToolResult, SessionID: session, CWD: root.String(), ToolName: "shell", ToolUseID: "intent-1",
+		ProviderTurnID: "provider-turn-1", Output: json.RawMessage(`{"message":"result-secret"}`),
+	}}); err != nil {
+		t.Fatalf("tool result: %v", err)
+	}
+
+	events := readEvents(t, repo, sessionID(t, session))
+	var resultEvent *eventlog.Event
+	for index := range events {
+		if events[index].Type == primitives.EventTypeToolResult {
+			resultEvent = &events[index]
+			break
+		}
+	}
+	if resultEvent == nil {
+		t.Fatal("tool result event not found")
+	}
+	if strings.Contains(string(resultEvent.Payload), "result-secret") || !strings.Contains(string(resultEvent.Payload), "agent.intent") {
+		t.Fatalf("result-only normalized event was not redacted: %s", resultEvent.Payload)
+	}
+	rawRecord, err := ReadRawHookRecord(repo.MetadataDir, resultEvent.RawRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(rawRecord.Payload), "result-secret") || !strings.Contains(string(rawRecord.Payload), "agent.intent") {
+		t.Fatalf("result-only raw record was not redacted: %s", rawRecord.Payload)
+	}
+}
+
+func TestBuiltInIntentResultWithoutRepeatedInputIsRedacted(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		adapter      primitives.AdapterName
+		promptHook   string
+		toolHook     string
+		callTurnID   string
+		resultTurnID string
+	}{
+		{
+			name: "claude-code-call-without-provider-turn", adapter: primitives.AdapterClaudeCode,
+			promptHook: "UserPromptSubmit", resultTurnID: "provider-turn-1",
+		},
+		{
+			name: "codex-result-without-provider-turn", adapter: primitives.AdapterCodex,
+			promptHook: "CodexHook", toolHook: "CodexHook", callTurnID: "provider-turn-1",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			requireGit(t)
+			root := workspaceRoot(t)
+			repo, err := checkpoint.Init(root)
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			t.Chdir(root.String())
+			writeFile(t, root, ".turnal/config.toml", "version = 1\n\n[secrets]\nstore_prompts = false\nstore_tool_io = true\n")
+			session := sessionID(t, "intent-result-"+test.name)
+			handlePayload(t, test.adapter, test.promptHook, map[string]any{
+				"cwd": root.String(), "session_id": session.String(), "hook_event_name": "UserPromptSubmit", "prompt": "private request",
+			})
+			preHook := test.toolHook
+			if preHook == "" {
+				preHook = "PreToolUse"
+			}
+			handlePayload(t, test.adapter, preHook, map[string]any{
+				"cwd": root.String(), "session_id": session.String(), "hook_event_name": "PreToolUse",
+				"turn_id": test.callTurnID, "tool_name": "Bash", "tool_use_id": "intent-1",
+				"tool_input": map[string]any{"command": "turnal intent --problem customer-secret"},
+			})
+			postHook := test.toolHook
+			if postHook == "" {
+				postHook = "PostToolUse"
+			}
+			handlePayload(t, test.adapter, postHook, map[string]any{
+				"cwd": root.String(), "session_id": session.String(), "hook_event_name": "PostToolUse",
+				"turn_id": test.resultTurnID, "tool_name": "Bash", "tool_use_id": "intent-1",
+				"tool_response": map[string]any{"message": "result-secret"},
+			})
+
+			events := readEvents(t, repo, session)
+			var resultEvent *eventlog.Event
+			for index := range events {
+				if events[index].Type == primitives.EventTypeToolResult {
+					resultEvent = &events[index]
+					break
+				}
+			}
+			if resultEvent == nil {
+				t.Fatal("tool result event not found")
+			}
+			if strings.Contains(string(resultEvent.Payload), "result-secret") || !strings.Contains(string(resultEvent.Payload), "agent.intent") {
+				t.Fatalf("normalized result was not redacted: %s", resultEvent.Payload)
+			}
+			rawRecord, err := ReadRawHookRecord(repo.MetadataDir, resultEvent.RawRef)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(rawRecord.Payload), "result-secret") || !strings.Contains(string(rawRecord.Payload), "agent.intent") {
+				t.Fatalf("raw result was not redacted: %s", rawRecord.Payload)
+			}
+			seenCall, err := sessionHasToolEvent(repo.EventLog(), test.adapter, session, hookPayload{
+				ToolUseID: "intent-1",
+				TurnID:    test.resultTurnID,
+			}, primitives.EventTypeToolCall)
+			if err != nil || !seenCall {
+				t.Fatalf("partial provider-turn metadata did not match the stored call: seen=%v err=%v", seenCall, err)
+			}
+		})
+	}
+}
+
+func TestBuiltInDelayedIntentResultAfterNextTurnIsRedacted(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		adapter     primitives.AdapterName
+		resultEvent string
+	}{
+		{name: "claude-code-failure", adapter: primitives.AdapterClaudeCode, resultEvent: "PostToolUseFailure"},
+		{name: "codex-success", adapter: primitives.AdapterCodex, resultEvent: "PostToolUse"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			requireGit(t)
+			root := workspaceRoot(t)
+			repo, err := checkpoint.Init(root)
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			t.Chdir(root.String())
+			writeFile(t, root, ".turnal/config.toml", "version = 1\n\n[secrets]\nstore_prompts = false\nstore_tool_io = true\n")
+			session := sessionID(t, "delayed-intent-result-"+test.name)
+			hookName := func(event string) string {
+				if test.adapter == primitives.AdapterCodex {
+					return "CodexHook"
+				}
+				return event
+			}
+			handlePayload(t, test.adapter, hookName("UserPromptSubmit"), map[string]any{
+				"cwd": root.String(), "session_id": session.String(), "turn_id": "provider-turn-1",
+				"hook_event_name": "UserPromptSubmit", "prompt": "private request",
+			})
+			handlePayload(t, test.adapter, hookName("PreToolUse"), map[string]any{
+				"cwd": root.String(), "session_id": session.String(), "turn_id": "provider-turn-1",
+				"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "intent-1",
+				"tool_input": map[string]any{"command": "turnal intent --problem customer-secret"},
+			})
+			handlePayload(t, test.adapter, hookName("Stop"), map[string]any{
+				"cwd": root.String(), "session_id": session.String(), "turn_id": "provider-turn-1",
+				"hook_event_name": "Stop", "last_assistant_message": "done",
+			})
+			handlePayload(t, test.adapter, hookName("UserPromptSubmit"), map[string]any{
+				"cwd": root.String(), "session_id": session.String(), "turn_id": "provider-turn-2",
+				"hook_event_name": "UserPromptSubmit", "prompt": "next private request",
+			})
+			resultPayload := map[string]any{
+				"cwd": root.String(), "session_id": session.String(), "turn_id": "provider-turn-1",
+				"hook_event_name": test.resultEvent, "tool_name": "Bash", "tool_use_id": "intent-1",
+			}
+			if test.resultEvent == "PostToolUseFailure" {
+				resultPayload["error"] = "result-secret"
+			} else {
+				resultPayload["tool_response"] = map[string]any{"message": "result-secret"}
+			}
+			handlePayload(t, test.adapter, hookName(test.resultEvent), resultPayload)
+
+			events := readEvents(t, repo, session)
+			var resultEvent *eventlog.Event
+			for index := range events {
+				if events[index].Type == primitives.EventTypeToolResult {
+					resultEvent = &events[index]
+					break
+				}
+			}
+			if resultEvent == nil {
+				t.Fatal("delayed tool result event not found")
+			}
+			if strings.Contains(string(resultEvent.Payload), "result-secret") || !strings.Contains(string(resultEvent.Payload), "agent.intent") {
+				t.Fatalf("delayed normalized result was not redacted: %s", resultEvent.Payload)
+			}
+			rawRecord, err := ReadRawHookRecord(repo.MetadataDir, resultEvent.RawRef)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(rawRecord.Payload), "result-secret") || !strings.Contains(string(rawRecord.Payload), "agent.intent") {
+				t.Fatalf("delayed raw result was not redacted: %s", rawRecord.Payload)
+			}
+		})
 	}
 }
 
@@ -393,6 +1778,14 @@ store_tool_io = false
 		"tool_input":    map[string]any{"content": "secret"},
 		"tool_response": map[string]any{"output": "secret"},
 	})
+	handlePayload(t, primitives.AdapterClaudeCode, "PostToolUseFailure", map[string]any{
+		"cwd":         root.String(),
+		"session_id":  "secret-session",
+		"tool_name":   "Write",
+		"tool_use_id": "tool-2",
+		"tool_input":  map[string]any{"content": "failed-input-secret"},
+		"error":       "failed-output-secret",
+	})
 
 	sessionID := sessionID(t, "secret-session")
 	events := readEvents(t, repo, sessionID)
@@ -418,7 +1811,7 @@ store_tool_io = false
 			if err := json.Unmarshal(event.Payload, &payload); err != nil {
 				t.Fatalf("unmarshal tool call payload: %v", err)
 			}
-			if strings.Contains(string(payload.Input), `"content":"secret"`) || !strings.Contains(string(payload.Input), "redacted") {
+			if strings.Contains(string(payload.Input), `"content":"secret"`) || strings.Contains(string(payload.Input), "failed-input-secret") || !strings.Contains(string(payload.Input), "redacted") {
 				t.Fatalf("tool input not redacted: %s", payload.Input)
 			}
 		case primitives.EventTypeToolResult:
@@ -426,10 +1819,95 @@ store_tool_io = false
 			if err := json.Unmarshal(event.Payload, &payload); err != nil {
 				t.Fatalf("unmarshal tool result payload: %v", err)
 			}
-			if strings.Contains(string(payload.Output), `"output":"secret"`) || !strings.Contains(string(payload.Output), "redacted") {
+			if strings.Contains(string(payload.Output), `"output":"secret"`) || strings.Contains(string(payload.Output), "failed-output-secret") || !strings.Contains(string(payload.Output), "redacted") {
 				t.Fatalf("tool output not redacted: %s", payload.Output)
 			}
 		}
+		if event.Type == primitives.EventTypeToolCall || event.Type == primitives.EventTypeToolResult {
+			rawRecord, err := ReadRawHookRecord(repo.MetadataDir, event.RawRef)
+			if err != nil {
+				t.Fatalf("ReadRawHookRecord: %v", err)
+			}
+			storedRaw := string(rawRecord.Payload)
+			if strings.Contains(storedRaw, "failed-input-secret") || strings.Contains(storedRaw, "failed-output-secret") || strings.Contains(storedRaw, `"content":"secret"`) || strings.Contains(storedRaw, `"output":"secret"`) || !strings.Contains(storedRaw, "redacted") {
+				t.Fatalf("raw tool payload not redacted: %s", rawRecord.Payload)
+			}
+		}
+	}
+}
+
+func TestPromptPrivacyAlsoRedactsIntentCommandArguments(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+	writeFile(t, root, ".turnal/config.toml", `
+version = 1
+
+[hooks]
+command = "workspace-turnal"
+
+[secrets]
+store_prompts = false
+store_tool_io = true
+`)
+	handlePayload(t, primitives.AdapterClaudeCode, "UserPromptSubmit", map[string]any{
+		"cwd": root.String(), "session_id": "private-intent", "prompt": "private request",
+	})
+	tool := map[string]any{
+		"cwd": root.String(), "session_id": "private-intent", "tool_name": "Bash", "tool_use_id": "intent-command",
+		"tool_input": map[string]any{"command": `workspace-turnal intent --session private-intent --problem "customer secret"`},
+	}
+	handlePayload(t, primitives.AdapterClaudeCode, "PreToolUse", tool)
+	tool["error"] = `command failed: workspace-turnal intent --problem "customer secret"`
+	handlePayload(t, primitives.AdapterClaudeCode, "PostToolUseFailure", tool)
+
+	events := readEvents(t, repo, sessionID(t, "private-intent"))
+	foundCall := false
+	foundResult := false
+	for _, event := range events {
+		if event.Type != primitives.EventTypeToolCall && event.Type != primitives.EventTypeToolResult {
+			continue
+		}
+		foundCall = foundCall || event.Type == primitives.EventTypeToolCall
+		foundResult = foundResult || event.Type == primitives.EventTypeToolResult
+		if strings.Contains(string(event.Payload), "customer secret") || !strings.Contains(string(event.Payload), "agent.intent") {
+			t.Fatalf("tool event did not redact intent command data: %s", event.Payload)
+		}
+		rawRecord, err := ReadRawHookRecord(repo.MetadataDir, event.RawRef)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(rawRecord.Payload), "customer secret") || !strings.Contains(string(rawRecord.Payload), "agent.intent") {
+			t.Fatalf("raw hook did not redact intent command data: %s", rawRecord.Payload)
+		}
+	}
+	if !foundCall || !foundResult {
+		t.Fatalf("intent command events: call=%v result=%v", foundCall, foundResult)
+	}
+}
+
+func TestIntentCommandDetectionHandlesProviderCommandShapes(t *testing.T) {
+	for _, input := range []json.RawMessage{
+		json.RawMessage(`{"command":"/workspace/bin/turnal intent --problem secret"}`),
+		json.RawMessage(`{"command":"C:\\Program Files\\Turnal\\turnal.exe intent --problem secret"}`),
+		json.RawMessage(`{"command":["turnal","intent","--problem","secret"]}`),
+	} {
+		if !rawContainsIntentCommand(input, "turnal") {
+			t.Fatalf("intent command was not detected in %s", input)
+		}
+	}
+	if !rawContainsIntentCommand(json.RawMessage(`{"command":"workspace-turnal intent --problem secret"}`), "workspace-turnal") {
+		t.Fatal("configured intent command was not detected")
+	}
+	if rawContainsIntentCommand(json.RawMessage(`{"command":"workspace-turnal intent --problem secret"}`), "other-wrapper") {
+		t.Fatal("unconfigured wrapper was detected as an intent command")
+	}
+	if rawContainsIntentCommand(json.RawMessage(`{"command":"turnal status"}`), "turnal") {
+		t.Fatal("non-intent Turnal command was detected as intent")
 	}
 }
 
@@ -646,13 +2124,19 @@ func TestNextPromptFinishesStaleActiveTurn(t *testing.T) {
 
 func handlePayload(t *testing.T, adapter primitives.AdapterName, hookName string, payload map[string]any) {
 	t.Helper()
+	raw := rawPayload(t, payload)
+	if err := HandleHookPayload(adapter, hookName, raw); err != nil {
+		t.Fatalf("HandleHookPayload %s: %v", hookName, err)
+	}
+}
+
+func rawPayload(t *testing.T, payload map[string]any) []byte {
+	t.Helper()
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
 	}
-	if err := HandleHookPayload(adapter, hookName, raw); err != nil {
-		t.Fatalf("HandleHookPayload %s: %v", hookName, err)
-	}
+	return raw
 }
 
 func readEvents(t *testing.T, repo *checkpoint.Repo, sessionID primitives.SessionID) []eventlog.Event {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"time"
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
@@ -30,6 +31,7 @@ type checkpointPayload struct {
 	WorktreeID       string               `json:"worktree_id,omitempty"`
 	StreamID         string               `json:"stream_id,omitempty"`
 	CommitSHA        string               `json:"commit_sha"`
+	CapturedAt       string               `json:"captured_at,omitempty"`
 	Ref              string               `json:"ref"`
 	CanonicalRef     string               `json:"canonical_ref,omitempty"`
 	GitSyncRef       string               `json:"git_sync_ref,omitempty"`
@@ -113,6 +115,10 @@ func AppendCheckpointWithGitSync(log eventlog.Log, adapter primitives.AdapterNam
 		gitSyncCommitSHA = gitSync.Commit.String()
 	}
 	repo := checkpointRepoFromLog(log)
+	capturedAt := ""
+	if !created.CapturedAt.IsZero() {
+		capturedAt = created.CapturedAt.UTC().Format(time.RFC3339Nano)
+	}
 	userGit, err := workspacegit.Open(repo.WorkspaceRoot).Context()
 	if err != nil {
 		return err
@@ -136,6 +142,7 @@ func AppendCheckpointWithGitSync(log eventlog.Log, adapter primitives.AdapterNam
 				WorktreeID:       created.WorktreeID.String(),
 				StreamID:         created.StreamID.String(),
 				CommitSHA:        created.Commit.String(),
+				CapturedAt:       capturedAt,
 				Ref:              created.Ref.String(),
 				CanonicalRef:     created.CanonicalRef.String(),
 				GitSyncRef:       gitSyncRef,
@@ -313,6 +320,7 @@ func recoverCheckpointJournal(log eventlog.Log, repo *checkpoint.Repo, journal c
 		Ref:          journal.Ref,
 		CanonicalRef: journal.CanonicalRef,
 		Commit:       journal.CommitSHA,
+		CapturedAt:   checkpointJournalCapturedAt(journal),
 		WorktreeID:   journal.WorktreeID,
 		StreamID:     journal.StreamID,
 	}, gitSync, journal.RawRef); err != nil {
@@ -324,6 +332,13 @@ func recoverCheckpointJournal(log eventlog.Log, repo *checkpoint.Repo, journal c
 		}
 	}
 	return nil
+}
+
+func checkpointJournalCapturedAt(journal checkpoint.CheckpointJournal) time.Time {
+	if parsed, err := time.Parse(time.RFC3339Nano, journal.CapturedAt); err == nil {
+		return parsed
+	}
+	return time.Time{}
 }
 
 func checkpointEventSeqStart(events []eventlog.Event) (primitives.EventSeq, error) {

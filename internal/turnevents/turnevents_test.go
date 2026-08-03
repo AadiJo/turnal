@@ -60,6 +60,9 @@ func TestRecoverCheckpointJournalsAppendsMissingCheckpointEvent(t *testing.T) {
 	if payload.Ref != started.Pre.Ref.String() || payload.CommitSHA != started.Pre.Commit.String() {
 		t.Fatalf("payload checkpoint = %s %s, want %s %s", payload.CommitSHA, payload.Ref, started.Pre.Commit, started.Pre.Ref)
 	}
+	if capturedAt, err := time.Parse(time.RFC3339Nano, payload.CapturedAt); err != nil || !capturedAt.Equal(started.Pre.CapturedAt) {
+		t.Fatalf("payload captured_at = %q, %v; want %s", payload.CapturedAt, err, started.Pre.CapturedAt)
+	}
 	if payload.UserGit.Exists {
 		t.Fatalf("payload user_git exists = true outside workspace Git repo: %#v", payload.UserGit)
 	}
@@ -116,6 +119,9 @@ func TestRecoverCheckpointIntentJournalPromotesExistingRef(t *testing.T) {
 	}
 	if payload.Ref != created.Ref.String() || payload.CommitSHA != created.Commit.String() {
 		t.Fatalf("payload checkpoint = %s %s, want %s %s", payload.CommitSHA, payload.Ref, created.Commit, created.Ref)
+	}
+	if payload.CapturedAt != "" {
+		t.Fatalf("recovered intent-state checkpoint claimed a precise captured_at: %q", payload.CapturedAt)
 	}
 }
 

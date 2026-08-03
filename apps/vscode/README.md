@@ -6,7 +6,7 @@ Turnal reads from a local flight recorder of your agents’ work. The extension 
 
 ## What you get
 
-- **Blame for the current line.** A quiet end-of-line note shows the agent, prompt, turn, and relative time for the line you’re on. Hover it for the full turn context, with links to that turn’s diff, details, and rollback.
+- **Intent-first blame for the current line.** A quiet end-of-line note shows the agent, the problem it said it was solving, and the relative time for the line you’re on. Hover it for evidence, the separate human request, confidence, and links to the turn’s diff, details, and rollback.
 
 - **Your agent history, two ways.** The Turnal view in the Activity Bar groups recorded turns and rollbacks by session, or flattens everything into a newest-first Recent Activity list. Both layouts are backed entirely by the CLI.
 
@@ -22,9 +22,9 @@ Recording, replay, verification, search, retention, worktree management, and con
 
 ### Inline blame and turn details
 
-Hover the current line to see the agent, prompt, tools, session, turn, and links to the recorded changes.
+Hover the current line to see the agent's stated problem, evidence, human request, timing confidence, action, session, turn, and links to the recorded changes. Missing, late, out-of-scope, or redacted intent is shown explicitly rather than reconstructed from the prompt. Redacted intent remains low confidence because its original scope is unavailable. When action boundaries or agent turns overlap, the annotation explains that no single intent can be assigned safely.
 
-![Inline blame hover showing the agent, prompt, and turn behind the current line, with links to its diff, details, and rollback.](https://i.imgur.com/eMnXYM9.png)
+![Inline blame hover showing the provenance behind the current line, with links to its diff, details, and rollback.](https://i.imgur.com/eMnXYM9.png)
 
 ### Native turn changes
 

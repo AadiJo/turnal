@@ -4,7 +4,7 @@
 export const product = {
   name: 'Turnal',
   tagline: 'A local flight recorder for AI coding agents.',
-  sub: 'Turnal pairs Claude Code and Codex activity with local events and hidden Git checkpoints. Search what happened, trace a line to its prompt, verify an earlier state, and roll back with a safety checkpoint first.',
+  sub: 'Turnal pairs Claude Code and Codex activity with local events and hidden Git checkpoints. Search what happened, trace a line to the agent’s stated intent and human request, verify an earlier state, and roll back with a safety checkpoint first.',
   install: 'npm install -g @aadijo/turnal',
   init: 'turnal init',
   agents: ['Claude Code', 'Codex'],
@@ -33,8 +33,8 @@ export const features: Feature[] = [
   },
   {
     k: 'blame',
-    title: 'Prompt-aware blame',
-    body: 'Line-level blame that shows the prompt behind a change, not just a commit hash. Finally answer “why is this line here?”',
+    title: 'Intent-aware blame',
+    body: 'Line-level blame that keeps the agent’s stated problem separate from the human request, with honest labels when intent is missing, late, or outside scope.',
     demo: 'blame',
   },
   {

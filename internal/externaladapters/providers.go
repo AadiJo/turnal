@@ -181,6 +181,9 @@ func toolEvents(base adaptersdk.Event, payload map[string]any, inputKeys, output
 	call.Input = firstJSON(payload, inputKeys...)
 	result := base
 	result.Type = adaptersdk.EventToolResult
+	// Preserve the paired call input so core privacy policy can recognize that
+	// an output belongs to a prompt-like `turnal intent` command.
+	result.Input = call.Input
 	result.Output = firstJSON(payload, outputKeys...)
 	return []adaptersdk.Event{call, result}
 }

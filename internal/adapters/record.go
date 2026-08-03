@@ -86,6 +86,10 @@ func (ref RawHookRef) String() string {
 }
 
 func RecordHookPayload(adapter primitives.AdapterName, hookName string, raw []byte) (string, error) {
+	return recordHookPayload(adapter, hookName, raw, false)
+}
+
+func recordHookPayload(adapter primitives.AdapterName, hookName string, raw []byte, forceIntentResultRedaction bool) (string, error) {
 	if len(raw) > MaxHookPayloadBytes {
 		return "", fmt.Errorf("hook payload is %d bytes; maximum is %d bytes", len(raw), MaxHookPayloadBytes)
 	}
@@ -114,11 +118,11 @@ func RecordHookPayload(adapter primitives.AdapterName, hookName string, raw []by
 	if err != nil {
 		return "", err
 	}
-	storedRaw := redactRawHookPayload(raw, effective.Secrets)
-	sessionID := sessionIDFromRawPayload(storedRaw)
+	sessionID := sessionIDFromRawPayload(raw)
 	if sessionID == "" {
 		sessionID, _ = primitives.ParseSessionID("unassigned")
 	}
+	storedRaw := redactRawHookPayload(raw, effective.Secrets, effective.Hooks.Command, forceIntentResultRedaction)
 
 	record := RawHookRecord{
 		Version:    1,
@@ -142,6 +146,10 @@ func RecordHookPayload(adapter primitives.AdapterName, hookName string, raw []by
 // supplies the routing fields. External adapters never receive repository or
 // event-log handles and therefore cannot write durable Turnal state.
 func RecordExternalHookPayload(adapter primitives.AdapterName, hookName string, raw []byte, cwd string, sessionID primitives.SessionID) (string, error) {
+	return recordExternalHookPayload(adapter, hookName, raw, cwd, sessionID, false)
+}
+
+func recordExternalHookPayload(adapter primitives.AdapterName, hookName string, raw []byte, cwd string, sessionID primitives.SessionID, forceIntentRedaction bool) (string, error) {
 	if len(raw) > MaxHookPayloadBytes {
 		return "", fmt.Errorf("hook payload is %d bytes; maximum is %d bytes", len(raw), MaxHookPayloadBytes)
 	}
@@ -171,7 +179,7 @@ func RecordExternalHookPayload(adapter primitives.AdapterName, hookName string, 
 	if err != nil {
 		return "", err
 	}
-	storedRaw := redactExternalHookPayload(raw, effective.Secrets)
+	storedRaw := redactExternalHookPayload(raw, effective.Secrets, effective.Hooks.Command, forceIntentRedaction)
 	record := RawHookRecord{
 		Version:    2,
 		SessionID:  parsedSession.String(),
@@ -189,7 +197,13 @@ func RecordExternalHookPayload(adapter primitives.AdapterName, hookName string, 
 	return appendRawHookRecord(repo.MetadataDir, record)
 }
 
-func redactExternalHookPayload(raw []byte, secrets agentconfig.Secrets) []byte {
+func redactExternalHookPayload(raw []byte, secrets agentconfig.Secrets, hookCommand string, forceIntentRedaction bool) []byte {
+	if !secrets.StorePrompts && forceIntentRedaction {
+		redacted, err := json.Marshal(map[string]any{"redacted": true, "policy": "turnal.secrets", "content": "agent.intent"})
+		if err == nil {
+			return redacted
+		}
+	}
 	if secrets.StorePrompts && secrets.StoreToolIO || !json.Valid(raw) {
 		return raw
 	}
@@ -197,7 +211,13 @@ func redactExternalHookPayload(raw []byte, secrets agentconfig.Secrets) []byte {
 	if json.Unmarshal(raw, &value) != nil {
 		return raw
 	}
-	redactExternalValue(value, secrets)
+	if !secrets.StorePrompts && valueContainsIntentCommand(value, hookCommand) {
+		redacted, err := json.Marshal(map[string]any{"redacted": true, "policy": "turnal.secrets", "content": "agent.intent"})
+		if err == nil {
+			return redacted
+		}
+	}
+	redactExternalValue(value, secrets, hookCommand)
 	redacted, err := json.Marshal(value)
 	if err != nil {
 		return raw
@@ -205,34 +225,57 @@ func redactExternalHookPayload(raw []byte, secrets agentconfig.Secrets) []byte {
 	return redacted
 }
 
-func redactExternalValue(value any, secrets agentconfig.Secrets) {
+func redactExternalValue(value any, secrets agentconfig.Secrets, hookCommand string) {
 	object, ok := value.(map[string]any)
 	if !ok {
 		if array, ok := value.([]any); ok {
 			for _, item := range array {
-				redactExternalValue(item, secrets)
+				redactExternalValue(item, secrets, hookCommand)
 			}
 		}
 		return
 	}
+	intentCommand := false
+	if !secrets.StorePrompts {
+		for key, child := range object {
+			switch normalizedExternalKey(key) {
+			case "toolinput", "toolargs", "args", "input":
+				if valueContainsIntentCommand(child, hookCommand) {
+					intentCommand = true
+					object[key] = map[string]any{"redacted": true, "policy": "turnal.secrets", "content": "agent.intent"}
+				}
+			}
+		}
+	}
 	for key, child := range object {
-		normalized := strings.ToLower(strings.ReplaceAll(key, "_", ""))
+		normalized := normalizedExternalKey(key)
 		if !secrets.StorePrompts {
 			switch normalized {
 			case "prompt", "initialprompt", "promptresponse", "lastassistantmessage":
 				object[key] = redactedText("", false)
 				continue
 			}
+			if intentCommand {
+				switch normalized {
+				case "toolinput", "toolargs", "args", "input", "toolresponse", "toolresult", "output", "result", "error":
+					object[key] = map[string]any{"redacted": true, "policy": "turnal.secrets", "content": "agent.intent"}
+					continue
+				}
+			}
 		}
 		if !secrets.StoreToolIO {
 			switch normalized {
-			case "toolinput", "toolargs", "toolresponse", "toolresult":
+			case "toolinput", "toolargs", "args", "input", "toolresponse", "toolresult", "output", "result", "error":
 				object[key] = map[string]any{"redacted": true, "policy": "turnal.secrets"}
 				continue
 			}
 		}
-		redactExternalValue(child, secrets)
+		redactExternalValue(child, secrets, hookCommand)
 	}
+}
+
+func normalizedExternalKey(key string) string {
+	return strings.ToLower(strings.ReplaceAll(key, "_", ""))
 }
 
 func appendRawHookRecord(metadataDir string, record RawHookRecord) (string, error) {

@@ -18,6 +18,7 @@ import (
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	experimentengine "github.com/AadiJo/turnal/internal/experiments"
+	"github.com/AadiJo/turnal/internal/filelock"
 	"github.com/AadiJo/turnal/internal/primitives"
 	rollbackengine "github.com/AadiJo/turnal/internal/rollback"
 	"github.com/AadiJo/turnal/internal/runs"
@@ -47,6 +48,18 @@ func TestDropSessionDeletesEventLogAndPrivateRefs(t *testing.T) {
 		t.Fatalf("CreateCheckpoint: %v", err)
 	}
 	appendCheckpointEvent(t, repo, sessionID, turnID, created)
+	action, err := repo.CreateSnapshotRef("refs/agent-vcs/actions/demo/worktree/"+repo.WorktreeID.String()+"/turn/000001/action/pre", "action snapshot")
+	if err != nil {
+		t.Fatalf("CreateSnapshotRef: %v", err)
+	}
+	importedAction, err := repo.CreateSnapshotRef("refs/agent-vcs/imports/store_source/actions/demo/worktree/"+repo.WorktreeID.String()+"/turn/000001/action/pre", "imported action snapshot")
+	if err != nil {
+		t.Fatalf("Create imported action snapshot: %v", err)
+	}
+	neighborAction, err := repo.CreateSnapshotRef("refs/agent-vcs/actions/demo2/worktree/"+repo.WorktreeID.String()+"/turn/000001/action/pre", "neighbor action snapshot")
+	if err != nil {
+		t.Fatalf("Create neighboring action snapshot: %v", err)
+	}
 
 	result, err := DropSession(repo, sessionID, false)
 	if err != nil {
@@ -61,6 +74,15 @@ func TestDropSessionDeletesEventLogAndPrivateRefs(t *testing.T) {
 	}
 	if len(refs) != 0 {
 		t.Fatalf("checkpoint refs after drop = %#v, want none", refs)
+	}
+	if _, err := repo.RefCommit(action.Ref); err == nil {
+		t.Fatal("action snapshot ref remains after drop")
+	}
+	if _, err := repo.RefCommit(importedAction.Ref); err == nil {
+		t.Fatal("imported action snapshot ref remains after drop")
+	}
+	if got, err := repo.RefCommit(neighborAction.Ref); err != nil || got != neighborAction.Commit {
+		t.Fatalf("neighboring session action snapshot = %s, %v; want %s", got, err, neighborAction.Commit)
 	}
 	sessions, err := eventlog.Open(repo.MetadataDir).ListSessions()
 	if err != nil {
@@ -600,6 +622,10 @@ func TestPruneOrphanRefsKeepsEventReferencedRefs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateSnapshotRef: %v", err)
 	}
+	orphanManifest := filepath.Join(repo.MetadataDir, "manifests", "modes", orphan.Commit.String()+".json")
+	if _, err := os.Stat(orphanManifest); err != nil {
+		t.Fatalf("orphan mode manifest: %v", err)
+	}
 
 	dryRun, err := PruneOrphanRefs(repo, true)
 	if err != nil {
@@ -610,6 +636,9 @@ func TestPruneOrphanRefsKeepsEventReferencedRefs(t *testing.T) {
 	}
 	if _, err := repo.RefCommit(orphan.Ref); err != nil {
 		t.Fatalf("dry-run deleted orphan ref: %v", err)
+	}
+	if _, err := os.Stat(orphanManifest); err != nil {
+		t.Fatalf("dry-run deleted orphan mode manifest: %v", err)
 	}
 
 	result, err := PruneOrphanRefs(repo, false)
@@ -622,6 +651,12 @@ func TestPruneOrphanRefsKeepsEventReferencedRefs(t *testing.T) {
 	if _, err := repo.RefCommit(orphan.Ref); err == nil {
 		t.Fatal("orphan ref still resolves after prune")
 	}
+	if len(result.DeletedFiles) != 1 || result.DeletedFiles[0] != orphanManifest {
+		t.Fatalf("pruned files = %#v, want orphan mode manifest %s", result.DeletedFiles, orphanManifest)
+	}
+	if _, err := os.Stat(orphanManifest); !os.IsNotExist(err) {
+		t.Fatalf("orphan mode manifest survived prune: %v", err)
+	}
 	if _, err := repo.CheckpointCommit(created.Ref); err != nil {
 		t.Fatalf("event-referenced checkpoint ref was pruned: %v", err)
 	}
@@ -630,6 +665,131 @@ func TestPruneOrphanRefsKeepsEventReferencedRefs(t *testing.T) {
 	}
 	if _, err := repo.CheckpointCommit(manual.CanonicalRef); err != nil {
 		t.Fatalf("manual canonical checkpoint ref was pruned: %v", err)
+	}
+}
+
+func TestPruneOrphanRefsWaitsForActionSnapshotPublication(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	writeFile(t, root, "app.txt", "before\n")
+	session := sessionID(t, "action-publication")
+	turnID, _ := primitives.NewTurnID(1)
+	if _, err := repo.EventLog().Append(eventlog.AppendInput{
+		SessionID: session,
+		Type:      primitives.EventTypeSessionStart,
+		Adapter:   primitives.AdapterCodex,
+		Payload:   json.RawMessage(`{"provider_session_id":"action-publication"}`),
+	}); err != nil {
+		t.Fatalf("append session start: %v", err)
+	}
+	gitSync := false
+	recorder := turnevents.Recorder{Log: repo.EventLog(), Manager: turns.NewManager(repo), Adapter: primitives.AdapterCodex}
+	recorder.Manager.GitSyncEnabled = &gitSync
+	if _, err := recorder.Start(session, turnID); err != nil {
+		t.Fatalf("start turn: %v", err)
+	}
+
+	var eventPath string
+	eventDir := filepath.Join(repo.MetadataDir, "log", "events", session.String())
+	if err := filepath.WalkDir(eventDir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".jsonl") {
+			eventPath = path
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("find event stream: %v", err)
+	}
+	if eventPath == "" {
+		t.Fatal("event stream path not found")
+	}
+	eventLock, err := filelock.Acquire(eventPath+".lock", time.Second)
+	if err != nil {
+		t.Fatalf("lock event stream: %v", err)
+	}
+	locked := true
+	defer func() {
+		if locked {
+			_ = eventLock.Release()
+		}
+	}()
+
+	raw, _ := json.Marshal(map[string]any{
+		"cwd": root.String(), "session_id": session.String(), "hook_event_name": "PreToolUse",
+		"tool_name": "apply_patch", "tool_use_id": "publish-race",
+	})
+	hookResult := make(chan error, 1)
+	go func() {
+		hookResult <- adapters.ProcessHookPayload(primitives.AdapterCodex, "CodexHook", "test:publish-race", raw)
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	var actionRefs []string
+	for time.Now().Before(deadline) {
+		actionRefs, err = repo.ListPrivateRefs("refs/agent-vcs/actions/" + session.String())
+		if err != nil {
+			t.Fatalf("list action refs: %v", err)
+		}
+		if len(actionRefs) == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(actionRefs) != 1 {
+		t.Fatalf("action refs before publication = %#v", actionRefs)
+	}
+
+	pruneResult := make(chan struct {
+		result Result
+		err    error
+	}, 1)
+	go func() {
+		result, err := PruneOrphanRefs(repo, false)
+		pruneResult <- struct {
+			result Result
+			err    error
+		}{result: result, err: err}
+	}()
+	select {
+	case result := <-pruneResult:
+		_ = eventLock.Release()
+		locked = false
+		t.Fatalf("prune completed before action event publication: result=%#v err=%v", result.result, result.err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if err := eventLock.Release(); err != nil {
+		t.Fatalf("release event stream lock: %v", err)
+	}
+	locked = false
+	select {
+	case err := <-hookResult:
+		if err != nil {
+			t.Fatalf("capture action hook: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("action hook did not finish")
+	}
+	select {
+	case result := <-pruneResult:
+		if result.err != nil {
+			t.Fatalf("PruneOrphanRefs: %v", result.err)
+		}
+		for _, deleted := range result.result.DeletedRefs {
+			if deleted == actionRefs[0] {
+				t.Fatalf("published action ref was pruned: %#v", result.result)
+			}
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("prune did not resume")
+	}
+	if _, err := repo.RefCommit(actionRefs[0]); err != nil {
+		t.Fatalf("published action ref does not resolve: %v", err)
 	}
 }
 

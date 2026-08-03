@@ -24,7 +24,7 @@ const (
 	hooksListRequestID  = 2
 )
 
-var expectedCodexEventNames = []string{"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"}
+var expectedCodexEventNames = []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"}
 
 type CodexHook struct {
 	CWD         string `json:"cwd"`

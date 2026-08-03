@@ -3,9 +3,9 @@ title: Turnal documentation | Record, verify, and recover agent work
 description: Production documentation for Turnal, including local agent history, verification, reproducibility analysis, replay, rollback, and the public CLI.
 ---
 
-<h1 id="overview">Record the work.<br>Keep the reason.</h1>
+<h1 id="overview">Record the work.<br>Keep the stated intent.</h1>
 
-<p class="docs-lead">Turnal is a local flight recorder for Claude Code and Codex. It captures each agent turn as an append-only event trail and a pair of hidden Git checkpoints, so you can reconstruct what happened, find the prompt behind a line, test an earlier state, or safely return to it.</p>
+<p class="docs-lead">Turnal is a local flight recorder for Claude Code and Codex. It captures each agent turn as an append-only event trail and hidden Git checkpoints, so you can reconstruct what happened, see the agent's stated intent and the human request behind a line, test an earlier state, or safely return to it.</p>
 
 [Start in five minutes](#quickstart) · [Understand the model](#mental-model)
 
@@ -101,7 +101,7 @@ Turnal separates the meaning of an agent run from the bytes in the workspace. On
 
 | Layer | Purpose | Durability |
 | --- | --- | --- |
-| **Event streams** | Append-only, hash-chained JSONL records preserve prompts, replies, tools, errors, checkpoints, and adapter metadata. | Durable; explains why |
+| **Event streams** | Append-only, hash-chained JSONL records preserve prompts, explicit agent intent, replies, tools, errors, checkpoints, and adapter metadata. | Durable; records what was said and done |
 | **Hidden Git** | A bare repository stores byte-exact synthetic commits for pre- and post-turn workspace snapshots. | Durable; preserves what |
 | **SQLite index** | An FTS5 index makes history searchable and is derived from durable logs and checkpoint refs. | Disposable; accelerates queries |
 
@@ -147,8 +147,11 @@ Claude Code is configured in `.claude/settings.json`.
 
 | Hook | Recorded boundary |
 | --- | --- |
+| `SessionStart` | Session metadata |
 | `UserPromptSubmit` | Prompt and pre boundary |
-| `PostToolUse` | Tool activity |
+| `PreToolUse` | Latest intent link and pre-action snapshot |
+| `PostToolUse` | Successful tool activity and post-action snapshot |
+| `PostToolUseFailure` | Failed tool activity and post-action snapshot |
 | `Stop` | Reply and post boundary |
 
 <h3 class="agent-heading"><img src="/brands/codex.svg" alt="" aria-hidden="true"><span>Codex</span></h3>
@@ -159,7 +162,8 @@ Codex is configured in `.codex/config.toml` with hooks enabled.
 | --- | --- |
 | `SessionStart` | Session metadata |
 | `UserPromptSubmit` | Prompt and pre boundary |
-| `PostToolUse` | Tool activity |
+| `PreToolUse` | Latest intent link and pre-action snapshot |
+| `PostToolUse` | Tool activity and post-action snapshot |
 | `Stop` | Reply and post boundary |
 
 Select integrations explicitly when needed:
@@ -233,9 +237,9 @@ Search defaults to the current worktree and 20 results. Use `--all-worktrees` fo
 
 ---
 
-## Prompt-aware blame
+## Intent-aware blame
 
-Turnal replays completed checkpoint history and attributes each current line to the turn that last changed it. Rename tracking and moved-line origins preserve authorship better than a simple last-snapshot comparison.
+Turnal replays completed checkpoint history and attributes each current line to the action that changed it when action boundaries are unambiguous. The result keeps the agent's stated problem separate from the human request. It does not treat either statement as proof that the change was correct.
 
 ```sh
 turnal blame src/webhooks/stripe.ts
@@ -243,7 +247,12 @@ turnal blame src/webhooks/stripe.ts:24 --verbose
 turnal blame src/webhooks/stripe.ts --session codex-b91e --json
 ```
 
-- Only complete turns with both pre and post checkpoints participate.
+- `origin.intent` contains the agent's recorded problem, scope, evidence, timing, status, and derived confidence. For a normal `turn` origin, a missing value means no agent intent was recorded for that change.
+- `origin.prompt` contains the separate human request when prompt storage is enabled.
+- When Codex supplies subagent identity, `origin.action_agent_id` and `origin.intent.agent_id` keep an action paired with that agent's own statement.
+- Intent recorded after an edit, outside its stated scope, or both is labeled explicitly and receives low confidence. Redacted intent also stays low confidence because its original scope is unavailable.
+- Missing or overlapping action boundaries and unresolved agent identity use an `ambiguous` origin. Concurrent or unfinished turns from different sessions use a `concurrent` origin. Both keep intent unavailable instead of guessing which agent or action changed the line.
+- Only complete turns with both pre and post checkpoints are replayed as candidate origins. Pre-only turns are consulted only to detect unsafe overlap and can force a `concurrent` origin.
 - The latest completed post checkpoint is the file source; live, uncheckpointed edits are not included.
 - Binary files are not supported.
 - The optional blame cache is derived and can be rebuilt.
@@ -381,7 +390,7 @@ Apply is exact-base only and does not attempt a three-way merge. A real apply us
 
 ## VS Code
 
-The first-party VS Code extension keeps Turnal's durable CLI model visible in the editor. It adds prompt-aware inline blame for the current line, session and recent-activity views, native single- and multi-file turn diffs, readable turn details, and rollback previews in VS Code's Changes editor.
+The first-party VS Code extension keeps Turnal's durable CLI model visible in the editor. It adds intent-aware inline blame for the current line, including honest missing, late, and scope labels; session and recent-activity views; native single- and multi-file turn diffs; readable turn details; and rollback previews in VS Code's Changes editor.
 
 Editor rollback always performs a fresh dry run, warns about affected unsaved editors, and asks for confirmation before changing the workspace. It uses checkpoint mode and never moves the project's Git HEAD or index. Recording, verification, replay, search, retention, and configuration remain CLI workflows.
 
@@ -524,7 +533,7 @@ Turnal does not upload recording data. Event logs, snapshots, and the search ind
 
 ### Recording policy
 
-Prompts and tool I/O are stored by default. Set `secrets.store_prompts = false` or `secrets.store_tool_io = false` to redact those fields from new normalized events and structured raw hook payloads. This setting does not modify transcript files written by the provider itself.
+Prompts and tool I/O are stored by default. Agent intent fields are prompt-like: `secrets.store_prompts = false` redacts the problem, scope, evidence, and the input and result of Turnal's intent-recording command even when tool I/O storage remains enabled. Set `secrets.store_tool_io = false` to redact other tool fields from new normalized events and structured raw hook payloads. These settings do not modify transcript files written by the provider itself.
 
 > **Malformed raw payloads cannot be structurally redacted.** When an adapter provides a non-JSON raw hook payload, Turnal preserves the opaque raw record because it cannot reliably identify individual prompt or tool fields inside it. Treat access to `.turnal` as access to development history, and set recording policy before starting sensitive work.
 
@@ -681,7 +690,7 @@ Diffs come from hidden Git snapshots, not provider-reported file changes. `--jso
 
 ### `turnal blame`
 
-Attribute lines to the completed turn and prompt that last changed them.
+Attribute lines to the action or completed turn that last changed them, with the agent's stated intent kept separate from the human request.
 
 ```text
 turnal blame PATH[:LINE] [--session ID] [--verbose] [--json]
@@ -690,10 +699,10 @@ turnal blame PATH[:LINE] [--session ID] [--verbose] [--json]
 | Flag | Description |
 | --- | --- |
 | `--session ID` | Restrict replay history and the latest checkpoint to one session. |
-| `--verbose` | Include prompt, tools, checkpoint ID, and origin metadata. |
-| `--json` | Emit structured blame results. |
+| `--verbose` | Include agent intent, human request, tools, checkpoint ID, and origin metadata. |
+| `--json` | Emit structured blame results, including intent status, timing, and confidence when intent was recorded. |
 
-Only completed pre/post turn pairs participate. Uncheckpointed workspace edits are not considered, and binary files are not supported.
+Only completed pre/post turn pairs are replayed as candidate origins. Pre-only turns are consulted only to detect unsafe overlap and can force a `concurrent` origin. Action attribution additionally requires usable pre/post tool snapshots; when a recorded intent cannot be tied safely to one action, the origin is `ambiguous`. Uncheckpointed workspace edits are not considered, and binary files are not supported.
 
 ### `turnal reindex`
 

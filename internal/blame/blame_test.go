@@ -7,12 +7,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	queryindex "github.com/AadiJo/turnal/internal/index"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/provenance"
+	"github.com/AadiJo/turnal/internal/turnevents"
+	"github.com/AadiJo/turnal/internal/turns"
 )
 
 func TestComputeBlameOverlappingEdits(t *testing.T) {
@@ -85,6 +90,38 @@ func TestComputeBlameDeletedLineShiftsOlderOrigin(t *testing.T) {
 	}
 	if entry.Origin.Kind != "turn" || entry.Origin.TurnID.Uint64() != 1 {
 		t.Fatalf("line 2 origin = %#v, want turn 1", entry.Origin)
+	}
+}
+
+func TestComputeBlameResynchronizesUntouchedPathAtLaterPreSnapshot(t *testing.T) {
+	root, repo := newBlameRepo(t)
+	sessionID := blameSessionID(t, "resync-gap")
+
+	captureBlameTurn(t, repo, root, sessionID, 1, "app.txt", "recorded\n", "write recorded value")
+	writeBlameFile(t, root, "app.txt", "unrecorded\n")
+
+	turn2 := blameTurnID(t, 2)
+	pre2, err := repo.CreateCheckpoint(sessionID, turn2, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("turn 2 pre: %v", err)
+	}
+	writeBlameFile(t, root, "other.txt", "unrelated\n")
+	if _, err := repo.CreateCheckpoint(sessionID, turn2, primitives.CheckpointPhasePost); err != nil {
+		t.Fatalf("turn 2 post: %v", err)
+	}
+	appendBlamePrompt(t, repo, sessionID, turn2, "change another file")
+
+	path, _ := primitives.ParseRepoPath("app.txt")
+	result, err := New(repo).Compute(Query{Path: path, Line: 1})
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	entry := result.Entries[0]
+	if entry.Text != "unrecorded" || entry.Origin.Kind != "baseline" || entry.Origin.CheckpointRef != pre2.Ref {
+		t.Fatalf("resynchronized origin = %#v, want turn 2 pre baseline", entry)
+	}
+	if !strings.Contains(strings.Join(result.Warnings, "\n"), "resynchronized") {
+		t.Fatalf("warnings = %#v, want resynchronization warning", result.Warnings)
 	}
 }
 
@@ -168,8 +205,8 @@ func TestComputeBlameSessionScopeUsesSessionEndpoint(t *testing.T) {
 	sessionA := blameSessionID(t, "session-a")
 	sessionB := blameSessionID(t, "session-b")
 
-	captureBlameTurn(t, repo, root, sessionA, 1, "shared.txt", "from a\n", "write from a")
-	captureBlameTurn(t, repo, root, sessionB, 1, "shared.txt", "from b\n", "write from b")
+	captureRecordedBlameTurn(t, repo, root, sessionA, 1, "shared.txt", "from a\n", "write from a")
+	captureRecordedBlameTurn(t, repo, root, sessionB, 1, "shared.txt", "from b\n", "write from b")
 
 	path, _ := primitives.ParseRepoPath("shared.txt")
 	global, err := New(repo).Compute(Query{Path: path, Line: 1})
@@ -186,6 +223,222 @@ func TestComputeBlameSessionScopeUsesSessionEndpoint(t *testing.T) {
 	}
 	if scoped.Entries[0].Text != "from a" || scoped.Entries[0].Origin.SessionID != sessionA {
 		t.Fatalf("scoped blame = %#v, want session-a endpoint", scoped.Entries[0])
+	}
+}
+
+func TestConcurrentTurnGroupsHandleSubsecondAndLegacyTimestamps(t *testing.T) {
+	second := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	sessionA := blameSessionID(t, "same-second-a")
+	sessionB := blameSessionID(t, "same-second-b")
+	turnID := blameTurnID(t, 1)
+	legacyTurn := func(session primitives.SessionID, first, last time.Time) completeTurn {
+		return completeTurn{
+			SessionID: session,
+			TurnID:    turnID,
+			Pre:       checkpoint.CheckpointRefInfo{SessionID: session, TurnID: turnID, Time: second},
+			Post:      checkpoint.CheckpointRefInfo{SessionID: session, TurnID: turnID, Time: second},
+			Events:    queryindex.TurnEventSummary{First: first, Last: last},
+		}
+	}
+	preciseTurn := func(session primitives.SessionID, first, last time.Time) completeTurn {
+		turn := legacyTurn(session, first, last)
+		turn.PreEvent = first
+		turn.PostEvent = last
+		turn.PreEventPrecise = true
+		turn.PostEventPrecise = true
+		turn.HasCheckpointEvents = true
+		return turn
+	}
+
+	overlapping := []completeTurn{
+		preciseTurn(sessionA, second.Add(100*time.Nanosecond), second.Add(400*time.Nanosecond)),
+		preciseTurn(sessionB, second.Add(200*time.Nanosecond), second.Add(500*time.Nanosecond)),
+	}
+	if groups := concurrentTurnGroups(overlapping); len(groups) != 1 || len(groups[0].Members) != 2 {
+		t.Fatalf("subsecond overlap groups = %#v", groups)
+	}
+
+	sequential := []completeTurn{
+		preciseTurn(sessionA, second.Add(100*time.Nanosecond), second.Add(200*time.Nanosecond)),
+		preciseTurn(sessionB, second.Add(300*time.Nanosecond), second.Add(400*time.Nanosecond)),
+	}
+	if groups := concurrentTurnGroups(sequential); len(groups) != 0 {
+		t.Fatalf("subsecond sequential groups = %#v", groups)
+	}
+
+	legacy := []completeTurn{legacyTurn(sessionA, time.Time{}, time.Time{}), legacyTurn(sessionB, time.Time{}, time.Time{})}
+	if groups := concurrentTurnGroups(legacy); len(groups) != 1 || groups[0].Latest.SessionID != sessionB {
+		t.Fatalf("same-second legacy groups = %#v, want latest endpoint from session B", groups)
+	}
+
+	// Different post seconds do not recover the unknown order of two coarse
+	// pre snapshots captured in the same second.
+	coarsePre := []completeTurn{
+		legacyTurn(sessionA, time.Time{}, second.Add(2*time.Second)),
+		legacyTurn(sessionB, time.Time{}, second.Add(time.Second)),
+	}
+	coarsePre[0].Post.Time = second.Add(2 * time.Second)
+	coarsePre[1].Post.Time = second.Add(time.Second)
+	groups := concurrentTurnGroups(coarsePre)
+	if len(groups) != 1 || groups[0].OrderKnown {
+		t.Fatalf("coarse pre-order groups = %#v, want unknown snapshot order", groups)
+	}
+
+	// A legacy event can be published well after its coarse pre snapshot. The
+	// checkpoint second remains part of the possible interval, so this cannot
+	// be treated as safely sequential.
+	delayedEvents := []completeTurn{
+		legacyTurn(sessionA, second.Add(800*time.Millisecond), second.Add(900*time.Millisecond)),
+		legacyTurn(sessionB, second.Add(100*time.Millisecond), second.Add(200*time.Millisecond)),
+	}
+	if groups := concurrentTurnGroups(delayedEvents); len(groups) != 1 || groups[0].OrderKnown {
+		t.Fatalf("delayed legacy event groups = %#v, want one conservatively unordered group", groups)
+	}
+}
+
+func TestSortCompleteTurnsUsesLegacyEventEndBeforeSessionID(t *testing.T) {
+	second := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	earlierSession := blameSessionID(t, "z-earlier")
+	laterSession := blameSessionID(t, "a-later")
+	turnID := blameTurnID(t, 1)
+	turns := []completeTurn{
+		{SessionID: laterSession, TurnID: turnID, Post: checkpoint.CheckpointRefInfo{Time: second}, Events: queryindex.TurnEventSummary{Last: second.Add(900 * time.Millisecond)}},
+		{SessionID: earlierSession, TurnID: turnID, Post: checkpoint.CheckpointRefInfo{Time: second}, Events: queryindex.TurnEventSummary{Last: second.Add(300 * time.Millisecond)}},
+	}
+	sortCompleteTurns(turns)
+	if turns[0].SessionID != earlierSession || turns[1].SessionID != laterSession {
+		t.Fatalf("legacy event-end order = %s, %s; want %s, %s", turns[0].SessionID, turns[1].SessionID, earlierSession, laterSession)
+	}
+}
+
+func TestConcurrentTurnsWithSameSessionAndDifferentStreamsStayDistinct(t *testing.T) {
+	second := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	session := blameSessionID(t, "shared-session")
+	turnID := blameTurnID(t, 1)
+	makeTurn := func(stream primitives.EventStreamID, start, end time.Time) completeTurn {
+		return completeTurn{
+			SessionID: session,
+			TurnID:    turnID,
+			Pre: checkpoint.CheckpointRefInfo{
+				SessionID: session, TurnID: turnID, StreamID: stream, Time: second,
+			},
+			Post:                checkpoint.CheckpointRefInfo{SessionID: session, TurnID: turnID, StreamID: stream, Time: second},
+			PreEvent:            start,
+			PostEvent:           end,
+			PreEventPrecise:     true,
+			PostEventPrecise:    true,
+			HasCheckpointEvents: true,
+		}
+	}
+	turns := []completeTurn{
+		makeTurn("stream-a", second.Add(100*time.Nanosecond), second.Add(400*time.Nanosecond)),
+		makeTurn("stream-b", second.Add(200*time.Nanosecond), second.Add(500*time.Nanosecond)),
+	}
+	groups := concurrentTurnGroups(turns)
+	if len(groups) != 1 || len(groups[0].Sessions) != 2 || !groups[0].OrderKnown {
+		t.Fatalf("same-session stream groups = %#v, want two distinct ordered participants", groups)
+	}
+}
+
+func TestConcurrentTurnStartsAtPrecisePreSnapshotBoundary(t *testing.T) {
+	second := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	sessionA := blameSessionID(t, "snapshot-gap-a")
+	sessionB := blameSessionID(t, "snapshot-gap-b")
+	turnID := blameTurnID(t, 1)
+	makeTurn := func(session primitives.SessionID, pre, firstEvent, post time.Time) completeTurn {
+		return completeTurn{
+			SessionID:           session,
+			TurnID:              turnID,
+			Pre:                 checkpoint.CheckpointRefInfo{SessionID: session, TurnID: turnID, Time: second},
+			Post:                checkpoint.CheckpointRefInfo{SessionID: session, TurnID: turnID, Time: second},
+			Events:              queryindex.TurnEventSummary{First: firstEvent, Last: post.Add(time.Nanosecond)},
+			PreEvent:            pre,
+			PostEvent:           post,
+			PreEventPrecise:     true,
+			PostEventPrecise:    true,
+			HasCheckpointEvents: true,
+		}
+	}
+
+	turns := []completeTurn{
+		makeTurn(sessionA, second.Add(100*time.Nanosecond), second.Add(500*time.Nanosecond), second.Add(900*time.Nanosecond)),
+		// B completes after A's pre snapshot but before A's first published event.
+		makeTurn(sessionB, second.Add(200*time.Nanosecond), second.Add(250*time.Nanosecond), second.Add(400*time.Nanosecond)),
+	}
+	if groups := concurrentTurnGroups(turns); len(groups) != 1 || len(groups[0].Members) != 2 || !groups[0].OrderKnown {
+		t.Fatalf("snapshot-publication gap groups = %#v, want one safely ordered concurrent group", groups)
+	}
+}
+
+func TestSortCompleteTurnsUsesDurableSnapshotBoundary(t *testing.T) {
+	second := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	sessionA := blameSessionID(t, "post-order-a")
+	sessionB := blameSessionID(t, "post-order-b")
+	turnID := blameTurnID(t, 1)
+	turns := []completeTurn{
+		{SessionID: sessionB, TurnID: turnID, Post: checkpoint.CheckpointRefInfo{Time: second}, PostEvent: second.Add(300 * time.Nanosecond), PostEventPrecise: true},
+		{SessionID: sessionA, TurnID: turnID, Post: checkpoint.CheckpointRefInfo{Time: second}, PostEvent: second.Add(200 * time.Nanosecond), PostEventPrecise: true},
+	}
+	sortCompleteTurns(turns)
+	if turns[0].SessionID != sessionA || turns[1].SessionID != sessionB {
+		t.Fatalf("snapshot order = %s, %s; want %s, %s", turns[0].SessionID, turns[1].SessionID, sessionA, sessionB)
+	}
+}
+
+func TestCheckpointEventTimeUsesCapturedBoundary(t *testing.T) {
+	capturedAt := time.Date(2026, 8, 3, 12, 0, 0, 123, time.UTC)
+	deliveredAt := capturedAt.Add(5 * time.Second)
+	timestamp, err := primitives.NewTimestamp(deliveredAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit, err := primitives.ParseCommitSHA("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	if err != nil {
+		t.Fatal(err)
+	}
+	records := []eventlog.Event{{
+		Type:    primitives.EventTypeCheckpoint,
+		Time:    timestamp,
+		Payload: json.RawMessage(`{"phase":"pre","commit_sha":"` + commit.String() + `","captured_at":"` + capturedAt.Format(time.RFC3339Nano) + `"}`),
+	}}
+	got, found, precise := checkpointEventTime(records, checkpoint.CheckpointRefInfo{Phase: primitives.CheckpointPhasePre, Commit: commit})
+	if !found || !precise || !got.Equal(capturedAt) {
+		t.Fatalf("checkpoint boundary = %s, found=%v precise=%v; want %s", got, found, precise, capturedAt)
+	}
+}
+
+func TestObserveHistoryTreatsUnpublishedPostCheckpointAsIncomplete(t *testing.T) {
+	root, repo := newBlameRepo(t)
+	writeBlameFile(t, root, "app.txt", "before\n")
+	session := blameSessionID(t, "post-publication-gap")
+	turnID := blameTurnID(t, 1)
+	gitSync := false
+	recorder := turnevents.Recorder{
+		Log:     repo.EventLog(),
+		Manager: turns.NewManager(repo),
+		Adapter: primitives.AdapterCodex,
+	}
+	recorder.Manager.GitSyncEnabled = &gitSync
+	if _, err := recorder.Start(session, turnID); err != nil {
+		t.Fatalf("start turn: %v", err)
+	}
+	writeBlameFile(t, root, "app.txt", "after\n")
+	manager := turns.NewManager(repo).WithCheckpointEvents(primitives.AdapterCodex, "")
+	manager.GitSyncEnabled = &gitSync
+	finished, err := manager.Finish(session, turnID)
+	if err != nil {
+		t.Fatalf("create unpublished post checkpoint: %v", err)
+	}
+	if _, err := repo.CheckpointCommit(finished.Post.Ref); err != nil {
+		t.Fatalf("unpublished post ref does not resolve: %v", err)
+	}
+
+	history, err := New(repo).observeHistory("")
+	if err != nil {
+		t.Fatalf("observe history: %v", err)
+	}
+	if len(history.Complete) != 0 || len(history.Incomplete) != 1 || history.Incomplete[0].SessionID != session {
+		t.Fatalf("history = %#v, want one incomplete publication-gap turn", history)
 	}
 }
 
@@ -326,7 +579,7 @@ func TestComputeBlameUsesSQLiteCacheAndInvalidatesOnHistoryChange(t *testing.T) 
 	if rows != 3 {
 		t.Fatalf("blame cache rows = %d, want sentinel + 2 lines", rows)
 	}
-	if _, err := db.Exec(`UPDATE blame_cache SET line_text = ?, origin_prompt = ? WHERE path = ? AND line_no = 1`, "from cache", "stale prompt", "cache.txt"); err != nil {
+	if _, err := db.Exec(`UPDATE blame_cache SET line_text = ?, origin_prompt = ?, origin_action_agent_id = ?, origin_action_agent_type = ? WHERE path = ? AND line_no = 1`, "from cache", "stale prompt", "agent-a", "worker", "cache.txt"); err != nil {
 		t.Fatalf("mutate blame cache: %v", err)
 	}
 
@@ -340,6 +593,9 @@ func TestComputeBlameUsesSQLiteCacheAndInvalidatesOnHistoryChange(t *testing.T) 
 	if cached.Entries[0].Origin.Prompt != "cache fill" {
 		t.Fatalf("cached origin prompt = %q, want current event summary", cached.Entries[0].Origin.Prompt)
 	}
+	if cached.Entries[0].Origin.ActionAgentID != "agent-a" || cached.Entries[0].Origin.ActionAgentType != "worker" {
+		t.Fatalf("cached action agent = %#v", cached.Entries[0].Origin)
+	}
 
 	captureBlameTurn(t, repo, root, sessionID, 2, "cache.txt", "fresh\nsecond\n", "new history")
 	updated, err := New(repo).Compute(Query{Path: path, Line: 1})
@@ -351,6 +607,163 @@ func TestComputeBlameUsesSQLiteCacheAndInvalidatesOnHistoryChange(t *testing.T) 
 	}
 	if updated.Entries[0].Origin.TurnID.Uint64() != 2 {
 		t.Fatalf("updated origin = %#v, want turn 2", updated.Entries[0].Origin)
+	}
+}
+
+func TestComputeBlameCacheRejectsMissingActionEvidence(t *testing.T) {
+	root, repo := newBlameRepo(t)
+	sessionID := blameSessionID(t, "cache-action-evidence")
+	turnID := blameTurnID(t, 1)
+	writeBlameFile(t, root, "app.txt", "before\n")
+	if _, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre); err != nil {
+		t.Fatalf("turn pre: %v", err)
+	}
+	intent, err := repo.EventLog().Append(eventlog.AppendInput{
+		SessionID: sessionID,
+		TurnID:    &turnID,
+		Type:      primitives.EventTypeAgentIntent,
+		Adapter:   primitives.AdapterCodex,
+		Payload: mustBlameJSON(t, provenance.IntentPayload{
+			Problem: "the value is stale",
+			Scope:   []string{"app.txt"},
+		}),
+	})
+	if err != nil {
+		t.Fatalf("append intent: %v", err)
+	}
+	actionPre, err := repo.CreateSnapshotRef("refs/agent-vcs/actions/cache-action-evidence/pre", "action pre")
+	if err != nil {
+		t.Fatalf("action pre: %v", err)
+	}
+	if _, err := repo.EventLog().Append(eventlog.AppendInput{
+		SessionID: sessionID,
+		TurnID:    &turnID,
+		Type:      primitives.EventTypeToolCall,
+		Adapter:   primitives.AdapterCodex,
+		Payload: mustBlameJSON(t, map[string]any{
+			"tool_name": "apply_patch", "tool_use_id": "edit-1", "mutation_candidate": true,
+			"pre_snapshot":     map[string]any{"ref": actionPre.Ref, "commit": actionPre.Commit},
+			"intent_event_seq": intent.Seq,
+		}),
+	}); err != nil {
+		t.Fatalf("append tool call: %v", err)
+	}
+	writeBlameFile(t, root, "app.txt", "after\n")
+	actionPost, err := repo.CreateSnapshotRef("refs/agent-vcs/actions/cache-action-evidence/post", "action post")
+	if err != nil {
+		t.Fatalf("action post: %v", err)
+	}
+	if _, err := repo.EventLog().Append(eventlog.AppendInput{
+		SessionID: sessionID,
+		TurnID:    &turnID,
+		Type:      primitives.EventTypeToolResult,
+		Adapter:   primitives.AdapterCodex,
+		Payload: mustBlameJSON(t, map[string]any{
+			"tool_name": "apply_patch", "tool_use_id": "edit-1",
+			"post_snapshot": map[string]any{"ref": actionPost.Ref, "commit": actionPost.Commit},
+		}),
+	}); err != nil {
+		t.Fatalf("append tool result: %v", err)
+	}
+	if _, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePost); err != nil {
+		t.Fatalf("turn post: %v", err)
+	}
+	appendBlamePrompt(t, repo, sessionID, turnID, "fix app")
+	if _, err := queryindex.Rebuild(repo); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+
+	path, _ := primitives.ParseRepoPath("app.txt")
+	warm, err := New(repo).Compute(Query{Path: path, Line: 1})
+	if err != nil {
+		t.Fatalf("warm Compute: %v", err)
+	}
+	if warm.Entries[0].Origin.Intent == nil || warm.Entries[0].Origin.Intent.Confidence != provenance.IntentConfidenceHigh {
+		t.Fatalf("warm origin = %#v, want high-confidence action intent", warm.Entries[0].Origin)
+	}
+	// Simulate partial hidden-repository loss without changing the durable ref
+	// namespace or event log. The query index therefore remains fresh, but its
+	// disposable cache must not outrank the missing action commit.
+	commitText := actionPre.Commit.String()
+	objectPath := filepath.Join(repo.GitDir, "objects", commitText[:2], commitText[2:])
+	if _, err := os.Stat(objectPath); err != nil {
+		t.Fatalf("loose action commit object: %v", err)
+	}
+	if err := os.Remove(objectPath); err != nil {
+		t.Fatalf("remove action commit object: %v", err)
+	}
+	if err := repo.ValidateCommit(actionPre.Commit); err == nil {
+		t.Fatalf("action pre commit %s survived object removal", actionPre.Commit)
+	}
+
+	if _, err := New(repo).Compute(Query{Path: path, Line: 1}); err == nil || !strings.Contains(err.Error(), "validate cached action snapshot") {
+		t.Fatalf("cached Compute error = %v, want missing durable action evidence", err)
+	}
+}
+
+func TestComputeBlameCacheRejectsMissingConcurrentBaselineEvidence(t *testing.T) {
+	root, repo := newBlameRepo(t)
+	writeBlameFile(t, root, "app.txt", "zero\n")
+	sessionA := blameSessionID(t, "cache-open-baseline")
+	sessionB := blameSessionID(t, "cache-complete-turn")
+	turnID := blameTurnID(t, 1)
+	gitSync := false
+	manager := turns.NewManager(repo)
+	manager.GitSyncEnabled = &gitSync
+	recorder := turnevents.Recorder{Log: repo.EventLog(), Manager: manager, Adapter: primitives.AdapterCodex}
+
+	openTurn, err := recorder.Start(sessionA, turnID)
+	if err != nil {
+		t.Fatalf("start open turn: %v", err)
+	}
+	writeBlameFile(t, root, "app.txt", "one\n")
+	if _, err := recorder.Start(sessionB, turnID); err != nil {
+		t.Fatalf("start complete turn: %v", err)
+	}
+	appendBlamePrompt(t, repo, sessionB, turnID, "write two")
+	writeBlameFile(t, root, "app.txt", "two\n")
+	if _, err := recorder.Finish(sessionB, turnID); err != nil {
+		t.Fatalf("finish complete turn: %v", err)
+	}
+	if _, err := queryindex.Rebuild(repo); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+
+	path, _ := primitives.ParseRepoPath("app.txt")
+	engine := New(repo)
+	warm, err := engine.Compute(Query{Path: path, Line: 1, SessionID: sessionB})
+	if err != nil {
+		t.Fatalf("warm Compute: %v", err)
+	}
+	if warm.Entries[0].Origin.Kind != "concurrent" {
+		t.Fatalf("warm origin = %#v, want concurrent attribution", warm.Entries[0].Origin)
+	}
+
+	history, err := engine.observeHistory("")
+	if err != nil {
+		t.Fatalf("observe history: %v", err)
+	}
+	if len(history.Complete) != 1 || len(history.Incomplete) != 1 {
+		t.Fatalf("history = %#v, want one complete and one incomplete turn", history)
+	}
+	concurrent := concurrentTurnAttributions(history.Complete, history.Incomplete)
+	if fact := concurrent[completeTurnIdentity(history.Complete[0])]; fact.Baseline == nil || fact.Baseline.Commit != openTurn.Pre.Commit {
+		t.Fatalf("concurrent fact = %#v, want open-turn pre checkpoint baseline", fact)
+	}
+
+	commitText := openTurn.Pre.Commit.String()
+	objectPath := filepath.Join(repo.GitDir, "objects", commitText[:2], commitText[2:])
+	if _, err := os.Stat(objectPath); err != nil {
+		t.Fatalf("loose concurrent baseline commit object: %v", err)
+	}
+	if err := os.Remove(objectPath); err != nil {
+		t.Fatalf("remove concurrent baseline commit object: %v", err)
+	}
+	if err := engine.validateCachedEvidence(history.Complete, concurrent); err == nil || !strings.Contains(err.Error(), "concurrent baseline checkpoint") {
+		t.Fatalf("cached evidence validation error = %v, want missing concurrent baseline evidence", err)
+	}
+	if _, err := engine.Compute(Query{Path: path, Line: 1, SessionID: sessionB}); err == nil {
+		t.Fatal("cached Compute succeeded after concurrent baseline evidence was removed")
 	}
 }
 
@@ -467,6 +880,23 @@ func captureBlameTurn(t *testing.T, repo *checkpoint.Repo, root primitives.Works
 		t.Fatalf("turn %d post: %v", turn, err)
 	}
 	appendBlamePrompt(t, repo, sessionID, turnID, prompt)
+}
+
+func captureRecordedBlameTurn(t *testing.T, repo *checkpoint.Repo, root primitives.WorkspaceRoot, sessionID primitives.SessionID, turn uint64, path string, postContent string, prompt string) {
+	t.Helper()
+	turnID := blameTurnID(t, turn)
+	gitSync := false
+	manager := turns.NewManager(repo)
+	manager.GitSyncEnabled = &gitSync
+	recorder := turnevents.Recorder{Log: repo.EventLog(), Manager: manager, Adapter: primitives.AdapterCodex}
+	if _, err := recorder.Start(sessionID, turnID); err != nil {
+		t.Fatalf("turn %d start: %v", turn, err)
+	}
+	appendBlamePrompt(t, repo, sessionID, turnID, prompt)
+	writeBlameFile(t, root, path, postContent)
+	if _, err := recorder.Finish(sessionID, turnID); err != nil {
+		t.Fatalf("turn %d finish: %v", turn, err)
+	}
 }
 
 func appendBlamePrompt(t *testing.T, repo *checkpoint.Repo, sessionID primitives.SessionID, turnID primitives.TurnID, prompt string) {
