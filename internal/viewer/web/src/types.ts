@@ -1,3 +1,70 @@
+export type Project = {
+  store_id: string;
+  repo_id?: string;
+  name: string;
+  root: string;
+  store_path: string;
+  branch?: string;
+  /** False when the store directory is gone. The project stays listed because
+   * its recorded history outlives the working tree. */
+  present: boolean;
+  index_state?: string;
+  history_state?: string;
+  session_count: number;
+  turn_count: number;
+  additions: number;
+  deletions: number;
+  last_activity?: string;
+  last_prompt?: string;
+  last_adapter?: string;
+  added_at?: string;
+  worktrees?: Array<{ root: string; git_dir?: string; last_seen_at?: string }>;
+};
+
+export type ActivityItem = {
+  store_id: string;
+  project_name: string;
+  session_key: string;
+  session_id: string;
+  title?: string;
+  adapter?: string;
+  model?: string;
+  branch?: string;
+  status?: string;
+  turn_count: number;
+  file_count: number;
+  additions: number;
+  deletions: number;
+  started_at?: string;
+  finished_at?: string;
+};
+
+export type ViewerIndex = {
+  projects: Project[];
+  db_path: string;
+  registry_path: string;
+  read_only: boolean;
+  network_silent: boolean;
+  viewer_started_at: string;
+  current_store_id?: string;
+};
+
+export type AddProjectRequest = {
+  directory: string;
+  agent?: string;
+  update_gitignore: boolean;
+  git_sync: boolean;
+};
+
+export type AddProjectResult = {
+  store_id: string;
+  root: string;
+  store_path: string;
+  attached: boolean;
+  gitignore_updated: boolean;
+  hooks?: string[];
+};
+
 export type Workspace = {
   name: string;
   root: string;

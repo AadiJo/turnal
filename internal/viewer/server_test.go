@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -110,6 +112,102 @@ func TestServerRequiresBootstrapAndScopesViewerSession(t *testing.T) {
 	server.ServeHTTP(badHostResponse, badHostRequest)
 	if badHostResponse.Code != http.StatusForbidden {
 		t.Fatalf("bad host status = %d", badHostResponse.Code)
+	}
+}
+
+// The write routes are the only way the viewer changes the filesystem, so they
+// must reject a caller that holds the session cookie but cannot echo the write
+// token. A cross-origin page can cause the cookie to be sent; it cannot read it.
+func TestWriteRoutesRequireTheWriteToken(t *testing.T) {
+	server, repo := newViewerTestServer(t)
+	server.expectedHost = "127.0.0.1:41732"
+	server.expectedBase = "http://" + server.expectedHost
+	prefix := "/" + server.launchPath + "/"
+
+	body, _ := json.Marshal(map[string]string{"secret": server.launchSecret})
+	bootstrapRequest := httptest.NewRequest(http.MethodPost, server.expectedBase+prefix+"api/v1/auth/bootstrap", bytes.NewReader(body))
+	bootstrapRequest.Host = server.expectedHost
+	bootstrapRequest.Header.Set("Origin", server.expectedBase)
+	bootstrapRequest.Header.Set(viewerHeader, "1")
+	bootstrapResponse := httptest.NewRecorder()
+	server.ServeHTTP(bootstrapResponse, bootstrapRequest)
+	if bootstrapResponse.Code != http.StatusOK {
+		t.Fatalf("bootstrap status = %d", bootstrapResponse.Code)
+	}
+	var bootstrapBody struct {
+		WriteToken string `json:"write_token"`
+	}
+	if err := json.Unmarshal(bootstrapResponse.Body.Bytes(), &bootstrapBody); err != nil {
+		t.Fatal(err)
+	}
+	if bootstrapBody.WriteToken == "" {
+		t.Fatal("bootstrap did not return a write token")
+	}
+	cookie := bootstrapResponse.Result().Cookies()[0]
+
+	for _, testCase := range []struct {
+		name   string
+		method string
+		route  string
+	}{
+		{"add", http.MethodPost, "api/v1/projects"},
+		{"remove", http.MethodDelete, "api/v1/projects/" + repo.StoreID.String()},
+	} {
+		request := httptest.NewRequest(testCase.method, server.expectedBase+prefix+testCase.route, strings.NewReader("{}"))
+		request.Host = server.expectedHost
+		request.Header.Set(viewerHeader, "1")
+		request.AddCookie(cookie)
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, request)
+		if response.Code != http.StatusForbidden {
+			t.Fatalf("%s without write token: status = %d, body=%s", testCase.name, response.Code, response.Body.String())
+		}
+	}
+
+	// With the token, remove succeeds and leaves the store on disk.
+	remove := httptest.NewRequest(http.MethodDelete, server.expectedBase+prefix+"api/v1/projects/"+repo.StoreID.String(), nil)
+	remove.Host = server.expectedHost
+	remove.Header.Set(viewerHeader, "1")
+	remove.Header.Set(viewerWriteHeader, bootstrapBody.WriteToken)
+	remove.AddCookie(cookie)
+	removeResponse := httptest.NewRecorder()
+	server.ServeHTTP(removeResponse, remove)
+	if removeResponse.Code != http.StatusOK {
+		t.Fatalf("remove status = %d, body=%s", removeResponse.Code, removeResponse.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(repo.MetadataDir, "git")); err != nil {
+		t.Fatalf("remove deleted the store from disk: %v", err)
+	}
+}
+
+// A key minted for one project must not resolve through another project's path,
+// and an unknown project must fail before any store is opened.
+func TestUnknownProjectIsRejected(t *testing.T) {
+	server, _ := newViewerTestServer(t)
+	server.expectedHost = "127.0.0.1:41733"
+	server.expectedBase = "http://" + server.expectedHost
+	prefix := "/" + server.launchPath + "/"
+
+	body, _ := json.Marshal(map[string]string{"secret": server.launchSecret})
+	bootstrapRequest := httptest.NewRequest(http.MethodPost, server.expectedBase+prefix+"api/v1/auth/bootstrap", bytes.NewReader(body))
+	bootstrapRequest.Host = server.expectedHost
+	bootstrapRequest.Header.Set("Origin", server.expectedBase)
+	bootstrapRequest.Header.Set(viewerHeader, "1")
+	bootstrapResponse := httptest.NewRecorder()
+	server.ServeHTTP(bootstrapResponse, bootstrapRequest)
+	cookie := bootstrapResponse.Result().Cookies()[0]
+
+	request := httptest.NewRequest(http.MethodGet, server.expectedBase+prefix+"api/v1/projects/store_missing/sessions", nil)
+	request.Host = server.expectedHost
+	request.Header.Set(viewerHeader, "1")
+	request.AddCookie(cookie)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("unknown project status = %d", response.Code)
+	}
+	if !strings.Contains(response.Body.String(), "unknown_project") {
+		t.Fatalf("unknown project body = %s", response.Body.String())
 	}
 }
 
