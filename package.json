@@ -26,7 +26,7 @@
     "build:web": "vite build",
     "check:web": "tsc --noEmit && npm run build:web && git diff --exit-code -- internal/viewer/web/dist",
     "dev:web": "vite",
-    "build:npm-binaries": "npm run build:web && node scripts/build-npm-binaries.js",
+    "build:npm-binaries": "node scripts/build-npm-binaries.js",
     "test": "go test ./...",
     "test:postinstall": "node --test scripts/remove-powershell-shims.test.js",
     "test:installer": "sh scripts/test-install.sh",
@@ -35,7 +35,7 @@
     "pack:dry-run": "npm pack --dry-run",
     "test:release-sbom": "node --test scripts/validate-release-sbom.test.js",
     "postinstall": "node npm/postinstall.js",
-    "prepack": "npm run build:npm-binaries",
+    "prepack": "node scripts/build-npm-binaries.js",
     "prepublishOnly": "go test ./..."
   },
   "repository": {
