@@ -18,9 +18,11 @@ var (
 )
 
 type Query struct {
-	Path      primitives.RepoPath
-	Line      int
-	SessionID primitives.SessionID
+	Path          primitives.RepoPath
+	Line          int
+	SessionID     primitives.SessionID
+	StreamID      primitives.EventStreamID
+	ThroughTurnID primitives.TurnID
 }
 
 type Result struct {

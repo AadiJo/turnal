@@ -27,18 +27,19 @@ func (engine Engine) Compute(query Query) (Result, error) {
 		return Result{}, ErrInvalidLine
 	}
 
-	history, err := engine.observeHistory("")
+	// Observe the requested stream, but leave the session and turn bounds off.
+	// Concurrency detection must still see other sessions, because its whole job
+	// is to notice that another session held a turn open while this one ran. It
+	// must not see other streams: the same turn id can legitimately exist in a
+	// second stream, and treating that as an overlap makes an ordinary blame
+	// look unresolvable.
+	history, err := engine.observeHistory("", query.StreamID, 0)
 	if err != nil {
 		return Result{}, err
 	}
-	turns := history.Complete
-	if query.SessionID != "" {
-		turns = make([]completeTurn, 0, len(history.Complete))
-		for _, turn := range history.Complete {
-			if turn.SessionID == query.SessionID {
-				turns = append(turns, turn)
-			}
-		}
+	turns, err := engine.completeTurns(query.SessionID, query.StreamID, query.ThroughTurnID)
+	if err != nil {
+		return Result{}, err
 	}
 	if len(turns) == 0 {
 		return Result{}, ErrNoHistory

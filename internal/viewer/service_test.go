@@ -86,7 +86,7 @@ func TestServiceTraversesTurnDiffAndBlameWithoutWritingHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if patch.Patch == "" || patch.Truncated {
+	if patch.Patch == "" || patch.Truncated || patch.LimitBytes != maxPatchBytes || patch.LimitLines != maxPatchLines {
 		t.Fatalf("patch = %#v", patch)
 	}
 	origins, err := service.Blame(ctx, turnKey, "auth.go", 0)
@@ -160,6 +160,60 @@ func TestServiceRetriesTransientPartialTailWhileWriterLockIsHeld(t *testing.T) {
 	}
 	if len(sessions) != 1 || sessions[0].ID != sessionID.String() {
 		t.Fatalf("sessions after live append retry = %#v", sessions)
+	}
+}
+
+func TestServiceBlameStopsAtCanonicalSelectedTurn(t *testing.T) {
+	repo := newViewerTestRepo(t)
+	path := filepath.Join(repo.WorkspaceRoot.String(), "version.txt")
+	if err := os.WriteFile(path, []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sessionID, err := primitives.ParseSessionID("bounded-viewer-blame")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := turnevents.Recorder{Log: repo.EventLog(), Manager: turns.NewManager(repo), Adapter: primitives.AdapterManual}
+	for _, content := range []string{"version one\n", "version two\n"} {
+		started, startErr := recorder.Start(sessionID, 0)
+		if startErr != nil {
+			t.Fatal(startErr)
+		}
+		if writeErr := os.WriteFile(path, []byte(content), 0o644); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+		if _, finishErr := recorder.Finish(sessionID, started.TurnID); finishErr != nil {
+			t.Fatal(finishErr)
+		}
+	}
+
+	service, err := NewService(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := service.Sessions(context.Background())
+	if err != nil || len(sessions) != 1 {
+		t.Fatalf("sessions = %#v, %v", sessions, err)
+	}
+	turnList, err := service.SessionTurns(context.Background(), sessions[0].Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var firstTurnKey string
+	for _, turn := range turnList.Turns {
+		if turn.ID == 1 {
+			firstTurnKey = turn.Key
+		}
+	}
+	if firstTurnKey == "" {
+		t.Fatalf("turns = %#v", turnList.Turns)
+	}
+	origins, err := service.Blame(context.Background(), firstTurnKey, "version.txt", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if origins.CompleteTurns != 1 || len(origins.Lines) != 1 || origins.Lines[0].Text != "version one" {
+		t.Fatalf("bounded origins = %#v", origins)
 	}
 }
 

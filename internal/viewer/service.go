@@ -285,7 +285,7 @@ func (service *Service) Patch(ctx context.Context, key, path string) (FilePatchV
 	}
 	return FilePatchView{
 		Path: parsedPath.String(), Patch: string(patch), Truncated: truncated,
-		ByteCount: originalBytes, LineCount: originalLines, LimitBytes: maxPatchBytes,
+		ByteCount: originalBytes, LineCount: originalLines, LimitBytes: maxPatchBytes, LimitLines: maxPatchLines,
 	}, nil
 }
 
@@ -295,6 +295,8 @@ func (service *Service) Blame(ctx context.Context, key, path string, line int) (
 		return BlameView{}, err
 	}
 	sessionID, _ := primitives.ParseSessionID(identity.SessionID)
+	streamID, _ := primitives.ParseEventStreamID(identity.StreamID)
+	turnID, _ := primitives.NewTurnID(identity.TurnID)
 	parsedPath, err := primitives.ParseRepoPath(path)
 	if err != nil {
 		return BlameView{}, err
@@ -306,7 +308,7 @@ func (service *Service) Blame(ctx context.Context, key, path string, line int) (
 		return BlameView{}, err
 	}
 	result, err := (blame.Engine{Repo: service.Repo, ReadOnly: true}).Compute(blame.Query{
-		Path: parsedPath, Line: line, SessionID: sessionID,
+		Path: parsedPath, Line: line, SessionID: sessionID, StreamID: streamID, ThroughTurnID: turnID,
 	})
 	if err != nil {
 		return BlameView{}, err
@@ -325,10 +327,7 @@ func (service *Service) Blame(ctx context.Context, key, path string, line int) (
 			ToolNames: entry.Origin.ToolNames, Time: entry.Origin.Time,
 		}
 		if entry.Origin.Kind == "turn" && entry.Origin.TurnID != 0 {
-			streamID, streamErr := service.streamForOrigin(ctx, entry.Origin.SessionID, entry.Origin.TurnID)
-			if streamErr == nil {
-				lineView.TurnKey, _ = service.codec.encode(resourceTurn, service.Repo.WorktreeID, streamID, entry.Origin.SessionID, entry.Origin.TurnID)
-			}
+			lineView.TurnKey, _ = service.codec.encode(resourceTurn, service.Repo.WorktreeID, streamID, entry.Origin.SessionID, entry.Origin.TurnID)
 		}
 		lines = append(lines, lineView)
 	}
@@ -647,31 +646,6 @@ func (service *Service) turnRecordForKey(ctx context.Context, key string) (resou
 		}
 	}
 	return resourceIdentity{}, turnRecord{}, fmt.Errorf("turn no longer exists in this canonical stream")
-}
-
-func (service *Service) streamForOrigin(ctx context.Context, sessionID primitives.SessionID, turnID primitives.TurnID) (primitives.EventStreamID, error) {
-	records, _, err := service.loadRecords(ctx)
-	if err != nil {
-		return "", err
-	}
-	var match primitives.EventStreamID
-	for _, record := range records {
-		if record.stream.SessionID != sessionID {
-			continue
-		}
-		for _, turn := range record.turns {
-			if turn.id == turnID {
-				if match != "" && match != record.stream.StreamID {
-					return "", fmt.Errorf("turn origin is ambiguous across streams")
-				}
-				match = record.stream.StreamID
-			}
-		}
-	}
-	if match == "" {
-		return "", fmt.Errorf("turn origin stream not found")
-	}
-	return match, nil
 }
 
 func fileViews(files []checkpoint.DiffFileStat) []FileView {

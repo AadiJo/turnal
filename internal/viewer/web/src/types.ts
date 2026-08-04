@@ -173,6 +173,7 @@ export type FilePatch = {
   byte_count: number;
   line_count: number;
   limit_bytes: number;
+  limit_lines: number;
 };
 
 export type BlameLine = {

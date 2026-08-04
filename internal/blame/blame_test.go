@@ -433,12 +433,74 @@ func TestObserveHistoryTreatsUnpublishedPostCheckpointAsIncomplete(t *testing.T)
 		t.Fatalf("unpublished post ref does not resolve: %v", err)
 	}
 
-	history, err := New(repo).observeHistory("")
+	history, err := New(repo).observeHistory("", "", 0)
 	if err != nil {
 		t.Fatalf("observe history: %v", err)
 	}
 	if len(history.Complete) != 0 || len(history.Incomplete) != 1 || history.Incomplete[0].SessionID != session {
 		t.Fatalf("history = %#v, want one incomplete publication-gap turn", history)
+	}
+}
+
+func TestComputeBlameScopesCanonicalStream(t *testing.T) {
+	root, repo := newBlameRepo(t)
+	repo.ScopedRefs = true
+	sessionID := blameSessionID(t, "shared-session")
+
+	captureBlameTurn(t, repo, root, sessionID, 1, "shared.txt", "from first stream\n", "first stream")
+	firstStream, err := repo.StreamID(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	secondRepo := *repo
+	secondRepo.EventProducerID, err = primitives.NewEventProducerID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	captureBlameTurn(t, &secondRepo, root, sessionID, 1, "shared.txt", "from second stream\n", "second stream")
+	secondStream, err := secondRepo.StreamID(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	path, _ := primitives.ParseRepoPath("shared.txt")
+	first, err := New(repo).Compute(Query{Path: path, SessionID: sessionID, StreamID: firstStream})
+	if err != nil {
+		t.Fatalf("first stream Compute: %v", err)
+	}
+	second, err := New(repo).Compute(Query{Path: path, SessionID: sessionID, StreamID: secondStream})
+	if err != nil {
+		t.Fatalf("second stream Compute: %v", err)
+	}
+	if first.Entries[0].Text != "from first stream" {
+		t.Fatalf("first stream blame = %#v", first.Entries[0])
+	}
+	if second.Entries[0].Text != "from second stream" {
+		t.Fatalf("second stream blame = %#v", second.Entries[0])
+	}
+}
+
+func TestComputeBlameStopsAtSelectedTurn(t *testing.T) {
+	root, repo := newBlameRepo(t)
+	sessionID := blameSessionID(t, "bounded-session")
+	captureBlameTurn(t, repo, root, sessionID, 1, "app.txt", "version one\n", "first version")
+	captureBlameTurn(t, repo, root, sessionID, 2, "app.txt", "version two\n", "second version")
+
+	streamID, err := repo.StreamID(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turnID := blameTurnID(t, 1)
+	path, _ := primitives.ParseRepoPath("app.txt")
+	result, err := New(repo).Compute(Query{
+		Path: path, SessionID: sessionID, StreamID: streamID, ThroughTurnID: turnID,
+	})
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	if result.CompleteTurns != 1 || result.Entries[0].Text != "version one" || result.LatestCommit == "" {
+		t.Fatalf("bounded blame = %#v", result)
 	}
 }
 
@@ -739,7 +801,7 @@ func TestComputeBlameCacheRejectsMissingConcurrentBaselineEvidence(t *testing.T)
 		t.Fatalf("warm origin = %#v, want concurrent attribution", warm.Entries[0].Origin)
 	}
 
-	history, err := engine.observeHistory("")
+	history, err := engine.observeHistory("", "", 0)
 	if err != nil {
 		t.Fatalf("observe history: %v", err)
 	}

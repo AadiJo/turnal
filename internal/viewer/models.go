@@ -191,6 +191,7 @@ type FilePatchView struct {
 	ByteCount  int    `json:"byte_count"`
 	LineCount  int    `json:"line_count"`
 	LimitBytes int    `json:"limit_bytes"`
+	LimitLines int    `json:"limit_lines"`
 }
 
 type BlameView struct {
