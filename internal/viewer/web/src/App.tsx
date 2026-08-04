@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from "preact/hooks";
 import { api, APIError, bootstrap } from "./api";
-import { Glyph } from "./Chrome";
 import { ProjectsView } from "./ProjectsView";
 import { ProjectView } from "./ProjectView";
 import type { ActivityItem, Project, ViewerIndex } from "./types";
@@ -113,8 +112,7 @@ function Loading() {
   return (
     <div className="hub">
       <div className="hub-top">
-        <Glyph size={26} />
-        <h1>Opening Turnal</h1>
+        <h1>Opening the project index</h1>
       </div>
       <div className="lede">Reading the project index and verifying the viewer session.</div>
     </div>
@@ -126,8 +124,7 @@ function Fatal({ error, onRetry }: { error: Error | null; onRetry: () => void })
   return (
     <div className="hub">
       <div className="hub-top">
-        <Glyph size={26} />
-        <h1>{locked ? "Relaunch from Turnal" : "The local history could not be read"}</h1>
+        <h1>{locked ? "Relaunch the viewer" : "The local history could not be read"}</h1>
       </div>
       <div className="lede">{error?.message || "The viewer did not return project data."}</div>
       <div className="empty">
@@ -151,11 +148,10 @@ function UnknownProject({ storeID, onBack }: { storeID: string; onBack: () => vo
   return (
     <div className="hub">
       <div className="hub-top">
-        <Glyph size={26} />
         <h1>That project is not indexed</h1>
       </div>
       <div className="lede">
-        No registered store matches <code>{storeID}</code>. It may have been removed from Turnal.
+        No registered store matches <code>{storeID}</code>. It may have been removed.
       </div>
       <div className="empty">
         <span className="row2">

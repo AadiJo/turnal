@@ -136,26 +136,6 @@ kbd {
   z-index: 20;
 }
 
-.mark {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  font-weight: 500;
-}
-
-.glyph {
-  width: 20px;
-  height: 20px;
-  flex: none;
-  color: var(--text-soft);
-}
-
-.glyph svg {
-  width: 100%;
-  height: 100%;
-  display: block;
-}
-
 .crumbs {
   display: flex;
   align-items: center;
@@ -164,6 +144,10 @@ kbd {
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
+  /* With no wordmark ahead of it, the trail starts the header and carries the
+     page's identity, so it gets a little more presence than nav text. */
+  font-size: 14px;
+  padding-left: 4px;
 }
 
 .crumbs a:hover {
@@ -1704,12 +1688,6 @@ kbd {
   padding: 72px 24px;
   border: 1px dashed var(--line-strong);
   border-radius: var(--radius);
-}
-
-.empty .glyph {
-  width: 34px;
-  height: 34px;
-  opacity: 0.45;
 }
 
 .empty strong {

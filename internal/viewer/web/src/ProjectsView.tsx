@@ -1,6 +1,6 @@
 import { useState } from "preact/hooks";
 import { api, APIError, canWrite } from "./api";
-import { Chrome, Delta, Glyph, Note, Section, Tabs } from "./Chrome";
+import { Chrome, Delta, Note, Section, Tabs } from "./Chrome";
 import { cleanAdapter, cx, displayTime, initials, isRealTime, shortAge } from "./format";
 import type { ActivityItem, Project, ViewerIndex } from "./types";
 
@@ -124,7 +124,6 @@ export function ProjectsView({
 
             {index.projects.length === 0 ? (
               <div className="empty">
-                <Glyph size={34} />
                 <strong>No projects recorded yet</strong>
                 <p>
                   Turnal records what your agents did, per project. Add a directory to start recording,
