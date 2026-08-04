@@ -27,6 +27,7 @@
     "test": "go test ./...",
     "test:postinstall": "node --test scripts/remove-powershell-shims.test.js",
     "test:installer": "sh scripts/test-install.sh",
+    "test:installer:windows": "powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/test-install.ps1",
     "build:release-archives": "node scripts/build-release-archives.js",
     "pack:dry-run": "npm pack --dry-run",
     "test:release-sbom": "node --test scripts/validate-release-sbom.test.js",

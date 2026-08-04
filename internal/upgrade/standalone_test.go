@@ -17,10 +17,17 @@ import (
 	"testing"
 )
 
-func TestInstallStandaloneDownloadsVerifiesAndReplacesExecutables(t *testing.T) {
-	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
-		t.Skip("standalone upgrades are only supported on macOS and Linux")
+const standaloneMetadataHelperEnvironment = "TURNAL_TEST_STANDALONE_METADATA_HELPER"
+
+func TestMain(m *testing.M) {
+	if metadata := os.Getenv(standaloneMetadataHelperEnvironment); metadata != "" {
+		fmt.Fprintln(os.Stdout, metadata)
+		os.Exit(0)
 	}
+	os.Exit(m.Run())
+}
+
+func TestInstallStandaloneDownloadsVerifiesAndReplacesExecutables(t *testing.T) {
 	platform, err := standalonePlatform(runtime.GOOS, runtime.GOARCH)
 	if err != nil {
 		t.Skipf("unsupported test platform: %v", err)
@@ -29,8 +36,34 @@ func TestInstallStandaloneDownloadsVerifiesAndReplacesExecutables(t *testing.T) 
 	version := "0.4.2"
 	archiveName := fmt.Sprintf("turnal_%s_%s.tar.gz", version, platform)
 	files := map[string][]byte{}
-	for _, name := range standaloneExecutables {
-		files[name] = standaloneMetadataScript(version, ChannelStable, InstallSourceStandalone)
+	if runtime.GOOS == "windows" {
+		testExecutable, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		executableBytes, err := os.ReadFile(testExecutable)
+		if err != nil {
+			t.Fatal(err)
+		}
+		metadata := fmt.Sprintf(
+			`{"version":%q,"channel":%q,"install_source":%q}`,
+			version,
+			ChannelStable,
+			InstallSourceStandalone,
+		)
+		t.Setenv(standaloneMetadataHelperEnvironment, metadata)
+		for _, name := range standaloneExecutables {
+			files[name] = executableBytes
+		}
+		originalFinalizer := standaloneTransactionFinalizer
+		standaloneTransactionFinalizer = func(transactionDir, _ string) error {
+			return os.RemoveAll(transactionDir)
+		}
+		t.Cleanup(func() { standaloneTransactionFinalizer = originalFinalizer })
+	} else {
+		for _, name := range standaloneExecutables {
+			files[name] = standaloneMetadataScript(version, ChannelStable, InstallSourceStandalone)
+		}
 	}
 	for _, name := range standaloneDocumentation {
 		files[name] = []byte("documentation-" + name)
@@ -74,6 +107,31 @@ func TestInstallStandaloneDownloadsVerifiesAndReplacesExecutables(t *testing.T) 
 		}
 		if !bytes.Equal(data, files[name]) {
 			t.Fatalf("%s bytes changed during standalone installation", name)
+		}
+	}
+}
+
+func TestStandalonePlatformSupportsWindows(t *testing.T) {
+	for _, architecture := range []string{"amd64", "arm64"} {
+		got, err := standalonePlatform("windows", architecture)
+		if err != nil {
+			t.Fatalf("standalonePlatform(windows, %s): %v", architecture, err)
+		}
+		want := "windows_" + architecture
+		if got != want {
+			t.Fatalf("platform = %q, want %q", got, want)
+		}
+	}
+}
+
+func TestStandaloneExecutableNamesUseWindowsSuffix(t *testing.T) {
+	names := standaloneExecutableNames("windows")
+	if len(names) != len(standaloneCommands) {
+		t.Fatalf("executable count = %d, want %d", len(names), len(standaloneCommands))
+	}
+	for _, name := range names {
+		if !strings.HasSuffix(name, ".exe") {
+			t.Fatalf("Windows executable %q is missing .exe", name)
 		}
 	}
 }
@@ -167,7 +225,8 @@ func TestReplaceStandaloneFilesRollsBackMidTransactionFailure(t *testing.T) {
 	}
 
 	rename := func(source, destination string) error {
-		if strings.HasSuffix(source, "turnal-adapter-gemini-cli.new") {
+		failedName := standaloneExecutableNames(runtime.GOOS)[2] + ".new"
+		if strings.HasSuffix(source, failedName) {
 			return errors.New("injected replacement failure")
 		}
 		return os.Rename(source, destination)
@@ -200,10 +259,12 @@ func TestReplaceStandaloneFilesPreservesBackupsWhenRollbackFails(t *testing.T) {
 	}
 
 	rename := func(source, destination string) error {
+		failedName := standaloneExecutableNames(runtime.GOOS)[2] + ".new"
+		restoreName := standaloneExecutableNames(runtime.GOOS)[1] + ".old"
 		switch {
-		case strings.HasSuffix(source, "turnal-adapter-gemini-cli.new"):
+		case strings.HasSuffix(source, failedName):
 			return errors.New("injected replacement failure")
-		case strings.HasSuffix(source, "turnal-adapter-opencode.old"):
+		case strings.HasSuffix(source, restoreName):
 			return errors.New("injected restore failure")
 		default:
 			return os.Rename(source, destination)
@@ -220,12 +281,12 @@ func TestReplaceStandaloneFilesPreservesBackupsWhenRollbackFails(t *testing.T) {
 	if len(transactions) != 1 {
 		t.Fatalf("transaction directories = %v, want preserved recovery directory", transactions)
 	}
-	backup := filepath.Join(transactions[0], "turnal-adapter-opencode.old")
+	backup := filepath.Join(transactions[0], standaloneExecutableNames(runtime.GOOS)[1]+".old")
 	data, readErr := os.ReadFile(backup)
 	if readErr != nil {
 		t.Fatalf("read preserved backup: %v", readErr)
 	}
-	if string(data) != "old-turnal-adapter-opencode" {
+	if string(data) != "old-"+standaloneExecutableNames(runtime.GOOS)[1] {
 		t.Fatalf("preserved backup = %q", data)
 	}
 	if !strings.Contains(err.Error(), transactions[0]) {

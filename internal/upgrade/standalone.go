@@ -23,12 +23,18 @@ import (
 const defaultReleaseBaseURL = "https://github.com/AadiJo/turnal/releases/download"
 const defaultStandaloneDownloadTimeout = 5 * time.Minute
 
-var standaloneExecutables = []string{
+var standaloneCommands = []string{
 	"turnal",
 	"turnal-adapter-opencode",
 	"turnal-adapter-gemini-cli",
 	"turnal-adapter-copilot-cli",
 }
+
+var standaloneExecutables = standaloneExecutableNames(runtime.GOOS)
+
+const StandaloneCleanupCommand = "__standalone-upgrade-cleanup"
+
+var standaloneTransactionFinalizer = finalizeStandaloneTransaction
 
 var standaloneDocumentation = []string{
 	"LICENSE",
@@ -103,7 +109,7 @@ func InstallStandalone(ctx context.Context, opts StandaloneInstallOptions) error
 func standalonePlatform(goos, goarch string) (string, error) {
 	var platform string
 	switch goos {
-	case "darwin", "linux":
+	case "darwin", "linux", "windows":
 		platform = goos
 	default:
 		return "", fmt.Errorf("standalone upgrades are unsupported on %s", goos)
@@ -116,6 +122,17 @@ func standalonePlatform(goos, goarch string) (string, error) {
 		return "", fmt.Errorf("standalone upgrades are unsupported on %s/%s", goos, goarch)
 	}
 	return platform + "_" + architecture, nil
+}
+
+func standaloneExecutableNames(goos string) []string {
+	names := make([]string, 0, len(standaloneCommands))
+	for _, command := range standaloneCommands {
+		if goos == "windows" {
+			command += ".exe"
+		}
+		names = append(names, command)
+	}
+	return names
 }
 
 func resolveInstallDir(opts StandaloneInstallOptions) (string, error) {
@@ -270,10 +287,29 @@ func verifyStagedStandalone(ctx context.Context, stageDir, version, channel stri
 }
 
 func replaceStandaloneFiles(stageDir, installDir string) error {
-	return replaceStandaloneFilesWithRename(stageDir, installDir, os.Rename)
+	return replaceStandaloneFilesWithRenameAndFinalize(
+		stageDir,
+		installDir,
+		os.Rename,
+		standaloneTransactionFinalizer,
+	)
 }
 
 func replaceStandaloneFilesWithRename(stageDir, installDir string, rename func(string, string) error) error {
+	return replaceStandaloneFilesWithRenameAndFinalize(
+		stageDir,
+		installDir,
+		rename,
+		func(transactionDir, _ string) error { return os.RemoveAll(transactionDir) },
+	)
+}
+
+func replaceStandaloneFilesWithRenameAndFinalize(
+	stageDir string,
+	installDir string,
+	rename func(string, string) error,
+	finalize func(transactionDir, installedTurnal string) error,
+) error {
 	if err := os.MkdirAll(installDir, 0o755); err != nil {
 		return fmt.Errorf("create standalone install directory: %w", err)
 	}
@@ -340,6 +376,16 @@ func replaceStandaloneFilesWithRename(stageDir, installDir string, rename func(s
 		if err := rename(filepath.Join(transactionDir, name+".new"), target); err != nil {
 			return failWithRollback(fmt.Errorf("install %s: %w", name, err))
 		}
+	}
+
+	removeTransaction = false
+	installedTurnal := filepath.Join(installDir, standaloneExecutables[0])
+	if err := finalize(transactionDir, installedTurnal); err != nil {
+		return fmt.Errorf(
+			"standalone files were installed, but cleanup could not be scheduled for %s: %w",
+			transactionDir,
+			err,
+		)
 	}
 	return nil
 }
