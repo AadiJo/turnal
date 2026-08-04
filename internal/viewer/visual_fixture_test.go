@@ -103,6 +103,69 @@ func TestCreateVisualFixture(t *testing.T) {
 	if _, err := exec.Command("git", "-C", rootPath, "status", "--short").Output(); err != nil {
 		t.Fatal(err)
 	}
+
+	// The viewer indexes every registered project, so a screenshot of the global
+	// index needs more than one. Create sibling projects with a little history
+	// each. They register in whatever TURNAL_STATE_DIR is set, so the caller is
+	// responsible for pointing that away from a real registry.
+	for _, sibling := range []struct {
+		name    string
+		adapter primitives.AdapterName
+		session string
+		turns   []visualTurn
+	}{
+		{
+			name: "codestore", adapter: primitives.AdapterClaudeCode, session: "render-large-diffs",
+			turns: []visualTurn{
+				{
+					Prompt: "Detach parsed substrings so a large patch stops retaining its parent buffer.",
+					Tool:   "apply_patch", Path: "src/parse.ts",
+					Content:   "export function detach(value: string): string {\n  // Copying breaks the retained slice of the original buffer.\n  return (\" \" + value).slice(1);\n}\n",
+					Assistant: "Parsing a 700 MB patch now peaks at 1.15 GB instead of 2.4 GB.",
+				},
+				{
+					Prompt: "Add position-to-line checkpoints so hunk lookup can binary search.",
+					Tool:   "apply_patch", Path: "src/layout.ts",
+					Content:   "export type Checkpoint = { offset: number; line: number };\n\nexport function findLine(marks: Checkpoint[], offset: number): number {\n  let low = 0;\n  let high = marks.length - 1;\n  while (low <= high) {\n    const mid = (low + high) >> 1;\n    if (marks[mid].offset < offset) low = mid + 1;\n    else high = mid - 1;\n  }\n  return marks[Math.max(0, high)].line;\n}\n",
+					Assistant: "Replaced the linear scan that went quadratic on very large hunks.",
+				},
+			},
+		},
+		{
+			name: "shipd", adapter: primitives.AdapterCodex, session: "release-gates",
+			turns: []visualTurn{
+				{
+					Prompt: "Fail the release when the built assets differ from what is committed.",
+					Tool:   "apply_patch", Path: "scripts/ci/quality.sh",
+					Content:   "#!/usr/bin/env bash\nset -euo pipefail\n\nnpm run check:web\ngo test ./...\n",
+					Assistant: "A stale embedded bundle now fails the build instead of shipping.",
+				},
+			},
+		},
+	} {
+		siblingPath := filepath.Join(filepath.Dir(rootPath), sibling.name)
+		if err := os.RemoveAll(siblingPath); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(siblingPath, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		siblingRoot, err := primitives.ParseWorkspaceRoot(siblingPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := exec.Command("git", "init", "-b", "main", siblingPath).Run(); err != nil {
+			t.Fatal(err)
+		}
+		siblingBootstrap, err := checkpoint.Bootstrap(siblingRoot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeVisualFile(t, siblingPath, "README.md", "# "+sibling.name+"\n")
+		createVisualSession(t, siblingBootstrap.Repo, sibling.session, sibling.adapter, sibling.turns)
+		t.Logf("visual fixture sibling created at %s", siblingPath)
+	}
+
 	t.Logf("visual fixture created at %s", rootPath)
 }
 
