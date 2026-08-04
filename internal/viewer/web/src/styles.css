@@ -1518,9 +1518,28 @@ kbd {
 }
 
 .input .browse {
-  color: var(--muted);
+  color: var(--text-soft);
   font-family: var(--sans);
   font-size: 12px;
+  flex: none;
+  height: 24px;
+  padding: 0 9px;
+  margin-right: -5px;
+  border-radius: 6px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-raised);
+}
+
+.input .browse:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+/* Explains why the picker is unavailable without stealing the dialog's focus. */
+.field-note {
+  color: var(--warning);
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 .radios {

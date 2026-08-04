@@ -269,6 +269,12 @@ func (server *Server) serveAPI(response http.ResponseWriter, request *http.Reque
 		server.addProject(response, request)
 		return
 	}
+	// Choosing a directory shows a native dialog, which spawns a process, so it
+	// is gated like the other state-changing routes even though it writes nothing.
+	if request.Method == http.MethodPost && route == "pick-directory" {
+		server.pickDirectory(response, request)
+		return
+	}
 	if request.Method == http.MethodDelete && len(segments) == 2 && segments[0] == "projects" {
 		server.removeProject(response, request, segments[1])
 		return
@@ -422,6 +428,34 @@ func (server *Server) addProject(response http.ResponseWriter, request *http.Req
 		return
 	}
 	server.writeJSON(response, http.StatusOK, result)
+}
+
+// pickDirectory shows the operating system's folder chooser and returns the
+// selected path. A browser file input reports only a file name, never a usable
+// filesystem path, so the viewer asks the platform instead of making the user
+// type one. Cancelling is reported as an ordinary outcome, and a machine with no
+// dialog available says so, letting the UI fall back to a text field.
+func (server *Server) pickDirectory(response http.ResponseWriter, request *http.Request) {
+	if !server.writeAllowed(request) {
+		server.writeError(response, http.StatusForbidden, "write_rejected", "This request is missing the viewer write token.")
+		return
+	}
+	selected, err := pickDirectory(request.Context(), defaultPickerStart())
+	if err != nil {
+		var cancelled ErrPickerCancelled
+		if errors.As(err, &cancelled) {
+			server.writeJSON(response, http.StatusOK, map[string]any{"cancelled": true})
+			return
+		}
+		var unavailable ErrPickerUnavailable
+		if errors.As(err, &unavailable) {
+			server.writeError(response, http.StatusNotImplemented, "picker_unavailable", unavailable.Error())
+			return
+		}
+		server.writeError(response, http.StatusBadRequest, "picker_failed", err.Error())
+		return
+	}
+	server.writeJSON(response, http.StatusOK, map[string]any{"cancelled": false, "directory": selected})
 }
 
 func (server *Server) removeProject(response http.ResponseWriter, request *http.Request, storeID string) {

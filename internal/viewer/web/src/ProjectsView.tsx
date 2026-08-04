@@ -83,12 +83,6 @@ export function ProjectsView({
         ]}
         active={tab}
         onSelect={setTab}
-        meta={
-          <>
-            <span>{index.projects.length} indexed</span>
-            <span>{index.db_path}</span>
-          </>
-        }
       />
 
       <div className="page">
@@ -314,6 +308,27 @@ function AddProjectDialog({
   const [agent, setAgent] = useState("auto");
   const [gitignore, setGitignore] = useState(true);
   const [gitSync, setGitSync] = useState(false);
+  const [picking, setPicking] = useState(false);
+  const [pickError, setPickError] = useState<string | null>(null);
+
+  // The native dialog runs on the host. If the machine has none, say so and
+  // leave the text field usable rather than dead-ending.
+  const choose = async () => {
+    setPicking(true);
+    setPickError(null);
+    try {
+      const result = await api.pickDirectory();
+      if (!result.cancelled && result.directory) setDirectory(result.directory);
+    } catch (error) {
+      setPickError(
+        error instanceof APIError && error.code === "picker_unavailable"
+          ? `${error.message}`
+          : "Could not open a folder chooser. Type the path instead.",
+      );
+    } finally {
+      setPicking(false);
+    }
+  };
 
   return (
     <div className="scrim" role="dialog" aria-modal="true" aria-label="Add project">
@@ -326,17 +341,21 @@ function AddProjectDialog({
           </span>
         </div>
         <div className="dialog-body">
-          <label className="field">
+          <div className="field">
             <span>Directory</span>
             <span className="input">
               <input
                 value={directory}
-                placeholder="/home/you/projects/example"
+                placeholder="Choose a folder, or type a path"
                 onInput={(event) => setDirectory(event.currentTarget.value)}
                 autoFocus
               />
+              <button className="browse" onClick={choose} disabled={picking || busy}>
+                {picking ? "Choosing…" : "Browse…"}
+              </button>
             </span>
-          </label>
+            {pickError && <span className="field-note">{pickError}</span>}
+          </div>
 
           <div className="field">
             <span>Agent capture</span>

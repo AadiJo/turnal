@@ -86,6 +86,11 @@ export const api = {
   projects: () => request<Project[]>("projects"),
   activity: (limit = 40) => request<ActivityItem[]>(`activity?limit=${limit}`),
   refresh: () => request<ViewerIndex>("refresh"),
+  /** Ask the host to show its native folder chooser. A browser file input only
+   * reports a name, never a path, so the platform dialog is the only way to get
+   * a directory the CLI can actually open. */
+  pickDirectory: () =>
+    request<{ cancelled: boolean; directory?: string }>("pick-directory", { method: "POST" }),
   addProject: (input: AddProjectRequest) =>
     request<AddProjectResult>("projects", { method: "POST", body: JSON.stringify(input) }),
   removeProject: (storeID: string) =>
