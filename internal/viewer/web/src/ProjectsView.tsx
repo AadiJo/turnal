@@ -352,6 +352,10 @@ function ProjectRows({
 
 function ProjectRowContent({ project }: { project: Project }) {
   const health = projectHealth(project);
+  const guidance = "guidance" in health ? health.guidance : undefined;
+  const guidanceText = guidance
+    ? `Run ${guidance.command} ${guidance.explanation}`
+    : undefined;
   return (
     <>
       <span className={cx("status", isRecent(project) && "active")}>
@@ -366,17 +370,16 @@ function ProjectRowContent({ project }: { project: Project }) {
         </span>
       </span>
       <span
-        className={cx("state", health.className, health.tooltip && "has-tooltip")}
-        title={health.tooltip}
+        className={cx("state", health.className, guidance && "has-tooltip")}
+        title={guidanceText}
         aria-label={
-          health.tooltip ? `${health.label}. ${health.tooltip}` : undefined
+          guidanceText ? `${health.label}. ${guidanceText}` : undefined
         }
       >
         {health.label}
-        {health.tooltip && (
+        {guidance && (
           <span className="state-tooltip" aria-hidden="true">
-            Run <code>{health.command}</code> to rebuild the disposable cache used
-            by search and indexed history commands.
+            Run <code>{guidance.command}</code> {guidance.explanation}
           </span>
         )}
       </span>
@@ -402,12 +405,7 @@ function isRecent(project: Project) {
   );
 }
 
-function projectHealth(project: Project): {
-  className: string;
-  label: string;
-  tooltip?: string;
-  command?: string;
-} {
+function projectHealth(project: Project) {
   if (!project.present) {
     return { className: "missing", label: "folder not found" } as const;
   }
@@ -418,9 +416,11 @@ function projectHealth(project: Project): {
     return {
       className: "missing",
       label: "search index missing",
-      tooltip:
-        "Run turnal reindex to rebuild the disposable cache used by search and indexed history commands.",
-      command: "turnal reindex",
+      guidance: {
+        command: "turnal reindex",
+        explanation:
+          "to rebuild the disposable cache used by search and indexed history commands.",
+      },
     } as const;
   }
   if (project.index_state === "unavailable") {
