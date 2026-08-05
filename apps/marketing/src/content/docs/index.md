@@ -228,6 +228,26 @@ turnal diff claude-7f2a:2
 
 ---
 
+## Turnal UI
+
+Run `turnal ui` to open Turnal Prism, the local browser interface for your recorded projects. Use it to browse recent activity, review sessions and turns, read prompts and tool events, inspect checkpoint diffs, and trace current lines back to the turns that changed them.
+
+```sh
+# Open the project index, or preselect the current recorded project.
+turnal ui
+
+# Open a specific project or recorded session.
+turnal ui --project path/to/project
+turnal ui --project path/to/project --session <session-id>
+
+# Print the local URL without opening a browser.
+turnal ui --no-open
+```
+
+Prism runs on the loopback interface and does not change workspace files or recorded history. It can show every project registered on the machine, even when you start it outside a project. Press Ctrl-C in the launch terminal to stop it. See the [full Prism guide](https://github.com/AadiJo/turnal/blob/main/docs/viewer.md) for its security model and other launch options.
+
+---
+
 ## Search
 
 Search covers normalized prompts, assistant replies, tool activity, file paths, and event text. Whitespace-separated query terms are combined with AND, so every term must match the indexed turn.
