@@ -365,7 +365,16 @@ function ProjectRowContent({ project }: { project: Project }) {
           <em>{project.last_prompt || "No recorded activity"}</em>
         </span>
       </span>
-      <span className={cx("state", health.className)}>{health.label}</span>
+      <span
+        className={cx("state", health.className)}
+        data-tooltip={health.tooltip}
+        title={health.tooltip}
+        aria-label={
+          health.tooltip ? `${health.label}. ${health.tooltip}` : undefined
+        }
+      >
+        {health.label}
+      </span>
       <span className="tag count-col">
         {project.session_count} session{project.session_count === 1 ? "" : "s"}
       </span>
@@ -396,7 +405,12 @@ function projectHealth(project: Project) {
     return { className: "stale", label: "search index may be stale" } as const;
   }
   if (project.index_state === "missing") {
-    return { className: "missing", label: "search index missing" } as const;
+    return {
+      className: "missing",
+      label: "search index missing",
+      tooltip:
+        "Run turnal reindex to rebuild the disposable cache used by search and indexed history commands.",
+    } as const;
   }
   if (project.index_state === "unavailable") {
     return { className: "missing", label: "search index unavailable" } as const;

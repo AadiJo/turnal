@@ -588,6 +588,38 @@ kbd {
   background: var(--minus);
 }
 
+.state[data-tooltip] {
+  position: relative;
+  cursor: help;
+}
+
+.state[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  z-index: 30;
+  left: 50%;
+  bottom: calc(100% + 9px);
+  width: 270px;
+  padding: 9px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: var(--bg);
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: normal;
+  box-shadow: 0 12px 28px #00000080;
+  transform: translateX(-50%);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.state[data-tooltip]:hover::after {
+  opacity: 1;
+  visibility: visible;
+}
+
 .gone {
   opacity: 0.5;
 }
@@ -712,6 +744,13 @@ kbd {
   border-radius: 0 0 calc(var(--radius) - 1px) calc(var(--radius) - 1px);
 }
 
+/* Every no-wrap row receives the same width derived from the longest patch
+   line, so its background travels through the full horizontal scroll range. */
+.code:not(.wrap) > .ln,
+.code:not(.wrap) > .hunk {
+  width: max(100%, var(--diff-row-width));
+}
+
 .hunk {
   display: grid;
   grid-template-columns: var(--gutter) 1fr auto;
@@ -796,6 +835,24 @@ kbd {
   color: var(--text-soft);
 }
 
+.code.wrap .ln {
+  width: 100%;
+  align-items: start;
+  line-height: 1.65;
+}
+
+.code.wrap .ln > .g,
+.code.wrap .ln > .sign {
+  padding-top: 4px;
+}
+
+.code.wrap .ln > code {
+  min-width: 0;
+  padding-block: 4px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .ln.add {
   background: var(--plus-bg);
 }
@@ -829,9 +886,19 @@ kbd {
   display: none;
 }
 
+.bars .ln > code,
+.plain .ln > code {
+  grid-column: 4;
+}
+
 .bars.stacked .ln,
 .plain.stacked .ln {
   grid-template-columns: 50px 50px 0 1fr;
+}
+
+.code:not(.wrap).bars.stacked .ln,
+.code:not(.wrap).plain.stacked .ln {
+  grid-template-columns: 50px 50px 0 max-content;
 }
 
 .plain .ln.add,

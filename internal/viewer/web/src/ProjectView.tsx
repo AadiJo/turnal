@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "preact/hooks";
 import { api } from "./api";
-import { Chrome, Delta, Note, Section, Tabs } from "./Chrome";
+import { Chrome, Delta, Section, Tabs } from "./Chrome";
 import {
   cleanAdapter,
   cx,
@@ -77,6 +77,7 @@ export function ProjectView({
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [annotations, setAnnotations] = useState(true);
+  const [wordWrap, setWordWrap] = useState(true);
   const [visiblePatchCount, setVisiblePatchCount] = useState(PATCH_PAGE_SIZE);
 
   const navigateFromCurrent = (next: Partial<ProjectLocation>) =>
@@ -472,8 +473,16 @@ export function ProjectView({
               <button
                 className={cx("ghost", annotations && "on")}
                 onClick={() => setAnnotations(!annotations)}
+                aria-pressed={annotations}
               >
                 Annotations: {annotations ? "on" : "off"}
+              </button>
+              <button
+                className={cx("ghost", wordWrap && "on")}
+                onClick={() => setWordWrap(!wordWrap)}
+                aria-pressed={wordWrap}
+              >
+                Word wrap: {wordWrap ? "on" : "off"}
               </button>
             </Section>
 
@@ -485,6 +494,7 @@ export function ProjectView({
                   patch={patches[file.path]}
                   patchError={patchErrors[file.path]}
                   turn={detail}
+                  wordWrap={wordWrap}
                 />
               ))}
               {diff && diff.files.length === 0 && (
@@ -519,13 +529,6 @@ export function ProjectView({
               )}
             </div>
 
-            {annotations && (
-              <Note>
-                <b>Turn context appears beside its recorded changes.</b> Prompts
-                and tool activity provide context, but do not prove why a
-                specific line changed.
-              </Note>
-            )}
           </div>
         </div>
       )}
@@ -603,17 +606,23 @@ function FileBox({
   patch,
   patchError,
   turn,
+  wordWrap,
 }: {
   file: FileChange;
   patch?: FilePatch;
   patchError?: string;
   turn: TurnDetail | null;
+  wordWrap: boolean;
 }) {
   const [open, setOpen] = useState(true);
   const parts = file.path.split("/");
   const name = parts.pop();
   const lines = useMemo(() => visiblePatchLines(patch?.patch), [patch]);
   const tools = turn?.tool_names?.slice(0, 3) ?? [];
+  const unwrappedColumns = patchDisplayColumns(
+    lines,
+    file.path.length + tools.join(", ").length + 48,
+  );
 
   return (
     <section className="file">
@@ -634,7 +643,12 @@ function FileBox({
         {turn && <span className="tag">Turn {turn.id}</span>}
       </div>
       {open && (
-        <div className="code bars stacked">
+        <div
+          className={cx("code", "bars", "stacked", wordWrap && "wrap")}
+          style={{
+            "--diff-row-width": `calc(var(--gutter) + ${unwrappedColumns}ch + 24px)`,
+          }}
+        >
           {turn && (
             <div className="hunk">
               <span className="expand" />
@@ -680,6 +694,21 @@ function patchLimitMessage(patch: FilePatch) {
   }
   if (limits.length === 0) return "Part of this patch could not be shown";
   return `Patch shortened at the ${limits.join(" and ")} viewing limit${limits.length > 1 ? "s" : ""}`;
+}
+
+/** Measures monospace patch rows in terminal columns so every unwrapped row can
+ * share the width of the longest line. Tabs advance to the next eight-column
+ * stop, matching the browser's default code rendering. */
+function patchDisplayColumns(lines: VisiblePatchLine[], headerColumns: number) {
+  let widest = headerColumns;
+  for (const line of lines) {
+    let columns = 0;
+    for (const character of line.value) {
+      columns += character === "\t" ? 8 - (columns % 8) : 1;
+    }
+    widest = Math.max(widest, columns);
+  }
+  return widest;
 }
 
 const hiddenPatchMetadataPrefixes = ["diff --git ", "index ", "--- ", "+++ "];
