@@ -35,6 +35,9 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           package-manager-cache: false
 
+      - name: Install project dependencies
+        run: npm ci
+
       - name: Setup Go
         uses: actions/setup-go@v6
         with:

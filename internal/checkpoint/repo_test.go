@@ -580,24 +580,24 @@ func TestDiffRefsPathTreatsWildcardFilenameLiterally(t *testing.T) {
 	}
 	sessionID, _ := primitives.ParseSessionID("literal-path")
 	turnID, _ := primitives.NewTurnID(1)
-	writeFile(t, root, "*.txt", "literal old\n")
-	writeFile(t, root, "other.txt", "other old\n")
+	writeFile(t, root, "[ab].txt", "literal old\n")
+	writeFile(t, root, "a.txt", "matched old\n")
 	pre, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, root, "*.txt", "literal new\n")
-	writeFile(t, root, "other.txt", "other new\n")
+	writeFile(t, root, "[ab].txt", "literal new\n")
+	writeFile(t, root, "a.txt", "matched new\n")
 	post, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePost)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	diff, err := repo.DiffRefsPath(pre.Ref, post.Ref, "*.txt")
+	diff, err := repo.DiffRefsPath(pre.Ref, post.Ref, "[ab].txt")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(diff), "literal new") || strings.Contains(string(diff), "other.txt") {
+	if !strings.Contains(string(diff), "literal new") || strings.Contains(string(diff), "a.txt") {
 		t.Fatalf("literal wildcard path diff =\n%s", diff)
 	}
 }
