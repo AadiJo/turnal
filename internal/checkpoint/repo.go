@@ -2,6 +2,7 @@ package checkpoint
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -790,13 +791,7 @@ func (repo *Repo) createSyntheticCommit(message string, entries []SyntheticTreeE
 }
 
 func (repo *Repo) DiffRefs(preRef, postRef primitives.CheckpointRef) ([]byte, error) {
-	indexPath, cleanup, err := repo.tempIndex()
-	if err != nil {
-		return nil, err
-	}
-	defer cleanup()
-
-	output, err := runHiddenGit(repo, indexPath,
+	output, err := runHiddenGitReadOnly(repo,
 		"diff",
 		"--patch",
 		"--no-color",
@@ -838,18 +833,29 @@ func (repo *Repo) DiffCommitToWorkspace(commit primitives.CommitSHA) ([]byte, er
 }
 
 func (repo *Repo) DiffRefsPath(preRef, postRef primitives.CheckpointRef, repoPath string) ([]byte, error) {
+	result, err := repo.DiffRefsPathLimited(context.Background(), preRef, postRef, repoPath, 0)
+	return result.Patch, err
+}
+
+// LimitedDiff is a patch response that retains at most the requested number of
+// bytes while still counting the complete Git output.
+type LimitedDiff struct {
+	Patch     []byte
+	ByteCount int
+	LineCount int
+	Truncated bool
+}
+
+// DiffRefsPathLimited streams a path-scoped patch without buffering more than
+// maxBytes. A non-positive limit retains the complete output.
+func (repo *Repo) DiffRefsPathLimited(ctx context.Context, preRef, postRef primitives.CheckpointRef, repoPath string, maxBytes int) (LimitedDiff, error) {
 	parsedPath, err := primitives.ParseRepoPath(repoPath)
 	if err != nil {
-		return nil, err
+		return LimitedDiff{}, err
 	}
 
-	indexPath, cleanup, err := repo.tempIndex()
-	if err != nil {
-		return nil, err
-	}
-	defer cleanup()
-
-	output, err := runHiddenGit(repo, indexPath,
+	output, err := runHiddenGitReadOnlyLimited(ctx, repo, maxBytes,
+		"--literal-pathspecs",
 		"diff",
 		"--patch",
 		"--unified=0",
@@ -863,9 +869,14 @@ func (repo *Repo) DiffRefsPath(preRef, postRef primitives.CheckpointRef, repoPat
 		parsedPath.String(),
 	)
 	if err != nil {
-		return nil, err
+		return LimitedDiff{}, err
 	}
-	return []byte(output), nil
+	return LimitedDiff{
+		Patch:     output.Bytes,
+		ByteCount: output.ByteCount,
+		LineCount: output.LineCount,
+		Truncated: output.Truncated,
+	}, nil
 }
 
 func (repo *Repo) DiffRefsPathWithRenames(preRef, postRef primitives.CheckpointRef, prePath, postPath string) ([]byte, error) {
@@ -896,13 +907,8 @@ func (repo *Repo) diffCommitsPathWithRenames(preRevision, postRevision, prePath,
 		return nil, err
 	}
 
-	indexPath, cleanup, err := repo.tempIndex()
-	if err != nil {
-		return nil, err
-	}
-	defer cleanup()
-
 	args := []string{
+		"--literal-pathspecs",
 		"diff",
 		"--patch",
 		"--unified=0",
@@ -919,7 +925,7 @@ func (repo *Repo) diffCommitsPathWithRenames(preRevision, postRevision, prePath,
 		args = append(args, parsedPostPath.String())
 	}
 
-	output, err := runHiddenGit(repo, indexPath, args...)
+	output, err := runHiddenGitReadOnly(repo, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1009,7 +1015,7 @@ func (repo *Repo) FindCheckpointTargets(sessionID primitives.SessionID, turnID p
 }
 
 func (repo *Repo) listCheckpointRefInfos(refPrefix string) ([]CheckpointRefInfo, error) {
-	output, err := runHiddenGit(repo, "", "for-each-ref", "--format=%(refname)%09%(objectname)%09%(committerdate:iso-strict)", refPrefix)
+	output, err := runHiddenGitReadOnly(repo, "for-each-ref", "--format=%(refname)%09%(objectname)%09%(committerdate:iso-strict)", refPrefix)
 	if err != nil {
 		return nil, err
 	}
@@ -1119,11 +1125,12 @@ func (repo *Repo) listCheckpointRefInfos(refPrefix string) ([]CheckpointRefInfo,
 }
 
 func (repo *Repo) DiffStatRefs(preRef, postRef primitives.CheckpointRef) (DiffSummary, error) {
-	output, err := runHiddenGit(repo, "",
+	output, err := runHiddenGitReadOnly(repo,
 		"-c",
 		"core.quotePath=false",
 		"diff",
 		"--numstat",
+		"-z",
 		"--no-renames",
 		"--no-ext-diff",
 		"--no-textconv",
@@ -1134,15 +1141,18 @@ func (repo *Repo) DiffStatRefs(preRef, postRef primitives.CheckpointRef) (DiffSu
 		return DiffSummary{}, err
 	}
 
+	return parseDiffNumstat(output)
+}
+
+func parseDiffNumstat(output string) (DiffSummary, error) {
 	var summary DiffSummary
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSuffix(line, "\r")
-		if line == "" {
+	for _, record := range strings.Split(output, "\x00") {
+		if record == "" {
 			continue
 		}
-		fields := strings.SplitN(line, "\t", 3)
+		fields := strings.SplitN(record, "\t", 3)
 		if len(fields) != 3 {
-			return DiffSummary{}, fmt.Errorf("diff stat invariant failed for %q: expected additions, deletions and path", line)
+			return DiffSummary{}, fmt.Errorf("diff stat invariant failed for %q: expected additions, deletions and path", record)
 		}
 
 		stat := DiffFileStat{Path: fields[2]}
@@ -1152,11 +1162,11 @@ func (repo *Repo) DiffStatRefs(preRef, postRef primitives.CheckpointRef) (DiffSu
 		} else {
 			additions, err := strconv.Atoi(fields[0])
 			if err != nil {
-				return DiffSummary{}, fmt.Errorf("parse additions for %q: %w", line, err)
+				return DiffSummary{}, fmt.Errorf("parse additions for %q: %w", record, err)
 			}
 			deletions, err := strconv.Atoi(fields[1])
 			if err != nil {
-				return DiffSummary{}, fmt.Errorf("parse deletions for %q: %w", line, err)
+				return DiffSummary{}, fmt.Errorf("parse deletions for %q: %w", record, err)
 			}
 			stat.Additions = additions
 			stat.Deletions = deletions
@@ -1185,7 +1195,7 @@ func (repo *Repo) DiffNameStatusCommits(preCommit, postCommit primitives.CommitS
 }
 
 func (repo *Repo) diffNameStatusRevisions(preRevision, postRevision string) ([]DiffFileChange, error) {
-	output, err := runHiddenGit(repo, "",
+	output, err := runHiddenGitReadOnly(repo,
 		"diff",
 		"--name-status",
 		"-z",
@@ -1280,7 +1290,7 @@ func (repo *Repo) ListPrivateRefs(prefix string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	output, err := runHiddenGit(repo, "", "for-each-ref", "--format=%(refname)", prefix)
+	output, err := runHiddenGitReadOnly(repo, "for-each-ref", "--format=%(refname)", prefix)
 	if err != nil {
 		return nil, err
 	}
@@ -1442,7 +1452,7 @@ func (repo *Repo) CommitFileBytes(commit primitives.CommitSHA, repoPath string) 
 	if err != nil {
 		return nil, err
 	}
-	output, err := runHiddenGit(repo, "", "show", parsedCommit.String()+":"+parsedPath.String())
+	output, err := runHiddenGitReadOnly(repo, "show", parsedCommit.String()+":"+parsedPath.String())
 	if err != nil {
 		return nil, err
 	}
@@ -1460,9 +1470,9 @@ func (repo *Repo) CommitFileBytesIfExists(commit primitives.CommitSHA, repoPath 
 	}
 
 	spec := parsedCommit.String() + ":" + parsedPath.String()
-	objectType, err := runHiddenGit(repo, "", "cat-file", "-t", spec)
+	objectType, err := runHiddenGitReadOnly(repo, "cat-file", "-t", spec)
 	if err != nil {
-		if _, commitErr := runHiddenGit(repo, "", "rev-parse", parsedCommit.String()+"^{commit}"); commitErr != nil {
+		if _, commitErr := runHiddenGitReadOnly(repo, "rev-parse", parsedCommit.String()+"^{commit}"); commitErr != nil {
 			return nil, false, commitErr
 		}
 		return nil, false, nil
@@ -1472,7 +1482,7 @@ func (repo *Repo) CommitFileBytesIfExists(commit primitives.CommitSHA, repoPath 
 		return nil, false, fmt.Errorf("%s at %s is a %s, not a file", parsedPath, parsedCommit, objectType)
 	}
 
-	output, err := runHiddenGit(repo, "", "cat-file", "blob", spec)
+	output, err := runHiddenGitReadOnly(repo, "cat-file", "blob", spec)
 	if err != nil {
 		return nil, false, err
 	}
@@ -2149,7 +2159,7 @@ func (repo *Repo) restoreSymlink(absPath string, entry TreeEntry) error {
 }
 
 func (repo *Repo) blobBytes(objectID string) ([]byte, error) {
-	output, err := runHiddenGit(repo, "", "cat-file", "blob", objectID)
+	output, err := runHiddenGitReadOnly(repo, "cat-file", "blob", objectID)
 	if err != nil {
 		return nil, err
 	}
@@ -2157,7 +2167,7 @@ func (repo *Repo) blobBytes(objectID string) ([]byte, error) {
 }
 
 func (repo *Repo) blobBytesLimited(objectID string, limit int64) ([]byte, error) {
-	sizeText, err := runHiddenGit(repo, "", "cat-file", "-s", objectID)
+	sizeText, err := runHiddenGitReadOnly(repo, "cat-file", "-s", objectID)
 	if err != nil {
 		return nil, err
 	}
@@ -2406,7 +2416,7 @@ func (repo *Repo) readModeManifest(commit primitives.CommitSHA) (map[string]fs.F
 	}
 	manifestHash := sha256.Sum256(data)
 	wantHash := hex.EncodeToString(manifestHash[:])
-	message, err := runHiddenGit(repo, "", "show", "-s", "--format=%B", commit.String())
+	message, err := runHiddenGitReadOnly(repo, "show", "-s", "--format=%B", commit.String())
 	if err != nil {
 		return nil, fmt.Errorf("read checkpoint mode manifest trailer: %w", err)
 	}
@@ -2590,6 +2600,63 @@ func runHiddenGitReadOnly(repo *Repo, args ...string) (string, error) {
 		return "", fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
 	}
 	return string(output), nil
+}
+
+type limitedGitOutput struct {
+	Bytes     []byte
+	ByteCount int
+	LineCount int
+	Truncated bool
+}
+
+type limitedOutputWriter struct {
+	limit int
+	data  bytes.Buffer
+	total int
+	lines int
+}
+
+func (writer *limitedOutputWriter) Write(value []byte) (int, error) {
+	written := len(value)
+	writer.total += written
+	writer.lines += bytes.Count(value, []byte{'\n'})
+	remaining := writer.limit - writer.data.Len()
+	if writer.limit <= 0 {
+		remaining = written
+	}
+	if remaining > written {
+		remaining = written
+	}
+	if remaining > 0 {
+		_, _ = writer.data.Write(value[:remaining])
+	}
+	return written, nil
+}
+
+func runHiddenGitReadOnlyLimited(ctx context.Context, repo *Repo, maxBytes int, args ...string) (limitedGitOutput, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = repo.WorkspaceRoot.String()
+	cmd.Env = append(cleanGitEnv(os.Environ()),
+		"GIT_DIR="+repo.GitDir,
+		"GIT_WORK_TREE="+repo.WorkspaceRoot.String(),
+		"GIT_OPTIONAL_LOCKS=0",
+	)
+	stdout := limitedOutputWriter{limit: maxBytes}
+	stderr := limitedOutputWriter{limit: 64 << 10}
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return limitedGitOutput{}, ctxErr
+		}
+		return limitedGitOutput{}, fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(stderr.data.String()))
+	}
+	return limitedGitOutput{
+		Bytes:     append([]byte(nil), stdout.data.Bytes()...),
+		ByteCount: stdout.total,
+		LineCount: stdout.lines,
+		Truncated: maxBytes > 0 && stdout.total > maxBytes,
+	}, nil
 }
 
 func runHiddenGitCommand(repo *Repo, indexPath string, stdin io.Reader, args ...string) (string, error) {

@@ -18,9 +18,12 @@ var (
 )
 
 type Query struct {
-	Path      primitives.RepoPath
-	Line      int
-	SessionID primitives.SessionID
+	Path          primitives.RepoPath
+	Line          int
+	SessionID     primitives.SessionID
+	WorktreeID    primitives.WorktreeID
+	StreamID      primitives.EventStreamID
+	ThroughTurnID primitives.TurnID
 }
 
 type Result struct {
@@ -63,7 +66,8 @@ type Origin struct {
 }
 
 type Engine struct {
-	Repo *checkpoint.Repo
+	Repo     *checkpoint.Repo
+	ReadOnly bool
 }
 
 func New(repo *checkpoint.Repo) Engine {

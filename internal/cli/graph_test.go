@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -99,18 +100,19 @@ func TestLogCommandAppliesLaneAndSessionLimits(t *testing.T) {
 	turn1, _ := primitives.NewTurnID(1)
 	turn2, _ := primitives.NewTurnID(2)
 
-	create := func(sessionID primitives.SessionID, turnID primitives.TurnID, content string) {
+	base := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	create := func(sessionID primitives.SessionID, turnID primitives.TurnID, content string, at time.Time) {
 		t.Helper()
 		writeFile(t, root, "app.txt", content)
-		if _, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePost); err != nil {
+		created, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePost)
+		if err != nil {
 			t.Fatalf("checkpoint %s turn %s: %v", sessionID, turnID, err)
 		}
+		rewriteCheckpointTime(t, repo, created, at)
 	}
-	create(sessionA, turn1, "a1\n")
-	time.Sleep(1100 * time.Millisecond)
-	create(sessionB, turn1, "b1\n")
-	time.Sleep(1100 * time.Millisecond)
-	create(sessionA, turn2, "a2\n")
+	create(sessionA, turn1, "a1\n", base)
+	create(sessionB, turn1, "b1\n", base.Add(time.Minute))
+	create(sessionA, turn2, "a2\n", base.Add(2*time.Minute))
 
 	bounded := stripANSI(runRootStdout(t, "log", "--max-lanes", "1", "--no-pager"))
 	if !strings.Contains(bounded, "checkpoint graph: 2 sessions, 3 turns, 1 lane, overflow used") {
@@ -129,6 +131,33 @@ func TestLogCommandAppliesLaneAndSessionLimits(t *testing.T) {
 	if !strings.Contains(transcript, "transcript log: showing 1 of 2 sessions, 2 of 3 turns") ||
 		!strings.Contains(transcript, "Session: [session-a]") || strings.Contains(transcript, "Session: [session-b]") {
 		t.Fatalf("--session-limit was not applied to transcript output:\n%s", transcript)
+	}
+}
+
+// rewriteCheckpointTime makes the lane-layout integration test independent of
+// the host clock while keeping the refs and tree produced by CreateCheckpoint.
+func rewriteCheckpointTime(t *testing.T, repo *checkpoint.Repo, created checkpoint.Checkpoint, at time.Time) {
+	t.Helper()
+	treeCommand := exec.Command("git", "--git-dir", repo.GitDir, "rev-parse", created.Commit.String()+"^{tree}")
+	treeOutput, err := treeCommand.Output()
+	if err != nil {
+		t.Fatalf("read checkpoint tree: %v", err)
+	}
+	date := at.Format(time.RFC3339)
+	commitCommand := exec.Command("git", "--git-dir", repo.GitDir, "commit-tree", strings.TrimSpace(string(treeOutput)), "-m", "graph timing fixture")
+	commitCommand.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=turnal-test", "GIT_AUTHOR_EMAIL=turnal-test@localhost", "GIT_AUTHOR_DATE="+date,
+		"GIT_COMMITTER_NAME=turnal-test", "GIT_COMMITTER_EMAIL=turnal-test@localhost", "GIT_COMMITTER_DATE="+date,
+	)
+	commitOutput, err := commitCommand.Output()
+	if err != nil {
+		t.Fatalf("create checkpoint timing fixture: %v", err)
+	}
+	commit := strings.TrimSpace(string(commitOutput))
+	for _, ref := range []primitives.CheckpointRef{created.Ref, created.CanonicalRef} {
+		if output, err := exec.Command("git", "--git-dir", repo.GitDir, "update-ref", ref.String(), commit).CombinedOutput(); err != nil {
+			t.Fatalf("update checkpoint timing ref %s: %v: %s", ref, err, output)
+		}
 	}
 }
 

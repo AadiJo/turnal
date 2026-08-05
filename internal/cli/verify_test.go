@@ -270,6 +270,8 @@ func cliVerifyRepo(t *testing.T) *checkpoint.Repo {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is required")
 	}
+	// Keep this test's store out of the developer's real project registry.
+	t.Setenv("TURNAL_STATE_DIR", t.TempDir())
 	root, err := primitives.ParseWorkspaceRoot(t.TempDir())
 	if err != nil {
 		t.Fatalf("ParseWorkspaceRoot: %v", err)
@@ -286,6 +288,8 @@ func cliVerifyRepoWithUserGit(t *testing.T) *checkpoint.Repo {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is required")
 	}
+	// Keep this test's store out of the developer's real project registry.
+	t.Setenv("TURNAL_STATE_DIR", t.TempDir())
 	root, err := primitives.ParseWorkspaceRoot(t.TempDir())
 	if err != nil {
 		t.Fatalf("ParseWorkspaceRoot: %v", err)

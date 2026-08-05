@@ -1,11 +1,19 @@
+bin/
+node_modules/
+
 apps/marketing/node_modules/
 apps/marketing/dist/
 apps/marketing/.astro/
 apps/marketing/.vercel/
 apps/marketing/.env*
 dist/
+# The viewer frontend is embedded with go:embed, so its build output is
+# committed on purpose and must survive the broad dist/ rule above.
+!internal/viewer/web/dist/
 turnal.spdx.json
 
 .turnal/
 
 npm/bin/
+
+tmp/

@@ -27,21 +27,26 @@ func (engine Engine) Compute(query Query) (Result, error) {
 		return Result{}, ErrInvalidLine
 	}
 
-	history, err := engine.observeHistory("")
+	worktreeID := query.WorktreeID
+	if worktreeID == "" {
+		worktreeID = engine.Repo.WorktreeID
+	}
+	// Replay only the selected canonical stream, but retain every stream in the
+	// worktree as concurrency evidence. Streams identify producers, so concurrent
+	// sessions normally have different stream IDs.
+	history, err := engine.observeHistoryForWorktree("", "", 0, worktreeID)
 	if err != nil {
 		return Result{}, err
 	}
-	turns := history.Complete
-	if query.SessionID != "" {
-		turns = make([]completeTurn, 0, len(history.Complete))
-		for _, turn := range history.Complete {
-			if turn.SessionID == query.SessionID {
-				turns = append(turns, turn)
-			}
-		}
+	turns, err := engine.completeTurnsForWorktree(query.SessionID, query.StreamID, query.ThroughTurnID, worktreeID)
+	if err != nil {
+		return Result{}, err
 	}
 	if len(turns) == 0 {
 		return Result{}, ErrNoHistory
+	}
+	if query.StreamID != "" {
+		history = withoutAlternateTurnRepresentations(history, turns)
 	}
 
 	path := query.Path.String()
@@ -49,7 +54,10 @@ func (engine Engine) Compute(query Query) (Result, error) {
 	historyKey := blameHistoryKey(history.Complete, history.Incomplete)
 	concurrent := concurrentTurnAttributions(history.Complete, history.Incomplete)
 
-	store := engine.openBlameCache()
+	var store *queryindex.Store
+	if !engine.ReadOnly {
+		store = engine.openBlameCache()
+	}
 	if store != nil {
 		defer store.Close()
 		cached, found, err := store.LoadBlameCache(queryindex.BlameCacheQuery{
@@ -122,6 +130,38 @@ func (engine Engine) Compute(query Query) (Result, error) {
 		Warnings:      warnings,
 		CompleteTurns: len(turns),
 	}, nil
+}
+
+// A provider can publish the same logical session turn through more than one
+// producer stream. When a canonical stream is selected, those alternate
+// representations must not masquerade as concurrent work. Unrelated turns in
+// other streams remain available as concurrency evidence.
+func withoutAlternateTurnRepresentations(history observedHistory, selected []completeTurn) observedHistory {
+	type logicalTurn struct {
+		session primitives.SessionID
+		turn    primitives.TurnID
+	}
+	selectedStreams := make(map[logicalTurn]primitives.EventStreamID, len(selected))
+	for _, turn := range selected {
+		selectedStreams[logicalTurn{session: turn.SessionID, turn: turn.TurnID}] = turn.Pre.StreamID
+	}
+	keepComplete := history.Complete[:0]
+	for _, turn := range history.Complete {
+		stream, matched := selectedStreams[logicalTurn{session: turn.SessionID, turn: turn.TurnID}]
+		if !matched || turn.Pre.StreamID == stream {
+			keepComplete = append(keepComplete, turn)
+		}
+	}
+	keepIncomplete := history.Incomplete[:0]
+	for _, turn := range history.Incomplete {
+		stream, matched := selectedStreams[logicalTurn{session: turn.SessionID, turn: turn.TurnID}]
+		if !matched || turn.Pre.StreamID == stream {
+			keepIncomplete = append(keepIncomplete, turn)
+		}
+	}
+	history.Complete = keepComplete
+	history.Incomplete = keepIncomplete
+	return history
 }
 
 func (engine Engine) validateCachedEvidence(turns []completeTurn, concurrent concurrentTurnAttribution) error {

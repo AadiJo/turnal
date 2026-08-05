@@ -189,6 +189,46 @@ func TestValidateReadOnlyWorktreeIdentityRejectsStaleGitBinding(t *testing.T) {
 	}
 }
 
+func TestListRegisteredStoresInfersLegacyPrimaryWorktree(t *testing.T) {
+	requireGit(t)
+	t.Setenv("TURNAL_STATE_DIR", t.TempDir())
+	root := workspaceRoot(t)
+	runUserGit(t, root.String(), "init")
+	repo, err := Init(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RegisterStore(); err != nil {
+		t.Fatal(err)
+	}
+
+	path, err := registryPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := readRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for storeIndex := range value.Stores {
+		for worktreeID, worktree := range value.Stores[storeIndex].Worktrees {
+			worktree.Primary = false
+			value.Stores[storeIndex].Worktrees[worktreeID] = worktree
+		}
+	}
+	if err := writeJSONAtomic(path, value, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	stores, err := ListRegisteredStores()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stores) != 1 || len(stores[0].Worktrees) != 1 || !stores[0].Worktrees[0].Primary {
+		t.Fatalf("legacy registry primary was not inferred: %#v", stores)
+	}
+}
+
 func runUserGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)

@@ -2,6 +2,7 @@ package checkpoint
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -569,6 +570,71 @@ func TestDiffRefsPathFiltersToPathAndUsesZeroContext(t *testing.T) {
 	}
 }
 
+func TestDiffRefsPathTreatsWildcardFilenameLiterally(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := Init(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID, _ := primitives.ParseSessionID("literal-path")
+	turnID, _ := primitives.NewTurnID(1)
+	writeFile(t, root, "[ab].txt", "literal old\n")
+	writeFile(t, root, "a.txt", "matched old\n")
+	pre, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, root, "[ab].txt", "literal new\n")
+	writeFile(t, root, "a.txt", "matched new\n")
+	post, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePost)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	diff, err := repo.DiffRefsPath(pre.Ref, post.Ref, "[ab].txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(diff), "literal new") || strings.Contains(string(diff), "a.txt") {
+		t.Fatalf("literal wildcard path diff =\n%s", diff)
+	}
+}
+
+func TestDiffRefsPathLimitedBoundsBufferedOutput(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := Init(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID, _ := primitives.ParseSessionID("bounded-diff")
+	turnID, _ := primitives.NewTurnID(1)
+	writeFile(t, root, "large.txt", strings.Repeat("old line\n", 4000))
+	pre, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, root, "large.txt", strings.Repeat("new line\n", 4000))
+	post, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePost)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const limit = 1024
+	result, err := repo.DiffRefsPathLimited(context.Background(), pre.Ref, post.Ref, "large.txt", limit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Truncated || len(result.Patch) != limit {
+		t.Fatalf("limited diff = %d bytes, truncated=%v", len(result.Patch), result.Truncated)
+	}
+	if result.ByteCount <= len(result.Patch) || result.LineCount < 8000 {
+		t.Fatalf("complete output counts = %d bytes, %d lines", result.ByteCount, result.LineCount)
+	}
+}
+
 func TestCommitFileBytesIfExists(t *testing.T) {
 	requireGit(t)
 
@@ -976,6 +1042,9 @@ func TestRestoreCommitPreservesGitignoredFiles(t *testing.T) {
 
 func workspaceRoot(t *testing.T) primitives.WorkspaceRoot {
 	t.Helper()
+	// Redirect machine-wide state: initializing a store registers it, and a
+	// throwaway temp workspace must not land in the developer's real registry.
+	t.Setenv("TURNAL_STATE_DIR", t.TempDir())
 	root, err := primitives.ParseWorkspaceRoot(t.TempDir())
 	if err != nil {
 		t.Fatalf("ParseWorkspaceRoot: %v", err)
@@ -1015,4 +1084,20 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestParseDiffNumstatPreservesUnusualPaths(t *testing.T) {
+	summary, err := parseDiffNumstat("2\t1\tline\nbreak\tand-tab.txt\x00-\t-\tbinary.dat\x00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.Files) != 2 {
+		t.Fatalf("files = %#v", summary.Files)
+	}
+	if got := summary.Files[0]; got.Path != "line\nbreak\tand-tab.txt" || got.Additions != 2 || got.Deletions != 1 {
+		t.Fatalf("text stat = %#v", got)
+	}
+	if got := summary.Files[1]; got.Path != "binary.dat" || !got.Binary {
+		t.Fatalf("binary stat = %#v", got)
+	}
 }

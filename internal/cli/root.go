@@ -26,6 +26,7 @@ func NewRootCmd() *cobra.Command {
 	rootCmd.AddCommand(storeCmd())
 	rootCmd.AddCommand(destroyCmd())
 	rootCmd.AddCommand(statusCmd())
+	rootCmd.AddCommand(uiCmd())
 	rootCmd.AddCommand(logCmd())
 	rootCmd.AddCommand(sessionsCmd())
 	rootCmd.AddCommand(reindexCmd())

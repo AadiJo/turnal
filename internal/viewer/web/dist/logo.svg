@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- turnal mark: flight recorder for AI coding agents.
+       A tapered comet swoosh of checkpoint turns sweeping back (rollback)
+       around a live recording light. The sweep originates from a point:
+       a tapered wedge, then flat-cut pieces all the way to the dart.
+       Accent is international orange: the color real flight recorders
+       are painted. -->
+  <rect width="256" height="256" rx="58" fill="#171512"/>
+  <!-- trail: a tapered origin wedge, then a flat-cut dash -->
+  <path d="M59.9 97.1 L53 108.1 L57.8 109.5 Z" fill="#ECE3D4" opacity="0.45"/>
+  <path d="M53.7 116.1 A72 72 0 0 0 52.7 133.6" fill="none" stroke="#ECE3D4" stroke-width="5.5" opacity="0.65"/>
+  <!-- the turn swoosh: tapered from thin flat tail to full width at the
+       head, built from two offset-center arcs -->
+  <path d="M50.7 141.6 A78.5 78.5 0 1 0 103.7 53.3 L100.9 66.9 A65.5 65.5 0 1 1 56.6 140.6 Z" fill="#ECE3D4"/>
+  <!-- rollback dart -->
+  <path d="M75.7 68.7 L101.8 39.2 L114.2 77.2 Z" fill="#ECE3D4" stroke="#ECE3D4" stroke-width="6" stroke-linejoin="round"/>
+  <!-- checkpoint turns threaded on the swoosh -->
+  <g>
+    <circle cx="83.3" cy="187.6" r="19" fill="#171512"/>
+    <circle cx="160.6" cy="191" r="19" fill="#171512"/>
+    <circle cx="196.6" cy="128.6" r="19" fill="#171512"/>
+    <circle cx="83.3" cy="187.6" r="13" fill="#ECE3D4"/>
+    <circle cx="160.6" cy="191" r="13" fill="#ECE3D4"/>
+    <circle cx="196.6" cy="128.6" r="13" fill="#ECE3D4"/>
+  </g>
+  <!-- REC: always recording -->
+  <circle cx="128" cy="128" r="22.5" fill="none" stroke="#FF4F00" stroke-width="5"/>
+  <circle cx="128" cy="128" r="13" fill="#FF4F00"/>
+</svg>

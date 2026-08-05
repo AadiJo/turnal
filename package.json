@@ -22,7 +22,10 @@
     "docs/"
   ],
   "scripts": {
-    "build": "go build -o bin/turnal ./cmd/turnal",
+    "build": "npm run build:web && go build -o bin/turnal ./cmd/turnal",
+    "build:web": "vite build",
+    "check:web": "tsc --noEmit && npm run build:web && git diff --exit-code -- internal/viewer/web/dist",
+    "dev:web": "vite",
     "build:npm-binaries": "node scripts/build-npm-binaries.js",
     "test": "go test ./...",
     "test:postinstall": "node --test scripts/remove-powershell-shims.test.js",
@@ -56,5 +59,14 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "dependencies": {
+    "preact": "^10.29.7"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "^2.10.5",
+    "@types/node": "^26.1.1",
+    "typescript": "^7.0.2",
+    "vite": "^6.4.1"
   }
 }
