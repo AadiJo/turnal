@@ -426,9 +426,7 @@ export function ProjectView({
             {session && (
               <div className="doc">
                 <div className="doc-head">
-                  <span className="avatar">
-                    {cleanAdapter(session.adapter).slice(0, 2)}
-                  </span>
+                  <AgentAvatar adapter={session.adapter} />
                   <b>{cleanAdapter(session.adapter)}</b>
                   <span>
                     opened this session at {displayTime(session.started_at)}
@@ -852,10 +850,8 @@ function TurnAnnotation({ turn }: { turn: TurnDetail }) {
       <div className="anno-in">
         <div className="anno-head">
           <span className="who">
-            <span className="avatar">
-              {cleanAdapter(turn.adapter).slice(0, 2)}
-            </span>{" "}
-            Turn {turn.id}
+            <AgentAvatar adapter={turn.adapter} />
+            <span>Turn {turn.id}</span>
           </span>
           <span>{cleanAdapter(turn.adapter)}</span>
           <span>{displayTime(turn.finished_at)}</span>
@@ -923,6 +919,22 @@ function TurnEventRow({ event }: { event: TurnEvent }) {
       </summary>
       {event.body && <pre>{event.body}</pre>}
     </details>
+  );
+}
+
+function AgentAvatar({ adapter }: { adapter?: string }) {
+  const label = cleanAdapter(adapter);
+  const icon =
+    label === "claude"
+      ? "claude-ai.svg"
+      : label === "codex"
+        ? "openai.svg"
+        : null;
+
+  return (
+    <span className={cx("avatar", icon && "agent-avatar")} aria-hidden="true">
+      {icon ? <img src={icon} alt="" /> : label.slice(0, 2)}
+    </span>
   );
 }
 

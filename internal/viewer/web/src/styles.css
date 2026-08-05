@@ -385,6 +385,12 @@ kbd {
   background: var(--surface-raised);
 }
 
+.avatar.agent-avatar img {
+  display: block;
+  width: 16px;
+  height: 16px;
+}
+
 .status {
   width: 16px;
   flex: none;
@@ -1540,6 +1546,10 @@ kbd {
 .review {
   min-width: 0;
   padding: 20px clamp(16px, 2vw, 40px) 80px;
+}
+
+.review > .anno {
+  margin-top: 14px;
 }
 
 /* ---------- dialog ---------- */
