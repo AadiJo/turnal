@@ -588,13 +588,12 @@ kbd {
   background: var(--minus);
 }
 
-.state[data-tooltip] {
+.state.has-tooltip {
   position: relative;
   cursor: help;
 }
 
-.state[data-tooltip]::after {
-  content: attr(data-tooltip);
+.state-tooltip {
   position: absolute;
   z-index: 30;
   left: 50%;
@@ -607,6 +606,7 @@ kbd {
   color: var(--text-soft);
   font-size: 12px;
   line-height: 1.55;
+  text-align: left;
   white-space: normal;
   box-shadow: 0 12px 28px #00000080;
   transform: translateX(-50%);
@@ -615,7 +615,14 @@ kbd {
   pointer-events: none;
 }
 
-.state[data-tooltip]:hover::after {
+.state-tooltip code {
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.state.has-tooltip:hover .state-tooltip {
   opacity: 1;
   visibility: visible;
 }

@@ -366,14 +366,19 @@ function ProjectRowContent({ project }: { project: Project }) {
         </span>
       </span>
       <span
-        className={cx("state", health.className)}
-        data-tooltip={health.tooltip}
+        className={cx("state", health.className, health.tooltip && "has-tooltip")}
         title={health.tooltip}
         aria-label={
           health.tooltip ? `${health.label}. ${health.tooltip}` : undefined
         }
       >
         {health.label}
+        {health.tooltip && (
+          <span className="state-tooltip" aria-hidden="true">
+            Run <code>{health.command}</code> to rebuild the disposable cache used
+            by search and indexed history commands.
+          </span>
+        )}
       </span>
       <span className="tag count-col">
         {project.session_count} session{project.session_count === 1 ? "" : "s"}
@@ -397,7 +402,12 @@ function isRecent(project: Project) {
   );
 }
 
-function projectHealth(project: Project) {
+function projectHealth(project: Project): {
+  className: string;
+  label: string;
+  tooltip?: string;
+  command?: string;
+} {
   if (!project.present) {
     return { className: "missing", label: "folder not found" } as const;
   }
@@ -410,6 +420,7 @@ function projectHealth(project: Project) {
       label: "search index missing",
       tooltip:
         "Run turnal reindex to rebuild the disposable cache used by search and indexed history commands.",
+      command: "turnal reindex",
     } as const;
   }
   if (project.index_state === "unavailable") {
