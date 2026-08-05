@@ -15,6 +15,8 @@ import (
 	agentconfig "github.com/AadiJo/turnal/internal/config"
 	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/AadiJo/turnal/internal/projects"
+	"github.com/AadiJo/turnal/internal/runs"
+	"github.com/pelletier/go-toml/v2"
 )
 
 // registry owns the machine-wide project index plus a lazily populated cache of
@@ -33,6 +35,15 @@ func newRegistry(db *projects.DB) *registry {
 // service resolves a store id to its read service. The error is deliberately
 // specific: an unknown project must fail before any path is opened.
 func (r *registry) service(ctx context.Context, storeID string) (*Service, error) {
+	// Membership is checked on every request. A second viewer can remove a
+	// project while this process still has its read service cached.
+	project, err := r.db.Project(ctx, storeID)
+	if err != nil {
+		return nil, err
+	}
+	if !project.Present {
+		return nil, fmt.Errorf("the recorded history for this project could not be found")
+	}
 	r.mu.Lock()
 	if service, ok := r.services[storeID]; ok {
 		r.mu.Unlock()
@@ -40,18 +51,11 @@ func (r *registry) service(ctx context.Context, storeID string) (*Service, error
 	}
 	r.mu.Unlock()
 
-	project, err := r.db.Project(ctx, storeID)
-	if err != nil {
-		return nil, err
-	}
-	if !project.Present {
-		return nil, fmt.Errorf("project store is no longer on disk: %s", project.StorePath)
-	}
 	root, err := primitives.ParseWorkspaceRoot(project.Root)
 	if err != nil {
 		return nil, err
 	}
-	repo, err := checkpoint.OpenAt(root, project.StorePath)
+	repo, err := checkpoint.OpenAtReadOnly(root, project.StorePath)
 	if err != nil {
 		return nil, err
 	}
@@ -87,21 +91,12 @@ func (r *registry) refresh(ctx context.Context) error {
 // already exists.
 func (r *registry) summarize(ctx context.Context, store checkpoint.RegisteredStore) (projects.Summary, error) {
 	storeID := store.StoreID.String()
-	root := store.StorePath
-	for _, worktree := range store.Worktrees {
-		if worktree.Root != "" {
-			root = worktree.Root
-			break
-		}
-	}
-	if root == store.StorePath {
-		root = filepath.Dir(store.StorePath)
-	}
+	root := store.PreferredRoot()
 	workspaceRoot, err := primitives.ParseWorkspaceRoot(root)
 	if err != nil {
 		return projects.Summary{}, err
 	}
-	repo, err := checkpoint.OpenAt(workspaceRoot, store.StorePath)
+	repo, err := checkpoint.OpenAtReadOnly(workspaceRoot, store.StorePath)
 	if err != nil {
 		return projects.Summary{}, err
 	}
@@ -113,31 +108,22 @@ func (r *registry) summarize(ctx context.Context, store checkpoint.RegisteredSto
 	r.services[storeID] = service
 	r.mu.Unlock()
 
-	workspace, err := service.Workspace(ctx)
+	sessions, err := service.Sessions(ctx)
 	if err != nil {
 		return projects.Summary{}, err
 	}
-	sessions, err := service.Sessions(ctx)
+	workspace, err := service.workspaceWithSessions(ctx, sessions)
 	if err != nil {
 		return projects.Summary{}, err
 	}
 	summary := projects.Summary{
 		IndexState:   workspace.IndexState,
 		HistoryState: workspace.HistoryState,
-		TurnCount:    workspace.TurnCount,
 		LastActivity: workspace.LastActivity,
 	}
-	// A wrapped run records two sessions for the same work: the wrapper's own
-	// session and the provider's hook session. They share a checkpoint pair, so
-	// listing both double-counts the change and shows a promptless twin in the
-	// feed. Keep the one carrying prompt text.
-	redundant := redundantWrapperSessions(sessions)
-
 	for _, session := range sessions {
-		if _, skip := redundant[session.Key]; skip {
-			continue
-		}
 		summary.SessionCount++
+		summary.TurnCount += session.TurnCount
 		summary.Additions += session.Additions
 		summary.Deletions += session.Deletions
 		summary.Sessions = append(summary.Sessions, projects.Activity{
@@ -190,21 +176,22 @@ func (r *registry) summarize(ctx context.Context, store checkpoint.RegisteredSto
 // same turn; both end up with identical change counts and finish times. Only the
 // hook session has the prompt, so the promptless twin is the redundant one.
 //
-// Sessions are matched on their change shape and finish time rather than on any
-// id, because the two sessions are deliberately independent event streams.
+// Durable run-capture links establish that the sessions belong to the same
+// wrapper invocation. Change shape and finish time then identify the duplicate
+// view without guessing relationships for unrelated or legacy sessions.
 func redundantWrapperSessions(sessions []SessionSummaryView) map[string]struct{} {
-	var prompted []SessionSummaryView
+	promptedByRun := make(map[string][]SessionSummaryView)
 	for _, session := range sessions {
-		if strings.TrimSpace(session.PromptPreview) != "" {
-			prompted = append(prompted, session)
+		if session.captureKind == runs.CaptureProvider && session.runID != "" && strings.TrimSpace(session.PromptPreview) != "" {
+			promptedByRun[session.runID] = append(promptedByRun[session.runID], session)
 		}
 	}
 	redundant := make(map[string]struct{})
 	for _, session := range sessions {
-		if strings.TrimSpace(session.PromptPreview) != "" {
+		if session.captureKind != runs.CaptureWrapper || session.runID == "" || strings.TrimSpace(session.PromptPreview) != "" {
 			continue
 		}
-		for _, twin := range prompted {
+		for _, twin := range promptedByRun[session.runID] {
 			// The wrapper opens slightly before and closes slightly after the
 			// provider session it wraps, so finish times differ by seconds
 			// rather than matching exactly.
@@ -251,7 +238,6 @@ func projectViews(list []projects.Project) []ProjectView {
 			RepoID:       project.RepoID,
 			Name:         project.Name,
 			Root:         project.Root,
-			StorePath:    project.StorePath,
 			Branch:       project.Branch,
 			Present:      project.Present,
 			IndexState:   project.IndexState,
@@ -300,9 +286,8 @@ func activityViews(list []projects.Activity) []ActivityView {
 }
 
 // addProject runs the same initialization path as turnal init: bootstrap the
-// store, optionally update .gitignore, then install agent hooks. This is the
-// only write path in the viewer, so it validates the directory first and
-// reports every filesystem effect it produced.
+// store, optionally update .gitignore, then install agent hooks. It validates
+// the directory first and reports every filesystem effect it produced.
 func (r *registry) addProject(ctx context.Context, request AddProjectRequest) (AddProjectResult, error) {
 	target := strings.TrimSpace(request.Directory)
 	if target == "" {
@@ -338,10 +323,8 @@ func (r *registry) addProject(ctx context.Context, request AddProjectRequest) (A
 	overrides := agentconfig.Overrides{InitAgent: &agent}
 	installHooks := agent != string(adapters.TargetNone)
 	overrides.InitInstallHooks = &installHooks
-	if request.GitSync {
-		gitSync := true
-		overrides.GitSyncEnabled = &gitSync
-	}
+	gitSync := request.GitSync
+	overrides.GitSyncEnabled = &gitSync
 	effective, _, err := agentconfig.Resolve(root.String(), overrides)
 	if err != nil {
 		return AddProjectResult{}, err
@@ -353,18 +336,21 @@ func (r *registry) addProject(ctx context.Context, request AddProjectRequest) (A
 	if err != nil {
 		return AddProjectResult{}, err
 	}
-	// Bootstrap only auto-registers Git workspaces. Adding a project is an
-	// explicit adoption, so register it either way or a non-Git project would
-	// never appear in the index.
-	if err := bootstrapped.Repo.RegisterStore(); err != nil {
-		return AddProjectResult{}, err
-	}
 	result := AddProjectResult{
 		StoreID:          bootstrapped.Repo.StoreID.String(),
 		Root:             bootstrapped.Repo.WorkspaceRoot.String(),
 		StorePath:        bootstrapped.Repo.MetadataDir,
 		Attached:         bootstrapped.Attached,
 		GitignoreUpdated: bootstrapped.GitignoreUpdated,
+	}
+	// Bootstrap only auto-registers Git workspaces. Adding a project is an
+	// explicit adoption, so register it either way or a non-Git project would
+	// never appear in the index.
+	if err := bootstrapped.Repo.RegisterStore(); err != nil {
+		return result, err
+	}
+	if err := persistViewerGitSync(bootstrapped.Repo.MetadataDir, request.GitSync); err != nil {
+		return result, err
 	}
 
 	if installHooks {
@@ -387,4 +373,26 @@ func (r *registry) addProject(ctx context.Context, request AddProjectRequest) (A
 		return result, err
 	}
 	return result, nil
+}
+
+// persistViewerGitSync makes the add-dialog choice durable. Resolve overrides
+// only affect the current initialization call; future captures read this
+// workspace layer from the store.
+func persistViewerGitSync(metadataDir string, enabled bool) error {
+	path := filepath.Join(metadataDir, "config.toml")
+	file, err := agentconfig.ReadFileLayer(path)
+	if err != nil {
+		return err
+	}
+	version := 1
+	file.Version = &version
+	file.GitSync = &agentconfig.GitSyncFile{Enabled: &enabled}
+	data, err := toml.Marshal(file)
+	if err != nil {
+		return fmt.Errorf("marshal workspace config: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("write workspace config %s: %w", path, err)
+	}
+	return nil
 }

@@ -1,14 +1,37 @@
-import { useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { api, APIError, canWrite } from "./api";
 import { Chrome, Delta, Note, Section, Tabs } from "./Chrome";
-import { cleanAdapter, cx, displayTime, initials, isRealTime, shortAge } from "./format";
+import {
+  cleanAdapter,
+  cx,
+  displayTime,
+  initials,
+  isRealTime,
+  shortAge,
+} from "./format";
 import type { ActivityItem, Project, ViewerIndex } from "./types";
 
 const AGENTS = [
-  { id: "auto", label: "Detect automatically", hint: "Configure whichever of Claude Code and Codex is discoverable." },
-  { id: "claude", label: "Claude Code only", hint: "Install hooks for Claude Code and leave Codex untouched." },
-  { id: "codex", label: "Codex only", hint: "Install hooks for Codex and leave Claude Code untouched." },
-  { id: "none", label: "Manual checkpoints only", hint: "No hooks. Record with turnal checkpoint and turnal run." },
+  {
+    id: "auto",
+    label: "Detect automatically",
+    hint: "Configure whichever of Claude Code and Codex is discoverable.",
+  },
+  {
+    id: "claude",
+    label: "Claude Code only",
+    hint: "Install hooks for Claude Code and leave Codex untouched.",
+  },
+  {
+    id: "codex",
+    label: "Codex only",
+    hint: "Install hooks for Codex and leave Claude Code untouched.",
+  },
+  {
+    id: "none",
+    label: "Manual saves only",
+    hint: "No hooks. Record agent runs with turnal run, or save folder snapshots with turnal save.",
+  },
 ];
 
 /** An hour, in ms. Projects touched inside this window are shown as working. */
@@ -17,12 +40,16 @@ const WORKING_WINDOW = 60 * 60 * 1000;
 export function ProjectsView({
   index,
   activity,
+  activityTruncated,
+  activityError,
   onOpenProject,
   onReload,
 }: {
   index: ViewerIndex;
   activity: ActivityItem[];
-  onOpenProject: (project: Project) => void;
+  activityTruncated: boolean;
+  activityError: string | null;
+  onOpenProject: (project: Project, sessionKey?: string) => void;
   onReload: () => void;
 }) {
   const [tab, setTab] = useState("projects");
@@ -35,15 +62,28 @@ export function ProjectsView({
   const working = index.projects.filter(isRecent);
   const rest = index.projects.filter((project) => !working.includes(project));
 
-  const submitAdd = async (directory: string, agent: string, gitignore: boolean, gitSync: boolean) => {
+  const submitAdd = async (
+    directory: string,
+    agent: string,
+    gitignore: boolean,
+    gitSync: boolean,
+  ) => {
     setBusy(true);
     setError(null);
     try {
-      await api.addProject({ directory, agent, update_gitignore: gitignore, git_sync: gitSync });
+      const result = await api.addProject({
+        directory,
+        agent,
+        update_gitignore: gitignore,
+        git_sync: gitSync,
+      });
       setAdding(false);
+      if (result.warning) setError(result.warning);
       onReload();
     } catch (nextError) {
-      setError(nextError instanceof APIError ? nextError.message : String(nextError));
+      setError(
+        nextError instanceof APIError ? nextError.message : String(nextError),
+      );
     } finally {
       setBusy(false);
     }
@@ -57,7 +97,9 @@ export function ProjectsView({
       setRemoving(null);
       onReload();
     } catch (nextError) {
-      setError(nextError instanceof APIError ? nextError.message : String(nextError));
+      setError(
+        nextError instanceof APIError ? nextError.message : String(nextError),
+      );
     } finally {
       setBusy(false);
     }
@@ -67,7 +109,6 @@ export function ProjectsView({
     <>
       <Chrome
         crumbs={[{ label: "All projects" }]}
-        onSearch={() => undefined}
         actions={
           writable ? (
             <button className="primary" onClick={() => setAdding(true)}>
@@ -120,9 +161,11 @@ export function ProjectsView({
               <div className="empty">
                 <strong>No projects recorded yet</strong>
                 <p>
-                  Turnal records what your agents did, per project. Add a directory to start recording,
-                  or run <code>turnal init</code> in a terminal. Nothing is uploaded and no existing
-                  repository is modified.
+                  Turnal records what your agents did, per project. Add a
+                  directory to start recording, or run <code>turnal init</code>{" "}
+                  in a terminal. Nothing is uploaded. Adding a project creates
+                  Turnal files and may update agent settings; your existing Git
+                  history is not changed.
                 </p>
                 {writable && (
                   <span className="row2">
@@ -143,60 +186,112 @@ export function ProjectsView({
 
             {index.projects.some((project) => !project.present) && (
               <Note>
-                <b>Registry staleness is shown, not hidden.</b> A store whose worktree root no longer
-                exists stays listed and dimmed. Its recorded history is still readable; only the working
-                tree is gone.
+                <b>Some project folders could not be found.</b> They stay listed
+                and dimmed because their recorded history may still be
+                available.
               </Note>
             )}
           </>
         ) : (
           <>
-            <Section title="Activity" note="all projects, newest first" />
-            {activity.length === 0 ? (
+            <Section title="Activity" note="newest first" />
+            {activityError ? (
+              <div className="note" role="alert">
+                <span className="badge">!</span>
+                <span>{activityError}</span>
+              </div>
+            ) : activity.length === 0 ? (
               <div className="empty">
                 <strong>No recorded sessions yet</strong>
-                <p>Run an agent in a recorded project and its turns will appear here.</p>
+                <p>
+                  Run an agent in a recorded project and its turns will appear
+                  here.
+                </p>
               </div>
             ) : (
               <div className="rows">
-                {activity.map((item) => (
-                  <a
-                    key={`${item.store_id}:${item.session_key}`}
-                    href="#"
-                    onClick={(event) => {
-                      event.preventDefault();
-                      const owner = index.projects.find((project) => project.store_id === item.store_id);
-                      if (owner) onOpenProject(owner);
-                    }}
-                  >
-                    <span className="avatar">{initials(item.project_name)}</span>
-                    <span className="row-main">
-                      <strong>{item.title || `Session ${item.session_id}`}</strong>
-                      <span>
-                        {item.project_name} <i>·</i> {cleanAdapter(item.adapter)} <i>·</i>{" "}
-                        {item.turn_count} turn{item.turn_count === 1 ? "" : "s"}
+                {activity.map((item) => {
+                  const owner = index.projects.find(
+                    (project) => project.store_id === item.store_id,
+                  );
+                  const content = (
+                    <>
+                      <span className="avatar">
+                        {initials(item.project_name)}
                       </span>
-                    </span>
-                    <Delta additions={item.additions} deletions={item.deletions} />
-                    <span className="when">{displayTime(item.finished_at || item.started_at)}</span>
-                  </a>
-                ))}
+                      <span className="row-main">
+                        <strong>
+                          {item.title || `Session ${item.session_id}`}
+                        </strong>
+                        <span>
+                          {item.project_name} <i>·</i>{" "}
+                          {cleanAdapter(item.adapter)} <i>·</i>{" "}
+                          {item.turn_count} turn
+                          {item.turn_count === 1 ? "" : "s"}
+                          {owner && !owner.present && (
+                            <>
+                              <i>·</i> folder not found
+                            </>
+                          )}
+                        </span>
+                      </span>
+                      <Delta
+                        additions={item.additions}
+                        deletions={item.deletions}
+                      />
+                      <span className="when">
+                        {displayTime(item.finished_at || item.started_at)}
+                      </span>
+                    </>
+                  );
+                  return owner?.present ? (
+                    <a
+                      key={`${item.store_id}:${item.session_key}`}
+                      href="#"
+                      onClick={(event) => {
+                        event.preventDefault();
+                        onOpenProject(owner, item.session_key);
+                      }}
+                    >
+                      {content}
+                    </a>
+                  ) : (
+                    <div
+                      className="activity-row gone"
+                      key={`${item.store_id}:${item.session_key}`}
+                      aria-disabled="true"
+                    >
+                      {content}
+                    </div>
+                  );
+                })}
               </div>
+            )}
+            {activityTruncated && (
+              <Note>
+                <b>Showing the newest {activity.length} sessions.</b> Older
+                activity is not shown.
+              </Note>
             )}
           </>
         )}
 
         {!writable && (
           <Note>
-            <b>This viewer session is read-only.</b> The launch token is single use, so a reloaded tab
-            can still read history but cannot add or remove projects. Relaunch with{" "}
-            <code>turnal ui</code> to manage projects.
+            <b>This viewer session is read-only.</b> The launch token is single
+            use, so a reloaded tab can still read history but cannot add or
+            remove projects. Relaunch with <code>turnal ui</code> to manage
+            projects.
           </Note>
         )}
       </div>
 
       {adding && (
-        <AddProjectDialog busy={busy} onCancel={() => setAdding(false)} onSubmit={submitAdd} />
+        <AddProjectDialog
+          busy={busy}
+          onCancel={() => setAdding(false)}
+          onSubmit={submitAdd}
+        />
       )}
       {removing && (
         <RemoveProjectDialog
@@ -224,35 +319,23 @@ function ProjectRows({
   return (
     <div className="rows">
       {projects.map((project) => (
-        <a
-          key={project.store_id}
-          href="#"
-          className={cx(!project.present && "gone")}
-          onClick={(event) => {
-            event.preventDefault();
-            if (project.present) onOpen(project);
-          }}
-        >
-          <span className={cx("status", isRecent(project) && "active")}>
-            {project.present ? "●" : "○"}
-          </span>
-          <span className="row-main">
-            <strong>{project.name}</strong>
-            <span>
-              {project.branch && <span className="tag mono">{project.branch}</span>}
-              {project.branch && <i>·</i>}
-              <em>{project.last_prompt || project.root}</em>
-            </span>
-          </span>
-          <span className={cx("state", healthClass(project))}>{healthLabel(project)}</span>
-          <span className="tag count-col">
-            {project.session_count} session{project.session_count === 1 ? "" : "s"}
-          </span>
-          <span className="tag count-col">
-            {project.turn_count} turn{project.turn_count === 1 ? "" : "s"}
-          </span>
-          <Delta additions={project.additions} deletions={project.deletions} />
-          <span className="when">{shortAge(project.last_activity)}</span>
+        <div className="project-row" key={project.store_id}>
+          {project.present ? (
+            <a
+              href="#"
+              className="project-link"
+              onClick={(event) => {
+                event.preventDefault();
+                onOpen(project);
+              }}
+            >
+              <ProjectRowContent project={project} />
+            </a>
+          ) : (
+            <div className="project-link gone" aria-disabled="true">
+              <ProjectRowContent project={project} />
+            </div>
+          )}
           {writable && (
             <button
               className="ghost"
@@ -266,9 +349,36 @@ function ProjectRows({
               Remove
             </button>
           )}
-        </a>
+        </div>
       ))}
     </div>
+  );
+}
+
+function ProjectRowContent({ project }: { project: Project }) {
+  return (
+    <>
+      <span className={cx("status", isRecent(project) && "active")}>
+        {project.present ? "●" : "○"}
+      </span>
+      <span className="row-main">
+        <strong>{project.name}</strong>
+        <span>
+          {project.branch && <span className="tag mono">{project.branch}</span>}
+          {project.branch && <i>·</i>}
+          <em>{project.last_prompt || project.root}</em>
+        </span>
+      </span>
+      <span className={cx("state", healthClass(project))}>{healthLabel(project)}</span>
+      <span className="tag count-col">
+        {project.session_count} session{project.session_count === 1 ? "" : "s"}
+      </span>
+      <span className="tag count-col">
+        {project.turn_count} turn{project.turn_count === 1 ? "" : "s"}
+      </span>
+      <Delta additions={project.additions} deletions={project.deletions} />
+      <span className="when">{shortAge(project.last_activity)}</span>
+    </>
   );
 }
 
@@ -277,20 +387,29 @@ function ProjectRows({
  * ancient. */
 function isRecent(project: Project) {
   if (!isRealTime(project.last_activity)) return false;
-  return Date.now() - new Date(project.last_activity!).getTime() < WORKING_WINDOW;
+  return (
+    Date.now() - new Date(project.last_activity!).getTime() < WORKING_WINDOW
+  );
 }
 
 function healthClass(project: Project) {
   if (!project.present) return "missing";
   if (project.index_state === "stale") return "stale";
-  if (project.index_state === "missing" || project.history_state === "attention") return "missing";
+  if (
+    project.index_state === "missing" ||
+    project.index_state === "unavailable" ||
+    project.history_state === "attention"
+  ) {
+    return "missing";
+  }
   return "healthy";
 }
 
 function healthLabel(project: Project) {
-  if (!project.present) return "worktree gone";
-  if (project.index_state === "stale") return "stale index";
-  if (project.index_state === "missing") return "index missing";
+  if (!project.present) return "folder not found";
+  if (project.index_state === "stale") return "history may be stale";
+  if (project.index_state === "missing") return "history unavailable";
+  if (project.index_state === "unavailable") return "history unavailable";
   if (project.history_state === "attention") return "needs attention";
   return "healthy";
 }
@@ -302,7 +421,12 @@ function AddProjectDialog({
 }: {
   busy: boolean;
   onCancel: () => void;
-  onSubmit: (directory: string, agent: string, gitignore: boolean, gitSync: boolean) => void;
+  onSubmit: (
+    directory: string,
+    agent: string,
+    gitignore: boolean,
+    gitSync: boolean,
+  ) => void;
 }) {
   const [directory, setDirectory] = useState("");
   const [agent, setAgent] = useState("auto");
@@ -310,6 +434,7 @@ function AddProjectDialog({
   const [gitSync, setGitSync] = useState(false);
   const [picking, setPicking] = useState(false);
   const [pickError, setPickError] = useState<string | null>(null);
+  const dialogRef = useDialogFocus(onCancel, busy);
 
   // The native dialog runs on the host. If the machine has none, say so and
   // leave the text field usable rather than dead-ending.
@@ -331,26 +456,37 @@ function AddProjectDialog({
   };
 
   return (
-    <div className="scrim" role="dialog" aria-modal="true" aria-label="Add project">
-      <div className="dialog">
+    <div className="scrim">
+      <div
+        className="dialog"
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Add project"
+        tabIndex={-1}
+      >
         <div className="dialog-head">
           <strong>Add project</strong>
           <span>
-            Point Turnal at a directory to record. This runs the same steps as <code>turnal init</code>{" "}
-            in that directory: it is the one flow in the viewer that writes to disk.
+            Choose a project folder to start recording agent activity.
           </span>
         </div>
         <div className="dialog-body">
           <div className="field">
-            <span>Directory</span>
+            <label htmlFor="project-directory">Project folder</label>
             <span className="input">
               <input
+                id="project-directory"
                 value={directory}
                 placeholder="Choose a folder, or type a path"
                 onInput={(event) => setDirectory(event.currentTarget.value)}
                 autoFocus
               />
-              <button className="browse" onClick={choose} disabled={picking || busy}>
+              <button
+                className="browse"
+                onClick={choose}
+                disabled={picking || busy}
+              >
                 {picking ? "Choosing…" : "Browse…"}
               </button>
             </span>
@@ -361,7 +497,10 @@ function AddProjectDialog({
             <span>Agent capture</span>
             <div className="radios">
               {AGENTS.map((option) => (
-                <label key={option.id} className={cx("radio", agent === option.id && "on")}>
+                <label
+                  key={option.id}
+                  className={cx("radio", agent === option.id && "on")}
+                >
                   <input
                     type="radio"
                     name="agent"
@@ -385,14 +524,18 @@ function AddProjectDialog({
                 <input
                   type="checkbox"
                   checked={gitignore}
-                  onChange={(event) => setGitignore(event.currentTarget.checked)}
+                  onChange={(event) =>
+                    setGitignore(event.currentTarget.checked)
+                  }
                 />
                 <span className="mk" aria-hidden="true">
                   ✓
                 </span>
                 <span className="body">
-                  <strong>Add .turnal/ to .gitignore</strong>
-                  <span>Keeps the store out of your existing repository history.</span>
+                  <strong>Keep Turnal files out of Git</strong>
+                  <span>
+                    Prevents Turnal's recording files from appearing in project changes.
+                  </span>
                 </span>
               </label>
               <label className={cx("check", gitSync && "on")}>
@@ -405,10 +548,11 @@ function AddProjectDialog({
                   ✓
                 </span>
                 <span className="body">
-                  <strong>Enable workspace-Git rollback</strong>
+                  <strong>Enable full Git rollback</strong>
                   <span>
-                    Lets rollback restore a previously captured HEAD and index. Off by default: it is the
-                    one mode that can modify your existing <code>.git/</code>.
+                    Lets rollback restore the captured branch and staged files.
+                    Off by default because it can change your existing Git
+                    history and staging area.
                   </span>
                 </span>
               </label>
@@ -418,28 +562,31 @@ function AddProjectDialog({
           <div className="willdo">
             <span className="t">What this will do</span>
             <span className="ln2">
-              <i>+</i> create {directory || "<directory>"}/.turnal/
+              <i>+</i> prepare this folder for recording
             </span>
             {gitignore && (
               <span className="ln2">
-                <i>+</i> append .turnal/ to .gitignore
+                <i>+</i> keep Turnal files out of Git
               </span>
             )}
             {agent !== "none" && (
               <span className="ln2">
-                <i>+</i> install hooks for the {agent === "auto" ? "detected" : agent} agent
+                <i>+</i> install hooks for the{" "}
+                {agent === "auto" ? "detected" : agent} agent
               </span>
             )}
             <span className="ln2">
-              <i>+</i> register the store in the project registry
+              <i>+</i> add this project to the viewer
             </span>
             <span className="ln2 no">
-              <i>·</i> your existing .git/ is not modified
+              <i>·</i> your existing Git history is not modified
             </span>
           </div>
         </div>
         <div className="dialog-foot">
-          <span className="hint">turnal init --agent {agent}</span>
+          <span className="hint">
+            The project folder will stay on your computer.
+          </span>
           <span className="sp" />
           <button className="ghost" onClick={onCancel} disabled={busy}>
             Cancel
@@ -447,7 +594,9 @@ function AddProjectDialog({
           <button
             className="primary"
             disabled={busy || directory.trim() === ""}
-            onClick={() => onSubmit(directory.trim(), agent, gitignore, gitSync)}
+            onClick={() =>
+              onSubmit(directory.trim(), agent, gitignore, gitSync)
+            }
           >
             {busy ? "Adding…" : "Add project"}
           </button>
@@ -468,41 +617,50 @@ function RemoveProjectDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const dialogRef = useDialogFocus(onCancel, busy);
   return (
-    <div className="scrim" role="dialog" aria-modal="true" aria-label="Remove project">
-      <div className="dialog">
+    <div className="scrim">
+      <div
+        className="dialog"
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Remove project"
+        tabIndex={-1}
+      >
         <div className="dialog-head">
           <strong>Remove {project.name} from Turnal</strong>
           <span>
-            This deregisters the project so it leaves this list. Nothing is deleted.
+            This removes the project from this viewer. The project folder and
+            recorded history will not be deleted.
           </span>
         </div>
         <div className="dialog-body">
           <div className="willdo">
             <span className="t">What this will do</span>
             <span className="ln2">
-              <i>+</i> remove the registry entry for this store
+              <i>+</i> remove this project from the viewer
             </span>
             <span className="ln2 no">
-              <i>·</i> {project.store_path} is left on disk
+              <i>·</i> leave the project folder unchanged
             </span>
             <span className="ln2 no">
               <i>·</i> recorded history is kept and stays readable
             </span>
             <span className="ln2 no">
-              <i>·</i> agent hooks stay installed
+              <i>·</i> agent recording setup is left unchanged
             </span>
           </div>
           <div className="note">
             <span className="badge">i</span>
             <span>
-              Re-add this directory later, or run <code>turnal init</code> in it, and the existing
-              history comes back. Use <code>turnal destroy</code> to actually delete recorded history.
+              To see this history here again, add the project back to the
+              viewer.
             </span>
           </div>
         </div>
         <div className="dialog-foot">
-          <span className="hint">registry entry only</span>
+          <span className="hint">folder will not be deleted</span>
           <span className="sp" />
           <button className="ghost" onClick={onCancel} disabled={busy}>
             Cancel
@@ -514,4 +672,65 @@ function RemoveProjectDialog({
       </div>
     </div>
   );
+}
+
+/** Keep keyboard focus inside a modal and restore it to the control that
+ * opened the dialog when the modal closes. */
+function useDialogFocus(onCancel: () => void, busy: boolean) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const cancelRef = useRef(onCancel);
+  const busyRef = useRef(busy);
+  cancelRef.current = onCancel;
+  busyRef.current = busy;
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const previous =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    const focusable = () =>
+      Array.from(
+        dialog.querySelectorAll<HTMLElement>(
+          "input:not(:disabled), button:not(:disabled), [href], [tabindex]:not([tabindex='-1'])",
+        ),
+      );
+    (
+      dialog.querySelector<HTMLElement>("[autofocus]") ??
+      focusable()[0] ??
+      dialog
+    ).focus();
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !busyRef.current) {
+        event.preventDefault();
+        cancelRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const controls = focusable();
+      if (controls.length === 0) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      if (previous?.isConnected) previous.focus();
+    };
+  }, []);
+
+  return dialogRef;
 }

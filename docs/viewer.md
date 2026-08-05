@@ -1,6 +1,6 @@
 # Turnal Prism local viewer
 
-Turnal Prism is the browser interface launched by `turnal ui`. It shows every project recorded on this machine, and explores the same durable history the CLI uses: the append-only event log explains activity, private checkpoint Git commits provide file state, and per-project SQLite remains an optional disposable index.
+Turnal Prism is the browser interface launched by `turnal ui`. It shows every project recorded on this machine and explores the same durable history the CLI uses: recorded events explain activity and saved snapshots provide file state.
 
 ## Launch
 
@@ -14,7 +14,7 @@ turnal ui --session <session-id>
 
 `turnal ui` runs from any directory, including one that has no Turnal store. Launched inside a recorded project, that project is preselected; launched anywhere else, the project index opens. `--session` needs a recorded project, so it must be run inside one or combined with `--project`.
 
-The command prints the loopback URL, the number of indexed projects, the project index path, the process ID, and the shutdown instruction. The default port is selected by the operating system. Press Ctrl-C in the launching terminal to stop the server and invalidate its in-memory session.
+The command prints the loopback URL, the number of indexed projects, the process ID, and the shutdown instruction. The default port is selected by the operating system. Press Ctrl-C in the launching terminal to stop the server and invalidate its in-memory session.
 
 ## Project index
 
@@ -46,13 +46,13 @@ These controls defend against drive-by websites, DNS rebinding, accidental local
 
 ## Writes
 
-History is read-only. Prism never changes workspace files, event logs, checkpoint refs, retention policy, or rollback state. Blame reads use the existing disposable cache only in read-only mode. Rollback, editing, and retention changes remain CLI-only; Prism can copy an inspect command but does not execute it.
+History is read-only. Prism never changes workspace files, event logs, saved snapshots, retention policy, or rollback state. History reads do not create or update per-project caches. Rollback, editing, and retention changes remain CLI-only.
 
 Two operations do write, and both are about which projects Turnal knows:
 
-**Add project** runs the same steps as `turnal init` in the chosen directory: create the `.turnal` store, optionally append `.turnal/` to `.gitignore`, install agent hooks for the selected agent, and register the store. The dialog lists these effects before you confirm and shows the equivalent CLI command. Workspace-Git rollback capture is off by default, because it is the one mode that can later modify your existing `.git/`. Your existing `.git/` is not modified by adding a project.
+**Add project** prepares the chosen folder for recording, optionally keeps Turnal's files out of the project's Git history, configures the selected agent, and adds the project to the viewer. The dialog lists these effects before you confirm. Full Git rollback is off by default because it can later change the project's existing Git history and staging area. Adding a project does not change its existing Git history.
 
-**Remove project** deregisters the store and nothing more. The `.turnal` directory, its recorded history, and any installed hooks are left on disk, so re-adding the directory or running `turnal init` in it restores the project with its history intact. Use `turnal destroy` to actually delete recorded history.
+**Remove project** removes the project from the viewer and nothing more. The project folder, recorded history, and installed hooks are not deleted. Add the project back to the viewer to see its existing history again.
 
 The viewer retries a transient partial event tail only while an event-writer lock is active. A partial tail without an active writer remains a visible integrity failure.
 
@@ -64,7 +64,7 @@ The viewer retries a transient partial event tail only while an event-writer loc
 - One patch response is limited to 512 KB and 6,000 lines.
 - One blame response is limited to 1,500 lines.
 - One turn response is limited to 500 normalized events.
-- The review surface fetches at most 20 file patches per turn.
+- The review surface loads file patches in pages of 20, with an explicit control to load more.
 - The cross-project activity feed is capped per request and defaults to the most recent 40 sessions.
 - Truncation is reported in the response and UI.
 

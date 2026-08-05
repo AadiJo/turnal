@@ -21,6 +21,7 @@ type Query struct {
 	Path          primitives.RepoPath
 	Line          int
 	SessionID     primitives.SessionID
+	WorktreeID    primitives.WorktreeID
 	StreamID      primitives.EventStreamID
 	ThroughTurnID primitives.TurnID
 }

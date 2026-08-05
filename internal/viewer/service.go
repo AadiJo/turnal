@@ -18,6 +18,7 @@ import (
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/filelock"
 	queryindex "github.com/AadiJo/turnal/internal/index"
+	"github.com/AadiJo/turnal/internal/manualcheckpoints"
 	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/AadiJo/turnal/internal/recall"
 )
@@ -65,6 +66,14 @@ type turnRecord struct {
 }
 
 func (service *Service) Workspace(ctx context.Context) (WorkspaceView, error) {
+	sessions, err := service.Sessions(ctx)
+	if err != nil {
+		return WorkspaceView{}, err
+	}
+	return service.workspaceWithSessions(ctx, sessions)
+}
+
+func (service *Service) workspaceWithSessions(ctx context.Context, sessions []SessionSummaryView) (WorkspaceView, error) {
 	streams, err := service.listDurableStreams(ctx)
 	if err != nil {
 		return WorkspaceView{}, err
@@ -90,30 +99,25 @@ func (service *Service) Workspace(ctx context.Context) (WorkspaceView, error) {
 	if len(status.Problems) > 0 {
 		view.HistoryState = "attention"
 	}
-	type sessionKey struct{ session, stream string }
-	type turnKey struct {
-		session, stream string
-		turn            uint64
-	}
-	sessionKeys := make(map[sessionKey]struct{})
-	turnKeys := make(map[turnKey]struct{})
 	for _, stream := range streams {
-		sessionKeys[sessionKey{session: stream.SessionID.String(), stream: stream.StreamID.String()}] = struct{}{}
 		for _, event := range stream.Events {
 			if event.Time.Time.After(view.LastActivity) {
 				view.LastActivity = event.Time.Time
 			}
-			if event.TurnID != nil {
-				turnKeys[turnKey{session: stream.SessionID.String(), stream: stream.StreamID.String(), turn: event.TurnID.Uint64()}] = struct{}{}
-			}
 		}
 	}
 	for _, info := range infos {
-		sessionKeys[sessionKey{session: info.SessionID.String(), stream: info.StreamID.String()}] = struct{}{}
-		turnKeys[turnKey{session: info.SessionID.String(), stream: info.StreamID.String(), turn: info.TurnID.Uint64()}] = struct{}{}
+		if info.Manual {
+			if info.Time.After(view.LastActivity) {
+				view.LastActivity = info.Time
+			}
+			continue
+		}
 	}
-	view.SessionCount = len(sessionKeys)
-	view.TurnCount = len(turnKeys)
+	view.SessionCount = len(sessions)
+	for _, session := range sessions {
+		view.TurnCount += session.TurnCount
+	}
 	return view, nil
 }
 
@@ -136,6 +140,39 @@ func (service *Service) Sessions(ctx context.Context) ([]SessionSummaryView, err
 		}
 		return views[i].ID < views[j].ID
 	})
+	redundant := redundantWrapperSessions(views)
+	visible := make([]SessionSummaryView, 0, len(views)-len(redundant))
+	for _, view := range views {
+		if _, skip := redundant[view.Key]; !skip {
+			visible = append(visible, view)
+		}
+	}
+	return visible, nil
+}
+
+// Saves returns standalone folder snapshots separately from agent sessions.
+func (service *Service) Saves(ctx context.Context) ([]ManualSaveView, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	saves, err := manualcheckpoints.Read(service.Repo, true)
+	if err != nil {
+		return nil, err
+	}
+	views := make([]ManualSaveView, 0, len(saves))
+	for index := len(saves) - 1; index >= 0; index-- {
+		save := saves[index]
+		when := save.Event.Time.Time
+		if when.IsZero() {
+			when = save.Checkpoint.Time
+		}
+		views = append(views, ManualSaveView{
+			ID:       save.Checkpoint.ID.String(),
+			Message:  save.Message,
+			Time:     when,
+			Warnings: save.Warnings,
+		})
+	}
 	return views, nil
 }
 
@@ -230,12 +267,12 @@ func (service *Service) Turn(ctx context.Context, key string) (TurnDetailView, e
 }
 
 func (service *Service) Diff(ctx context.Context, key string) (DiffSummaryView, error) {
-	identity, turn, err := service.turnRecordForKey(ctx, key)
+	_, turn, err := service.turnRecordForKey(ctx, key)
 	if err != nil {
 		return DiffSummaryView{}, err
 	}
 	if turn.pre == nil || turn.post == nil {
-		return DiffSummaryView{}, fmt.Errorf("turn %d has no complete checkpoint pair", identity.TurnID)
+		return DiffSummaryView{}, fmt.Errorf("the before-and-after snapshots for this turn are incomplete")
 	}
 	return DiffSummaryView{
 		TurnKey:     key,
@@ -255,7 +292,7 @@ func (service *Service) Patch(ctx context.Context, key, path string) (FilePatchV
 		return FilePatchView{}, err
 	}
 	if turn.pre == nil || turn.post == nil {
-		return FilePatchView{}, fmt.Errorf("turn has no complete checkpoint pair")
+		return FilePatchView{}, fmt.Errorf("the before-and-after snapshots for this turn are incomplete")
 	}
 	parsedPath, err := primitives.ParseRepoPath(path)
 	if err != nil {
@@ -264,18 +301,14 @@ func (service *Service) Patch(ctx context.Context, key, path string) (FilePatchV
 	if err := ctx.Err(); err != nil {
 		return FilePatchView{}, err
 	}
-	patch, err := service.Repo.DiffRefsPath(turn.pre.Ref, turn.post.Ref, parsedPath.String())
+	result, err := service.Repo.DiffRefsPathLimited(ctx, turn.pre.Ref, turn.post.Ref, parsedPath.String(), maxPatchBytes)
 	if err != nil {
 		return FilePatchView{}, err
 	}
-	originalBytes := len(patch)
-	originalLines := strings.Count(string(patch), "\n")
-	truncated := false
-	if len(patch) > maxPatchBytes {
-		patch = patch[:maxPatchBytes]
-		for !utf8.Valid(patch) && len(patch) > 0 {
-			patch = patch[:len(patch)-1]
-		}
+	patch := result.Patch
+	truncated := result.Truncated
+	for !utf8.Valid(patch) && len(patch) > 0 {
+		patch = patch[:len(patch)-1]
 		truncated = true
 	}
 	lines := strings.Split(string(patch), "\n")
@@ -285,18 +318,22 @@ func (service *Service) Patch(ctx context.Context, key, path string) (FilePatchV
 	}
 	return FilePatchView{
 		Path: parsedPath.String(), Patch: string(patch), Truncated: truncated,
-		ByteCount: originalBytes, LineCount: originalLines, LimitBytes: maxPatchBytes, LimitLines: maxPatchLines,
+		ByteCount: result.ByteCount, LineCount: result.LineCount, LimitBytes: maxPatchBytes, LimitLines: maxPatchLines,
 	}, nil
 }
 
 func (service *Service) Blame(ctx context.Context, key, path string, line int) (BlameView, error) {
-	identity, err := service.codec.decode(key, resourceTurn)
+	identity, _, err := service.turnRecordForKey(ctx, key)
 	if err != nil {
 		return BlameView{}, err
 	}
 	sessionID, _ := primitives.ParseSessionID(identity.SessionID)
 	streamID, _ := primitives.ParseEventStreamID(identity.StreamID)
 	turnID, _ := primitives.NewTurnID(identity.TurnID)
+	var worktreeID primitives.WorktreeID
+	if identity.WorktreeID != "" {
+		worktreeID, _ = primitives.ParseWorktreeID(identity.WorktreeID)
+	}
 	parsedPath, err := primitives.ParseRepoPath(path)
 	if err != nil {
 		return BlameView{}, err
@@ -308,7 +345,8 @@ func (service *Service) Blame(ctx context.Context, key, path string, line int) (
 		return BlameView{}, err
 	}
 	result, err := (blame.Engine{Repo: service.Repo, ReadOnly: true}).Compute(blame.Query{
-		Path: parsedPath, Line: line, SessionID: sessionID, StreamID: streamID, ThroughTurnID: turnID,
+		Path: parsedPath, Line: line, SessionID: sessionID, WorktreeID: worktreeID,
+		StreamID: streamID, ThroughTurnID: turnID,
 	})
 	if err != nil {
 		return BlameView{}, err
@@ -327,7 +365,7 @@ func (service *Service) Blame(ctx context.Context, key, path string, line int) (
 			ToolNames: entry.Origin.ToolNames, Time: entry.Origin.Time,
 		}
 		if entry.Origin.Kind == "turn" && entry.Origin.TurnID != 0 {
-			lineView.TurnKey, _ = service.codec.encode(resourceTurn, service.Repo.WorktreeID, streamID, entry.Origin.SessionID, entry.Origin.TurnID)
+			lineView.TurnKey, _ = service.codec.encode(resourceTurn, worktreeID, streamID, entry.Origin.SessionID, entry.Origin.TurnID)
 		}
 		lines = append(lines, lineView)
 	}
@@ -363,6 +401,9 @@ func (service *Service) loadRecords(ctx context.Context) ([]sessionRecord, strin
 		if err := ctx.Err(); err != nil {
 			return nil, indexState, err
 		}
+		if stream.Workspace {
+			continue
+		}
 		record := ensure(stream.SessionID, stream.StreamID, stream.WorktreeID)
 		record.stream = stream
 		for _, event := range stream.Events {
@@ -389,6 +430,11 @@ func (service *Service) loadRecords(ctx context.Context) ([]sessionRecord, strin
 		}
 	}
 	for _, info := range infos {
+		// A manual save is a standalone snapshot, not an agent session. Its
+		// checkpoint identity intentionally has no session or event stream.
+		if info.Manual {
+			continue
+		}
 		ensure(info.SessionID, info.StreamID, info.WorktreeID)
 	}
 	for _, record := range records {
@@ -550,6 +596,16 @@ func (service *Service) sessionView(record sessionRecord) (SessionSummaryView, e
 	}
 	seenFiles := make(map[string]struct{})
 	for _, event := range record.stream.Events {
+		if event.Type == primitives.EventTypeRunCaptureLink {
+			var payload struct {
+				RunID string `json:"run_id"`
+				Kind  string `json:"kind"`
+			}
+			if json.Unmarshal(event.Payload, &payload) == nil {
+				view.runID = payload.RunID
+				view.captureKind = payload.Kind
+			}
+		}
 		if view.Adapter == "" && event.Adapter != "" {
 			view.Adapter = event.Adapter.String()
 		}

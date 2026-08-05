@@ -42,7 +42,7 @@ func uiCmd() *cobra.Command {
 // running turnal ui from an unrecorded directory opens the global index.
 func resolveViewerProject(project string) (*checkpoint.Repo, error) {
 	if project == "" {
-		repo, err := openCheckpointRepo()
+		repo, err := openCheckpointRepoReadOnly()
 		if err != nil {
 			return nil, nil
 		}
@@ -62,7 +62,7 @@ func resolveViewerProject(project string) (*checkpoint.Repo, error) {
 		}
 		root = parsed
 	}
-	repo, err := checkpoint.Open(root)
+	repo, err := checkpoint.OpenReadOnly(root)
 	if err != nil {
 		return nil, fmt.Errorf("open project at %s: %w", absolute, err)
 	}

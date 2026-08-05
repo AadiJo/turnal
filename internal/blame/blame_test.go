@@ -793,7 +793,11 @@ func TestComputeBlameCacheRejectsMissingConcurrentBaselineEvidence(t *testing.T)
 
 	path, _ := primitives.ParseRepoPath("app.txt")
 	engine := New(repo)
-	warm, err := engine.Compute(Query{Path: path, Line: 1, SessionID: sessionB})
+	streamB, err := repo.StreamID(sessionB)
+	if err != nil {
+		t.Fatalf("stream for complete turn: %v", err)
+	}
+	warm, err := engine.Compute(Query{Path: path, Line: 1, SessionID: sessionB, StreamID: streamB})
 	if err != nil {
 		t.Fatalf("warm Compute: %v", err)
 	}
@@ -824,8 +828,36 @@ func TestComputeBlameCacheRejectsMissingConcurrentBaselineEvidence(t *testing.T)
 	if err := engine.validateCachedEvidence(history.Complete, concurrent); err == nil || !strings.Contains(err.Error(), "concurrent baseline checkpoint") {
 		t.Fatalf("cached evidence validation error = %v, want missing concurrent baseline evidence", err)
 	}
-	if _, err := engine.Compute(Query{Path: path, Line: 1, SessionID: sessionB}); err == nil {
+	if _, err := engine.Compute(Query{Path: path, Line: 1, SessionID: sessionB, StreamID: streamB}); err == nil {
 		t.Fatal("cached Compute succeeded after concurrent baseline evidence was removed")
+	}
+}
+
+func TestReadOnlyComputeDoesNotWriteBlameCache(t *testing.T) {
+	root, repo := newBlameRepo(t)
+	writeBlameFile(t, root, "readonly.txt", "before\n")
+	sessionID := blameSessionID(t, "read-only-cache")
+	captureBlameTurn(t, repo, root, sessionID, 1, "readonly.txt", "after\n", "change the file")
+	if _, err := queryindex.Rebuild(repo); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+
+	path, _ := primitives.ParseRepoPath("readonly.txt")
+	if _, err := (Engine{Repo: repo, ReadOnly: true}).Compute(Query{Path: path, Line: 1}); err != nil {
+		t.Fatalf("read-only Compute: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", queryindex.PathsForMetadata(repo.MetadataDir).DBPath)
+	if err != nil {
+		t.Fatalf("open query index: %v", err)
+	}
+	defer db.Close()
+	var rows int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM blame_cache WHERE path = ?`, path.String()).Scan(&rows); err != nil {
+		t.Fatalf("count blame cache rows: %v", err)
+	}
+	if rows != 0 {
+		t.Fatalf("read-only Compute wrote %d blame cache rows", rows)
 	}
 }
 

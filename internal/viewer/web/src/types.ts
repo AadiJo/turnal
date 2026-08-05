@@ -3,7 +3,6 @@ export type Project = {
   repo_id?: string;
   name: string;
   root: string;
-  store_path: string;
   branch?: string;
   /** False when the store directory is gone. The project stays listed because
    * its recorded history outlives the working tree. */
@@ -39,10 +38,13 @@ export type ActivityItem = {
   finished_at?: string;
 };
 
+export type ActivityPage = {
+  items: ActivityItem[];
+  truncated: boolean;
+};
+
 export type ViewerIndex = {
   projects: Project[];
-  db_path: string;
-  registry_path: string;
   read_only: boolean;
   network_silent: boolean;
   viewer_started_at: string;
@@ -59,10 +61,10 @@ export type AddProjectRequest = {
 export type AddProjectResult = {
   store_id: string;
   root: string;
-  store_path: string;
   attached: boolean;
   gitignore_updated: boolean;
   hooks?: string[];
+  warning?: string;
 };
 
 export type Workspace = {
@@ -110,6 +112,13 @@ export type SessionSummary = {
   prompt_preview?: string;
 };
 
+export type ManualSave = {
+  id: string;
+  message?: string;
+  time?: string;
+  warnings?: string[];
+};
+
 export type TurnSummary = {
   key: string;
   id: number;
@@ -138,7 +147,14 @@ export type SessionTurns = {
 export type TurnEvent = {
   sequence: number;
   type: string;
-  kind: "prompt" | "assistant" | "tool" | "result" | "checkpoint" | "error" | "system";
+  kind:
+    | "prompt"
+    | "assistant"
+    | "tool"
+    | "result"
+    | "checkpoint"
+    | "error"
+    | "system";
   title: string;
   body?: string;
   tool_name?: string;

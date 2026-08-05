@@ -7,15 +7,41 @@ import type { ActivityItem, Project, ViewerIndex } from "./types";
 /** Which screen is showing. The project index is the root; a selected project
  * pushes into its own view. State lives in the URL so reloads and history
  * navigation land in the same place. */
-type Route = { name: "projects" } | { name: "project"; storeID: string; sessionKey?: string };
+type ProjectRoute = {
+  name: "project";
+  storeID: string;
+  sessionKey?: string;
+  turnKey?: string;
+  view?: "sessions" | "review" | "origins";
+  path?: string;
+  from?: number;
+  to?: number;
+};
+type Route = { name: "projects" } | ProjectRoute;
 
-const launchBase = () => `/${window.location.pathname.split("/").filter(Boolean)[0]}/`;
+const launchBase = () =>
+  `/${window.location.pathname.split("/").filter(Boolean)[0]}/`;
 
 function readRoute(): Route {
   const params = new URLSearchParams(window.location.search);
   const storeID = params.get("project");
   if (storeID) {
-    return { name: "project", storeID, sessionKey: params.get("session") ?? undefined };
+    const view = params.get("view");
+    const from = Number(params.get("from"));
+    const to = Number(params.get("to"));
+    return {
+      name: "project",
+      storeID,
+      sessionKey: params.get("session") ?? undefined,
+      turnKey: params.get("turn") ?? undefined,
+      view:
+        view === "sessions" || view === "origins" || view === "review"
+          ? view
+          : undefined,
+      path: params.get("path") ?? undefined,
+      from: Number.isInteger(from) && from > 0 ? from : undefined,
+      to: Number.isInteger(to) && to > 0 ? to : undefined,
+    };
   }
   return { name: "projects" };
 }
@@ -25,6 +51,11 @@ function writeRoute(route: Route) {
   if (route.name === "project") {
     params.set("project", route.storeID);
     if (route.sessionKey) params.set("session", route.sessionKey);
+    if (route.turnKey) params.set("turn", route.turnKey);
+    if (route.view) params.set("view", route.view);
+    if (route.path) params.set("path", route.path);
+    if (route.from) params.set("from", String(route.from));
+    if (route.to) params.set("to", String(route.to));
   }
   const query = params.toString();
   history.pushState({}, "", `${launchBase()}${query ? `?${query}` : ""}`);
@@ -33,6 +64,8 @@ function writeRoute(route: Route) {
 export function App() {
   const [index, setIndex] = useState<ViewerIndex | null>(null);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
+  const [activityTruncated, setActivityTruncated] = useState(false);
+  const [activityError, setActivityError] = useState<string | null>(null);
   const [route, setRoute] = useState<Route>(readRoute);
   const [error, setError] = useState<Error | null>(null);
   const [loading, setLoading] = useState(true);
@@ -40,10 +73,22 @@ export function App() {
   const load = useCallback(async (refresh: boolean) => {
     try {
       const nextIndex = refresh ? await api.refresh() : await api.index();
-      const nextActivity = await api.activity().catch(() => []);
       setIndex(nextIndex);
-      setActivity(nextActivity);
       setError(null);
+      try {
+        const nextActivity = await api.activity();
+        setActivity(nextActivity.items);
+        setActivityTruncated(nextActivity.truncated);
+        setActivityError(null);
+      } catch (nextError) {
+        setActivity([]);
+        setActivityTruncated(false);
+        setActivityError(
+          nextError instanceof Error
+            ? nextError.message
+            : "Recent activity could not be read.",
+        );
+      }
     } catch (nextError) {
       setError(nextError as Error);
     }
@@ -77,23 +122,35 @@ export function App() {
   };
 
   if (loading) return <Loading />;
-  if (error || !index) return <Fatal error={error} onRetry={() => load(false)} />;
+  if (error || !index)
+    return <Fatal error={error} onRetry={() => load(false)} />;
 
   if (route.name === "project") {
-    const project = index.projects.find((item) => item.store_id === route.storeID);
+    const project = index.projects.find(
+      (item) => item.store_id === route.storeID,
+    );
     if (!project) {
-      return (
-        <UnknownProject
-          storeID={route.storeID}
-          onBack={() => navigate({ name: "projects" })}
-        />
-      );
+      return <UnknownProject onBack={() => navigate({ name: "projects" })} />;
     }
     return (
       <ProjectView
         project={project}
         initialSessionKey={route.sessionKey}
+        initialTurnKey={route.turnKey}
+        initialView={route.view}
+        initialPath={route.path}
+        initialSelection={
+          route.from
+            ? {
+                from: route.from,
+                to: Math.max(route.from, route.to ?? route.from),
+              }
+            : undefined
+        }
         onBack={() => navigate({ name: "projects" })}
+        onNavigate={(state) =>
+          navigate({ name: "project", storeID: project.store_id, ...state })
+        }
       />
     );
   }
@@ -102,7 +159,11 @@ export function App() {
     <ProjectsView
       index={index}
       activity={activity}
-      onOpenProject={(project: Project) => navigate({ name: "project", storeID: project.store_id })}
+      activityTruncated={activityTruncated}
+      activityError={activityError}
+      onOpenProject={(project: Project, sessionKey?: string) =>
+        navigate({ name: "project", storeID: project.store_id, sessionKey })
+      }
       onReload={() => load(true)}
     />
   );
@@ -112,26 +173,40 @@ function Loading() {
   return (
     <div className="hub">
       <div className="hub-top">
-        <h1>Opening the project index</h1>
+        <h1>Opening Turnal</h1>
       </div>
-      <div className="lede">Reading the project index and verifying the viewer session.</div>
+      <div className="lede">
+        Reading your projects and verifying the viewer session.
+      </div>
     </div>
   );
 }
 
-function Fatal({ error, onRetry }: { error: Error | null; onRetry: () => void }) {
+function Fatal({
+  error,
+  onRetry,
+}: {
+  error: Error | null;
+  onRetry: () => void;
+}) {
   const locked = error instanceof APIError && error.code === "viewer_locked";
   return (
     <div className="hub">
       <div className="hub-top">
-        <h1>{locked ? "Relaunch the viewer" : "The local history could not be read"}</h1>
+        <h1>
+          {locked
+            ? "Relaunch the viewer"
+            : "The local history could not be read"}
+        </h1>
       </div>
-      <div className="lede">{error?.message || "The viewer did not return project data."}</div>
+      <div className="lede">
+        {error?.message || "The viewer did not return project data."}
+      </div>
       <div className="empty">
         <p>
           {locked
             ? "This viewer session expired or its launch token was already used."
-            : "Check that the store is readable and try again."}
+            : "Check that the project folder is readable and try again."}
         </p>
         <span className="row2">
           <button className="primary" onClick={onRetry}>
@@ -144,14 +219,14 @@ function Fatal({ error, onRetry }: { error: Error | null; onRetry: () => void })
   );
 }
 
-function UnknownProject({ storeID, onBack }: { storeID: string; onBack: () => void }) {
+function UnknownProject({ onBack }: { onBack: () => void }) {
   return (
     <div className="hub">
       <div className="hub-top">
-        <h1>That project is not indexed</h1>
+        <h1>That project is no longer in the viewer</h1>
       </div>
       <div className="lede">
-        No registered store matches <code>{storeID}</code>. It may have been removed.
+        It may have been removed. Add the project again to see it here.
       </div>
       <div className="empty">
         <span className="row2">

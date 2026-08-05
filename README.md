@@ -163,22 +163,6 @@ turnal rollback --to <printed-hash>
 
 Manual saves capture the same project surface as automatic checkpoints. They do not capture the project's Git HEAD or index, so `--workspace-git` rollback is unavailable for them.
 
-### Turnal Prism local viewer
-
-Run one command to open a read-only visual history in your browser:
-
-```sh
-turnal ui
-```
-
-Prism keeps session topology, prompt and tool context, checkpoint diffs, and line origins in one local interface. It binds to loopback, uses a one-time fragment bootstrap, loads no remote assets, and never changes workspace files or durable history. See the [viewer security and data-boundary guide](docs/viewer.md) for the complete model.
-
-![Turnal Prism session topology with recorded prompts, tools, and checkpoint evidence](docs/turnal-viewer-timeline.png)
-
-![Turnal Prism bounded unified diff with prompt and tool context](docs/turnal-viewer-diff.png)
-
-![Turnal Prism line provenance linking a source line to its originating turn and prompt](docs/turnal-viewer-provenance.png)
-
 ### Codex wrapper mode
 
 Turnal can launch Codex with wrapper checkpoints in addition to hook capture:

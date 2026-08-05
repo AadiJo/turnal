@@ -90,7 +90,7 @@ func TestRefreshIndexesRegisteredStores(t *testing.T) {
 		t.Fatalf("summary not stored: turns=%d additions=%d", project.TurnCount, project.Additions)
 	}
 
-	feed, err := db.Activity(context.Background(), 10)
+	feed, _, err := db.Activity(context.Background(), 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,11 @@ func TestRefreshKeepsStoresWhoseDirectoryIsGone(t *testing.T) {
 	db := openIsolated(t)
 	root := filepath.Join(t.TempDir(), "vanishing")
 	repo := registerStore(t, root)
-	if err := db.Refresh(context.Background(), staticSummary(Summary{TurnCount: 3})); err != nil {
+	lastActivity := time.Now().UTC().Add(-time.Minute)
+	if err := db.Refresh(context.Background(), staticSummary(Summary{
+		TurnCount: 3, Additions: 7, LastPrompt: "keep me", LastActivity: lastActivity,
+		Sessions: []Activity{{SessionKey: "kept", SessionID: "session"}},
+	})); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.RemoveAll(repo.MetadataDir); err != nil {
@@ -124,6 +128,16 @@ func TestRefreshKeepsStoresWhoseDirectoryIsGone(t *testing.T) {
 	}
 	if list[0].Present {
 		t.Fatal("missing store directory was still reported present")
+	}
+	if list[0].HistoryState != "absent" || list[0].TurnCount != 3 || list[0].Additions != 7 || list[0].LastPrompt != "keep me" {
+		t.Fatalf("missing store lost its last readable summary: %#v", list[0])
+	}
+	activity, _, err := db.Activity(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(activity) != 1 || activity[0].SessionKey != "kept" {
+		t.Fatalf("missing store lost its last readable activity: %#v", activity)
 	}
 }
 
@@ -143,6 +157,39 @@ func TestRefreshToleratesUnreadableStore(t *testing.T) {
 	}
 	if len(list) != 1 || list[0].HistoryState != "attention" {
 		t.Fatalf("projects = %#v, want one project flagged for attention", list)
+	}
+}
+
+func TestRefreshKeepsLastGoodSummaryWhenStoreIsTemporarilyUnreadable(t *testing.T) {
+	db := openIsolated(t)
+	repo := registerStore(t, filepath.Join(t.TempDir(), "temporarily-unreadable"))
+	lastActivity := time.Now().UTC().Add(-time.Minute)
+	good := Summary{
+		Branch: "main", HistoryState: "ready", TurnCount: 4, Additions: 9,
+		LastActivity: lastActivity, LastPrompt: "keep this", LastAdapter: "codex",
+		Sessions: []Activity{{SessionKey: "kept", SessionID: "session", Title: "keep this"}},
+	}
+	if err := db.Refresh(context.Background(), staticSummary(good)); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Refresh(context.Background(), func(context.Context, checkpoint.RegisteredStore) (Summary, error) {
+		return Summary{}, os.ErrPermission
+	}); err != nil {
+		t.Fatal(err)
+	}
+	project, err := db.Project(context.Background(), repo.StoreID.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if project.HistoryState != "attention" || project.TurnCount != 4 || project.Additions != 9 || project.LastPrompt != "keep this" {
+		t.Fatalf("summary was erased after transient failure: %#v", project)
+	}
+	activity, _, err := db.Activity(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(activity) != 1 || activity[0].SessionKey != "kept" {
+		t.Fatalf("activity was erased after transient failure: %#v", activity)
 	}
 }
 
@@ -177,6 +224,91 @@ func TestDeregisterKeepsStoreOnDisk(t *testing.T) {
 			t.Fatal("store is still registered after deregistering")
 		}
 	}
+	// Retained hooks and ordinary writable opens refresh identities. That must
+	// not silently put a project back into the viewer after the user removed it.
+	if _, err := checkpoint.Open(repo.WorkspaceRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Refresh(context.Background(), staticSummary(Summary{})); err != nil {
+		t.Fatal(err)
+	}
+	list, err = db.Projects(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("automatic open re-added removed project: %#v", list)
+	}
+	// Re-adding is explicit and clears the durable hidden marker.
+	if err := repo.RegisterStore(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Refresh(context.Background(), staticSummary(Summary{})); err != nil {
+		t.Fatal(err)
+	}
+	list, err = db.Projects(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].StoreID != repo.StoreID.String() {
+		t.Fatalf("explicit re-add projects = %#v", list)
+	}
+}
+
+func TestDeregisterCascadesAfterReopeningIndex(t *testing.T) {
+	stateDir := t.TempDir()
+	t.Setenv("TURNAL_STATE_DIR", stateDir)
+	db, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := registerStore(t, filepath.Join(t.TempDir(), "reopened"))
+	if err := db.Refresh(context.Background(), staticSummary(Summary{
+		Sessions: []Activity{{SessionKey: "session", SessionID: "session"}},
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err = Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.Deregister(context.Background(), repo.StoreID.String()); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"activity", "project_worktrees"} {
+		var rows int
+		if err := db.db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&rows); err != nil {
+			t.Fatal(err)
+		}
+		if rows != 0 {
+			t.Fatalf("%s retained %d orphaned rows after reopen", table, rows)
+		}
+	}
+}
+
+func TestActivityReportsWhenOlderSessionsAreOmitted(t *testing.T) {
+	db := openIsolated(t)
+	registerStore(t, filepath.Join(t.TempDir(), "activity-limit"))
+	now := time.Now().UTC()
+	if err := db.Refresh(context.Background(), staticSummary(Summary{Sessions: []Activity{
+		{SessionKey: "one", SessionID: "one", FinishedAt: now},
+		{SessionKey: "two", SessionID: "two", FinishedAt: now.Add(-time.Minute)},
+		{SessionKey: "three", SessionID: "three", FinishedAt: now.Add(-2 * time.Minute)},
+	}})); err != nil {
+		t.Fatal(err)
+	}
+	activity, truncated, err := db.Activity(context.Background(), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(activity) != 2 || !truncated {
+		t.Fatalf("activity len=%d truncated=%v, want 2 and true", len(activity), truncated)
+	}
 }
 
 // A store removed from the registry outside the viewer disappears on refresh.
@@ -198,6 +330,70 @@ func TestRefreshDropsDeregisteredStores(t *testing.T) {
 	}
 	if len(list) != 0 {
 		t.Fatalf("projects = %d, want 0", len(list))
+	}
+}
+
+func TestDeregisterWaitsForInFlightRefresh(t *testing.T) {
+	db := openIsolated(t)
+	otherDB, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = otherDB.Close() })
+	repo := registerStore(t, filepath.Join(t.TempDir(), "racing"))
+	started := make(chan struct{})
+	release := make(chan struct{})
+	refreshDone := make(chan error, 1)
+	go func() {
+		refreshDone <- db.Refresh(context.Background(), func(context.Context, checkpoint.RegisteredStore) (Summary, error) {
+			close(started)
+			<-release
+			return Summary{TurnCount: 1}, nil
+		})
+	}()
+	<-started
+
+	deregisterDone := make(chan error, 1)
+	go func() {
+		deregisterDone <- otherDB.Deregister(context.Background(), repo.StoreID.String())
+	}()
+	select {
+	case err := <-deregisterDone:
+		t.Fatalf("Deregister returned before the in-flight refresh completed: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	if err := <-refreshDone; err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if err := <-deregisterDone; err != nil {
+		t.Fatalf("Deregister: %v", err)
+	}
+	list, err := db.Projects(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("removed project was resurrected by refresh: %#v", list)
+	}
+}
+
+func TestPreferredRootSkipsDeletedLinkedWorktreeAndKeepsPrimary(t *testing.T) {
+	base := t.TempDir()
+	deleted := filepath.Join(base, "a-deleted-link")
+	primary := filepath.Join(base, "z-primary")
+	if err := os.MkdirAll(primary, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store := checkpoint.RegisteredStore{
+		StorePath: filepath.Join(primary, ".turnal"),
+		Worktrees: []checkpoint.RegisteredWorktree{
+			{Root: deleted},
+			{Root: primary, Primary: true},
+		},
+	}
+	if got := store.PreferredRoot(); got != primary {
+		t.Fatalf("PreferredRoot = %q, want live primary %q", got, primary)
 	}
 }
 
@@ -254,5 +450,53 @@ func TestOpenRebuildsAfterDeletionAndCorruption(t *testing.T) {
 	defer recovered.Close()
 	if err := recovered.Refresh(context.Background(), staticSummary(Summary{})); err != nil {
 		t.Fatalf("refresh after corruption: %v", err)
+	}
+}
+
+func TestConcurrentOpenSerializesCorruptIndexRebuild(t *testing.T) {
+	t.Setenv("TURNAL_STATE_DIR", t.TempDir())
+	path, err := Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("not a database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	results := make(chan *DB, 2)
+	errors := make(chan error, 2)
+	start := make(chan struct{})
+	for range 2 {
+		go func() {
+			<-start
+			db, openErr := Open()
+			if openErr != nil {
+				errors <- openErr
+				return
+			}
+			results <- db
+		}()
+	}
+	close(start)
+	var opened []*DB
+	for range 2 {
+		select {
+		case openErr := <-errors:
+			t.Fatalf("concurrent Open: %v", openErr)
+		case db := <-results:
+			opened = append(opened, db)
+		}
+	}
+	for _, db := range opened {
+		healthy, healthErr := db.healthy()
+		if healthErr != nil || !healthy {
+			t.Fatalf("opened index is unhealthy: healthy=%v err=%v", healthy, healthErr)
+		}
+		if err := db.Close(); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

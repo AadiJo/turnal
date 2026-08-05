@@ -10,6 +10,7 @@ import (
 
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/filelock"
+	"github.com/AadiJo/turnal/internal/manualcheckpoints"
 	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/AadiJo/turnal/internal/turnevents"
 	"github.com/AadiJo/turnal/internal/turns"
@@ -50,6 +51,10 @@ func TestServiceTraversesTurnDiffAndBlameWithoutWritingHistory(t *testing.T) {
 
 	service, err := NewService(repo)
 	if err != nil {
+		t.Fatal(err)
+	}
+	// Query-only viewer operations must not need scratch files in the store.
+	if err := os.RemoveAll(repo.TmpDir); err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
@@ -95,6 +100,99 @@ func TestServiceTraversesTurnDiffAndBlameWithoutWritingHistory(t *testing.T) {
 	}
 	if len(origins.Lines) == 0 || origins.Lines[3].TurnID != started.TurnID.Uint64() {
 		t.Fatalf("blame = %#v", origins)
+	}
+	missingTurnID, err := primitives.NewTurnID(started.TurnID.Uint64() + 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turnIdentity, err := service.codec.decode(turnKey, resourceTurn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	streamID, err := primitives.ParseEventStreamID(turnIdentity.StreamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingTurnKey, err := service.codec.encode(resourceTurn, repo.WorktreeID, streamID, sessionID, missingTurnID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Blame(ctx, missingTurnKey, "auth.go", 0); err == nil {
+		t.Fatal("blame accepted a canonical key for a turn that does not exist")
+	}
+	if _, err := os.Stat(repo.TmpDir); !os.IsNotExist(err) {
+		t.Fatalf("read-only viewer recreated scratch directory %s: %v", repo.TmpDir, err)
+	}
+}
+
+func TestServiceDoesNotTurnManualSaveIntoSession(t *testing.T) {
+	repo := newViewerTestRepo(t)
+	created, err := repo.CreateManualCheckpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manualcheckpoints.Append(repo, created, "before refactor"); err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewService(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := service.Sessions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("manual save created viewer sessions: %#v", sessions)
+	}
+	workspace, err := service.Workspace(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workspace.SessionCount != 0 || workspace.TurnCount != 0 {
+		t.Fatalf("manual save changed workspace session counts: %#v", workspace)
+	}
+	saves, err := service.Saves(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saves) != 1 || saves[0].Message != "before refactor" {
+		t.Fatalf("saves = %#v", saves)
+	}
+}
+
+func TestServiceListsManualSavesFromLinkedWorktrees(t *testing.T) {
+	repo := newViewerTestRepo(t)
+	repo.ScopedRefs = true
+	linked := *repo
+	var err error
+	linked.WorktreeID, err = primitives.NewWorktreeID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	linked.EventProducerID, err = primitives.NewEventProducerID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	linked.ScopedRefs = true
+	created, err := linked.CreateManualCheckpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manualcheckpoints.Append(&linked, created, "saved from linked folder"); err != nil {
+		t.Fatal(err)
+	}
+
+	service, err := NewService(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saves, err := service.Saves(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saves) != 1 || saves[0].Message != "saved from linked folder" {
+		t.Fatalf("linked saves = %#v", saves)
 	}
 }
 
@@ -214,6 +312,62 @@ func TestServiceBlameStopsAtCanonicalSelectedTurn(t *testing.T) {
 	}
 	if origins.CompleteTurns != 1 || len(origins.Lines) != 1 || origins.Lines[0].Text != "version one" {
 		t.Fatalf("bounded origins = %#v", origins)
+	}
+}
+
+func TestServiceBlameUsesTheSelectedLinkedWorktree(t *testing.T) {
+	repo := newViewerTestRepo(t)
+	repo.ScopedRefs = true
+	linked := *repo
+	var err error
+	linked.WorktreeID, err = primitives.NewWorktreeID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	linked.EventProducerID, err = primitives.NewEventProducerID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	linked.ScopedRefs = true
+
+	path := filepath.Join(linked.WorkspaceRoot.String(), "linked.txt")
+	if err := os.WriteFile(path, []byte("before\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sessionID, err := primitives.ParseSessionID("linked-worktree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := turnevents.Recorder{Log: linked.EventLog(), Manager: turns.NewManager(&linked), Adapter: primitives.AdapterManual}
+	started, err := recorder.Start(sessionID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("from linked worktree\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recorder.Finish(sessionID, started.TurnID); err != nil {
+		t.Fatal(err)
+	}
+
+	service, err := NewService(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := service.Sessions(context.Background())
+	if err != nil || len(sessions) != 1 || sessions[0].WorktreeID != linked.WorktreeID.String() {
+		t.Fatalf("linked sessions = %#v, %v", sessions, err)
+	}
+	turnList, err := service.SessionTurns(context.Background(), sessions[0].Key)
+	if err != nil || len(turnList.Turns) != 1 {
+		t.Fatalf("linked turns = %#v, %v", turnList, err)
+	}
+	origins, err := service.Blame(context.Background(), turnList.Turns[0].Key, "linked.txt", 0)
+	if err != nil {
+		t.Fatalf("linked worktree blame: %v", err)
+	}
+	if len(origins.Lines) != 1 || origins.Lines[0].Text != "from linked worktree" {
+		t.Fatalf("linked worktree origins = %#v", origins)
 	}
 }
 

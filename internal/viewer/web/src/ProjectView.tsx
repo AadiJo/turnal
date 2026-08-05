@@ -1,13 +1,22 @@
 import { useEffect, useMemo, useState } from "preact/hooks";
 import { api } from "./api";
 import { Chrome, Delta, Note, Section, Tabs } from "./Chrome";
-import { cleanAdapter, cx, displayTime, duration, isActive, shortAge, shortID } from "./format";
+import {
+  cleanAdapter,
+  cx,
+  displayTime,
+  duration,
+  isActive,
+  shortAge,
+  shortID,
+} from "./format";
 import type {
   Blame,
   BlameLine,
   DiffSummary,
   FileChange,
   FilePatch,
+  ManualSave,
   Project,
   SessionSummary,
   SessionTurns,
@@ -16,40 +25,91 @@ import type {
 } from "./types";
 
 type Mode = "sessions" | "review" | "origins";
+type ProjectLocation = {
+  sessionKey?: string;
+  turnKey?: string;
+  view?: Mode;
+  path?: string;
+  from?: number;
+  to?: number;
+};
+const PATCH_PAGE_SIZE = 20;
+const EVENT_PAGE_SIZE = 20;
 
 export function ProjectView({
   project,
   onBack,
+  onNavigate,
   initialSessionKey,
+  initialTurnKey,
+  initialView,
+  initialPath,
+  initialSelection,
 }: {
   project: Project;
   onBack: () => void;
+  onNavigate: (location: ProjectLocation) => void;
   initialSessionKey?: string;
+  initialTurnKey?: string;
+  initialView?: Mode;
+  initialPath?: string;
+  initialSelection?: { from: number; to: number };
 }) {
   const store = project.store_id;
-  const [mode, setMode] = useState<Mode>("sessions");
+  const [mode, setMode] = useState<Mode>(
+    initialView ?? (initialSessionKey ? "review" : "sessions"),
+  );
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
-  const [sessionKey, setSessionKey] = useState<string | null>(initialSessionKey ?? null);
+  const [saves, setSaves] = useState<ManualSave[]>([]);
+  const [sessionKey, setSessionKey] = useState<string | null>(
+    initialSessionKey ?? null,
+  );
   const [turns, setTurns] = useState<SessionTurns | null>(null);
-  const [turnKey, setTurnKey] = useState<string | null>(null);
+  const [turnKey, setTurnKey] = useState<string | null>(initialTurnKey ?? null);
   const [detail, setDetail] = useState<TurnDetail | null>(null);
   const [diff, setDiff] = useState<DiffSummary | null>(null);
   const [patches, setPatches] = useState<Record<string, FilePatch>>({});
+  const [patchErrors, setPatchErrors] = useState<Record<string, string>>({});
   const [blame, setBlame] = useState<Blame | null>(null);
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [selectedPath, setSelectedPath] = useState<string | null>(
+    initialPath ?? null,
+  );
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [annotations, setAnnotations] = useState(true);
-  const [split, setSplit] = useState(false);
+  const [visiblePatchCount, setVisiblePatchCount] = useState(PATCH_PAGE_SIZE);
+
+  const navigateFromCurrent = (next: Partial<ProjectLocation>) =>
+    onNavigate({
+      sessionKey: sessionKey ?? undefined,
+      turnKey: turnKey ?? undefined,
+      view: mode,
+      path: selectedPath ?? undefined,
+      ...next,
+    });
+
+  useEffect(() => {
+    if (!initialSessionKey) {
+      setMode("sessions");
+      return;
+    }
+    setSessionKey(initialSessionKey);
+    setTurnKey(initialTurnKey ?? null);
+    setMode(initialView ?? "review");
+    setSelectedPath(initialPath ?? null);
+  }, [initialSessionKey, initialTurnKey, initialView, initialPath]);
 
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
-    api
-      .sessions(store, controller.signal)
-      .then((value) => {
-        setSessions(value);
-        setSessionKey((current) => current ?? value[0]?.key ?? null);
+    Promise.all([
+      api.sessions(store, controller.signal),
+      api.saves(store, controller.signal),
+    ])
+      .then(([nextSessions, nextSaves]) => {
+        setSessions(nextSessions);
+        setSaves(nextSaves);
+        setSessionKey((current) => current ?? nextSessions[0]?.key ?? null);
         setError(null);
       })
       .catch((nextError: Error) => {
@@ -62,76 +122,139 @@ export function ProjectView({
   useEffect(() => {
     if (!sessionKey) return;
     const controller = new AbortController();
+    setTurns(null);
+    setTurnKey(null);
+    setDetail(null);
+    setDiff(null);
+    setSelectedPath(initialPath ?? null);
     api
       .sessionTurns(store, sessionKey, controller.signal)
       .then((value) => {
         setTurns(value);
-        setTurnKey(value.turns[0]?.key ?? null);
+        const requestedTurn = value.turns.some(
+          (turn) => turn.key === initialTurnKey,
+        )
+          ? initialTurnKey
+          : undefined;
+        setTurnKey(requestedTurn ?? value.turns[0]?.key ?? null);
       })
       .catch((nextError: Error) => {
         if (nextError.name !== "AbortError") setError(nextError.message);
       });
     return () => controller.abort();
-  }, [store, sessionKey]);
+  }, [store, sessionKey, initialTurnKey]);
 
   useEffect(() => {
-    if (!turnKey) {
+    const turnBelongsToSession =
+      turns?.turns.some((turn) => turn.key === turnKey) ?? false;
+    if (!turnKey || !turnBelongsToSession) {
       setDetail(null);
       setDiff(null);
       return;
     }
     const controller = new AbortController();
-    Promise.all([
-      api.turn(store, turnKey, controller.signal),
-      api.diff(store, turnKey, controller.signal).catch(() => null),
-    ])
-      .then(([nextDetail, nextDiff]) => {
+    setError(null);
+    setDetail(null);
+    setDiff(null);
+    setPatches({});
+    setPatchErrors({});
+    setVisiblePatchCount(PATCH_PAGE_SIZE);
+
+    api
+      .turn(store, turnKey, controller.signal)
+      .then((nextDetail) => {
         setDetail(nextDetail);
-        setDiff(nextDiff);
-        setSelectedPath(nextDiff?.files[0]?.path ?? nextDetail.files?.[0]?.path ?? null);
+        setSelectedPath(
+          (current) => initialPath ?? current ?? nextDetail.files?.[0]?.path ?? null,
+        );
       })
       .catch((nextError: Error) => {
         if (nextError.name !== "AbortError") setError(nextError.message);
       });
-    return () => controller.abort();
-  }, [store, turnKey]);
 
-  // Fetch every changed file's patch so the review surface is one continuous
-  // diff rather than a file picker.
+    api
+      .diff(store, turnKey, controller.signal)
+      .then((nextDiff) => {
+        setDiff(nextDiff);
+        setSelectedPath(initialPath ?? nextDiff.files[0]?.path ?? null);
+      })
+      .catch((nextError: Error) => {
+        if (nextError.name !== "AbortError") {
+          setError(
+            "File changes are not available for this turn yet. Its recorded activity is shown below.",
+          );
+        }
+      });
+    return () => controller.abort();
+  }, [store, turns, turnKey, initialPath]);
+
+  // Load a bounded page at a time. The user can continue the same continuous
+  // review explicitly without a large generated change freezing the browser.
   useEffect(() => {
     if (mode !== "review" || !turnKey || !diff) return;
     const controller = new AbortController();
     let cancelled = false;
     (async () => {
       const next: Record<string, FilePatch> = {};
-      for (const file of diff.files.slice(0, 20)) {
-        try {
-          next[file.path] = await api.patch(store, turnKey, file.path, controller.signal);
-        } catch {
-          // A single unreadable file must not blank the whole review.
+      const failures: Record<string, string> = {};
+      const batchSize = 4;
+      // Include every visible file that has not reached a terminal state. If a
+      // page change aborts an earlier request, the unfinished file is retried.
+      const files = diff.files
+        .slice(0, visiblePatchCount)
+        .filter((file) => !patches[file.path] && !patchErrors[file.path]);
+      for (let offset = 0; offset < files.length; offset += batchSize) {
+        const batch = files.slice(offset, offset + batchSize);
+        await Promise.all(
+          batch.map(async (file) => {
+            try {
+              next[file.path] = await api.patch(
+                store,
+                turnKey,
+                file.path,
+                controller.signal,
+              );
+            } catch (nextError) {
+              failures[file.path] =
+                nextError instanceof Error
+                  ? nextError.message
+                  : "The patch could not be read.";
+            }
+          }),
+        );
+        if (!cancelled) {
+          setPatches((current) => ({ ...current, ...next }));
+          setPatchErrors((current) => ({ ...current, ...failures }));
         }
       }
-      if (!cancelled) setPatches(next);
     })();
     return () => {
       cancelled = true;
       controller.abort();
     };
-  }, [mode, store, turnKey, diff]);
+  }, [mode, store, turnKey, diff, visiblePatchCount]);
 
   useEffect(() => {
-    if (mode !== "origins" || !turnKey || !selectedPath) return;
+    if (mode !== "origins" || !turnKey || !selectedPath) {
+      setBlame(null);
+      return;
+    }
     const controller = new AbortController();
+    setBlame(null);
     api
       .blame(store, turnKey, selectedPath, controller.signal)
       .then(setBlame)
       .catch((nextError: Error) => {
-        if (nextError.name !== "AbortError") setError(nextError.message);
+        if (nextError.name !== "AbortError") {
+          setBlame(null);
+          setError(nextError.message);
+        }
       });
     return () => controller.abort();
   }, [mode, store, turnKey, selectedPath]);
 
-  const session = turns?.session ?? sessions.find((item) => item.key === sessionKey) ?? null;
+  const session =
+    turns?.session ?? sessions.find((item) => item.key === sessionKey) ?? null;
 
   return (
     <>
@@ -149,7 +272,11 @@ export function ProjectView({
           { id: "origins", label: "Origins" },
         ]}
         active={mode}
-        onSelect={(id) => setMode(id as Mode)}
+        onSelect={(id) => {
+          const nextMode = id as Mode;
+          setMode(nextMode);
+          navigateFromCurrent({ view: nextMode });
+        }}
         meta={
           <>
             <span>{project.turn_count} turns</span>
@@ -169,13 +296,15 @@ export function ProjectView({
 
       {mode === "sessions" && (
         <div className="page">
-          <Section title="Sessions" note={loading ? "loading" : `${sessions.length}`} />
+          <Section
+            title="Sessions"
+            note={loading ? "loading" : `${sessions.length}`}
+          />
           {sessions.length === 0 && !loading ? (
             <div className="empty">
               <strong>No recorded sessions yet</strong>
               <p>
-                Run your configured agent in this project, or create a manual checkpoint with{" "}
-                <code>turnal checkpoint</code>.
+                Run your configured agent in this project to record a session.
               </p>
             </div>
           ) : (
@@ -189,13 +318,22 @@ export function ProjectView({
                     event.preventDefault();
                     setSessionKey(item.key);
                     setMode("review");
+                    onNavigate({ sessionKey: item.key, view: "review" });
                   }}
                 >
-                  <span className={cx("status", isActive(item.status) && "active")}>
-                    {item.status === "complete" ? "✓" : item.status === "active" ? "●" : "!"}
+                  <span
+                    className={cx("status", isActive(item.status) && "active")}
+                  >
+                    {item.status === "complete"
+                      ? "✓"
+                      : item.status === "active"
+                        ? "●"
+                        : "!"}
                   </span>
                   <span className="row-main">
-                    <strong>{item.prompt_preview || `Session ${shortID(item.id, 12)}`}</strong>
+                    <strong>
+                      {item.prompt_preview || `Session ${shortID(item.id, 12)}`}
+                    </strong>
                     <span>
                       {cleanAdapter(item.adapter)}
                       {item.model && (
@@ -204,14 +342,48 @@ export function ProjectView({
                           <i>·</i> {item.model}
                         </>
                       )}{" "}
-                      <i>·</i> {item.turn_count} turn{item.turn_count === 1 ? "" : "s"} <i>·</i>{" "}
+                      <i>·</i> {item.turn_count} turn
+                      {item.turn_count === 1 ? "" : "s"} <i>·</i>{" "}
                       {duration(item.started_at, item.finished_at)}
                     </span>
                   </span>
-                  {item.branch && <span className="tag mono">{item.branch}</span>}
-                  <Delta additions={item.additions} deletions={item.deletions} />
-                  <span className="when">{shortAge(item.finished_at || item.started_at)}</span>
+                  {item.branch && (
+                    <span className="tag mono">{item.branch}</span>
+                  )}
+                  <Delta
+                    additions={item.additions}
+                    deletions={item.deletions}
+                  />
+                  <span className="when">
+                    {shortAge(item.finished_at || item.started_at)}
+                  </span>
                 </a>
+              ))}
+            </div>
+          )}
+          <Section title="Saved snapshots" note={`${saves.length}`} />
+          {saves.length === 0 ? (
+            <div className="empty compact">
+              <p>
+                Save a folder snapshot from the terminal with{" "}
+                <code>turnal save</code>.
+              </p>
+            </div>
+          ) : (
+            <div className="save-rows">
+              {saves.map((save) => (
+                <div className="save-row" key={save.id}>
+                  <span className="status">✓</span>
+                  <span className="row-main">
+                    <strong>{save.message || "Saved folder snapshot"}</strong>
+                    <span>
+                      {save.warnings?.length
+                        ? "Saved with a warning"
+                        : "Folder snapshot"}
+                    </span>
+                  </span>
+                  <span className="when">{shortAge(save.time)}</span>
+                </div>
               ))}
             </div>
           )}
@@ -230,13 +402,22 @@ export function ProjectView({
                 onClick={(event) => {
                   event.preventDefault();
                   setTurnKey(turn.key);
+                  setSelectedPath(null);
+                  navigateFromCurrent({
+                    turnKey: turn.key,
+                    view: "review",
+                    path: undefined,
+                    from: undefined,
+                    to: undefined,
+                  });
                 }}
               >
                 <span className="n">{turn.id}</span>
                 <span className="body">
-                  <strong>{turn.prompt || "Manual checkpoint"}</strong>
+                  <strong>{turn.prompt || "Prompt not recorded"}</strong>
                   <span>
-                    {displayTime(turn.finished_at)} <i>·</i> {turn.files?.length ?? 0} file
+                    {displayTime(turn.finished_at)} <i>·</i>{" "}
+                    {turn.files?.length ?? 0} file
                     {(turn.files?.length ?? 0) === 1 ? "" : "s"} <i>·</i>
                     <span className="p">+{turn.additions}</span>
                     <span className="m">-{turn.deletions}</span>
@@ -250,29 +431,50 @@ export function ProjectView({
             {session && (
               <div className="doc">
                 <div className="doc-head">
-                  <span className="avatar">{cleanAdapter(session.adapter).slice(0, 2)}</span>
+                  <span className="avatar">
+                    {cleanAdapter(session.adapter).slice(0, 2)}
+                  </span>
                   <b>{cleanAdapter(session.adapter)}</b>
-                  <span>opened this session at {displayTime(session.started_at)}</span>
+                  <span>
+                    opened this session at {displayTime(session.started_at)}
+                  </span>
                   <span className="sp" />
-                  {detail?.post_commit && <span className="tag good">Checkpoint-backed</span>}
+                  {detail?.post_commit && (
+                    <span className="tag good">Snapshot verified</span>
+                  )}
                 </div>
                 <div className="doc-body">
-                  <p>{detail?.prompt || session.prompt_preview || "No prompt text was stored."}</p>
+                  <p>
+                    {detail?.prompt ||
+                      session.prompt_preview ||
+                      "No prompt text was stored."}
+                  </p>
                 </div>
               </div>
             )}
+
+            {detail?.truncated && (
+              <div className="note" role="status">
+                <span className="badge">!</span>
+                <span>
+                  Only the first {detail.events.length} recorded events are
+                  shown for this turn.
+                </span>
+              </div>
+            )}
+
+            {annotations && detail && <TurnAnnotation turn={detail} />}
 
             <Section
               title="Changes"
               note={
                 diff
-                  ? `${diff.files.length} files · pre ${shortID(diff.pre_commit, 7)} → post ${shortID(diff.post_commit, 7)}`
-                  : "no diff"
+                  ? `${diff.files.length} files · before ${shortID(diff.pre_commit, 7)} → after ${shortID(diff.post_commit, 7)}`
+                  : error
+                    ? "unavailable"
+                    : "loading"
               }
             >
-              <button className="ghost" onClick={() => setSplit(!split)}>
-                Layout: {split ? "split" : "stacked"}
-              </button>
               <button
                 className={cx("ghost", annotations && "on")}
                 onClick={() => setAnnotations(!annotations)}
@@ -282,29 +484,52 @@ export function ProjectView({
             </Section>
 
             <div className="surface">
-              {diff?.files.map((file) => (
+              {diff?.files.slice(0, visiblePatchCount).map((file) => (
                 <FileBox
                   key={file.path}
                   file={file}
                   patch={patches[file.path]}
-                  split={split}
+                  patchError={patchErrors[file.path]}
                   turn={detail}
-                  annotations={annotations}
                 />
               ))}
-              {!diff?.files.length && (
+              {diff && diff.files.length === 0 && (
                 <div className="empty">
                   <strong>No file changes in this turn</strong>
-                  <p>The turn was recorded, but its checkpoint pair contains no differing files.</p>
+                  <p>
+                    No file changes were captured while this turn was recorded.
+                  </p>
+                </div>
+              )}
+              {diff && visiblePatchCount < diff.files.length && (
+                <div className="load-more">
+                  <button
+                    className="ghost"
+                    onClick={() =>
+                      setVisiblePatchCount((current) =>
+                        Math.min(current + PATCH_PAGE_SIZE, diff.files.length),
+                      )
+                    }
+                  >
+                    Load{" "}
+                    {Math.min(
+                      PATCH_PAGE_SIZE,
+                      diff.files.length - visiblePatchCount,
+                    )}{" "}
+                    more files
+                  </button>
+                  <span>
+                    {diff.files.length - visiblePatchCount} not loaded
+                  </span>
                 </div>
               )}
             </div>
 
             {annotations && (
               <Note>
-                <b>Turn context sits at the hunk that produced it.</b> Prompt, tool activity, and the
-                pre and post checkpoint pair are joined to recorded activity. This does not claim
-                statement-level causality.
+                <b>Turn context appears beside its recorded changes.</b> Prompts
+                and tool activity provide context, but do not prove why a
+                specific line changed.
               </Note>
             )}
           </div>
@@ -330,6 +555,12 @@ export function ProjectView({
                     onClick={(event) => {
                       event.preventDefault();
                       setSelectedPath(file.path);
+                      navigateFromCurrent({
+                        view: "origins",
+                        path: file.path,
+                        from: undefined,
+                        to: undefined,
+                      });
                     }}
                   >
                     <span className="nm">{name}</span>
@@ -343,7 +574,20 @@ export function ProjectView({
               })}
             </div>
           </aside>
-          <OriginsPane blame={blame} path={selectedPath} />
+          <OriginsPane
+            blame={blame?.path === selectedPath ? blame : null}
+            path={selectedPath}
+            sessionKey={sessionKey}
+            turnKey={turnKey}
+            initialSelection={initialSelection}
+            onSelectionChange={(selection) =>
+              navigateFromCurrent({
+                view: "origins",
+                from: selection?.from,
+                to: selection?.to,
+              })
+            }
+          />
         </div>
       )}
     </>
@@ -353,44 +597,28 @@ export function ProjectView({
 function FileBox({
   file,
   patch,
-  split,
+  patchError,
   turn,
-  annotations,
 }: {
   file: FileChange;
   patch?: FilePatch;
-  split: boolean;
+  patchError?: string;
   turn: TurnDetail | null;
-  annotations: boolean;
 }) {
   const [open, setOpen] = useState(true);
   const parts = file.path.split("/");
   const name = parts.pop();
-  // Drop the unified-diff preamble. "diff --git", "index", "---" and "+++"
-  // restate the path already shown in the file header, and rendering them as
-  // content makes every file open with four lines of noise.
-  const lines = useMemo(
-    () =>
-      (patch?.patch.split("\n") ?? []).filter(
-        (line) =>
-          !line.startsWith("diff --git ") &&
-          !line.startsWith("index ") &&
-          !line.startsWith("--- ") &&
-          !line.startsWith("+++ ") &&
-          !line.startsWith("new file mode ") &&
-          !line.startsWith("deleted file mode ") &&
-          !line.startsWith("similarity index ") &&
-          !line.startsWith("rename from ") &&
-          !line.startsWith("rename to "),
-      ),
-    [patch],
-  );
+  const lines = useMemo(() => visiblePatchLines(patch?.patch), [patch]);
   const tools = turn?.tool_names?.slice(0, 3) ?? [];
 
   return (
     <section className="file">
       <div className="fhead">
-        <button className="caret" onClick={() => setOpen(!open)} aria-expanded={open}>
+        <button
+          className="caret"
+          onClick={() => setOpen(!open)}
+          aria-expanded={open}
+        >
           {open ? "▾" : "▸"}
         </button>
         <span className="path">
@@ -402,11 +630,13 @@ function FileBox({
         {turn && <span className="tag">Turn {turn.id}</span>}
       </div>
       {open && (
-        <div className={cx("code", "bars", split ? "split" : "stacked")}>
+        <div className="code bars stacked">
           {turn && (
             <div className="hunk">
               <span className="expand" />
-              <span className="range">{file.binary ? "binary file" : `@@ ${file.path}`}</span>
+              <span className="range">
+                {file.binary ? "binary file" : `@@ ${file.path}`}
+              </span>
               <span className="hmeta">
                 Turn <b>{turn.id}</b> · {displayTime(turn.finished_at)}
                 {tools.length > 0 && ` · ${tools.join(", ")}`}
@@ -416,24 +646,86 @@ function FileBox({
           {numberPatch(lines).map((row, index) => (
             <PatchLine key={`${index}-${row.value.slice(0, 10)}`} row={row} />
           ))}
-          {patch?.truncated && (
+          {!patch && (
             <div className="hunk">
               <span className="expand" />
-              <span className="range">
-                Patch limited to {Math.round(patch.limit_bytes / 1024)} KB
-              </span>
+              <span className="range">{patchError || "Loading patch…"}</span>
               <span className="hmeta" />
             </div>
           )}
-          {annotations && turn && <TurnAnnotation turn={turn} />}
+          {patch?.truncated && (
+            <div className="hunk">
+              <span className="expand" />
+              <span className="range">{patchLimitMessage(patch)}</span>
+              <span className="hmeta" />
+            </div>
+          )}
         </div>
       )}
     </section>
   );
 }
 
+function patchLimitMessage(patch: FilePatch) {
+  const limits: string[] = [];
+  if (patch.byte_count > patch.limit_bytes) {
+    limits.push(`${Math.round(patch.limit_bytes / 1024)} KB`);
+  }
+  if (patch.line_count > patch.limit_lines) {
+    limits.push(`${patch.limit_lines.toLocaleString()} lines`);
+  }
+  if (limits.length === 0) return "Part of this patch could not be shown";
+  return `Patch shortened at the ${limits.join(" and ")} viewing limit${limits.length > 1 ? "s" : ""}`;
+}
+
+const hiddenPatchMetadataPrefixes = ["diff --git ", "index ", "--- ", "+++ "];
+
+const visiblePatchMetadataPrefixes = [
+  "new file mode ",
+  "deleted file mode ",
+  "old mode ",
+  "new mode ",
+  "similarity index ",
+  "rename from ",
+  "rename to ",
+  "Binary files ",
+];
+
+type VisiblePatchLine = { value: string; metadata: boolean };
+
+/** Removes transport-only headers but keeps file-mode, rename, and binary
+ * information. Once a hunk starts, similarly prefixed source text is content. */
+function visiblePatchLines(patch?: string): VisiblePatchLine[] {
+  if (!patch) return [];
+  const visible: VisiblePatchLine[] = [];
+  let inPreamble = true;
+  const lines = patch.split("\n");
+  if (lines[lines.length - 1] === "") lines.pop();
+  for (const line of lines) {
+    if (inPreamble && line.startsWith("@@")) {
+      inPreamble = false;
+    }
+    if (
+      inPreamble &&
+      hiddenPatchMetadataPrefixes.some((prefix) => line.startsWith(prefix))
+    ) {
+      continue;
+    }
+    if (
+      inPreamble &&
+      visiblePatchMetadataPrefixes.some((prefix) => line.startsWith(prefix))
+    ) {
+      visible.push({ value: line, metadata: true });
+      continue;
+    }
+    inPreamble = false;
+    visible.push({ value: line, metadata: false });
+  }
+  return visible;
+}
+
 type PatchRow = {
-  kind: "add" | "del" | "ctx" | "hunk";
+  kind: "add" | "del" | "ctx" | "hunk" | "meta";
   value: string;
   /** Line number in the pre-image, absent for additions. */
   old?: number;
@@ -445,11 +737,16 @@ type PatchRow = {
  * each @@ header. Numbering by array index would report the position in the
  * patch text, which is a different and less useful fact than the line number in
  * the file. */
-function numberPatch(lines: string[]): PatchRow[] {
+function numberPatch(lines: VisiblePatchLine[]): PatchRow[] {
   const rows: PatchRow[] = [];
   let oldLine = 0;
   let newLine = 0;
-  for (const value of lines) {
+  for (const line of lines) {
+    const value = line.value;
+    if (line.metadata) {
+      rows.push({ kind: "meta", value });
+      continue;
+    }
     if (value.startsWith("@@")) {
       const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(value);
       if (match) {
@@ -483,20 +780,28 @@ function numberPatch(lines: string[]): PatchRow[] {
 }
 
 function PatchLine({ row }: { row: PatchRow }) {
-  if (row.kind === "hunk") {
+  if (row.kind === "hunk" || row.kind === "meta") {
     return (
       <div className="hunk">
-        <span className="expand">↕</span>
+        <span className="expand">{row.kind === "hunk" ? "↕" : ""}</span>
         <span className="range">{row.value}</span>
         <span className="hmeta" />
       </div>
     );
   }
   return (
-    <div className={cx("ln", row.kind === "add" && "add", row.kind === "del" && "del")}>
+    <div
+      className={cx(
+        "ln",
+        row.kind === "add" && "add",
+        row.kind === "del" && "del",
+      )}
+    >
       <span className="g">{row.old ?? ""}</span>
       <span className="g">{row.next ?? ""}</span>
-      <span className="sign">{row.kind === "add" ? "+" : row.kind === "del" ? "-" : ""}</span>
+      <span className="sign">
+        {row.kind === "add" ? "+" : row.kind === "del" ? "-" : ""}
+      </span>
       <code>{row.value}</code>
     </div>
   );
@@ -504,13 +809,20 @@ function PatchLine({ row }: { row: PatchRow }) {
 
 function TurnAnnotation({ turn }: { turn: TurnDetail }) {
   const [open, setOpen] = useState(true);
-  const toolEvents = turn.events.filter((event) => event.kind === "tool").slice(0, 3);
+  const [visibleEvents, setVisibleEvents] = useState(EVENT_PAGE_SIZE);
+
+  useEffect(() => setVisibleEvents(EVENT_PAGE_SIZE), [turn.key]);
+
+  const shownEvents = turn.events.slice(0, visibleEvents);
   return (
     <div className="anno">
       <div className="anno-in">
         <div className="anno-head">
           <span className="who">
-            <span className="avatar">{cleanAdapter(turn.adapter).slice(0, 2)}</span> Turn {turn.id}
+            <span className="avatar">
+              {cleanAdapter(turn.adapter).slice(0, 2)}
+            </span>{" "}
+            Turn {turn.id}
           </span>
           <span>{cleanAdapter(turn.adapter)}</span>
           <span>{displayTime(turn.finished_at)}</span>
@@ -522,20 +834,39 @@ function TurnAnnotation({ turn }: { turn: TurnDetail }) {
         </div>
         {open && (
           <>
-            <div className="anno-body">{turn.prompt || "No prompt text was stored for this turn."}</div>
-            {toolEvents.map((event: TurnEvent) => (
-              <div className="anno-tool" key={event.sequence}>
-                <b>{event.tool_name || event.title}</b> {event.body?.slice(0, 220) ?? ""}
+            <div className="event-list">
+              {shownEvents.map((event: TurnEvent) => (
+                <TurnEventRow event={event} key={event.sequence} />
+              ))}
+            </div>
+            {visibleEvents < turn.events.length && (
+              <div className="load-more event-more">
+                <button
+                  className="ghost"
+                  onClick={() =>
+                    setVisibleEvents((current) =>
+                      Math.min(current + EVENT_PAGE_SIZE, turn.events.length),
+                    )
+                  }
+                >
+                  Show{" "}
+                  {Math.min(
+                    EVENT_PAGE_SIZE,
+                    turn.events.length - visibleEvents,
+                  )}{" "}
+                  more events
+                </button>
+                <span>{turn.events.length - visibleEvents} not shown</span>
               </div>
-            ))}
+            )}
             <div className="anno-refs">
-              <span>pre</span>
+              <span>before</span>
               <code>{shortID(turn.pre_commit, 10)}</code>
               <span>→</span>
-              <span>post</span>
+              <span>after</span>
               <code>{shortID(turn.post_commit, 10)}</code>
               <span>·</span>
-              <span>private checkpoint git commits</span>
+              <span>saved snapshots</span>
             </div>
           </>
         )}
@@ -544,26 +875,72 @@ function TurnAnnotation({ turn }: { turn: TurnDetail }) {
   );
 }
 
-function OriginsPane({ blame, path }: { blame: Blame | null; path: string | null }) {
-  const [selection, setSelection] = useState<{ from: number; to: number } | null>(null);
+function TurnEventRow({ event }: { event: TurnEvent }) {
+  const expanded =
+    event.kind === "prompt" ||
+    event.kind === "assistant" ||
+    event.kind === "error";
+  return (
+    <details className={cx("event-row", `event-${event.kind}`)} open={expanded}>
+      <summary>
+        <span className="event-kind">{event.kind}</span>
+        <b>{event.tool_name || event.title}</b>
+        <span className="sp" />
+        <span>{displayTime(event.time)}</span>
+      </summary>
+      {event.body && <pre>{event.body}</pre>}
+    </details>
+  );
+}
+
+function OriginsPane({
+  blame,
+  path,
+  sessionKey,
+  turnKey,
+  initialSelection,
+  onSelectionChange,
+}: {
+  blame: Blame | null;
+  path: string | null;
+  sessionKey: string | null;
+  turnKey: string | null;
+  initialSelection?: { from: number; to: number };
+  onSelectionChange: (selection: { from: number; to: number } | null) => void;
+}) {
+  const [selection, setSelection] = useState<{
+    from: number;
+    to: number;
+  } | null>(initialSelection ?? null);
+
+  useEffect(() => {
+    setSelection(initialSelection ?? null);
+  }, [path, initialSelection?.from, initialSelection?.to]);
 
   if (!path) {
     return (
       <section className="pane">
         <div className="empty">
           <strong>Select a file</strong>
-          <p>Checkpoint-derived line origins will appear here.</p>
+          <p>Recorded line origins will appear here.</p>
         </div>
       </section>
     );
   }
 
-  // Merge consecutive lines from the same turn so the prompt is paid for once
-  // instead of stamped on every line.
+  // Merge consecutive lines only when their complete attribution identity
+  // matches. Baseline and concurrent origins intentionally have no turn id.
   const blocks: Array<{ turn?: BlameLine; lines: BlameLine[] }> = [];
   for (const line of blame?.lines ?? []) {
     const last = blocks[blocks.length - 1];
-    if (last && last.turn?.turn_id === line.turn_id) last.lines.push(line);
+    if (
+      last &&
+      last.turn?.kind === line.kind &&
+      last.turn?.session_id === line.session_id &&
+      last.turn?.turn_id === line.turn_id &&
+      last.turn?.time === line.time
+    )
+      last.lines.push(line);
     else blocks.push({ turn: line, lines: [line] });
   }
 
@@ -576,22 +953,38 @@ function OriginsPane({ blame, path }: { blame: Blame | null; path: string | null
       <div className="pane-head">
         <span className="path">{path}</span>
         <span className="sp" />
-        {blame && <span className="tag">{blame.complete_turns} turns replayed</span>}
-        {blame?.truncated && <span className="tag">first {blame.lines.length} lines</span>}
+        {blame && (
+          <span className="tag">{blame.complete_turns} turns replayed</span>
+        )}
+        {blame?.truncated && (
+          <span className="tag">first {blame.lines.length} lines</span>
+        )}
       </div>
+      {!!blame?.warnings?.length && (
+        <div className="note" role="status">
+          <span className="badge">!</span>
+          <span>{blame.warnings.join(" ")}</span>
+        </div>
+      )}
       <div className="origins">
         {blocks.map((block, index) => (
-          <div key={index} className={cx("blk", !block.turn?.turn_id && "base")}>
+          <div
+            key={index}
+            className={cx("blk", block.turn?.kind === "baseline" && "base")}
+          >
             <span className={cx("age", `a${Math.min(index + 1, 4)}`)} />
             <div className="attrib">
               <div className="top">
-                <b>{block.turn?.turn_id ? `Turn ${block.turn.turn_id}` : "Baseline"}</b>
-                {block.turn?.adapter && <span>{cleanAdapter(block.turn.adapter)}</span>}
-                {block.turn?.time && <span>{displayTime(block.turn.time)}</span>}
+                <b>{originLabel(block.turn)}</b>
+                {block.turn?.adapter && (
+                  <span>{cleanAdapter(block.turn.adapter)}</span>
+                )}
+                {block.turn?.time && (
+                  <span>{displayTime(block.turn.time)}</span>
+                )}
               </div>
               <div className="why">
-                {block.turn?.prompt ||
-                  "These lines predate the scoped recorded turn history in this store."}
+                {block.turn?.prompt || originExplanation(block.turn)}
               </div>
               {!!block.turn?.tool_names?.length && (
                 <div className="foot">
@@ -609,24 +1002,35 @@ function OriginsPane({ blame, path }: { blame: Blame | null; path: string | null
                   key={line.line}
                   className={cx(
                     "bl",
-                    selection && line.line >= selection.from && line.line <= selection.to && "sel",
+                    selection &&
+                      line.line >= selection.from &&
+                      line.line <= selection.to &&
+                      "sel",
                   )}
                 >
-                  <span
+                  <button
+                    type="button"
                     className="g"
-                    onClick={(event) =>
-                      setSelection((current) =>
-                        event.shiftKey && current
+                    aria-label={`Select line ${line.line}`}
+                    aria-pressed={Boolean(
+                      selection &&
+                      line.line >= selection.from &&
+                      line.line <= selection.to,
+                    )}
+                    onClick={(event) => {
+                      const next =
+                        event.shiftKey && selection
                           ? {
-                              from: Math.min(current.from, line.line),
-                              to: Math.max(current.from, line.line),
+                              from: Math.min(selection.from, line.line),
+                              to: Math.max(selection.from, line.line),
                             }
-                          : { from: line.line, to: line.line },
-                      )
-                    }
+                          : { from: line.line, to: line.line };
+                      setSelection(next);
+                      onSelectionChange(next);
+                    }}
                   >
                     {line.line}
-                  </span>
+                  </button>
                   <code>{line.text || " "}</code>
                 </div>
               ))}
@@ -643,17 +1047,23 @@ function OriginsPane({ blame, path }: { blame: Blame | null; path: string | null
           </b>
           <span>·</span>
           <span>
-            {selected?.turn_id ? `turn ${selected.turn_id}` : "baseline"}
+            {originLabel(selected).toLowerCase()}
             {selected?.adapter ? ` · ${cleanAdapter(selected.adapter)}` : ""}
           </span>
           <span className="sp" />
           <button
             className="ghost"
-            onClick={() =>
-              navigator.clipboard?.writeText(
-                `${window.location.href.split("#")[0]}#L${selection.from}-L${selection.to}`,
-              )
-            }
+            onClick={() => {
+              const url = new URL(window.location.href);
+              url.hash = "";
+              url.searchParams.set("view", "origins");
+              url.searchParams.set("path", path);
+              if (sessionKey) url.searchParams.set("session", sessionKey);
+              if (turnKey) url.searchParams.set("turn", turnKey);
+              url.searchParams.set("from", String(selection.from));
+              url.searchParams.set("to", String(selection.to));
+              navigator.clipboard?.writeText(url.toString());
+            }}
           >
             Copy link
           </button>
@@ -661,4 +1071,17 @@ function OriginsPane({ blame, path }: { blame: Blame | null; path: string | null
       )}
     </section>
   );
+}
+
+function originLabel(origin?: BlameLine) {
+  if (origin?.kind === "concurrent") return "Concurrent changes";
+  if (origin?.turn_id) return `Turn ${origin.turn_id}`;
+  return "Baseline";
+}
+
+function originExplanation(origin?: BlameLine) {
+  if (origin?.kind === "concurrent") {
+    return "These lines changed while recorded agent turns overlapped, so they cannot be assigned safely to one turn.";
+  }
+  return "These lines predate the recorded turn history for this project.";
 }

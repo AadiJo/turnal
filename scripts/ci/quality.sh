@@ -20,6 +20,9 @@ go vet ./...
 go test -race ./...
 npm run test:postinstall
 npm run test:release-sbom
+# The viewer frontend is committed as embedded assets, so a stale dist/ must fail
+# the build rather than ship silently.
+npm run check:web
 go build -o "$build_dir/turnal" ./cmd/turnal
 
 go install golang.org/x/vuln/cmd/govulncheck@v1.6.0

@@ -48,7 +48,15 @@ type partialTurn struct {
 }
 
 func (engine Engine) completeTurns(sessionFilter primitives.SessionID, streamFilter primitives.EventStreamID, throughTurnID primitives.TurnID) ([]completeTurn, error) {
-	history, err := engine.observeHistory(sessionFilter, streamFilter, throughTurnID)
+	var worktreeID primitives.WorktreeID
+	if engine.Repo != nil {
+		worktreeID = engine.Repo.WorktreeID
+	}
+	return engine.completeTurnsForWorktree(sessionFilter, streamFilter, throughTurnID, worktreeID)
+}
+
+func (engine Engine) completeTurnsForWorktree(sessionFilter primitives.SessionID, streamFilter primitives.EventStreamID, throughTurnID primitives.TurnID, worktreeFilter primitives.WorktreeID) ([]completeTurn, error) {
+	history, err := engine.observeHistoryForWorktree(sessionFilter, streamFilter, throughTurnID, worktreeFilter)
 	if err != nil {
 		return nil, err
 	}
@@ -60,6 +68,14 @@ func (engine Engine) completeTurns(sessionFilter primitives.SessionID, streamFil
 // because a duplicate turn id in another stream would otherwise contribute to
 // the same attribution.
 func (engine Engine) observeHistory(sessionFilter primitives.SessionID, streamFilter primitives.EventStreamID, throughTurnID primitives.TurnID) (observedHistory, error) {
+	var worktreeID primitives.WorktreeID
+	if engine.Repo != nil {
+		worktreeID = engine.Repo.WorktreeID
+	}
+	return engine.observeHistoryForWorktree(sessionFilter, streamFilter, throughTurnID, worktreeID)
+}
+
+func (engine Engine) observeHistoryForWorktree(sessionFilter primitives.SessionID, streamFilter primitives.EventStreamID, throughTurnID primitives.TurnID, worktreeFilter primitives.WorktreeID) (observedHistory, error) {
 	if engine.Repo == nil {
 		return observedHistory{}, fmt.Errorf("blame requires checkpoint repo")
 	}
@@ -81,7 +97,7 @@ func (engine Engine) observeHistory(sessionFilter primitives.SessionID, streamFi
 		if throughTurnID != 0 && info.TurnID.Uint64() > throughTurnID.Uint64() {
 			continue
 		}
-		if engine.Repo.WorktreeID != "" && info.WorktreeID != "" && info.WorktreeID != engine.Repo.WorktreeID {
+		if worktreeFilter != "" && info.WorktreeID != "" && info.WorktreeID != worktreeFilter {
 			continue
 		}
 		if info.Phase != primitives.CheckpointPhasePre && info.Phase != primitives.CheckpointPhasePost {

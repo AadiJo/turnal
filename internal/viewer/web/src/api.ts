@@ -1,10 +1,11 @@
 import type {
-  ActivityItem,
+  ActivityPage,
   AddProjectRequest,
   AddProjectResult,
   Blame,
   DiffSummary,
   FilePatch,
+  ManualSave,
   Project,
   SessionSummary,
   SessionTurns,
@@ -64,12 +65,19 @@ export async function bootstrap(): Promise<void> {
   const fragment = new URLSearchParams(window.location.hash.slice(1));
   const secret = fragment.get("token");
   if (!secret) return;
-  const result = await request<{ ok: true; write_token?: string }>("auth/bootstrap", {
-    method: "POST",
-    body: JSON.stringify({ secret }),
-  });
+  const result = await request<{ ok: true; write_token?: string }>(
+    "auth/bootstrap",
+    {
+      method: "POST",
+      body: JSON.stringify({ secret }),
+    },
+  );
   writeToken = result.write_token ?? null;
-  history.replaceState({}, "", `${window.location.pathname}${window.location.search}`);
+  history.replaceState(
+    {},
+    "",
+    `${window.location.pathname}${window.location.search}`,
+  );
 }
 
 /** Whether this session may add or remove projects. False after a reload, since
@@ -84,37 +92,61 @@ const scoped = (storeID: string, path: string) =>
 export const api = {
   index: () => request<ViewerIndex>("index"),
   projects: () => request<Project[]>("projects"),
-  activity: (limit = 40) => request<ActivityItem[]>(`activity?limit=${limit}`),
+  activity: (limit = 40) => request<ActivityPage>(`activity?limit=${limit}`),
   refresh: () => request<ViewerIndex>("refresh"),
   /** Ask the host to show its native folder chooser. A browser file input only
    * reports a name, never a path, so the platform dialog is the only way to get
    * a directory the CLI can actually open. */
   pickDirectory: () =>
-    request<{ cancelled: boolean; directory?: string }>("pick-directory", { method: "POST" }),
-  addProject: (input: AddProjectRequest) =>
-    request<AddProjectResult>("projects", { method: "POST", body: JSON.stringify(input) }),
-  removeProject: (storeID: string) =>
-    request<{ ok: true; history_kept: boolean }>(`projects/${encodeURIComponent(storeID)}`, {
-      method: "DELETE",
+    request<{ cancelled: boolean; directory?: string }>("pick-directory", {
+      method: "POST",
     }),
+  addProject: (input: AddProjectRequest) =>
+    request<AddProjectResult>("projects", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  removeProject: (storeID: string) =>
+    request<{ ok: true; history_kept: boolean }>(
+      `projects/${encodeURIComponent(storeID)}`,
+      {
+        method: "DELETE",
+      },
+    ),
 
-  workspace: (storeID: string) => request<Workspace>(scoped(storeID, "workspace")),
+  workspace: (storeID: string) =>
+    request<Workspace>(scoped(storeID, "workspace")),
   sessions: (storeID: string, signal?: AbortSignal) =>
     request<SessionSummary[]>(scoped(storeID, "sessions"), { signal }),
+  saves: (storeID: string, signal?: AbortSignal) =>
+    request<ManualSave[]>(scoped(storeID, "saves"), { signal }),
   sessionTurns: (storeID: string, key: string, signal?: AbortSignal) =>
-    request<SessionTurns>(scoped(storeID, `sessions/${encodeURIComponent(key)}/turns`), { signal }),
+    request<SessionTurns>(
+      scoped(storeID, `sessions/${encodeURIComponent(key)}/turns`),
+      { signal },
+    ),
   turn: (storeID: string, key: string, signal?: AbortSignal) =>
-    request<TurnDetail>(scoped(storeID, `turns/${encodeURIComponent(key)}`), { signal }),
+    request<TurnDetail>(scoped(storeID, `turns/${encodeURIComponent(key)}`), {
+      signal,
+    }),
   diff: (storeID: string, key: string, signal?: AbortSignal) =>
-    request<DiffSummary>(scoped(storeID, `diffs/${encodeURIComponent(key)}`), { signal }),
+    request<DiffSummary>(scoped(storeID, `diffs/${encodeURIComponent(key)}`), {
+      signal,
+    }),
   patch: (storeID: string, key: string, path: string, signal?: AbortSignal) =>
     request<FilePatch>(
-      scoped(storeID, `diffs/${encodeURIComponent(key)}/file?path=${encodeURIComponent(path)}`),
+      scoped(
+        storeID,
+        `diffs/${encodeURIComponent(key)}/file?path=${encodeURIComponent(path)}`,
+      ),
       { signal },
     ),
   blame: (storeID: string, key: string, path: string, signal?: AbortSignal) =>
     request<Blame>(
-      scoped(storeID, `blame/${encodeURIComponent(key)}?path=${encodeURIComponent(path)}`),
+      scoped(
+        storeID,
+        `blame/${encodeURIComponent(key)}?path=${encodeURIComponent(path)}`,
+      ),
       { signal },
     ),
 };

@@ -101,7 +101,7 @@ func findWindowsPowerShell() (string, error) {
 			return candidate, nil
 		}
 	}
-	return "", ErrPickerUnavailable{Reason: "powershell.exe is not reachable through WSL interop"}
+	return "", ErrPickerUnavailable{Reason: "The Windows folder chooser is not available. Type the folder path instead."}
 }
 
 // toWindowsPath converts a Linux path to its Windows form so the dialog opens in
@@ -140,7 +140,7 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
 		if ctx.Err() != nil {
 			return "", ErrPickerCancelled{}
 		}
-		return "", ErrPickerUnavailable{Reason: "the Windows folder dialog could not be shown"}
+		return "", ErrPickerUnavailable{Reason: "The Windows folder chooser could not be opened. Type the folder path instead."}
 	}
 	selected := strings.TrimSpace(lastLine(string(output)))
 	if selected == "" {
@@ -197,7 +197,7 @@ func pickWithLinuxDialog(ctx context.Context, start string) (string, error) {
 		return selected, nil
 	}
 	return "", ErrPickerUnavailable{
-		Reason: "install one of " + strings.Join(missing, ", ") + ", or type the path instead",
+		Reason: "No folder chooser is installed. Type the folder path, or install " + strings.Join(missing, ", ") + " and try again.",
 	}
 }
 

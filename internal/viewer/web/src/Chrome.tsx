@@ -6,11 +6,9 @@ export type Crumb = { label: string; onClick?: () => void; mono?: boolean };
 export function Chrome({
   crumbs,
   actions,
-  onSearch,
 }: {
   crumbs: Crumb[];
   actions?: ComponentChildren;
-  onSearch?: () => void;
 }) {
   return (
     <header className="chrome">
@@ -29,13 +27,6 @@ export function Chrome({
         ))}
       </nav>
       <div className="chrome-right">
-        {onSearch && (
-          <button className="search" type="button" onClick={onSearch}>
-            <span>Search projects, sessions, files</span>
-            <span className="sp" />
-            <kbd>⌘K</kbd>
-          </button>
-        )}
         <span className="chip">Read only</span>
         {actions}
       </div>

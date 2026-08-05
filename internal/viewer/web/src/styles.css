@@ -8,7 +8,7 @@
 :root {
   color-scheme: dark;
 
-  --bg: #191719;
+  --bg: #000000;
   --rail: #1e1c1f;
   --sidebar: #211f23;
   --surface: #232126;
@@ -19,7 +19,7 @@
   --line: #2b282d;
   --line-strong: #3a363d;
 
-  --text: #e9e7ea;
+  --text: #ffffff;
   --text-soft: #b9b5bd;
   --muted: #8a858f;
   --quiet: #615d68;
@@ -54,27 +54,6 @@
 
   font-family: var(--sans);
   text-rendering: optimizeLegibility;
-}
-
-:root[data-theme="light"] {
-  color-scheme: light;
-  --bg: #f7f6f7;
-  --rail: #fbfafb;
-  --sidebar: #f2f1f3;
-  --surface: #ffffff;
-  --surface-raised: #f6f5f7;
-  --surface-hover: #efeef1;
-  --surface-selected: #e8e6ea;
-  --line: #e3e1e5;
-  --line-strong: #cdcad1;
-  --text: #1b1a1c;
-  --text-soft: #4a474d;
-  --muted: #74707a;
-  --quiet: #9b98a1;
-  --plus: #3f7a44;
-  --plus-bg: rgba(76, 138, 82, 0.1);
-  --minus: #a84c56;
-  --minus-bg: rgba(168, 76, 86, 0.09);
 }
 
 * {
@@ -204,28 +183,6 @@ kbd {
   padding: 1px 5px;
 }
 
-.search {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  height: 32px;
-  min-width: 320px;
-  padding: 0 12px;
-  border-radius: var(--radius-control);
-  border: 1px solid var(--line);
-  background: var(--surface);
-  color: var(--quiet);
-  font-size: 13px;
-}
-
-.search:hover {
-  border-color: var(--line-strong);
-}
-
-.search .sp {
-  flex: 1;
-}
-
 /* ---------- tabs ---------- */
 
 .tabs {
@@ -264,9 +221,6 @@ kbd {
 .tabs .count {
   font-size: 11.5px;
   color: var(--muted);
-  background: var(--surface-raised);
-  border-radius: 999px;
-  padding: 1px 7px;
 }
 
 .tabs-right {
@@ -357,12 +311,45 @@ kbd {
   gap: 1px;
 }
 
-.rows > a {
+.rows > a,
+.rows > .activity-row {
   display: flex;
   align-items: center;
   gap: 13px;
   padding: 11px 13px;
   border-radius: var(--radius-row);
+}
+
+.activity-row[aria-disabled="true"] {
+  cursor: not-allowed;
+}
+
+.project-row {
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius-row);
+}
+
+.project-row:hover {
+  background: var(--surface-hover);
+}
+
+.project-link {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  min-width: 0;
+  flex: 1;
+  padding: 11px 13px;
+}
+
+.project-link[aria-disabled="true"] {
+  cursor: not-allowed;
+}
+
+.project-row > .ghost {
+  flex: none;
+  margin-right: 13px;
 }
 
 .rows > a:hover {
@@ -371,6 +358,25 @@ kbd {
 
 .rows > a.on {
   background: var(--surface-selected);
+}
+
+.save-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.save-row {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 11px 13px;
+  border-radius: var(--radius-row);
+}
+
+.empty.compact {
+  min-height: 0;
+  padding-block: 18px;
 }
 
 .avatar {
@@ -439,16 +445,19 @@ kbd {
 
 /* Right-hand metadata aligns in fixed columns so a list of projects scans
    vertically. Content-sized tags left the numbers ragged. */
-.rows > a .state {
+.rows > a .state,
+.project-link .state {
   width: 116px;
 }
 
-.rows > a .tag.count-col {
+.rows > a .tag.count-col,
+.project-link .tag.count-col {
   width: 92px;
   text-align: right;
 }
 
-.rows > a .delta {
+.rows > a .delta,
+.project-link .delta {
   width: 148px;
   text-align: right;
 }
@@ -522,6 +531,38 @@ kbd {
 
 .bar i.m {
   background: var(--minus);
+}
+
+/* Keep project actions usable in narrow viewer panes. The detailed counts are
+   still available after opening a project. */
+@media (max-width: 720px) {
+  .rows > a .state,
+  .rows > a .tag.count-col,
+  .rows > a .delta,
+  .project-link .state,
+  .project-link .tag.count-col,
+  .project-link .delta {
+    display: none;
+  }
+
+  .chrome {
+    padding-inline: 12px;
+  }
+
+  .chip,
+  .tabs-right {
+    display: none;
+  }
+
+  .tabs {
+    padding-inline: 8px;
+    overflow-x: auto;
+  }
+
+  .tabs a {
+    flex: none;
+    padding-inline: 10px;
+  }
 }
 
 /* Health is a dot plus muted text, never a colored chip. */
@@ -623,6 +664,7 @@ kbd {
 }
 
 .file {
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--surface);
@@ -735,10 +777,6 @@ kbd {
   grid-template-columns: 50px 50px 18px 1fr;
 }
 
-.split .ln {
-  grid-template-columns: 50px 1fr 50px 1fr;
-}
-
 .ln > .g {
   color: var(--quiet);
   text-align: right;
@@ -806,16 +844,6 @@ kbd {
 .plain .ln.add,
 .plain .ln.del {
   background: none;
-}
-
-.split .ln.pair > code:nth-of-type(1) {
-  background: var(--minus-bg);
-  box-shadow: inset 2px 0 0 var(--minus);
-}
-
-.split .ln.pair > code:nth-of-type(2) {
-  background: var(--plus-bg);
-  box-shadow: inset 2px 0 0 var(--plus);
 }
 
 .k {
@@ -888,6 +916,83 @@ kbd {
 
 .anno-body.hide {
   display: none;
+}
+
+.event-list {
+  display: grid;
+  gap: 7px;
+  padding-top: 10px;
+}
+
+.event-row {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--surface-raised);
+  min-width: 0;
+}
+
+.event-row summary {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 11px;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.event-row summary::-webkit-details-marker {
+  display: none;
+}
+
+.event-row summary::before {
+  content: "▸";
+  color: var(--muted);
+}
+
+.event-row[open] summary::before {
+  content: "▾";
+}
+
+.event-row summary b {
+  color: var(--text-soft);
+  font-weight: 500;
+}
+
+.event-row summary .sp {
+  flex: 1;
+}
+
+.event-kind {
+  width: 68px;
+  color: var(--muted);
+  font-family: var(--mono);
+  text-transform: uppercase;
+  font-size: 10.5px;
+}
+
+.event-row pre {
+  margin: 0;
+  padding: 10px 12px 12px 31px;
+  border-top: 1px solid var(--line);
+  color: var(--text-soft);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 32rem;
+  overflow: auto;
+}
+
+.event-error {
+  border-color: color-mix(in srgb, var(--minus) 45%, var(--line));
+}
+
+.event-more {
+  justify-content: flex-start;
+  padding: 10px 0 0;
 }
 
 .anno-tool {
@@ -1189,6 +1294,11 @@ kbd {
 }
 
 .bl .g {
+  appearance: none;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font: inherit;
   color: var(--quiet);
   text-align: right;
   padding-right: 12px;
@@ -1253,6 +1363,18 @@ kbd {
 
 .note > span:last-child {
   max-width: 110ch;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.load-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 18px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .note b {
@@ -1456,6 +1578,7 @@ kbd {
 
 .dialog {
   width: 100%;
+  min-width: 0;
   max-width: 560px;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
@@ -1487,6 +1610,7 @@ kbd {
   padding: 16px 18px;
   display: grid;
   gap: 16px;
+  min-width: 0;
 }
 
 .field {
@@ -1652,6 +1776,7 @@ kbd {
   padding: 11px 12px;
   display: grid;
   gap: 6px;
+  min-width: 0;
 }
 
 .willdo .t {
@@ -1666,6 +1791,8 @@ kbd {
   font-family: var(--mono);
   font-size: 12px;
   color: var(--text-soft);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .willdo .ln2 i {
@@ -1800,4 +1927,77 @@ button:disabled {
   border-radius: 5px;
   padding: 1.5px 5px;
   font-size: 12px;
+}
+
+/* Project details stack vertically when the viewer is phone-width. This rule
+   follows the desktop detail declarations so the narrow grid wins the cascade. */
+@media (max-width: 720px) {
+  .dialog-foot .hint {
+    display: none;
+  }
+
+  .dialog-foot button {
+    white-space: nowrap;
+  }
+
+  .session-shell,
+  .shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .turnlist {
+    position: static;
+    height: auto;
+    max-height: 38dvh;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .review {
+    padding: 16px 12px 64px;
+  }
+
+  .shell {
+    gap: 12px;
+    padding: 12px 12px 64px;
+  }
+
+  .tree {
+    position: static;
+    max-height: 34dvh;
+    overflow: auto;
+  }
+
+  .pane-head {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .pane-head .path {
+    flex: 1 1 100%;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .pane-head .sp {
+    display: none;
+  }
+
+  .blk {
+    grid-template-columns: 3px minmax(0, 1fr);
+  }
+
+  .blk .age {
+    grid-row: 1 / span 2;
+  }
+
+  .blk .attrib,
+  .blk .blines {
+    grid-column: 2;
+  }
+
+  .blk .attrib {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
 }

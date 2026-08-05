@@ -38,7 +38,7 @@ const (
 	viewerCookie       = "turnal_viewer_session"
 	viewerSessionTTL   = 8 * time.Hour
 	viewerReadTimeout  = 15 * time.Second
-	viewerWriteTimeout = 45 * time.Second
+	viewerWriteTimeout = pickerTimeout + 15*time.Second
 )
 
 type Options struct {
@@ -164,7 +164,6 @@ func Run(ctx context.Context, options Options) error {
 	if options.Repo != nil {
 		fmt.Fprintf(options.Out, "Workspace:     %s\n", options.Repo.WorkspaceRoot)
 	}
-	fmt.Fprintf(options.Out, "Index:         %s\n", db.Path())
 	fmt.Fprintf(options.Out, "PID:           %d\n", os.Getpid())
 	fmt.Fprintln(options.Out, "Stop:          press Ctrl-C")
 
@@ -222,7 +221,7 @@ func resolveInitialSession(displayID string, sessions []SessionSummaryView) (str
 	case 1:
 		return matches[0].Key, nil
 	default:
-		return "", fmt.Errorf("viewer session %q is ambiguous across %d event streams; open Prism and select the canonical stream", displayID, len(matches))
+		return "", fmt.Errorf("more than one recorded session matches %q; open Prism and select the one you want", displayID)
 	}
 }
 
@@ -302,18 +301,20 @@ func (server *Server) serveAPI(response http.ResponseWriter, request *http.Reque
 		limit := 0
 		if value := request.URL.Query().Get("limit"); value != "" {
 			parsed, err := strconv.Atoi(value)
-			if err != nil {
-				server.writeError(response, http.StatusBadRequest, "invalid_limit", "Activity limit must be an integer.")
+			if err != nil || parsed <= 0 || parsed > projects.MaxActivityLimit {
+				server.writeError(response, http.StatusBadRequest, "invalid_limit", fmt.Sprintf("Activity limit must be between 1 and %d.", projects.MaxActivityLimit))
 				return
 			}
 			limit = parsed
 		}
-		list, err := server.registry.db.Activity(ctx, limit)
+		list, truncated, err := server.registry.db.Activity(ctx, limit)
 		if err != nil {
 			server.failRead(response, err)
 			return
 		}
-		server.writeJSON(response, http.StatusOK, activityViews(list))
+		server.writeJSON(response, http.StatusOK, ActivityPageView{
+			Items: activityViews(list), Truncated: truncated,
+		})
 		return
 	case "refresh":
 		if err := server.registry.refresh(ctx); err != nil {
@@ -331,7 +332,7 @@ func (server *Server) serveAPI(response http.ResponseWriter, request *http.Reque
 	storeID := segments[1]
 	service, err := server.registry.service(ctx, storeID)
 	if err != nil {
-		server.writeError(response, http.StatusNotFound, "unknown_project", err.Error())
+		server.writeError(response, http.StatusNotFound, "unknown_project", "This project is no longer available in the viewer.")
 		return
 	}
 	scoped := segments[2:]
@@ -343,6 +344,8 @@ func (server *Server) serveAPI(response http.ResponseWriter, request *http.Reque
 		result, err = service.Workspace(ctx)
 	case len(scoped) == 1 && scoped[0] == "sessions":
 		result, err = service.Sessions(ctx)
+	case len(scoped) == 1 && scoped[0] == "saves":
+		result, err = service.Saves(ctx)
 	case len(scoped) == 3 && scoped[0] == "sessions" && scoped[2] == "turns":
 		result, err = service.SessionTurns(ctx, scoped[1])
 	case len(scoped) == 2 && scoped[0] == "turns":
@@ -375,7 +378,7 @@ func (server *Server) failRead(response http.ResponseWriter, err error) {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		status = http.StatusRequestTimeout
 	}
-	server.writeError(response, status, "viewer_read_failed", err.Error())
+	server.writeError(response, status, "viewer_read_failed", "The requested history could not be read. Try again.")
 }
 
 func (server *Server) writeIndex(response http.ResponseWriter, request *http.Request) {
@@ -384,15 +387,8 @@ func (server *Server) writeIndex(response http.ResponseWriter, request *http.Req
 		server.failRead(response, err)
 		return
 	}
-	registryFile, err := checkpoint.RegistryPath()
-	if err != nil {
-		server.failRead(response, err)
-		return
-	}
 	server.writeJSON(response, http.StatusOK, IndexView{
 		Projects:        projectViews(list),
-		DBPath:          server.registry.db.Path(),
-		RegistryPath:    registryFile,
 		ReadOnly:        true,
 		NetworkSilent:   true,
 		ViewerStartedAt: server.startedAt,
@@ -412,7 +408,7 @@ func (server *Server) writeAllowed(request *http.Request) bool {
 
 func (server *Server) addProject(response http.ResponseWriter, request *http.Request) {
 	if !server.writeAllowed(request) {
-		server.writeError(response, http.StatusForbidden, "write_rejected", "This request is missing the viewer write token.")
+		server.writeError(response, http.StatusForbidden, "write_rejected", "This viewer session can no longer make changes. Relaunch Prism and try again.")
 		return
 	}
 	request.Body = http.MaxBytesReader(response, request.Body, 8192)
@@ -424,7 +420,12 @@ func (server *Server) addProject(response http.ResponseWriter, request *http.Req
 	}
 	result, err := server.registry.addProject(request.Context(), input)
 	if err != nil {
-		server.writeError(response, http.StatusBadRequest, "add_project_failed", err.Error())
+		if result.Root != "" {
+			result.Warning = "The folder was prepared, but agent recording could not be fully set up. You can finish the setup later."
+			server.writeJSON(response, http.StatusOK, result)
+			return
+		}
+		server.writeError(response, http.StatusBadRequest, "add_project_failed", "The project could not be added. Check that the folder exists and is writable, then try again.")
 		return
 	}
 	server.writeJSON(response, http.StatusOK, result)
@@ -437,7 +438,7 @@ func (server *Server) addProject(response http.ResponseWriter, request *http.Req
 // dialog available says so, letting the UI fall back to a text field.
 func (server *Server) pickDirectory(response http.ResponseWriter, request *http.Request) {
 	if !server.writeAllowed(request) {
-		server.writeError(response, http.StatusForbidden, "write_rejected", "This request is missing the viewer write token.")
+		server.writeError(response, http.StatusForbidden, "write_rejected", "This viewer session can no longer make changes. Relaunch Prism and try again.")
 		return
 	}
 	selected, err := pickDirectory(request.Context(), defaultPickerStart())
@@ -449,10 +450,10 @@ func (server *Server) pickDirectory(response http.ResponseWriter, request *http.
 		}
 		var unavailable ErrPickerUnavailable
 		if errors.As(err, &unavailable) {
-			server.writeError(response, http.StatusNotImplemented, "picker_unavailable", unavailable.Error())
+			server.writeError(response, http.StatusNotImplemented, "picker_unavailable", unavailable.Reason)
 			return
 		}
-		server.writeError(response, http.StatusBadRequest, "picker_failed", err.Error())
+		server.writeError(response, http.StatusBadRequest, "picker_failed", "The folder chooser could not be opened. Type the folder path instead.")
 		return
 	}
 	server.writeJSON(response, http.StatusOK, map[string]any{"cancelled": false, "directory": selected})
@@ -460,11 +461,11 @@ func (server *Server) pickDirectory(response http.ResponseWriter, request *http.
 
 func (server *Server) removeProject(response http.ResponseWriter, request *http.Request, storeID string) {
 	if !server.writeAllowed(request) {
-		server.writeError(response, http.StatusForbidden, "write_rejected", "This request is missing the viewer write token.")
+		server.writeError(response, http.StatusForbidden, "write_rejected", "This viewer session can no longer make changes. Relaunch Prism and try again.")
 		return
 	}
 	if err := server.registry.db.Deregister(request.Context(), storeID); err != nil {
-		server.writeError(response, http.StatusBadRequest, "remove_project_failed", err.Error())
+		server.writeError(response, http.StatusBadRequest, "remove_project_failed", "The project could not be removed from the viewer. Try again.")
 		return
 	}
 	server.registry.forget(storeID)

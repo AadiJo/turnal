@@ -70,12 +70,14 @@ type registryStore struct {
 	StoreID      primitives.StoreID          `json:"store_id"`
 	StorePath    string                      `json:"store_path"`
 	Worktrees    map[string]registryWorktree `json:"worktrees,omitempty"`
+	Hidden       bool                        `json:"hidden,omitempty"`
 }
 
 type registryWorktree struct {
 	Root     string `json:"root"`
 	GitDir   string `json:"git_dir,omitempty"`
 	LastSeen string `json:"last_seen_at"`
+	Primary  bool   `json:"primary,omitempty"`
 }
 
 func (repo *Repo) Identity() StoreIdentity {
@@ -563,6 +565,14 @@ func registryPath() (string, error) {
 }
 
 func registerRepo(repo *Repo, binding WorktreeIdentity) error {
+	return registerRepoWithVisibility(repo, binding, false)
+}
+
+func registerRepoExplicit(repo *Repo, binding WorktreeIdentity) error {
+	return registerRepoWithVisibility(repo, binding, true)
+}
+
+func registerRepoWithVisibility(repo *Repo, binding WorktreeIdentity, reveal bool) error {
 	path, err := registryPath()
 	if err != nil {
 		return err
@@ -597,6 +607,9 @@ func registerRepo(repo *Repo, binding WorktreeIdentity) error {
 		entry.RepoID = repo.RepoID
 		entry.StoreID = repo.StoreID
 		entry.StorePath = storePath
+		if reveal {
+			entry.Hidden = false
+		}
 		if entry.Worktrees == nil {
 			entry.Worktrees = map[string]registryWorktree{}
 		}
@@ -604,6 +617,7 @@ func registerRepo(repo *Repo, binding WorktreeIdentity) error {
 			Root:     cleanIdentityPath(binding.Root),
 			GitDir:   cleanIdentityPath(binding.GitDir),
 			LastSeen: binding.LastSeenAt,
+			Primary:  binding.Primary,
 		}
 		sort.Slice(registryValue.Stores, func(i, j int) bool {
 			if registryValue.Stores[i].GitCommonDir != registryValue.Stores[j].GitCommonDir {

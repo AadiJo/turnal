@@ -212,6 +212,19 @@ func TestUnknownProjectIsRejected(t *testing.T) {
 	}
 }
 
+func TestRemovedProjectCannotBeReadThroughCachedService(t *testing.T) {
+	server, repo := newViewerTestServer(t)
+	if _, err := server.registry.service(context.Background(), repo.StoreID.String()); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.registry.db.Deregister(context.Background(), repo.StoreID.String()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.registry.service(context.Background(), repo.StoreID.String()); err == nil {
+		t.Fatal("removed project remained accessible through cached service")
+	}
+}
+
 // A wrapped agent run records two sessions for one piece of work: the wrapper's
 // own session and the provider's hook session. They share a checkpoint pair, so
 // counting both doubles the change totals and puts a promptless twin in the
@@ -220,9 +233,11 @@ func TestRedundantWrapperSessionsAreDropped(t *testing.T) {
 	finished := time.Date(2026, 8, 3, 18, 13, 46, 0, time.UTC)
 	sessions := []SessionSummaryView{
 		// The wrapper: same change shape, finishes a few seconds later, no prompt.
-		{Key: "wrapper", Adapter: "codex", Additions: 11, FileCount: 1, FinishedAt: finished.Add(4 * time.Second)},
+		{Key: "wrapper", Adapter: "codex", Additions: 11, FileCount: 1, FinishedAt: finished.Add(4 * time.Second), runID: "run-linked", captureKind: "wrapper"},
 		// The provider session that actually carries the prompt.
-		{Key: "hooks", Adapter: "codex", Model: "gpt-5.6-sol", PromptPreview: "Add a Usage section", Additions: 11, FileCount: 1, FinishedAt: finished},
+		{Key: "hooks", Adapter: "codex", Model: "gpt-5.6-sol", PromptPreview: "Add a Usage section", Additions: 11, FileCount: 1, FinishedAt: finished, runID: "run-linked", captureKind: "provider"},
+		// Same shape and time, but no durable run link: this is unrelated work.
+		{Key: "coincidental", Adapter: "codex", Additions: 11, FileCount: 1, FinishedAt: finished.Add(3 * time.Second)},
 		// An unrelated manual checkpoint: promptless, but nothing matches it.
 		{Key: "manual", Adapter: "manual", Additions: 3, FileCount: 1, FinishedAt: finished.Add(-time.Hour)},
 	}
@@ -236,6 +251,9 @@ func TestRedundantWrapperSessionsAreDropped(t *testing.T) {
 	}
 	if _, dropped := redundant["manual"]; dropped {
 		t.Fatal("an unmatched manual checkpoint was dropped; it is the only record of that work")
+	}
+	if _, dropped := redundant["coincidental"]; dropped {
+		t.Fatal("an unrelated session was dropped based only on matching counts and time")
 	}
 }
 
@@ -253,5 +271,77 @@ func TestResolveInitialSessionFailsClosedOnFriendlyIDAmbiguity(t *testing.T) {
 	}
 	if _, err := resolveInitialSession("missing", sessions); err == nil {
 		t.Fatal("missing friendly session id was accepted")
+	}
+}
+
+func TestViewerWriteTimeoutCoversFolderPicker(t *testing.T) {
+	if viewerWriteTimeout <= pickerTimeout {
+		t.Fatalf("viewer write timeout %s must exceed picker timeout %s", viewerWriteTimeout, pickerTimeout)
+	}
+}
+
+func TestActivityRouteRejectsUnboundedLimits(t *testing.T) {
+	server, _ := newViewerTestServer(t)
+	server.bootstrapped = true
+	server.sessionUntil = time.Now().Add(time.Minute)
+	request := httptest.NewRequest(http.MethodGet, "/activity?limit=101", nil)
+	request.Header.Set(viewerHeader, "1")
+	request.AddCookie(&http.Cookie{Name: viewerCookie, Value: server.sessionToken})
+	response := httptest.NewRecorder()
+	server.serveAPI(response, request, "activity")
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "invalid_limit") {
+		t.Fatalf("activity limit response = %d, %s", response.Code, response.Body.String())
+	}
+}
+
+func TestAddProjectPersistsGitSyncChoice(t *testing.T) {
+	server, _ := newViewerTestServer(t)
+	target := t.TempDir()
+	result, err := server.registry.addProject(context.Background(), AddProjectRequest{
+		Directory: target,
+		Agent:     "none",
+		GitSync:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(result.StorePath, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "[git_sync]") || !strings.Contains(string(data), "enabled = true") {
+		t.Fatalf("git-sync choice was not persisted:\n%s", data)
+	}
+}
+
+func TestAddProjectReportsPartialSetupInPlainLanguage(t *testing.T) {
+	server, _ := newViewerTestServer(t)
+	target := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(target, ".claude", "settings.json"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(AddProjectRequest{Directory: target, Agent: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/projects", bytes.NewReader(body))
+	request.Header.Set(viewerWriteHeader, server.sessionToken)
+	response := httptest.NewRecorder()
+	server.addProject(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("partial add response = %d, %s", response.Code, response.Body.String())
+	}
+	var result AddProjectResult
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Root != target || result.Warning == "" {
+		t.Fatalf("partial add result = %#v", result)
+	}
+	if strings.Contains(result.Warning, ".turnal") || strings.Contains(result.Warning, "sqlite") {
+		t.Fatalf("partial add warning exposed implementation details: %q", result.Warning)
+	}
+	if _, err := os.Stat(filepath.Join(target, ".turnal", "git")); err != nil {
+		t.Fatalf("partial add hid its completed folder setup: %v", err)
 	}
 }

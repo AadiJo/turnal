@@ -16,9 +16,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
+	"github.com/AadiJo/turnal/internal/filelock"
 	"github.com/AadiJo/turnal/internal/primitives"
 	_ "modernc.org/sqlite"
 )
@@ -95,8 +97,9 @@ type Summarizer func(ctx context.Context, store checkpoint.RegisteredStore) (Sum
 
 // DB is the machine-wide project index.
 type DB struct {
-	db   *sql.DB
-	path string
+	db          *sql.DB
+	path        string
+	reconcileMu sync.Mutex
 }
 
 // Path returns the database file location, honoring TURNAL_STATE_DIR.
@@ -118,6 +121,25 @@ func Open() (*DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("create turnal state directory: %w", err)
 	}
+	lock, err := filelock.Acquire(path+".reconcile.lock", reconcileLockTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("acquire project index lifecycle lock: %w", err)
+	}
+	db, openErr := openUnderLifecycleLock(path)
+	releaseErr := lock.Release()
+	if openErr != nil {
+		return nil, openErr
+	}
+	if releaseErr != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("release project index lifecycle lock: %w", releaseErr)
+	}
+	return db, nil
+}
+
+// openUnderLifecycleLock may replace the derived index file, so every caller
+// must hold the same cross-process lock used by reconciliation.
+func openUnderLifecycleLock(path string) (*DB, error) {
 	db, err := openAt(path)
 	if err != nil {
 		return nil, err
@@ -148,6 +170,14 @@ func openAt(path string) (*DB, error) {
 	}
 	// Single connection: writes are serialized and the index is small.
 	handle.SetMaxOpenConns(1)
+	handle.SetMaxIdleConns(1)
+	// foreign_keys is connection-local in SQLite. Set it whenever the healthy
+	// index is opened, not only while creating the schema, so parent deletes
+	// always remove their derived child rows.
+	if _, err := handle.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+		_ = handle.Close()
+		return nil, fmt.Errorf("enable project index foreign keys: %w", err)
+	}
 	return &DB{db: handle, path: path}, nil
 }
 
@@ -191,6 +221,12 @@ func (d *DB) initialize() error {
 // has disappeared are kept and marked absent. A per-store summarize failure is
 // recorded on that row and does not abort the refresh.
 func (d *DB) Refresh(ctx context.Context, summarize Summarizer) error {
+	return d.withReconcileLock(ctx, func() error {
+		return d.refresh(ctx, summarize)
+	})
+}
+
+func (d *DB) refresh(ctx context.Context, summarize Summarizer) error {
 	stores, err := checkpoint.ListRegisteredStores()
 	if err != nil {
 		return err
@@ -213,18 +249,55 @@ func (d *DB) Refresh(ctx context.Context, summarize Summarizer) error {
 		if present {
 			produced, summarizeErr := summarize(ctx, store)
 			if summarizeErr != nil {
-				summary.HistoryState = "attention"
+				if err := d.markSummaryUnavailable(ctx, store, root, true, "attention", now); err != nil {
+					return err
+				}
+				continue
 			} else {
 				summary = produced
 			}
 		} else {
-			summary.HistoryState = "absent"
+			if err := d.markSummaryUnavailable(ctx, store, root, false, "absent", now); err != nil {
+				return err
+			}
+			continue
 		}
 		if err := d.upsert(ctx, store, root, present, summary, now); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+const reconcileLockTimeout = 30 * time.Second
+
+// withReconcileLock serializes registry snapshots and index writes both within
+// this process and across concurrent viewer processes.
+func (d *DB) withReconcileLock(ctx context.Context, fn func() error) error {
+	d.reconcileMu.Lock()
+	defer d.reconcileMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	timeout := reconcileLockTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return ctx.Err()
+		}
+		if remaining < timeout {
+			timeout = remaining
+		}
+	}
+	lock, err := filelock.Acquire(d.path+".reconcile.lock", timeout)
+	if err != nil {
+		return fmt.Errorf("acquire project reconciliation lock: %w", err)
+	}
+	result := fn()
+	if releaseErr := lock.Release(); result == nil && releaseErr != nil {
+		result = releaseErr
+	}
+	return result
 }
 
 func (d *DB) pruneMissing(registered map[string]struct{}) error {
@@ -298,16 +371,8 @@ func (d *DB) upsert(ctx context.Context, store checkpoint.RegisteredStore, root 
 		return fmt.Errorf("write indexed project: %w", err)
 	}
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM project_worktrees WHERE store_id = ?`, storeID); err != nil {
-		return fmt.Errorf("reset project worktrees: %w", err)
-	}
-	for _, worktree := range store.Worktrees {
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO project_worktrees (store_id, root, git_dir, last_seen_at)
-			VALUES (?,?,?,?)`, storeID, worktree.Root, worktree.GitDir, worktree.LastSeenAt,
-		); err != nil {
-			return fmt.Errorf("write project worktree: %w", err)
-		}
+	if err := replaceWorktrees(ctx, tx, storeID, store.Worktrees); err != nil {
+		return err
 	}
 
 	if _, err := tx.ExecContext(ctx, `DELETE FROM activity WHERE store_id = ?`, storeID); err != nil {
@@ -328,6 +393,61 @@ func (d *DB) upsert(ctx context.Context, store checkpoint.RegisteredStore, root 
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit project index write: %w", err)
+	}
+	return nil
+}
+
+// markSummaryUnavailable keeps the last known-good derived values and activity
+// when history cannot currently be read. A newly seen store still gets a row so
+// it remains visible and recoverable.
+func (d *DB) markSummaryUnavailable(ctx context.Context, store checkpoint.RegisteredStore, root string, present bool, historyState string, now time.Time) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin project summary failure write: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	storeID := store.StoreID.String()
+	result, err := tx.ExecContext(ctx, `
+		UPDATE projects SET
+			repo_id = ?, store_path = ?, git_common_dir = ?, name = ?, root = ?,
+			present = ?, history_state = ?, refreshed_at = ?
+		WHERE store_id = ?`,
+		store.RepoID.String(), store.StorePath, store.GitCommonDir, filepath.Base(root), root,
+		boolToInt(present), historyState, timeText(now), storeID,
+	)
+	if err != nil {
+		return fmt.Errorf("mark project summary unavailable: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read project summary failure result: %w", err)
+	}
+	if rows == 0 {
+		if err := tx.Rollback(); err != nil {
+			return err
+		}
+		return d.upsert(ctx, store, root, present, Summary{HistoryState: historyState}, now)
+	}
+	if err := replaceWorktrees(ctx, tx, storeID, store.Worktrees); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit project summary failure write: %w", err)
+	}
+	return nil
+}
+
+func replaceWorktrees(ctx context.Context, tx *sql.Tx, storeID string, worktrees []checkpoint.RegisteredWorktree) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM project_worktrees WHERE store_id = ?`, storeID); err != nil {
+		return fmt.Errorf("reset project worktrees: %w", err)
+	}
+	for _, worktree := range worktrees {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO project_worktrees (store_id, root, git_dir, last_seen_at)
+			VALUES (?,?,?,?)`, storeID, worktree.Root, worktree.GitDir, worktree.LastSeenAt,
+		); err != nil {
+			return fmt.Errorf("write project worktree: %w", err)
+		}
 	}
 	return nil
 }
@@ -410,10 +530,19 @@ func (d *DB) Project(ctx context.Context, storeID string) (Project, error) {
 	return Project{}, fmt.Errorf("project %s is not indexed", storeID)
 }
 
-// Activity returns the newest sessions across every project.
-func (d *DB) Activity(ctx context.Context, limit int) ([]Activity, error) {
+const (
+	DefaultActivityLimit = 40
+	MaxActivityLimit     = 100
+)
+
+// Activity returns a bounded list of the newest sessions across every project
+// and reports whether older sessions were omitted.
+func (d *DB) Activity(ctx context.Context, limit int) ([]Activity, bool, error) {
 	if limit <= 0 {
-		limit = 50
+		limit = DefaultActivityLimit
+	}
+	if limit > MaxActivityLimit {
+		limit = MaxActivityLimit
 	}
 	rows, err := d.db.QueryContext(ctx, `
 		SELECT a.store_id, p.name, a.session_key, a.session_id, COALESCE(a.title, ''),
@@ -423,9 +552,9 @@ func (d *DB) Activity(ctx context.Context, limit int) ([]Activity, error) {
 		FROM activity a
 		JOIN projects p ON p.store_id = a.store_id
 		ORDER BY COALESCE(a.finished_at, a.started_at) DESC
-		LIMIT ?`, limit)
+		LIMIT ?`, limit+1)
 	if err != nil {
-		return nil, fmt.Errorf("list activity: %w", err)
+		return nil, false, fmt.Errorf("list activity: %w", err)
 	}
 	defer rows.Close()
 	var list []Activity
@@ -437,39 +566,42 @@ func (d *DB) Activity(ctx context.Context, limit int) ([]Activity, error) {
 			&item.Adapter, &item.Model, &item.Branch, &item.Status, &item.TurnCount,
 			&item.FileCount, &item.Additions, &item.Deletions, &started, &finished,
 		); err != nil {
-			return nil, fmt.Errorf("scan activity: %w", err)
+			return nil, false, fmt.Errorf("scan activity: %w", err)
 		}
 		item.StartedAt = parseTime(started)
 		item.FinishedAt = parseTime(finished)
 		list = append(list, item)
 	}
-	return list, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	truncated := len(list) > limit
+	if truncated {
+		list = list[:limit]
+	}
+	return list, truncated, nil
 }
 
 // Deregister removes a project from the registry and from this index. No files
 // are deleted: the store keeps its recorded history and can be re-registered.
 func (d *DB) Deregister(ctx context.Context, storeID string) error {
-	parsed, err := primitives.ParseStoreID(storeID)
-	if err != nil {
-		return err
-	}
-	if err := checkpoint.DeregisterStore(parsed); err != nil {
-		return err
-	}
-	if _, err := d.db.ExecContext(ctx, `DELETE FROM projects WHERE store_id = ?`, storeID); err != nil {
-		return fmt.Errorf("drop project from index: %w", err)
-	}
-	return nil
+	return d.withReconcileLock(ctx, func() error {
+		parsed, err := primitives.ParseStoreID(storeID)
+		if err != nil {
+			return err
+		}
+		if err := checkpoint.DeregisterStore(parsed); err != nil {
+			return err
+		}
+		if _, err := d.db.ExecContext(ctx, `DELETE FROM projects WHERE store_id = ?`, storeID); err != nil {
+			return fmt.Errorf("drop project from index: %w", err)
+		}
+		return nil
+	})
 }
 
 func primaryRoot(store checkpoint.RegisteredStore) string {
-	for _, worktree := range store.Worktrees {
-		if worktree.Root != "" {
-			return worktree.Root
-		}
-	}
-	// A store always lives at <root>/.turnal, so the parent is the workspace.
-	return filepath.Dir(store.StorePath)
+	return store.PreferredRoot()
 }
 
 func boolToInt(value bool) int {

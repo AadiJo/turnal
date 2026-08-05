@@ -10,7 +10,6 @@ type ProjectView struct {
 	RepoID       string                `json:"repo_id,omitempty"`
 	Name         string                `json:"name"`
 	Root         string                `json:"root"`
-	StorePath    string                `json:"store_path"`
 	Branch       string                `json:"branch,omitempty"`
 	Present      bool                  `json:"present"`
 	IndexState   string                `json:"index_state,omitempty"`
@@ -52,11 +51,14 @@ type ActivityView struct {
 	FinishedAt  time.Time `json:"finished_at,omitempty"`
 }
 
+type ActivityPageView struct {
+	Items     []ActivityView `json:"items"`
+	Truncated bool           `json:"truncated"`
+}
+
 // IndexView is the payload for the global landing page.
 type IndexView struct {
 	Projects        []ProjectView `json:"projects"`
-	DBPath          string        `json:"db_path"`
-	RegistryPath    string        `json:"registry_path"`
 	ReadOnly        bool          `json:"read_only"`
 	NetworkSilent   bool          `json:"network_silent"`
 	ViewerStartedAt time.Time     `json:"viewer_started_at"`
@@ -76,10 +78,11 @@ type AddProjectRequest struct {
 type AddProjectResult struct {
 	StoreID          string   `json:"store_id"`
 	Root             string   `json:"root"`
-	StorePath        string   `json:"store_path"`
+	StorePath        string   `json:"-"`
 	Attached         bool     `json:"attached"`
 	GitignoreUpdated bool     `json:"gitignore_updated"`
 	Hooks            []string `json:"hooks,omitempty"`
+	Warning          string   `json:"warning,omitempty"`
 }
 
 type WorkspaceView struct {
@@ -118,6 +121,17 @@ type SessionSummaryView struct {
 	Deletions     int       `json:"deletions"`
 	Status        string    `json:"status"`
 	PromptPreview string    `json:"prompt_preview,omitempty"`
+	runID         string
+	captureKind   string
+}
+
+// ManualSaveView is a standalone folder snapshot, intentionally separate from
+// agent sessions and turns.
+type ManualSaveView struct {
+	ID       string    `json:"id"`
+	Message  string    `json:"message,omitempty"`
+	Time     time.Time `json:"time,omitempty"`
+	Warnings []string  `json:"warnings,omitempty"`
 }
 
 type TurnSummaryView struct {

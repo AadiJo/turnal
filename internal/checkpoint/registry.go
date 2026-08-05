@@ -26,6 +26,32 @@ type RegisteredWorktree struct {
 	Root       string
 	GitDir     string
 	LastSeenAt string
+	Primary    bool
+}
+
+// PreferredRoot selects a usable workspace binding for read-only project
+// access. The primary worktree wins while it exists; otherwise a live linked
+// worktree keeps the shared store accessible after another checkout is removed.
+func (store RegisteredStore) PreferredRoot() string {
+	for _, primaryOnly := range []bool{true, false} {
+		for _, worktree := range store.Worktrees {
+			if worktree.Root == "" || (primaryOnly && !worktree.Primary) {
+				continue
+			}
+			if info, err := os.Stat(worktree.Root); err == nil && info.IsDir() {
+				return worktree.Root
+			}
+		}
+	}
+	for _, primaryOnly := range []bool{true, false} {
+		for _, worktree := range store.Worktrees {
+			if worktree.Root != "" && (!primaryOnly || worktree.Primary) {
+				return worktree.Root
+			}
+		}
+	}
+	// A local store lives at <root>/.turnal.
+	return filepath.Dir(store.StorePath)
 }
 
 // StateDir returns the directory holding machine-wide Turnal state, honoring
@@ -59,20 +85,36 @@ func ListRegisteredStores() ([]RegisteredStore, error) {
 	}
 	stores := make([]RegisteredStore, 0, len(value.Stores))
 	for _, entry := range value.Stores {
+		if entry.Hidden {
+			continue
+		}
 		store := RegisteredStore{
 			RepoID:       entry.RepoID,
 			StoreID:      entry.StoreID,
 			StorePath:    entry.StorePath,
 			GitCommonDir: entry.GitCommonDir,
 		}
-		for _, worktree := range entry.Worktrees {
+		// Registry v1 originally omitted the primary flag. The durable worktree
+		// identity files already carry it, so use them to upgrade legacy entries
+		// in memory without rewriting during a read.
+		primaryByID := make(map[string]bool)
+		if bindings, identityErr := listWorktreeIdentities(entry.StorePath); identityErr == nil {
+			for _, binding := range bindings {
+				primaryByID[binding.WorktreeID.String()] = binding.Primary
+			}
+		}
+		for worktreeID, worktree := range entry.Worktrees {
 			store.Worktrees = append(store.Worktrees, RegisteredWorktree{
 				Root:       worktree.Root,
 				GitDir:     worktree.GitDir,
 				LastSeenAt: worktree.LastSeen,
+				Primary:    worktree.Primary || primaryByID[worktreeID],
 			})
 		}
 		sort.Slice(store.Worktrees, func(i, j int) bool {
+			if store.Worktrees[i].Primary != store.Worktrees[j].Primary {
+				return store.Worktrees[i].Primary
+			}
 			return store.Worktrees[i].Root < store.Worktrees[j].Root
 		})
 		stores = append(stores, store)
@@ -104,14 +146,13 @@ func (repo *Repo) RegisterStore() error {
 	if !ok {
 		binding = repo.WorktreeIdentity()
 	}
-	return registerRepo(repo, binding)
+	return registerRepoExplicit(repo, binding)
 }
 
-// DeregisterStore removes a store from the user-state registry. It deletes no
-// files: the .turnal directory, its recorded history, and any installed agent
-// hooks are left exactly as they are, so the store can be re-registered later
-// with turnal init or turnal worktree attach. Use internal/destroy to actually
-// remove recorded history.
+// DeregisterStore hides a store from the machine-wide project inventory. The
+// retained entry lets linked worktrees keep resolving their shared store, but
+// automatic opens cannot make the project visible again. An explicit
+// RegisterStore clears the marker. No project files or history are deleted.
 func DeregisterStore(storeID primitives.StoreID) error {
 	path, err := registryPath()
 	if err != nil {
@@ -123,18 +164,16 @@ func DeregisterStore(storeID primitives.StoreID) error {
 		if err != nil {
 			return err
 		}
-		kept := make([]registryStore, 0, len(value.Stores))
-		for _, entry := range value.Stores {
-			if entry.StoreID == storeID {
+		for index := range value.Stores {
+			if value.Stores[index].StoreID == storeID {
 				removed = true
-				continue
+				value.Stores[index].Hidden = true
+				break
 			}
-			kept = append(kept, entry)
 		}
 		if !removed {
 			return nil
 		}
-		value.Stores = kept
 		value.Version = registryVersion
 		return writeJSONAtomic(path, value, 0o600)
 	}); err != nil {
