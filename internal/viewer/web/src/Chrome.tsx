@@ -34,17 +34,21 @@ export function Chrome({
   );
 }
 
-export type Tab = { id: string; label: string; count?: number };
+export type Tab<ID extends string> = {
+  id: ID;
+  label: string;
+  count?: number;
+};
 
-export function Tabs({
+export function Tabs<ID extends string>({
   tabs,
   active,
   onSelect,
   meta,
 }: {
-  tabs: Tab[];
-  active: string;
-  onSelect: (id: string) => void;
+  tabs: readonly Tab<ID>[];
+  active: ID;
+  onSelect: (id: ID) => void;
   meta?: ComponentChildren;
 }) {
   return (

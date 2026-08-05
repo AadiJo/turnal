@@ -296,13 +296,6 @@ kbd {
   font-weight: 500;
 }
 
-.card {
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--surface);
-  overflow: hidden;
-}
-
 /* ---------- repo / session rows ---------- */
 
 .rows {
@@ -1072,18 +1065,6 @@ kbd {
   color: var(--text);
 }
 
-.tree-filter {
-  margin: 8px;
-  display: flex;
-  align-items: center;
-  height: 30px;
-  padding: 0 11px;
-  border-radius: var(--radius-control);
-  border: 1px solid var(--line);
-  color: var(--quiet);
-  font-size: 12.5px;
-}
-
 .tree-list {
   padding: 4px 8px 10px;
 }
@@ -1140,14 +1121,6 @@ kbd {
   margin-left: 5px;
 }
 
-.i1 {
-  padding-left: 24px !important;
-}
-
-.i2 {
-  padding-left: 38px !important;
-}
-
 .pane {
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -1176,31 +1149,6 @@ kbd {
 
 .pane-head .sp {
   flex: 1;
-}
-
-.seg {
-  display: flex;
-  gap: 2px;
-  padding: 3px;
-  border-radius: var(--radius-control);
-  background: var(--surface-raised);
-}
-
-.seg button {
-  height: 24px;
-  padding: 0 11px;
-  border-radius: 6px;
-  font-size: 12.5px;
-  color: var(--muted);
-}
-
-.seg button:hover {
-  color: var(--text);
-}
-
-.seg button.on {
-  background: var(--surface-selected);
-  color: var(--text);
 }
 
 /* ---------- origins ---------- */
@@ -1419,50 +1367,6 @@ kbd {
   color: var(--muted);
   padding-bottom: 26px;
   line-height: 1.75;
-}
-
-.hub ol {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: grid;
-  gap: 8px;
-}
-
-.hub li a {
-  display: flex;
-  gap: 14px;
-  align-items: flex-start;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--surface);
-  padding: 15px 17px;
-}
-
-.hub li a:hover {
-  background: var(--surface-hover);
-  border-color: var(--line-strong);
-}
-
-.hub li .n {
-  font-family: var(--mono);
-  color: var(--quiet);
-  font-size: 12px;
-  padding-top: 2px;
-  flex: none;
-}
-
-.hub li b {
-  display: block;
-  font-weight: 500;
-  padding-bottom: 5px;
-}
-
-.hub li span.d {
-  display: block;
-  color: var(--muted);
-  line-height: 1.75;
-  font-size: 12.5px;
 }
 
 /* ---------- session shell ----------
@@ -1804,6 +1708,13 @@ kbd {
 
 .willdo .ln2.no i {
   color: var(--quiet);
+}
+
+.willdo .cli-command {
+  color: var(--text-soft);
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .dialog-foot {

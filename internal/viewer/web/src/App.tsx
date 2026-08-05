@@ -90,7 +90,11 @@ export function App() {
         );
       }
     } catch (nextError) {
-      setError(nextError as Error);
+      setError(
+        nextError instanceof Error
+          ? nextError
+          : new Error("The project index could not be read."),
+      );
     }
   }, []);
 

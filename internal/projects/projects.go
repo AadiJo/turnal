@@ -244,7 +244,7 @@ func (d *DB) refresh(ctx context.Context, summarize Summarizer) error {
 			return err
 		}
 		present := checkpoint.StoreExists(store.StorePath)
-		root := primaryRoot(store)
+		root := store.PreferredRoot()
 		summary := Summary{HistoryState: "ready"}
 		if present {
 			produced, summarizeErr := summarize(ctx, store)
@@ -598,10 +598,6 @@ func (d *DB) Deregister(ctx context.Context, storeID string) error {
 		}
 		return nil
 	})
-}
-
-func primaryRoot(store checkpoint.RegisteredStore) string {
-	return store.PreferredRoot()
 }
 
 func boolToInt(value bool) int {

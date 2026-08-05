@@ -9,7 +9,12 @@ import {
   isRealTime,
   shortAge,
 } from "./format";
-import type { ActivityItem, Project, ViewerIndex } from "./types";
+import type {
+  ActivityItem,
+  AddProjectRequest,
+  Project,
+  ViewerIndex,
+} from "./types";
 
 const AGENTS = [
   {
@@ -62,21 +67,11 @@ export function ProjectsView({
   const working = index.projects.filter(isRecent);
   const rest = index.projects.filter((project) => !working.includes(project));
 
-  const submitAdd = async (
-    directory: string,
-    agent: string,
-    gitignore: boolean,
-    gitSync: boolean,
-  ) => {
+  const submitAdd = async (request: AddProjectRequest) => {
     setBusy(true);
     setError(null);
     try {
-      const result = await api.addProject({
-        directory,
-        agent,
-        update_gitignore: gitignore,
-        git_sync: gitSync,
-      });
+      const result = await api.addProject(request);
       setAdding(false);
       if (result.warning) setError(result.warning);
       onReload();
@@ -356,6 +351,7 @@ function ProjectRows({
 }
 
 function ProjectRowContent({ project }: { project: Project }) {
+  const health = projectHealth(project);
   return (
     <>
       <span className={cx("status", isRecent(project) && "active")}>
@@ -369,7 +365,7 @@ function ProjectRowContent({ project }: { project: Project }) {
           <em>{project.last_prompt || "No recorded activity"}</em>
         </span>
       </span>
-      <span className={cx("state", healthClass(project))}>{healthLabel(project)}</span>
+      <span className={cx("state", health.className)}>{health.label}</span>
       <span className="tag count-col">
         {project.session_count} session{project.session_count === 1 ? "" : "s"}
       </span>
@@ -392,26 +388,23 @@ function isRecent(project: Project) {
   );
 }
 
-function healthClass(project: Project) {
-  if (!project.present) return "missing";
-  if (project.index_state === "stale") return "stale";
-  if (
-    project.index_state === "missing" ||
-    project.index_state === "unavailable" ||
-    project.history_state === "attention"
-  ) {
-    return "missing";
+function projectHealth(project: Project) {
+  if (!project.present) {
+    return { className: "missing", label: "folder not found" } as const;
   }
-  return "healthy";
-}
-
-function healthLabel(project: Project) {
-  if (!project.present) return "folder not found";
-  if (project.index_state === "stale") return "history may be stale";
-  if (project.index_state === "missing") return "history unavailable";
-  if (project.index_state === "unavailable") return "history unavailable";
-  if (project.history_state === "attention") return "needs attention";
-  return "healthy";
+  if (project.index_state === "stale") {
+    return { className: "stale", label: "search index may be stale" } as const;
+  }
+  if (project.index_state === "missing") {
+    return { className: "missing", label: "search index missing" } as const;
+  }
+  if (project.index_state === "unavailable") {
+    return { className: "missing", label: "search index unavailable" } as const;
+  }
+  if (project.history_state === "attention") {
+    return { className: "missing", label: "needs attention" } as const;
+  }
+  return { className: "healthy", label: "healthy" } as const;
 }
 
 function AddProjectDialog({
@@ -421,12 +414,7 @@ function AddProjectDialog({
 }: {
   busy: boolean;
   onCancel: () => void;
-  onSubmit: (
-    directory: string,
-    agent: string,
-    gitignore: boolean,
-    gitSync: boolean,
-  ) => void;
+  onSubmit: (request: AddProjectRequest) => void;
 }) {
   const [directory, setDirectory] = useState("");
   const [agent, setAgent] = useState("auto");
@@ -581,6 +569,15 @@ function AddProjectDialog({
             <span className="ln2 no">
               <i>·</i> your existing Git history is not modified
             </span>
+            <span className="t">Equivalent CLI, run in the selected folder</span>
+            <code className="cli-command">
+              {initCommand({
+                directory: directory.trim(),
+                agent,
+                update_gitignore: gitignore,
+                git_sync: gitSync,
+              })}
+            </code>
           </div>
         </div>
         <div className="dialog-foot">
@@ -595,7 +592,12 @@ function AddProjectDialog({
             className="primary"
             disabled={busy || directory.trim() === ""}
             onClick={() =>
-              onSubmit(directory.trim(), agent, gitignore, gitSync)
+              onSubmit({
+                directory: directory.trim(),
+                agent,
+                update_gitignore: gitignore,
+                git_sync: gitSync,
+              })
             }
           >
             {busy ? "Adding…" : "Add project"}
@@ -604,6 +606,16 @@ function AddProjectDialog({
       </div>
     </div>
   );
+}
+
+function initCommand(request: AddProjectRequest) {
+  const args = ["turnal", "init"];
+  if (request.agent && request.agent !== "auto") {
+    args.push("--agent", request.agent);
+  }
+  if (!request.update_gitignore) args.push("--update-gitignore=false");
+  if (request.git_sync) args.push("--git-sync");
+  return args.join(" ");
 }
 
 function RemoveProjectDialog({

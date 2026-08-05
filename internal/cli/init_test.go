@@ -93,6 +93,30 @@ update_gitignore = false
 	}
 }
 
+func TestInitCommandCanSkipGitignoreFromFlag(t *testing.T) {
+	requireGit(t)
+	isolateAgentConfig(t)
+
+	root := workspaceRoot(t)
+	t.Chdir(root.String())
+
+	cmd := NewRootCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"init", "--skip-hooks", "--update-gitignore=false"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init command: %v\n%s", err, out.String())
+	}
+
+	if _, err := os.Stat(filepath.Join(root.String(), ".gitignore")); !os.IsNotExist(err) {
+		t.Fatalf(".gitignore exists or could not be checked: %v", err)
+	}
+	if !strings.Contains(out.String(), "gitignore update skipped") {
+		t.Fatalf("init output did not report skipped gitignore update:\n%s", out.String())
+	}
+}
+
 func TestInitUsesRootCheckoutCodexHooksFromLinkedWorktree(t *testing.T) {
 	requireGit(t)
 	isolateAgentConfig(t)

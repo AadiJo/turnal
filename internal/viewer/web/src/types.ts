@@ -7,8 +7,8 @@ export type Project = {
   /** False when the store directory is gone. The project stays listed because
    * its recorded history outlives the working tree. */
   present: boolean;
-  index_state?: string;
-  history_state?: string;
+  index_state?: "healthy" | "stale" | "missing" | "unavailable";
+  history_state?: "ready" | "attention";
   session_count: number;
   turn_count: number;
   additions: number;

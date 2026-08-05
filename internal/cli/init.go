@@ -22,6 +22,7 @@ func initCmd() *cobra.Command {
 	var agent string
 	var skipHooks bool
 	var enableGitSync bool
+	var updateGitignore bool
 	var storePath string
 
 	cmd := &cobra.Command{
@@ -48,6 +49,9 @@ func initCmd() *cobra.Command {
 			}
 			if cmd.Flags().Changed("git-sync") {
 				overrides.GitSyncEnabled = &enableGitSync
+			}
+			if cmd.Flags().Changed("update-gitignore") {
+				overrides.BootstrapUpdateGitignore = &updateGitignore
 			}
 			effective, _, err := agentconfig.Resolve(root.String(), overrides)
 			if err != nil {
@@ -133,6 +137,7 @@ func initCmd() *cobra.Command {
 	cmd.Flags().StringVar(&agent, "agent", string(adapters.TargetAuto), "Agent hooks to configure: auto, claude, codex, all, or none")
 	cmd.Flags().BoolVar(&skipHooks, "skip-hooks", false, "Skip automatic agent hook configuration")
 	cmd.Flags().BoolVar(&enableGitSync, "git-sync", false, "Enable opt-in workspace Git state capture for future workspace-git rollbacks")
+	cmd.Flags().BoolVar(&updateGitignore, "update-gitignore", true, "Add Turnal metadata to .gitignore")
 	cmd.Flags().StringVar(&storePath, "store", "", "Use or create a Turnal store at this explicit .turnal path")
 	return cmd
 }

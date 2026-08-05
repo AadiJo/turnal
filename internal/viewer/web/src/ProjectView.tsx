@@ -112,8 +112,8 @@ export function ProjectView({
         setSessionKey((current) => current ?? nextSessions[0]?.key ?? null);
         setError(null);
       })
-      .catch((nextError: Error) => {
-        if (nextError.name !== "AbortError") setError(nextError.message);
+      .catch((nextError: unknown) => {
+        if (!isAbortError(nextError)) setError(errorMessage(nextError));
       })
       .finally(() => setLoading(false));
     return () => controller.abort();
@@ -138,8 +138,8 @@ export function ProjectView({
           : undefined;
         setTurnKey(requestedTurn ?? value.turns[0]?.key ?? null);
       })
-      .catch((nextError: Error) => {
-        if (nextError.name !== "AbortError") setError(nextError.message);
+      .catch((nextError: unknown) => {
+        if (!isAbortError(nextError)) setError(errorMessage(nextError));
       });
     return () => controller.abort();
   }, [store, sessionKey, initialTurnKey]);
@@ -168,8 +168,8 @@ export function ProjectView({
           (current) => initialPath ?? current ?? nextDetail.files?.[0]?.path ?? null,
         );
       })
-      .catch((nextError: Error) => {
-        if (nextError.name !== "AbortError") setError(nextError.message);
+      .catch((nextError: unknown) => {
+        if (!isAbortError(nextError)) setError(errorMessage(nextError));
       });
 
     api
@@ -178,8 +178,8 @@ export function ProjectView({
         setDiff(nextDiff);
         setSelectedPath(initialPath ?? nextDiff.files[0]?.path ?? null);
       })
-      .catch((nextError: Error) => {
-        if (nextError.name !== "AbortError") {
+      .catch((nextError: unknown) => {
+        if (!isAbortError(nextError)) {
           setError(
             "File changes are not available for this turn yet. Its recorded activity is shown below.",
           );
@@ -244,10 +244,10 @@ export function ProjectView({
     api
       .blame(store, turnKey, selectedPath, controller.signal)
       .then(setBlame)
-      .catch((nextError: Error) => {
-        if (nextError.name !== "AbortError") {
+      .catch((nextError: unknown) => {
+        if (!isAbortError(nextError)) {
           setBlame(null);
-          setError(nextError.message);
+          setError(errorMessage(nextError));
         }
       });
     return () => controller.abort();
@@ -273,9 +273,8 @@ export function ProjectView({
         ]}
         active={mode}
         onSelect={(id) => {
-          const nextMode = id as Mode;
-          setMode(nextMode);
-          navigateFromCurrent({ view: nextMode });
+          setMode(id);
+          navigateFromCurrent({ view: id });
         }}
         meta={<span>{project.turn_count} turns</span>}
       />
@@ -587,6 +586,16 @@ export function ProjectView({
       )}
     </>
   );
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error
+    ? error.message
+    : "Turnal could not read this view.";
 }
 
 function FileBox({
