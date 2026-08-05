@@ -366,7 +366,7 @@ function ProjectRowContent({ project }: { project: Project }) {
         <span>
           {project.branch && <span className="tag mono">{project.branch}</span>}
           {project.branch && <i>·</i>}
-          <em>{project.last_prompt || project.root}</em>
+          <em>{project.last_prompt || "No recorded activity"}</em>
         </span>
       </span>
       <span className={cx("state", healthClass(project))}>{healthLabel(project)}</span>

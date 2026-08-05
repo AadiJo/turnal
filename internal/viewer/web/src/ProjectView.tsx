@@ -277,12 +277,7 @@ export function ProjectView({
           setMode(nextMode);
           navigateFromCurrent({ view: nextMode });
         }}
-        meta={
-          <>
-            <span>{project.turn_count} turns</span>
-            <span className="tag mono">{project.root}</span>
-          </>
-        }
+        meta={<span>{project.turn_count} turns</span>}
       />
 
       {error && (

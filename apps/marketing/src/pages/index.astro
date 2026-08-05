@@ -9,6 +9,7 @@ import AgentHistoryDemo from '../components/AgentHistoryDemo.astro';
 import CaseForkDemo from '../components/CaseForkDemo.astro';
 import { commandPanels, graphOutput, installCommand } from '../data/terminalHome';
 import { product } from '../data/content';
+import prismScreenshotUrl from '../../../../docs/turnal-viewer-sessions.png?url';
 
 const capabilities = [
   {
@@ -171,6 +172,24 @@ const capabilities = [
             ))}
           </div>
         </div>
+      </section>
+
+      <section id="prism" class="prism-section th-wrap" aria-labelledby="prism-title">
+        <header class="section-heading">
+          <h2 id="prism-title">Every project. One local view.</h2>
+          <p>Run <code>turnal ui</code> to see sessions from Claude Code and Codex in one place. Open a project to review its prompts, models, turns, branches, and file changes.</p>
+        </header>
+
+        <figure class="prism-frame">
+          <img
+            src={prismScreenshotUrl}
+            alt="Turnal Prism session list for the example atlas-web project, with claude-fable-5 and gpt-5.6-sol sessions"
+            width="1440"
+            height="418"
+            loading="lazy"
+            decoding="async"
+          />
+        </figure>
       </section>
 
       <section id="evidence" class="evidence-section th-wrap">
@@ -469,6 +488,30 @@ const capabilities = [
     white-space: nowrap;
   }
 
+  .terminal-home-theme .prism-section {
+    padding-top: 70px;
+    padding-bottom: 126px;
+    scroll-margin-top: 82px;
+  }
+  .terminal-home-theme .prism-section code {
+    color: var(--fg);
+    font-family: var(--mono);
+    font-size: 0.9em;
+  }
+  .terminal-home-theme .prism-frame {
+    margin: 50px 0 0;
+    overflow: hidden;
+    border: 1px solid rgba(236, 227, 212, 0.14);
+    border-radius: 15px;
+    background: #171518;
+    box-shadow: 0 28px 80px rgba(0, 0, 0, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.035);
+  }
+  .terminal-home-theme .prism-frame img {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
   .terminal-home-theme .evidence-section { padding-top: 112px; padding-bottom: 118px; border-top: 1px solid var(--hair); scroll-margin-top: 82px; }
 
   .terminal-home-theme .workflow-section { padding-top: 104px; padding-bottom: 104px; scroll-margin-top: 82px; }
@@ -549,6 +592,13 @@ const capabilities = [
     .terminal-home-theme .hero-copy { max-width: 590px; }
     .terminal-home-theme .hero h1 { max-width: 12ch; font-size: clamp(46px, 10vw, 68px); }
     .terminal-home-theme .hero-visual { margin-top: 34px; }
+    .terminal-home-theme .prism-frame {
+      overflow-x: auto;
+      border-radius: 12px;
+      scrollbar-color: rgba(236, 227, 212, 0.25) transparent;
+      scrollbar-width: thin;
+    }
+    .terminal-home-theme .prism-frame img { width: 900px; max-width: none; }
     .terminal-home-theme .command-workbench { grid-template-columns: 1fr; }
     .terminal-home-theme .command-menu { display: flex; overflow-x: auto; padding: 0 0 7px; scroll-snap-type: x mandatory; }
     .terminal-home-theme .command-menu button { width: min(76vw, 300px); flex: none; scroll-snap-align: start; border-right: 1px solid var(--hair); }
@@ -565,6 +615,8 @@ const capabilities = [
     .terminal-home-theme .docs-link { padding: 7px 2px; }
     .terminal-home-theme .adapter-strip { min-height: 80px; }
     .terminal-home-theme .capabilities { padding-top: 115px; padding-bottom: 50px; }
+    .terminal-home-theme .prism-section { padding-top: 58px; padding-bottom: 90px; }
+    .terminal-home-theme .prism-frame { margin-top: 34px; }
     .terminal-home-theme .evidence-section { padding-top: 88px; padding-bottom: 90px; }
     .terminal-home-theme .capability-ledger { grid-template-columns: 1fr; }
     .terminal-home-theme .capability-ledger article,

@@ -55,48 +55,48 @@ func TestCreateVisualFixture(t *testing.T) {
 		writeVisualFile(t, rootPath, name, content)
 	}
 
-	createVisualSession(t, repo, "secure-local-viewer", primitives.AdapterCodex, []visualTurn{
+	createVisualSession(t, repo, "resumable-imports", primitives.AdapterCodex, []visualTurn{
 		{
-			Prompt: "Harden fragment bootstrap and scope the viewer session to its random launch path.",
+			Prompt: "Make the import queue resume cleanly after a worker restart.",
 			Tool:   "apply_patch", Path: "internal/viewer/server.go",
 			Content:   "package viewer\n\nfunc allowedHost(host, expected string) bool {\n\tif host == \"\" {\n\t\treturn false\n\t}\n\treturn host == expected\n}\n",
-			Assistant: "Added strict host matching and a scoped one-time bootstrap exchange.",
+			Assistant: "Added a durable cursor and idempotent resume checks for interrupted imports.",
 		},
 		{
-			Prompt: "Add bounded payloads and make cancelled browser requests stop checkpoint work.",
+			Prompt: "Bound batch payloads and stop background work when a request is cancelled.",
 			Tool:   "apply_patch", Path: "internal/viewer/service.go",
 			Content:   "package viewer\n\nimport \"context\"\n\nconst maxPayload = 512 << 10\n\nfunc payloadLimit(ctx context.Context) (int, error) {\n\tif err := ctx.Err(); err != nil {\n\t\treturn 0, err\n\t}\n\treturn maxPayload, nil\n}\n",
-			Assistant: "Bounded diff responses and propagated cancellation through the read service.",
+			Assistant: "Bounded batch responses and propagated cancellation through the import service.",
 		},
 		{
-			Prompt: "Use versioned opaque keys so duplicate turn IDs cannot resolve across streams.",
+			Prompt: "Use versioned keys so duplicate job IDs cannot resolve across queues.",
 			Tool:   "apply_patch", Path: "internal/viewer/identity.go",
 			Content:   "package viewer\n\nconst resourceKeyVersion = 1\n\ntype resourceIdentity struct {\n\tStore string\n\tWorktree string\n\tStream string\n\tSession string\n\tTurn uint64\n}\n",
-			Assistant: "Canonical keys now carry the full store, worktree, stream, session, and turn identity.",
+			Assistant: "Canonical keys now carry the complete workspace, queue, run, and job identity.",
 		},
 	})
 
-	createVisualSession(t, repo, "provenance-workflow", primitives.AdapterClaudeCode, []visualTurn{
+	createVisualSession(t, repo, "keyboard-navigation", primitives.AdapterClaudeCode, []visualTurn{
 		{
-			Prompt: "Build the checkpoint graph and keep the selected turn context visible.",
+			Prompt: "Add keyboard navigation to the issue board and keep focus visible.",
 			Tool:   "apply_patch", Path: "web/src/App.tsx",
 			Content:   "export function App() {\n  return (\n    <main data-view=\"timeline\">\n      <nav>Sessions</nav>\n      <section>Checkpoint graph</section>\n      <aside>Turn evidence</aside>\n    </main>\n  );\n}\n",
-			Assistant: "Built a navigable topology with a persistent evidence inspector.",
+			Assistant: "Added predictable arrow-key movement with a persistent focus indicator.",
 		},
 		{
-			Prompt: "Refine the dark theme with calmer contrast and spring-based selection motion.",
+			Prompt: "Refine the dark theme with calmer contrast and reduced-motion support.",
 			Tool:   "apply_patch", Path: "web/src/styles.css",
 			Content:   ":root {\n  --accent: #73d7b8;\n  --surface: #181c1b;\n  --surface-raised: #1d2221;\n  --text: #edf2ef;\n}\n\n.turn-selection {\n  transition: transform 240ms cubic-bezier(.16, 1, .3, 1);\n}\n",
-			Assistant: "Tuned hierarchy, contrast, and selection feedback across all three panes.",
+			Assistant: "Tuned hierarchy, contrast, and selection feedback across the board.",
 		},
 	})
 
 	createVisualSession(t, repo, "release-readiness", primitives.AdapterManual, []visualTurn{
 		{
-			Prompt: "Document the local-only viewer command and its read-only security boundary.",
+			Prompt: "Record the release candidate before the database migration.",
 			Tool:   "apply_patch", Path: "README.md",
 			Content:   "# Turnal\n\nA local-first flight recorder for coding agents.\n\n## Local viewer\n\nRun `turnal ui` to inspect sessions, checkpoint diffs, and line origins. The server binds to loopback and never changes durable history.\n",
-			Assistant: "Documented launch behavior, the local trust boundary, and the non-mutating workflow.",
+			Assistant: "Recorded the release candidate and its migration checklist.",
 		},
 	})
 
@@ -115,7 +115,7 @@ func TestCreateVisualFixture(t *testing.T) {
 		turns   []visualTurn
 	}{
 		{
-			name: "codestore", adapter: primitives.AdapterClaudeCode, session: "render-large-diffs",
+			name: "relay-api", adapter: primitives.AdapterClaudeCode, session: "render-large-diffs",
 			turns: []visualTurn{
 				{
 					Prompt: "Detach parsed substrings so a large patch stops retaining its parent buffer.",
@@ -132,7 +132,7 @@ func TestCreateVisualFixture(t *testing.T) {
 			},
 		},
 		{
-			name: "shipd", adapter: primitives.AdapterCodex, session: "release-gates",
+			name: "harbor-cli", adapter: primitives.AdapterCodex, session: "release-gates",
 			turns: []visualTurn{
 				{
 					Prompt: "Fail the release when the built assets differ from what is committed.",
@@ -185,8 +185,8 @@ func createVisualSession(t *testing.T, repo *checkpoint.Repo, id string, adapter
 	}
 	appendVisualEvent(t, repo.EventLog(), sessionID, nil, primitives.EventTypeSessionStart, adapter, map[string]any{
 		"model": map[primitives.AdapterName]string{
-			primitives.AdapterCodex:      "gpt-5-codex",
-			primitives.AdapterClaudeCode: "claude-sonnet",
+			primitives.AdapterCodex:      "gpt-5.6-sol",
+			primitives.AdapterClaudeCode: "claude-fable-5",
 			primitives.AdapterManual:     "manual",
 		}[adapter],
 	})
