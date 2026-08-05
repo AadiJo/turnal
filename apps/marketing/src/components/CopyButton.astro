@@ -23,11 +23,11 @@ const { text, label = 'Copy install command' } = Astro.props;
     position: relative;
     display: inline-grid;
     place-items: center;
-    width: 34px;
-    height: 34px;
+    width: 32px;
+    height: 32px;
     flex: none;
     border: none;
-    border-radius: 8px;
+    border-radius: 7px;
     background: var(--copy-bg, rgba(236, 227, 212, 0.08));
     color: var(--copy-fg, rgba(236, 227, 212, 0.6));
     transition: background 0.15s ease, color 0.15s ease, transform 0.12s ease;
@@ -38,9 +38,9 @@ const { text, label = 'Copy install command' } = Astro.props;
 
   .ic {
     grid-area: 1 / 1;
-    width: 17px;
-    height: 17px;
-    transition: transform 0.18s cubic-bezier(0.2, 0.8, 0.3, 1.2), opacity 0.14s ease;
+    width: 16px;
+    height: 16px;
+    transition: opacity 120ms ease, transform 160ms ease;
   }
   .ic-check { transform: scale(0.4); opacity: 0; color: var(--accent, #ff4f00); }
 

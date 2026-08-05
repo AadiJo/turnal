@@ -28,7 +28,23 @@ const warning = (value: string) => `<span class="th-warning">${value}</span>`;
 const danger = (value: string) => `<span class="th-danger">${value}</span>`;
 const label = (value: string) => `<span class="th-label">${value}</span>`;
 
-export const installCommand = 'npm install -g @aadijo/turnal';
+export const installMethods = [
+  {
+    id: 'npm',
+    label: 'npm',
+    command: 'npm install -g @aadijo/turnal',
+  },
+  {
+    id: 'macos-linux',
+    label: 'macOS/Linux',
+    command: "curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/AadiJo/turnal/main/install.sh | sh",
+  },
+  {
+    id: 'windows',
+    label: 'Windows',
+    command: 'irm https://raw.githubusercontent.com/AadiJo/turnal/main/install.ps1 | iex',
+  },
+] as const;
 
 export const graphLines = [
   '',
