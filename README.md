@@ -66,12 +66,12 @@ Each release provides `turnal_<version>_<platform>_<architecture>.tar.gz` for ma
 ```sh
 curl --proto '=https' --tlsv1.2 -fsSL \
   https://raw.githubusercontent.com/AadiJo/turnal/main/install.sh |
-  sh -s -- --version 0.0.1 --install-dir "$HOME/bin"
+  sh -s -- --version 0.0.4 --install-dir "$HOME/bin"
 ```
 
 ```powershell
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/AadiJo/turnal/main/install.ps1))) `
-  -Version 0.0.1 `
+  -Version 0.0.4 `
   -InstallDir "$HOME\bin"
 ```
 
