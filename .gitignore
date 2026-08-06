@@ -13,6 +13,7 @@ dist/
 turnal.spdx.json
 
 .turnal/
+.plans/
 
 npm/bin/
 
