@@ -2,6 +2,7 @@ package projects
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -96,6 +97,108 @@ func TestRefreshIndexesRegisteredStores(t *testing.T) {
 	}
 	if len(feed) != 1 || feed[0].ProjectName != "alpha" || feed[0].Title != "Add the thing" {
 		t.Fatalf("activity = %#v", feed)
+	}
+}
+
+func TestReplaceWorktreesToleratesDuplicateRegistryRoots(t *testing.T) {
+	db := openIsolated(t)
+	repo := registerStore(t, filepath.Join(t.TempDir(), "duplicate-root"))
+	if err := db.Refresh(context.Background(), staticSummary(Summary{})); err != nil {
+		t.Fatal(err)
+	}
+
+	tx, err := db.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := repo.WorkspaceRoot.String()
+	worktrees := []checkpoint.RegisteredWorktree{
+		{Root: root, GitDir: "old", LastSeenAt: "2026-08-05T01:00:00Z"},
+		{Root: root, GitDir: "current", LastSeenAt: "2026-08-05T02:00:00Z"},
+	}
+	if err := replaceWorktrees(context.Background(), tx, repo.StoreID.String(), worktrees); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("replace duplicate worktrees: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	var count int
+	var gitDir string
+	if err := db.db.QueryRow(`
+		SELECT COUNT(*), MAX(COALESCE(git_dir, ''))
+		FROM project_worktrees WHERE store_id = ? AND root = ?`, repo.StoreID.String(), root,
+	).Scan(&count, &gitDir); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || gitDir != "current" {
+		t.Fatalf("indexed duplicate root count=%d git_dir=%q, want 1 current", count, gitDir)
+	}
+}
+
+func TestRefreshRebuildsDuplicateRegistryRoots(t *testing.T) {
+	db := openIsolated(t)
+	repo := registerStore(t, filepath.Join(t.TempDir(), "duplicate-registry-root"))
+	registryPath, err := checkpoint.RegistryPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(registryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type registryWorktree struct {
+		Root     string `json:"root"`
+		GitDir   string `json:"git_dir,omitempty"`
+		LastSeen string `json:"last_seen_at"`
+		Primary  bool   `json:"primary,omitempty"`
+	}
+	var registry struct {
+		Version int `json:"version"`
+		Stores  []struct {
+			GitCommonDir string                      `json:"git_common_dir"`
+			RepoID       primitives.RepoID           `json:"repo_id"`
+			StoreID      primitives.StoreID          `json:"store_id"`
+			StorePath    string                      `json:"store_path"`
+			Worktrees    map[string]registryWorktree `json:"worktrees,omitempty"`
+			Hidden       bool                        `json:"hidden,omitempty"`
+		} `json:"stores"`
+	}
+	if err := json.Unmarshal(data, &registry); err != nil {
+		t.Fatal(err)
+	}
+	current := registry.Stores[0].Worktrees[repo.WorktreeID.String()]
+	current.GitDir = "current"
+	current.LastSeen = "2026-08-05T02:00:00.1Z"
+	registry.Stores[0].Worktrees[repo.WorktreeID.String()] = current
+	staleID, err := primitives.NewWorktreeID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry.Stores[0].Worktrees[staleID.String()] = registryWorktree{
+		Root: current.Root, GitDir: "stale", LastSeen: "2026-08-05T02:00:00Z", Primary: current.Primary,
+	}
+	data, err = json.MarshalIndent(registry, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(registryPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.Refresh(context.Background(), staticSummary(Summary{})); err != nil {
+		t.Fatalf("refresh duplicate registry roots: %v", err)
+	}
+	projects, err := db.Projects(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projects) != 1 || len(projects[0].Worktrees) != 1 {
+		t.Fatalf("projects after duplicate-root rebuild = %#v", projects)
+	}
+	if got := projects[0].Worktrees[0]; got.GitDir != "current" || got.LastSeenAt != current.LastSeen {
+		t.Fatalf("indexed worktree = %#v, want newest registry binding", got)
 	}
 }
 

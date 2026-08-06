@@ -613,8 +613,14 @@ func registerRepoWithVisibility(repo *Repo, binding WorktreeIdentity, reveal boo
 		if entry.Worktrees == nil {
 			entry.Worktrees = map[string]registryWorktree{}
 		}
+		bindingRoot := cleanIdentityPath(binding.Root)
+		for worktreeID, worktree := range entry.Worktrees {
+			if worktreeID != binding.WorktreeID.String() && sameIdentityPath(worktree.Root, bindingRoot) {
+				delete(entry.Worktrees, worktreeID)
+			}
+		}
 		entry.Worktrees[binding.WorktreeID.String()] = registryWorktree{
-			Root:     cleanIdentityPath(binding.Root),
+			Root:     bindingRoot,
 			GitDir:   cleanIdentityPath(binding.GitDir),
 			LastSeen: binding.LastSeenAt,
 			Primary:  binding.Primary,

@@ -229,6 +229,60 @@ func TestListRegisteredStoresInfersLegacyPrimaryWorktree(t *testing.T) {
 	}
 }
 
+func TestRegisterStoreRemovesStaleWorktreeWithSameRoot(t *testing.T) {
+	t.Setenv("TURNAL_STATE_DIR", t.TempDir())
+	root := workspaceRoot(t)
+	repo, err := Init(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RegisterStore(); err != nil {
+		t.Fatal(err)
+	}
+
+	path, err := registryPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := readRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentGitDir := value.Stores[0].Worktrees[repo.WorktreeID.String()].GitDir
+	staleID, err := primitives.NewWorktreeID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	value.Stores[0].Worktrees[staleID.String()] = registryWorktree{
+		Root: root.String(), LastSeen: "2026-08-05T01:00:00Z", Primary: true,
+	}
+	if err := writeJSONAtomic(path, value, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stores, err := ListRegisteredStores()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stores) != 1 || len(stores[0].Worktrees) != 1 || stores[0].Worktrees[0].GitDir != currentGitDir {
+		t.Fatalf("registered duplicate roots were not reconciled in memory: %#v", stores)
+	}
+
+	if err := repo.RegisterStore(); err != nil {
+		t.Fatal(err)
+	}
+	value, err = readRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktrees := value.Stores[0].Worktrees
+	if len(worktrees) != 1 {
+		t.Fatalf("registered worktrees = %#v, want only the current binding", worktrees)
+	}
+	if _, ok := worktrees[repo.WorktreeID.String()]; !ok {
+		t.Fatalf("current worktree %s is not registered: %#v", repo.WorktreeID, worktrees)
+	}
+}
+
 func runUserGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
