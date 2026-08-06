@@ -444,7 +444,11 @@ func replaceWorktrees(ctx context.Context, tx *sql.Tx, storeID string, worktrees
 	for _, worktree := range worktrees {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO project_worktrees (store_id, root, git_dir, last_seen_at)
-			VALUES (?,?,?,?)`, storeID, worktree.Root, worktree.GitDir, worktree.LastSeenAt,
+			VALUES (?,?,?,?)
+			ON CONFLICT(store_id, root) DO UPDATE SET
+				git_dir = excluded.git_dir,
+				last_seen_at = excluded.last_seen_at`,
+			storeID, worktree.Root, worktree.GitDir, worktree.LastSeenAt,
 		); err != nil {
 			return fmt.Errorf("write project worktree: %w", err)
 		}

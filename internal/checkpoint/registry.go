@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/AadiJo/turnal/internal/primitives"
 )
@@ -103,13 +104,24 @@ func ListRegisteredStores() ([]RegisteredStore, error) {
 				primaryByID[binding.WorktreeID.String()] = binding.Primary
 			}
 		}
+		byRoot := make(map[string]RegisteredWorktree, len(entry.Worktrees))
 		for worktreeID, worktree := range entry.Worktrees {
-			store.Worktrees = append(store.Worktrees, RegisteredWorktree{
+			candidate := RegisteredWorktree{
 				Root:       worktree.Root,
 				GitDir:     worktree.GitDir,
 				LastSeenAt: worktree.LastSeen,
 				Primary:    worktree.Primary || primaryByID[worktreeID],
-			})
+			}
+			root := cleanIdentityPath(candidate.Root)
+			if root == "" {
+				root = "\x00" + worktreeID
+			}
+			if existing, ok := byRoot[root]; !ok || preferRegisteredWorktree(candidate, existing) {
+				byRoot[root] = candidate
+			}
+		}
+		for _, worktree := range byRoot {
+			store.Worktrees = append(store.Worktrees, worktree)
 		}
 		sort.Slice(store.Worktrees, func(i, j int) bool {
 			if store.Worktrees[i].Primary != store.Worktrees[j].Primary {
@@ -121,6 +133,29 @@ func ListRegisteredStores() ([]RegisteredStore, error) {
 	}
 	sort.Slice(stores, func(i, j int) bool { return stores[i].StorePath < stores[j].StorePath })
 	return stores, nil
+}
+
+// preferRegisteredWorktree selects the binding most likely to be current when
+// a legacy registry contains more than one worktree ID for the same root.
+func preferRegisteredWorktree(candidate, existing RegisteredWorktree) bool {
+	candidateSeen, candidateErr := time.Parse(time.RFC3339Nano, candidate.LastSeenAt)
+	existingSeen, existingErr := time.Parse(time.RFC3339Nano, existing.LastSeenAt)
+	if candidateErr == nil && existingErr != nil {
+		return true
+	}
+	if candidateErr != nil && existingErr == nil {
+		return false
+	}
+	if candidateErr == nil && !candidateSeen.Equal(existingSeen) {
+		return candidateSeen.After(existingSeen)
+	}
+	if candidate.LastSeenAt != existing.LastSeenAt {
+		return candidate.LastSeenAt > existing.LastSeenAt
+	}
+	if candidate.Primary != existing.Primary {
+		return candidate.Primary
+	}
+	return candidate.GitDir > existing.GitDir
 }
 
 // StoreExists reports whether a registered store still has its hidden Git
