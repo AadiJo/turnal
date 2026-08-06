@@ -311,6 +311,17 @@ turnal reindex
 
 Reindexing rebuilds SQLite from the event logs and private checkpoint refs.
 
+### Local viewer
+
+Run `turnal ui` to open Turnal Prism, a local browser interface for browsing recorded projects, sessions, turns, prompts, tool activity, diffs, and line-level blame. It runs on the loopback interface and can be launched from inside a recorded project or elsewhere to open the project index.
+
+```sh
+turnal ui
+turnal ui --no-open
+```
+
+See the [Prism guide](docs/viewer.md) for project and session launch options, data limits, and its security model.
+
 ## Replay
 
 Replay opens history in a separate worktree so inspection does not disturb the active workspace:
