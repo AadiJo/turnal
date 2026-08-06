@@ -126,7 +126,7 @@ func TestCreateVisualFixture(t *testing.T) {
 				{
 					Prompt: "Add position-to-line checkpoints so hunk lookup can binary search.",
 					Tool:   "apply_patch", Path: "src/layout.ts",
-					Content:   "export type Checkpoint = { offset: number; line: number };\n\nexport function findLine(marks: Checkpoint[], offset: number): number {\n  let low = 0;\n  let high = marks.length - 1;\n  while (low <= high) {\n    const mid = (low + high) >> 1;\n    if (marks[mid].offset < offset) low = mid + 1;\n    else high = mid - 1;\n  }\n  return marks[Math.max(0, high)].line;\n}\n",
+					Content:   "export type Checkpoint = { offset: number; line: number; source: \"prompt\" | \"assistant\" | \"tool\" | \"path\"; description: string; createdAt: string };\n\nexport function findLine(marks: Checkpoint[], offset: number): number {\n  let low = 0;\n  let high = marks.length - 1;\n  while (low <= high) {\n    const mid = (low + high) >> 1;\n    if (marks[mid].offset < offset) low = mid + 1;\n    else high = mid - 1;\n  }\n  return marks[Math.max(0, high)].line;\n}\n",
 					Assistant: "Replaced the linear scan that went quadratic on very large hunks.",
 				},
 			},

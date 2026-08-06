@@ -352,6 +352,10 @@ function ProjectRows({
 
 function ProjectRowContent({ project }: { project: Project }) {
   const health = projectHealth(project);
+  const guidance = "guidance" in health ? health.guidance : undefined;
+  const guidanceText = guidance
+    ? `Run ${guidance.command} ${guidance.explanation}`
+    : undefined;
   return (
     <>
       <span className={cx("status", isRecent(project) && "active")}>
@@ -365,7 +369,20 @@ function ProjectRowContent({ project }: { project: Project }) {
           <em>{project.last_prompt || "No recorded activity"}</em>
         </span>
       </span>
-      <span className={cx("state", health.className)}>{health.label}</span>
+      <span
+        className={cx("state", health.className, guidance && "has-tooltip")}
+        title={guidanceText}
+        aria-label={
+          guidanceText ? `${health.label}. ${guidanceText}` : undefined
+        }
+      >
+        {health.label}
+        {guidance && (
+          <span className="state-tooltip" aria-hidden="true">
+            Run <code>{guidance.command}</code> {guidance.explanation}
+          </span>
+        )}
+      </span>
       <span className="tag count-col">
         {project.session_count} session{project.session_count === 1 ? "" : "s"}
       </span>
@@ -396,7 +413,15 @@ function projectHealth(project: Project) {
     return { className: "stale", label: "search index may be stale" } as const;
   }
   if (project.index_state === "missing") {
-    return { className: "missing", label: "search index missing" } as const;
+    return {
+      className: "missing",
+      label: "search index missing",
+      guidance: {
+        command: "turnal reindex",
+        explanation:
+          "to rebuild the disposable cache used by search and indexed history commands.",
+      },
+    } as const;
   }
   if (project.index_state === "unavailable") {
     return { className: "missing", label: "search index unavailable" } as const;
