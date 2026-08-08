@@ -16,6 +16,7 @@ type WorktreeID string
 type EventProducerID string
 type EventStreamID string
 type CheckpointID string
+type BundleID string
 type ImportID string
 type RunID string
 type AttemptID string
@@ -119,6 +120,49 @@ func ParseCheckpointID(value string) (CheckpointID, error) {
 }
 
 func (id CheckpointID) String() string { return string(id) }
+
+// BundleID identifies one shared-history projection of a completed turn. It is
+// stable before publication and never depends on a remote.
+func DeriveBundleID(repoID RepoID, streamID EventStreamID, turnID TurnID) (BundleID, error) {
+	parsedRepoID, err := ParseRepoID(repoID.String())
+	if err != nil {
+		return "", err
+	}
+	parsedStreamID, err := ParseEventStreamID(streamID.String())
+	if err != nil {
+		return "", err
+	}
+	parsedTurnID, err := NewTurnID(turnID.Uint64())
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256([]byte(parsedRepoID.String() + "\x00" + parsedStreamID.String() + "\x00" + parsedTurnID.String()))
+	return ParseBundleID("bundle_" + hex.EncodeToString(digest[:16]))
+}
+
+func ParseBundleID(value string) (BundleID, error) {
+	parsed, err := parseDurableID("bundle id", "bundle", value)
+	return BundleID(parsed), err
+}
+
+func (id BundleID) String() string { return string(id) }
+
+func (id BundleID) MarshalText() ([]byte, error) {
+	parsed, err := ParseBundleID(id.String())
+	if err != nil {
+		return nil, err
+	}
+	return []byte(parsed), nil
+}
+
+func (id *BundleID) UnmarshalText(text []byte) error {
+	parsed, err := ParseBundleID(string(text))
+	if err != nil {
+		return err
+	}
+	*id = parsed
+	return nil
+}
 
 func NewImportID() (ImportID, error) {
 	value, err := newDurableID("import")

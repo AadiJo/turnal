@@ -28,6 +28,7 @@ Turnal should be piloted before company-wide adoption. Pin a version and validat
 - Run repository-defined checks against the live workspace or a recorded checkpoint.
 - Promote recorded turns into immutable Cases, compare isolated Attempts, and apply a selected result.
 - Share one Turnal store across linked Git worktrees.
+- Publish an explicitly approved, privacy-filtered context history through Git for teammate review.
 
 ## Requirements
 
@@ -186,6 +187,20 @@ turnal turn finish --session demo
 turnal diff demo:1
 ```
 
+### Shared history
+
+Shared history is opt-in. It publishes a signed, context-only projection to a Git remote without publishing Turnal snapshots, patches, raw hook payloads, tool inputs, or tool outputs. Preview the exact bundle and approve its policy hash before the first push:
+
+```sh
+turnal share enable --remote <git-url-or-path> --prompt-mode redacted_text
+turnal share preview <session>:<turn> --json
+turnal share preview <session>:<turn> --approve
+turnal sync push
+turnal sync pull
+```
+
+Use `turnal share status` to inspect consent, pending bundles, blocked projections, and unpushed history. A published locator such as `v1:<device-id>:<bundle-id>` can be opened with `turnal share show <locator>`. See [shared history](docs/shared-history.md) for the protocol, privacy boundary, and failure semantics.
+
 ## How it works
 
 Turnal deliberately keeps four responsibilities separate:
@@ -224,7 +239,7 @@ Ignored and secrets-denied files are left untouched during checkpoint rollback. 
 
 ## Privacy and secrets
 
-Turnal stores history locally under `.turnal/`; it does not upload it. Prompts and tool payloads can contain credentials or proprietary data, so review the policy before recording sensitive work.
+Turnal stores history locally under `.turnal/` and does not upload it during normal recording. The explicit `turnal sync push` shared-history workflow is the exception. It publishes only the approved projection described above. Prompts and tool payloads can contain credentials or proprietary data, so review both the recording and publication policies before sensitive work.
 
 Workspace configuration lives at `.turnal/config.toml`. Global defaults live at the platform-specific user configuration path, normally `~/.config/turnal/config.toml` on Linux.
 
