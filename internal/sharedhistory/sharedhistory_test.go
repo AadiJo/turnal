@@ -441,6 +441,19 @@ func TestSanitizeTextMatchesCaseInsensitiveWorkspaceAliases(t *testing.T) {
 	}
 }
 
+func TestAbsoluteWorkspaceRootValidationIsPlatformNeutral(t *testing.T) {
+	for _, root := range []string{"/home/alice/project", `C:\Users\Alice\project`, "d:/work/project", `\\server\share\project`} {
+		if !isAbsoluteWorkspaceRoot(root) {
+			t.Errorf("absolute workspace root rejected: %q", root)
+		}
+	}
+	for _, root := range []string{"", "relative/project", `C:relative`, `\rooted`, "/workspace/..", `C:\workspace\.\project`, "bad\x00root"} {
+		if isAbsoluteWorkspaceRoot(root) {
+			t.Errorf("non-absolute workspace root accepted: %q", root)
+		}
+	}
+}
+
 func TestPromptOmissionIsTypedAndDoesNotPublishText(t *testing.T) {
 	repo := newSharedHistoryTestRepo(t)
 	sessionID, turnID := recordSharedHistoryTurn(t, repo)

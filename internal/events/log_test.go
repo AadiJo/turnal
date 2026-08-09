@@ -127,12 +127,21 @@ func TestIndependentV2StreamsCanReuseSessionAndSequence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("append stream one: %v", err)
 	}
+	logOneAlias := OpenFor(metadataDir, "/workspace/one-alias", repoID, storeID, worktreeOne, producerOne)
+	continued, err := logOneAlias.Append(AppendInput{
+		SessionID: sessionID,
+		Type:      primitives.EventTypeAssistantMessage,
+		Payload:   json.RawMessage(`{"text":"continued"}`),
+	})
+	if err != nil {
+		t.Fatalf("continue stream one through alias: %v", err)
+	}
 	second, err := logTwo.Append(AppendInput{SessionID: sessionID, Type: primitives.EventTypePromptUser, Payload: json.RawMessage(`{"text":"two"}`)})
 	if err != nil {
 		t.Fatalf("append stream two: %v", err)
 	}
-	if first.Seq.Uint64() != 1 || second.Seq.Uint64() != 1 {
-		t.Fatalf("independent sequences = %s and %s, want both 1", first.Seq, second.Seq)
+	if first.Seq.Uint64() != 1 || continued.Seq.Uint64() != 2 || second.Seq.Uint64() != 1 {
+		t.Fatalf("stream sequences = %s, %s, and %s; want 1, 2, and 1", first.Seq, continued.Seq, second.Seq)
 	}
 	if first.StreamID == second.StreamID || first.WorktreeID == second.WorktreeID {
 		t.Fatalf("stream identities collided: first=%#v second=%#v", first, second)
@@ -145,12 +154,32 @@ func TestIndependentV2StreamsCanReuseSessionAndSequence(t *testing.T) {
 	if len(streams) != 2 {
 		t.Fatalf("durable streams = %d, want 2: %#v", len(streams), streams)
 	}
+	for _, stream := range streams {
+		want := "/workspace/one"
+		if stream.WorktreeID == worktreeTwo {
+			want = "/workspace/two"
+		}
+		if stream.WorkspaceRoot != want {
+			t.Fatalf("stream %s workspace root = %q, want %q", stream.StreamID, stream.WorkspaceRoot, want)
+		}
+	}
+	if err := WriteStreamMetadata(metadataDir, StreamMetadata{
+		Version:       1,
+		StreamID:      first.StreamID,
+		ProducerID:    producerOne,
+		RepoID:        repoID,
+		WorktreeID:    worktreeOne,
+		SessionID:     sessionID,
+		WorkspaceRoot: "/workspace/conflict",
+	}); err == nil || !strings.Contains(err.Error(), "collision") {
+		t.Fatalf("workspace root metadata collision error = %v", err)
+	}
 	events, err := Open(metadataDir).Read(sessionID)
 	if err != nil {
 		t.Fatalf("aggregate Read: %v", err)
 	}
-	if len(events) != 2 {
-		t.Fatalf("aggregate events = %d, want 2", len(events))
+	if len(events) != 3 {
+		t.Fatalf("aggregate events = %d, want 3", len(events))
 	}
 }
 

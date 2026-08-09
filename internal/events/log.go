@@ -199,9 +199,6 @@ func (log Log) Append(input AppendInput) (Event, error) {
 		}
 		version = 2
 		path = log.streamPath(sessionID, streamID)
-		if err := log.ensureStreamMetadata(sessionID, streamID); err != nil {
-			return Event{}, err
-		}
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return Event{}, fmt.Errorf("create event stream dir: %w", err)
@@ -211,6 +208,11 @@ func (log Log) Append(input AppendInput) (Event, error) {
 		return Event{}, err
 	}
 	defer func() { _ = lock.Release() }()
+	if streamID != "" {
+		if err := log.ensureStreamMetadata(sessionID, streamID); err != nil {
+			return Event{}, err
+		}
+	}
 
 	if _, err := recoverTrailingPartialPath(path); err != nil {
 		return Event{}, err
@@ -951,13 +953,14 @@ func StreamPath(metadataDir string, sessionID primitives.SessionID, streamID pri
 }
 
 type StreamMetadata struct {
-	Version    int                        `json:"version"`
-	StreamID   primitives.EventStreamID   `json:"stream_id"`
-	ProducerID primitives.EventProducerID `json:"event_producer_id"`
-	RepoID     primitives.RepoID          `json:"repo_id"`
-	WorktreeID primitives.WorktreeID      `json:"worktree_id"`
-	SessionID  primitives.SessionID       `json:"session_id"`
-	CreatedAt  string                     `json:"created_at"`
+	Version       int                        `json:"version"`
+	StreamID      primitives.EventStreamID   `json:"stream_id"`
+	ProducerID    primitives.EventProducerID `json:"event_producer_id"`
+	RepoID        primitives.RepoID          `json:"repo_id"`
+	WorktreeID    primitives.WorktreeID      `json:"worktree_id"`
+	SessionID     primitives.SessionID       `json:"session_id"`
+	WorkspaceRoot string                     `json:"workspace_root,omitempty"`
+	CreatedAt     string                     `json:"created_at"`
 }
 
 func (log Log) ensureStreamMetadata(sessionID primitives.SessionID, streamID primitives.EventStreamID) error {
@@ -979,13 +982,14 @@ func (log Log) ensureStreamMetadata(sessionID primitives.SessionID, streamID pri
 		return fmt.Errorf("create event stream metadata dir: %w", err)
 	}
 	metadata := StreamMetadata{
-		Version:    1,
-		StreamID:   streamID,
-		ProducerID: log.ProducerID,
-		RepoID:     log.RepoID,
-		WorktreeID: log.WorktreeID,
-		SessionID:  sessionID,
-		CreatedAt:  time.Now().UTC().Format(time.RFC3339Nano),
+		Version:       1,
+		StreamID:      streamID,
+		ProducerID:    log.ProducerID,
+		RepoID:        log.RepoID,
+		WorktreeID:    log.WorktreeID,
+		SessionID:     sessionID,
+		WorkspaceRoot: log.WorkspaceRoot,
+		CreatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	data, err := json.MarshalIndent(metadata, "", "  ")
 	if err != nil {
@@ -1064,7 +1068,13 @@ func writeStreamMetadata(dir string, metadata StreamMetadata) error {
 	data = append(data, '\n')
 	if existing, readErr := os.ReadFile(path); readErr == nil {
 		var parsed StreamMetadata
-		if json.Unmarshal(existing, &parsed) != nil || parsed.StreamID != metadata.StreamID || parsed.RepoID != metadata.RepoID || parsed.WorktreeID != metadata.WorktreeID || parsed.SessionID != metadata.SessionID {
+		if json.Unmarshal(existing, &parsed) != nil {
+			return fmt.Errorf("event stream metadata collision at %s", path)
+		}
+		// An empty root is legacy metadata. Two known roots must agree because
+		// their exact spelling defines the stream's path privacy boundary.
+		workspaceRootConflict := parsed.WorkspaceRoot != "" && metadata.WorkspaceRoot != "" && parsed.WorkspaceRoot != metadata.WorkspaceRoot
+		if parsed.StreamID != metadata.StreamID || parsed.RepoID != metadata.RepoID || parsed.WorktreeID != metadata.WorktreeID || parsed.SessionID != metadata.SessionID || workspaceRootConflict {
 			return fmt.Errorf("event stream metadata collision at %s", path)
 		}
 		return nil

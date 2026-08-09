@@ -64,7 +64,11 @@ func listCompletedTurns(repo *checkpoint.Repo) ([]turnSource, error) {
 		}
 		for turnID, events := range byTurn {
 			if turnCompleted(events) {
-				turns = append(turns, turnSource{Stream: stream, WorkspaceRoot: workspaceRoots[stream.WorktreeID], TurnID: turnID, Events: events})
+				workspaceRoot := stream.WorkspaceRoot
+				if workspaceRoot == "" {
+					workspaceRoot = workspaceRoots[stream.WorktreeID]
+				}
+				turns = append(turns, turnSource{Stream: stream, WorkspaceRoot: workspaceRoot, TurnID: turnID, Events: events})
 			}
 		}
 	}
@@ -130,6 +134,9 @@ func buildBundle(repo *checkpoint.Repo, identity deviceIdentity, policy policyFi
 		if containsDetectedSecret(event.Adapter.String()) {
 			return builtBundle{}, fmt.Errorf("source adapter id contains secret-like material; refusing to publish it as event metadata")
 		}
+	}
+	if !isAbsoluteWorkspaceRoot(source.WorkspaceRoot) {
+		return builtBundle{}, fmt.Errorf("source worktree root is invalid for stream %s; refusing to project paths without its privacy boundary", source.Stream.StreamID)
 	}
 	bundleID, err := primitives.DeriveBundleID(policy.RepoID, source.Stream.StreamID, source.TurnID)
 	if err != nil {
@@ -387,9 +394,6 @@ func workspaceRootVariants(workspaceRoot string) []string {
 		roots = append(roots, trimWorkspaceTrailingSeparators(resolved))
 	}
 	for _, root := range append([]string(nil), roots...) {
-		roots = append(roots, platformWorkspaceRootAliases(root)...)
-	}
-	for _, root := range append([]string(nil), roots...) {
 		slashRoot := filepath.ToSlash(root)
 		switch {
 		case strings.HasPrefix(slashRoot, "/private/var/") || strings.HasPrefix(slashRoot, "/private/tmp/"):
@@ -642,6 +646,35 @@ func windowsDrivePathStart(value string, index int) bool {
 	}
 	previous, _ := utf8.DecodeLastRuneInString(value[:index])
 	return unicode.IsSpace(previous) || unicode.IsPunct(previous) || unicode.IsSymbol(previous)
+}
+
+func isAbsoluteWorkspaceRoot(value string) bool {
+	if value == "" || strings.ContainsRune(value, 0) || containsDotPathComponent(value) {
+		return false
+	}
+	if value[0] == '/' || windowsDrivePathStart(value, 0) {
+		return true
+	}
+	if len(value) < 5 || value[0] != '\\' || value[1] != '\\' {
+		return false
+	}
+	serverEnd := strings.IndexAny(value[2:], `/\`)
+	if serverEnd <= 0 {
+		return false
+	}
+	shareStart := 2 + serverEnd + 1
+	return shareStart < len(value) && !isPathSeparator(value[shareStart])
+}
+
+func containsDotPathComponent(value string) bool {
+	for _, component := range strings.FieldsFunc(value, func(character rune) bool {
+		return character == '/' || character == '\\'
+	}) {
+		if component == "." || component == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 func containsParentPathComponent(value string) bool {

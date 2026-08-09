@@ -465,12 +465,13 @@ func installStreams(repo *checkpoint.Repo, importID primitives.ImportID, streams
 			producerID = primary.ProducerID
 		}
 		metadata := eventlog.StreamMetadata{
-			Version:    1,
-			StreamID:   stream.StreamID,
-			ProducerID: producerID,
-			RepoID:     stream.RepoID,
-			WorktreeID: worktreeID,
-			SessionID:  stream.SessionID,
+			Version:       1,
+			StreamID:      stream.StreamID,
+			ProducerID:    producerID,
+			RepoID:        stream.RepoID,
+			WorktreeID:    worktreeID,
+			SessionID:     stream.SessionID,
+			WorkspaceRoot: stream.WorkspaceRoot,
 		}
 		writeMetadata := eventlog.WriteStreamMetadata
 		if stream.Workspace {
