@@ -440,8 +440,12 @@ func replaceWorkspaceRoot(value, workspaceRoot string) (string, bool) {
 	last := 0
 	for _, match := range matches {
 		start, end := match[0], match[1]
+		separatorOnly := isPathSeparatorOnly(workspaceRoot)
 		startsAtBoundary := workspacePathStartBoundary(value, start)
-		if isPathSeparatorOnly(workspaceRoot) && !startsAtBoundary {
+		if separatorOnly {
+			startsAtBoundary = workspaceSeparatorStartBoundary(value, start)
+		}
+		if separatorOnly && !startsAtBoundary {
 			continue
 		}
 		if !startsAtBoundary || !workspacePathEndBoundary(value, start, end, workspaceRoot) {
@@ -466,14 +470,30 @@ func workspacePathStartBoundary(value string, index int) bool {
 	if index == 0 {
 		return true
 	}
+	previous, _ := utf8.DecodeLastRuneInString(value[:index])
+	if strings.ContainsRune("\"'`", previous) {
+		return true
+	}
 	if strings.ContainsAny(value[:index], `/\`) {
 		return false
+	}
+	if unicode.IsSpace(previous) {
+		return true
+	}
+	return strings.ContainsRune("\"'`()[]{}<>=,;:", previous)
+}
+
+func workspaceSeparatorStartBoundary(value string, index int) bool {
+	if index == 0 {
+		return true
 	}
 	previous, _ := utf8.DecodeLastRuneInString(value[:index])
 	if unicode.IsSpace(previous) {
 		return true
 	}
-	return strings.ContainsRune("\"'`()[]{}<>=,;:", previous)
+	// A colon is excluded so the slashes in URL schemes are not interpreted
+	// as filesystem-root paths.
+	return strings.ContainsRune("\"'`()[]{}<>=,;", previous)
 }
 
 func workspacePathEndBoundary(value string, start, end int, workspaceRoot string) bool {

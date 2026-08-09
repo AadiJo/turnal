@@ -247,6 +247,12 @@ func TestSanitizeTextRecognizesUnambiguousWorkspacePathBoundaries(t *testing.T) 
 			want:          `See "$WORKSPACE", then continue`,
 		},
 		{
+			name:          "quoted after another path",
+			workspaceRoot: "/home/alice/project",
+			text:          `Compare /tmp/input with "/home/alice/project/file"`,
+			want:          `Compare [PATH_REDACTED] with "$WORKSPACE/file"`,
+		},
+		{
 			name:          "unix trailing separator",
 			workspaceRoot: "/home/alice/project/",
 			text:          "Inspect /home/alice/project/private.txt",
@@ -263,6 +269,12 @@ func TestSanitizeTextRecognizesUnambiguousWorkspacePathBoundaries(t *testing.T) 
 			workspaceRoot: "/",
 			text:          "Inspect /private.txt",
 			want:          "Inspect $WORKSPACE/private.txt",
+		},
+		{
+			name:          "unix filesystem root after URL",
+			workspaceRoot: "/",
+			text:          "URL https://example.com then /private.txt",
+			want:          "URL https://example.com then $WORKSPACE/private.txt",
 		},
 		{
 			name:          "windows drive root",
