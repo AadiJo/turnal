@@ -1,7 +1,6 @@
 package sharedhistory
 
 import (
-	"context"
 	"time"
 
 	"github.com/AadiJo/turnal/internal/primitives"
@@ -30,15 +29,6 @@ const (
 	DirectionPull Direction = "pull"
 )
 
-// Service is the complete caller-facing interface for shared history. Policy,
-// projection, signing, Git transport, staging, and recovery stay behind it.
-type Service interface {
-	Status(context.Context) (Status, error)
-	Preview(context.Context, PreviewOptions) (Plan, error)
-	Sync(context.Context, Direction) (Result, error)
-	Read(context.Context, string) (StoredBundle, error)
-}
-
 type PreviewOptions struct {
 	SessionID primitives.SessionID
 	TurnID    primitives.TurnID
@@ -48,6 +38,7 @@ type PreviewOptions struct {
 type Status struct {
 	Configured       bool              `json:"configured"`
 	Remote           string            `json:"remote,omitempty"`
+	RepoID           primitives.RepoID `json:"repo_id,omitempty"`
 	PromptMode       PromptMode        `json:"prompt_mode,omitempty"`
 	PolicyHash       string            `json:"policy_hash,omitempty"`
 	Approved         bool              `json:"approved"`
@@ -95,29 +86,27 @@ type SequenceRange struct {
 }
 
 type Manifest struct {
-	SchemaVersion    int                        `json:"schema_version"`
-	BundleID         primitives.BundleID        `json:"bundle_id"`
-	RepoID           primitives.RepoID          `json:"repo_id"`
-	DeviceID         string                     `json:"device_id"`
-	ProducerID       primitives.EventProducerID `json:"producer_id"`
-	StoreID          primitives.StoreID         `json:"store_id"`
-	WorktreeID       primitives.WorktreeID      `json:"worktree_id"`
-	StreamID         primitives.EventStreamID   `json:"stream_id"`
-	SessionID        primitives.SessionID       `json:"session_id"`
-	TurnID           primitives.TurnID          `json:"turn_id"`
-	SourceSequence   SequenceRange              `json:"source_sequence_range"`
-	SourceRefs       []SourceRef                `json:"source_ref"`
-	PreviousBundleID primitives.BundleID        `json:"prev_bundle_id,omitempty"`
-	PreviousManifest string                     `json:"prev_manifest_hash,omitempty"`
-	PolicyHash       string                     `json:"policy_hash"`
-	PromptMode       PromptMode                 `json:"prompt_mode"`
-	EvidenceClass    string                     `json:"evidence_class"`
-	SourceLinks      []SourceLink               `json:"source_links,omitempty"`
-	Omissions        map[string]int             `json:"omissions"`
-	Truncations      Truncations                `json:"truncations"`
-	ContentHashes    map[string]string          `json:"content_hashes"`
-	CreatedAt        time.Time                  `json:"created_at"`
-	Signature        string                     `json:"signature"`
+	SchemaVersion  int                        `json:"schema_version"`
+	BundleID       primitives.BundleID        `json:"bundle_id"`
+	RepoID         primitives.RepoID          `json:"repo_id"`
+	DeviceID       string                     `json:"device_id"`
+	ProducerID     primitives.EventProducerID `json:"producer_id"`
+	StoreID        primitives.StoreID         `json:"store_id"`
+	WorktreeID     primitives.WorktreeID      `json:"worktree_id"`
+	StreamID       primitives.EventStreamID   `json:"stream_id"`
+	SessionID      primitives.SessionID       `json:"session_id"`
+	TurnID         primitives.TurnID          `json:"turn_id"`
+	SourceSequence SequenceRange              `json:"source_sequence_range"`
+	SourceRefs     []SourceRef                `json:"source_ref"`
+	PolicyHash     string                     `json:"policy_hash"`
+	PromptMode     PromptMode                 `json:"prompt_mode"`
+	EvidenceClass  string                     `json:"evidence_class"`
+	SourceLinks    []SourceLink               `json:"source_links,omitempty"`
+	Omissions      map[string]int             `json:"omissions"`
+	Truncations    Truncations                `json:"truncations"`
+	ContentHashes  map[string]string          `json:"content_hashes"`
+	CreatedAt      time.Time                  `json:"created_at"`
+	Signature      string                     `json:"signature"`
 }
 
 type Truncations struct {
@@ -216,24 +205,24 @@ type StoredBundle struct {
 }
 
 type policyFile struct {
-	Version          int        `json:"version"`
-	Remote           string     `json:"remote"`
-	PromptMode       PromptMode `json:"prompt_mode"`
-	AllowlistVersion string     `json:"allowlist_version"`
-	ScannerVersion   string     `json:"scanner_version"`
-	FieldLimit       int        `json:"field_limit"`
-	BundleLimit      int        `json:"bundle_limit"`
-	ApprovedHash     string     `json:"approved_hash,omitempty"`
+	Version          int               `json:"version"`
+	Remote           string            `json:"remote"`
+	RepoID           primitives.RepoID `json:"repo_id"`
+	PromptMode       PromptMode        `json:"prompt_mode"`
+	AllowlistVersion string            `json:"allowlist_version"`
+	ScannerVersion   string            `json:"scanner_version"`
+	FieldLimit       int               `json:"field_limit"`
+	BundleLimit      int               `json:"bundle_limit"`
+	ApprovedHash     string            `json:"approved_hash,omitempty"`
 }
 
 type stateFile struct {
-	Version      int               `json:"version"`
-	Committed    map[string]string `json:"committed,omitempty"`
-	Published    map[string]string `json:"published,omitempty"`
-	Blocked      map[string]string `json:"blocked,omitempty"`
-	LastSeen     map[string]string `json:"last_seen,omitempty"`
-	LastManifest string            `json:"last_manifest,omitempty"`
-	LastBundle   string            `json:"last_bundle,omitempty"`
+	Version   int               `json:"version"`
+	Remote    string            `json:"remote,omitempty"`
+	Committed map[string]string `json:"committed,omitempty"`
+	Published map[string]string `json:"published,omitempty"`
+	Blocked   map[string]string `json:"blocked,omitempty"`
+	LastSeen  map[string]string `json:"last_seen,omitempty"`
 }
 
 type unsignedManifest Manifest

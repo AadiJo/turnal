@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -57,9 +58,9 @@ func openGitStore(ctx context.Context, repo *checkpoint.Repo) (*gitStore, error)
 }
 
 func (store *gitStore) localHead(ctx context.Context) (string, error) {
-	output, err := store.run(ctx, "rev-parse", "--verify", "HEAD^{commit}")
+	output, err := store.run(ctx, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
 	if err != nil {
-		if isGitExit(err) {
+		if isGitExitCode(err, 1) {
 			return "", nil
 		}
 		return "", err
@@ -206,7 +207,7 @@ func (store *gitStore) listRemoteHistory(ctx context.Context, remote string) ([]
 	return refs, nil
 }
 
-func (store *gitStore) fetchAndIngest(ctx context.Context, remote string, remoteRef remoteRef, lastSeen string) ([]StoredBundle, error) {
+func (store *gitStore) fetchAndIngest(ctx context.Context, remote string, remoteRef remoteRef, lastSeen string, repoID primitives.RepoID) ([]StoredBundle, error) {
 	if remoteRef.Head == lastSeen {
 		return nil, nil
 	}
@@ -251,7 +252,7 @@ func (store *gitStore) fetchAndIngest(ctx context.Context, remote string, remote
 			return nil, err
 		}
 		var batch Batch
-		if err := json.Unmarshal(batchData, &batch); err != nil {
+		if err := decodeStrictJSON(batchData, &batch); err != nil {
 			return nil, fmt.Errorf("parse shared history batch at %s: %w", commit, err)
 		}
 		public, err := verifyBatch(batch)
@@ -285,10 +286,10 @@ func (store *gitStore) fetchAndIngest(ctx context.Context, remote string, remote
 				return nil, err
 			}
 			var manifest Manifest
-			if err := json.Unmarshal(manifestData, &manifest); err != nil {
+			if err := decodeStrictJSON(manifestData, &manifest); err != nil {
 				return nil, fmt.Errorf("parse shared history manifest %s: %w", item.BundleID, err)
 			}
-			if err := validateManifest(store.repo, remoteRef.DeviceID, item, manifest); err != nil {
+			if err := validateManifest(repoID, remoteRef.DeviceID, item, manifest); err != nil {
 				return nil, fmt.Errorf("validate shared history manifest %s: %w", item.BundleID, err)
 			}
 			if len(manifestData)+len(eventsData) > DefaultBundleLimit {
@@ -315,7 +316,10 @@ func (store *gitStore) fetchAndIngest(ctx context.Context, remote string, remote
 		}
 		previous = commit
 	}
-	oldTracking, _ := store.refValue(ctx, trackingRef(remoteRef.DeviceID))
+	oldTracking, err := store.refValue(ctx, trackingRef(remoteRef.DeviceID))
+	if err != nil {
+		return nil, err
+	}
 	args := []string{"update-ref", trackingRef(remoteRef.DeviceID), remoteRef.Head}
 	if oldTracking != "" {
 		args = append(args, oldTracking)
@@ -342,7 +346,7 @@ func (store *gitStore) recoverCommittedState(ctx context.Context, identity devic
 		return fmt.Errorf("recover shared history outbox: %w", err)
 	}
 	var batch Batch
-	if err := json.Unmarshal(data, &batch); err != nil {
+	if err := decodeStrictJSON(data, &batch); err != nil {
 		return fmt.Errorf("recover shared history outbox batch: %w", err)
 	}
 	if _, err := verifyBatch(batch); err != nil {
@@ -377,10 +381,51 @@ func (store *gitStore) recoverCommittedState(ctx context.Context, identity devic
 	return nil
 }
 
-func (store *gitStore) refValue(ctx context.Context, ref string) (string, error) {
-	output, err := store.run(ctx, "rev-parse", "--verify", ref+"^{commit}")
+func (store *gitStore) validateCommittedPolicy(ctx context.Context, state stateFile, policyHash string) error {
+	if len(state.Committed) == 0 {
+		return nil
+	}
+	head := ""
+	for bundleID, committedHead := range state.Committed {
+		if head != "" && committedHead != head {
+			return fmt.Errorf("shared history outbox contains bundles from multiple heads")
+		}
+		head = committedHead
+		if strings.TrimSpace(bundleID) == "" || strings.TrimSpace(committedHead) == "" {
+			return fmt.Errorf("shared history outbox contains an invalid committed entry")
+		}
+	}
+	data, err := store.showFile(ctx, head, "batch.json", 8<<20)
 	if err != nil {
-		if isGitExit(err) {
+		return fmt.Errorf("validate shared history outbox policy: %w", err)
+	}
+	var batch Batch
+	if err := decodeStrictJSON(data, &batch); err != nil {
+		return fmt.Errorf("validate shared history outbox policy: %w", err)
+	}
+	for _, item := range batch.Bundles {
+		if _, committed := state.Committed[item.BundleID.String()]; !committed {
+			continue
+		}
+		manifestData, err := store.showFile(ctx, head, item.Path+"/manifest.json", DefaultBundleLimit)
+		if err != nil {
+			return fmt.Errorf("validate shared history outbox policy: %w", err)
+		}
+		var manifest Manifest
+		if err := decodeStrictJSON(manifestData, &manifest); err != nil {
+			return fmt.Errorf("validate shared history outbox policy: %w", err)
+		}
+		if manifest.PolicyHash != policyHash {
+			return fmt.Errorf("shared history outbox bundle %s was approved under policy %s, not current policy %s; restore the prior configuration and publish it before changing policy", item.BundleID, manifest.PolicyHash, policyHash)
+		}
+	}
+	return nil
+}
+
+func (store *gitStore) refValue(ctx context.Context, ref string) (string, error) {
+	output, err := store.run(ctx, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	if err != nil {
+		if isGitExitCode(err, 1) {
 			return "", nil
 		}
 		return "", err
@@ -389,12 +434,9 @@ func (store *gitStore) refValue(ctx context.Context, ref string) (string, error)
 }
 
 func (store *gitStore) showFile(ctx context.Context, commit, path string, limit int64) ([]byte, error) {
-	data, err := store.runBytes(ctx, "show", commit+":"+path)
+	data, err := store.runBytesLimit(ctx, limit, "show", commit+":"+path)
 	if err != nil {
 		return nil, err
-	}
-	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("shared history object %s exceeds %d bytes", path, limit)
 	}
 	return data, nil
 }
@@ -403,7 +445,7 @@ func materializePulled(repo *checkpoint.Repo, bundle StoredBundle) error {
 	path := filepath.Join(sharedRoot(repo), "pulled", bundle.Manifest.DeviceID, bundle.Manifest.BundleID.String()+".json")
 	if existingData, err := readRegularFile(path, DefaultBundleLimit*2); err == nil {
 		var existing StoredBundle
-		if err := json.Unmarshal(existingData, &existing); err != nil {
+		if err := decodeStrictJSON(existingData, &existing); err != nil {
 			return fmt.Errorf("parse existing shared history bundle %s: %w", bundle.Manifest.BundleID, err)
 		}
 		existingCanonical, err := json.Marshal(existing)
@@ -424,14 +466,14 @@ func materializePulled(repo *checkpoint.Repo, bundle StoredBundle) error {
 	return writeJSONAtomic(path, bundle, 0o600)
 }
 
-func validateManifest(repo *checkpoint.Repo, deviceID string, item BatchBundle, manifest Manifest) error {
+func validateManifest(repoID primitives.RepoID, deviceID string, item BatchBundle, manifest Manifest) error {
 	if manifest.SchemaVersion != SchemaVersion || manifest.EvidenceClass != EvidencePublisherClaim {
 		return fmt.Errorf("unsupported schema or evidence class")
 	}
 	if err := validatePromptMode(manifest.PromptMode); err != nil {
 		return err
 	}
-	if manifest.BundleID != item.BundleID || manifest.DeviceID != deviceID || manifest.RepoID != repo.RepoID {
+	if manifest.BundleID != item.BundleID || manifest.DeviceID != deviceID || manifest.RepoID != repoID {
 		return fmt.Errorf("manifest identity does not match its batch and repository")
 	}
 	if manifest.SessionID != item.SessionID || manifest.TurnID != item.TurnID || manifest.SourceSequence != item.Sequence {
@@ -457,6 +499,29 @@ func validateManifest(repo *checkpoint.Repo, deviceID string, item BatchBundle, 
 	if !validSHA256(manifest.PolicyHash) || !validSHA256(manifest.ContentHashes["events.jsonl"]) {
 		return fmt.Errorf("manifest contains an invalid SHA-256 digest")
 	}
+	if manifest.CreatedAt.IsZero() || manifest.Truncations.Count < 0 || manifest.Truncations.OriginalBytes < 0 {
+		return fmt.Errorf("manifest contains invalid creation or truncation metadata")
+	}
+	for reason, count := range manifest.Omissions {
+		if strings.TrimSpace(reason) == "" || len(reason) > 256 || count <= 0 {
+			return fmt.Errorf("manifest contains invalid omission metadata")
+		}
+	}
+	for _, link := range manifest.SourceLinks {
+		if link.CommitSHA == "" && link.Checkpoint == "" {
+			return fmt.Errorf("manifest contains an empty source link")
+		}
+		if link.CommitSHA != "" {
+			if _, err := primitives.ParseCommitSHA(link.CommitSHA); err != nil {
+				return fmt.Errorf("manifest contains an invalid source commit")
+			}
+		}
+		if link.Checkpoint != "" {
+			if _, err := primitives.ParseCheckpointID(link.Checkpoint); err != nil {
+				return fmt.Errorf("manifest contains an invalid checkpoint link")
+			}
+		}
+	}
 	return nil
 }
 
@@ -470,6 +535,12 @@ func validateProjectedEvents(manifest Manifest, events []ContextEvent) error {
 	}
 	previous := primitives.EventSeq(0)
 	for _, event := range events {
+		if err := validateContextEvent(event); err != nil {
+			return err
+		}
+		if event.Prompt != nil && event.Prompt.Omitted != (manifest.PromptMode == PromptModeOmit) {
+			return fmt.Errorf("prompt projection does not match manifest prompt mode")
+		}
 		ref, exists := refs[event.Seq]
 		if !exists || ref != event.Source {
 			return fmt.Errorf("event %s is not bound to its manifest source reference", event.Seq)
@@ -484,7 +555,7 @@ func validateProjectedEvents(manifest Manifest, events []ContextEvent) error {
 
 func validateChainAnchor(anchor map[string]string) error {
 	for stream, hash := range anchor {
-		if strings.TrimSpace(stream) == "" || strings.ContainsAny(stream, "\r\n\x00") || !validSHA256(hash) {
+		if strings.TrimSpace(stream) == "" || len(stream) > 256 || strings.ContainsAny(stream, "\r\n\x00") || !validSHA256(hash) {
 			return fmt.Errorf("chain anchor contains an invalid stream or hash")
 		}
 	}
@@ -509,7 +580,7 @@ func decodeEventsJSONL(data []byte) ([]ContextEvent, error) {
 	var events []ContextEvent
 	for scanner.Scan() {
 		var event ContextEvent
-		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+		if err := decodeStrictJSON(scanner.Bytes(), &event); err != nil {
 			return nil, err
 		}
 		if err := validateContextEvent(event); err != nil {
@@ -556,7 +627,100 @@ func validateContextEvent(event ContextEvent) error {
 	if !matchingPayload {
 		return fmt.Errorf("shared history event type %s does not match its typed payload", event.Type)
 	}
+	return validateContextPayload(event)
+}
+
+func validateContextPayload(event ContextEvent) error {
+	switch event.Type {
+	case primitives.EventTypeTurnStart:
+		if event.Lifecycle.State != "started" {
+			return fmt.Errorf("invalid turn-start lifecycle projection")
+		}
+	case primitives.EventTypeTurnFinish:
+		if event.Lifecycle.State != "finished" {
+			return fmt.Errorf("invalid turn-finish lifecycle projection")
+		}
+	case primitives.EventTypePromptUser:
+		if event.Prompt.Omitted {
+			if event.Prompt.Text != "" || event.Prompt.Truncated || event.Prompt.Bytes != 0 {
+				return fmt.Errorf("omitted prompt projection contains text metadata")
+			}
+		} else if err := validateProjectedText(event.Prompt.Text, event.Prompt.Truncated, event.Prompt.Bytes); err != nil {
+			return fmt.Errorf("invalid prompt projection: %w", err)
+		}
+	case primitives.EventTypeAgentIntent:
+		if err := validateTextProjection(event.Intent.Problem); err != nil {
+			return fmt.Errorf("invalid intent problem: %w", err)
+		}
+		if len(event.Intent.AgentType) > 256 || containsControl(event.Intent.AgentType) {
+			return fmt.Errorf("invalid intent agent type")
+		}
+		for _, values := range [][]string{event.Intent.Scope, event.Intent.Evidence} {
+			for _, value := range values {
+				if len(value) > DefaultFieldLimit {
+					return fmt.Errorf("intent list field exceeds %d bytes", DefaultFieldLimit)
+				}
+			}
+		}
+	case primitives.EventTypeAssistantMessage:
+		if err := validateTextProjection(*event.Assistant); err != nil {
+			return fmt.Errorf("invalid assistant projection: %w", err)
+		}
+	case primitives.EventTypeToolCall, primitives.EventTypeToolResult:
+		if event.Tool.Name == "" || len(event.Tool.Name) > 256 || containsControl(event.Tool.Name) {
+			return fmt.Errorf("invalid tool name projection")
+		}
+		validCategory := event.Tool.Category == "mutation" || event.Tool.Category == "search" || event.Tool.Category == "read" || event.Tool.Category == "command" || event.Tool.Category == "other"
+		if !validCategory {
+			return fmt.Errorf("invalid tool category projection")
+		}
+		if event.Type == primitives.EventTypeToolCall && event.Tool.Status != "started" {
+			return fmt.Errorf("invalid tool-call status projection")
+		}
+		if event.Type == primitives.EventTypeToolResult && (event.Tool.Status != "completed" || event.Tool.MutationCandidate) {
+			return fmt.Errorf("invalid tool-result status projection")
+		}
+	case primitives.EventTypeCheckpoint:
+		if _, err := primitives.ParseCheckpointPhase(event.Checkpoint.Phase); err != nil {
+			return fmt.Errorf("invalid checkpoint phase projection")
+		}
+		if _, err := primitives.ParseCheckpointID(event.Checkpoint.CheckpointID); err != nil {
+			return fmt.Errorf("invalid checkpoint id projection")
+		}
+		if event.Checkpoint.SourceCommit != "" {
+			if _, err := primitives.ParseCommitSHA(event.Checkpoint.SourceCommit); err != nil {
+				return fmt.Errorf("invalid checkpoint source commit projection")
+			}
+		}
+	case primitives.EventTypeError:
+		if event.CaptureError.Kind != "capture_error" {
+			return fmt.Errorf("invalid capture-error projection")
+		}
+	}
 	return nil
+}
+
+func validateTextProjection(text TextProjection) error {
+	return validateProjectedText(text.Text, text.Truncated, text.Bytes)
+}
+
+func validateProjectedText(text string, truncated bool, originalBytes int) error {
+	if len(text) > DefaultFieldLimit || originalBytes < 0 {
+		return fmt.Errorf("text field exceeds limits")
+	}
+	if truncated && originalBytes <= len(text) {
+		return fmt.Errorf("truncation metadata is inconsistent")
+	}
+	return nil
+}
+
+func containsControl(value string) bool {
+	for _, character := range value {
+		if character < 0x20 || character == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 func (store *gitStore) run(ctx context.Context, args ...string) (string, error) {
@@ -565,15 +729,51 @@ func (store *gitStore) run(ctx context.Context, args ...string) (string, error) 
 }
 
 func (store *gitStore) runBytes(ctx context.Context, args ...string) ([]byte, error) {
+	return store.runBytesLimit(ctx, 16<<20, args...)
+}
+
+func (store *gitStore) runBytesLimit(ctx context.Context, limit int64, args ...string) ([]byte, error) {
 	commandArgs := append([]string{"-C", store.root}, args...)
 	cmd := exec.CommandContext(ctx, "git", commandArgs...)
 	cmd.Env = scrubGitEnv(os.Environ())
-	data, err := cmd.CombinedOutput()
+	stdout := &limitedBuffer{limit: limit}
+	stderr := &limitedBuffer{limit: 64 << 10}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	err := cmd.Run()
 	if err != nil {
-		return nil, gitCommandError{args: args, output: strings.TrimSpace(string(data)), err: err}
+		return nil, gitCommandError{args: args, output: strings.TrimSpace(stderr.String()), err: err}
 	}
-	return data, nil
+	if stdout.overflow {
+		return nil, fmt.Errorf("git %s output exceeds %d bytes", strings.Join(args, " "), limit)
+	}
+	return stdout.Bytes(), nil
 }
+
+type limitedBuffer struct {
+	data     bytes.Buffer
+	limit    int64
+	overflow bool
+}
+
+func (buffer *limitedBuffer) Write(value []byte) (int, error) {
+	written := len(value)
+	remaining := buffer.limit - int64(buffer.data.Len())
+	if remaining > 0 {
+		keep := int64(len(value))
+		if keep > remaining {
+			keep = remaining
+		}
+		_, _ = buffer.data.Write(value[:keep])
+	}
+	if int64(written) > remaining {
+		buffer.overflow = true
+	}
+	return written, nil
+}
+
+func (buffer *limitedBuffer) Bytes() []byte  { return buffer.data.Bytes() }
+func (buffer *limitedBuffer) String() string { return buffer.data.String() }
 
 type gitCommandError struct {
 	args   []string
@@ -590,27 +790,108 @@ func (err gitCommandError) Error() string {
 
 func (err gitCommandError) Unwrap() error { return err.err }
 
-func isGitExit(err error) bool {
+func isGitExitCode(err error, code int) bool {
 	var exitErr *exec.ExitError
-	return errors.As(err, &exitErr)
+	return errors.As(err, &exitErr) && exitErr.ExitCode() == code
 }
 
 func scrubGitEnv(values []string) []string {
-	blocked := map[string]struct{}{
-		"GIT_DIR": {}, "GIT_WORK_TREE": {}, "GIT_INDEX_FILE": {}, "GIT_OBJECT_DIRECTORY": {},
-		"GIT_ALTERNATE_OBJECT_DIRECTORIES": {}, "GIT_COMMON_DIR": {}, "GIT_PREFIX": {},
-	}
 	result := make([]string, 0, len(values))
 	for _, value := range values {
-		name := value
-		if index := strings.IndexByte(value, '='); index >= 0 {
-			name = value[:index]
-		}
-		if _, found := blocked[name]; !found {
+		name, _, found := strings.Cut(value, "=")
+		if found && !strings.HasPrefix(strings.ToUpper(name), "GIT_") {
 			result = append(result, value)
 		}
 	}
 	return result
+}
+
+func decodeStrictJSON(data []byte, target any) error {
+	if err := rejectDuplicateJSONKeys(data); err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("unexpected trailing JSON value")
+		}
+		return err
+	}
+	return nil
+}
+
+func rejectDuplicateJSONKeys(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if err := walkJSONValue(decoder); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("unexpected trailing JSON value")
+		}
+		return err
+	}
+	return nil
+}
+
+func walkJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, isDelimiter := token.(json.Delim)
+	if !isDelimiter {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		seen := map[string]struct{}{}
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return fmt.Errorf("JSON object key is not a string")
+			}
+			if _, duplicate := seen[key]; duplicate {
+				return fmt.Errorf("duplicate JSON field %q", key)
+			}
+			seen[key] = struct{}{}
+			if err := walkJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		if closing != json.Delim('}') {
+			return fmt.Errorf("malformed JSON object")
+		}
+	case '[':
+		for decoder.More() {
+			if err := walkJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		if closing != json.Delim(']') {
+			return fmt.Errorf("malformed JSON array")
+		}
+	default:
+		return fmt.Errorf("unexpected JSON delimiter %q", delimiter)
+	}
+	return nil
 }
 
 func validDeviceID(value string) bool {

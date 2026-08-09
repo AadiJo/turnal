@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/AadiJo/turnal/internal/sharedhistory"
 	"github.com/spf13/cobra"
 )
@@ -24,6 +25,7 @@ func shareCmd() *cobra.Command {
 func shareEnableCmd() *cobra.Command {
 	var remote string
 	var promptMode string
+	var repoID string
 	var jsonOutput bool
 	cmd := &cobra.Command{
 		Use:          "enable",
@@ -40,7 +42,14 @@ func shareEnableCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			status, err := sharedhistory.Configure(repo, remote, sharedhistory.PromptMode(promptMode))
+			sharedRepoID := repo.RepoID
+			if repoID != "" {
+				sharedRepoID, err = primitives.ParseRepoID(repoID)
+				if err != nil {
+					return err
+				}
+			}
+			status, err := sharedhistory.Configure(repo, sharedhistory.ConfigureOptions{Remote: remote, PromptMode: sharedhistory.PromptMode(promptMode), RepoID: sharedRepoID})
 			if err != nil {
 				return err
 			}
@@ -49,6 +58,7 @@ func shareEnableCmd() *cobra.Command {
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "shared history configured\n")
 			fmt.Fprintf(cmd.OutOrStdout(), "remote:      %s\n", status.Remote)
+			fmt.Fprintf(cmd.OutOrStdout(), "repo:        %s\n", status.RepoID)
 			fmt.Fprintf(cmd.OutOrStdout(), "device:      %s\n", status.DeviceID)
 			fmt.Fprintf(cmd.OutOrStdout(), "prompt mode: %s\n", status.PromptMode)
 			fmt.Fprintf(cmd.OutOrStdout(), "policy:      %s\n", status.PolicyHash)
@@ -58,6 +68,7 @@ func shareEnableCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&remote, "remote", "", "Git URL or path that will receive shared history refs")
 	cmd.Flags().StringVar(&promptMode, "prompt-mode", "", "Prompt publication policy: redacted_text or omit")
+	cmd.Flags().StringVar(&repoID, "repo-id", "", "Shared repository ID supplied by a publisher when joining existing history")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit structured JSON")
 	return cmd
 }
@@ -225,6 +236,7 @@ func writeShareStatus(cmd *cobra.Command, status sharedhistory.Status) {
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), "shared history: configured")
 	fmt.Fprintf(cmd.OutOrStdout(), "remote:      %s\n", status.Remote)
+	fmt.Fprintf(cmd.OutOrStdout(), "repo:        %s\n", status.RepoID)
 	fmt.Fprintf(cmd.OutOrStdout(), "device:      %s\n", status.DeviceID)
 	fmt.Fprintf(cmd.OutOrStdout(), "prompt mode: %s\n", status.PromptMode)
 	fmt.Fprintf(cmd.OutOrStdout(), "approved:    %t\n", status.Approved)

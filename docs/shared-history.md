@@ -18,6 +18,18 @@ turnal sync push
 
 `redacted_text` publishes prompt text after workspace-path normalization, secret scanning, and deterministic size limits. `omit` publishes a typed prompt omission instead of prompt text. Changing the remote, prompt mode, schema, scanner, allowlist, or limits changes the policy hash and requires approval again.
 
+`turnal share status` prints the shared repository id. A teammate with an independently initialized clone joins that history by supplying the publisher's id explicitly:
+
+```sh
+turnal share enable \
+  --remote <same-git-url-or-path> \
+  --repo-id <publisher-repo-id> \
+  --prompt-mode omit
+turnal sync pull
+```
+
+The explicit id prevents a remote that contains history for another project from being silently adopted. It identifies the shared project without replacing the clone's private Turnal store identity.
+
 `preview --json` is the complete bundle projection: signed manifest, projected events, omissions, truncations, evidence class, source links, and stable locator. Preview remains important because secret scanning is best-effort and allowed text can contain source fragments.
 
 The locator can also connect a source commit to its context without putting published data in the source repository:
@@ -65,6 +77,8 @@ Every manifest labels its evidence as `publisher_attested_projection`. Source ev
 ## Failure and recovery
 
 The isolated repository beneath `.turnal/shared-history/repository/` is a crash-safe local outbox. A network failure leaves its commit queued for a later `turnal sync push`. If Turnal stops after committing a batch but before updating local state, the next push reconstructs the outbox from the signed local tip.
+
+Turnal will not change the remote or privacy policy while that outbox is pending, because the queued projection was approved under the previous policy. Publish it first. After the outbox is clear, changing the remote requires a new preview approval; the next push copies the device's existing approved Git history to the new remote even when no new turns are pending.
 
 Shared-history Git operations use the configured remote directly, scrub inherited `GIT_*` variables, and never update source Git refs. `turnal sync push` reports transport failures; normal Turnal capture and project Git commands do not invoke it.
 

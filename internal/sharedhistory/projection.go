@@ -37,6 +37,7 @@ var secretPatterns = []*regexp.Regexp{
 
 var absolutePathPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(?:[a-z]:\\Users\\[^\\\s]+\\[^\s]*)`),
+	regexp.MustCompile(`\\\\[^\\\s]+\\[^\s]+`),
 	regexp.MustCompile(`(?:/(?:home|Users)/[^/\s]+/[^\s]*)`),
 	regexp.MustCompile(`(?i)\b[a-z]:[\\/](?:[^\\/\s"'()]+[\\/])*[^\\/\s"'()]+`),
 	regexp.MustCompile(`/(?:[a-zA-Z0-9._~-]+/)+[a-zA-Z0-9._~-]+`),
@@ -117,7 +118,7 @@ func findCompletedTurn(repo *checkpoint.Repo, sessionID primitives.SessionID, tu
 }
 
 func buildBundle(repo *checkpoint.Repo, identity deviceIdentity, policy policyFile, policyDigest string, source turnSource) (builtBundle, error) {
-	bundleID, err := primitives.DeriveBundleID(repo.RepoID, source.Stream.StreamID, source.TurnID)
+	bundleID, err := primitives.DeriveBundleID(policy.RepoID, source.Stream.StreamID, source.TurnID)
 	if err != nil {
 		return builtBundle{}, err
 	}
@@ -154,7 +155,7 @@ func buildBundle(repo *checkpoint.Repo, identity deviceIdentity, policy policyFi
 	manifest := Manifest{
 		SchemaVersion:  SchemaVersion,
 		BundleID:       bundleID,
-		RepoID:         repo.RepoID,
+		RepoID:         policy.RepoID,
 		DeviceID:       identity.DeviceID,
 		ProducerID:     source.Stream.ProducerID,
 		StoreID:        repo.StoreID,
@@ -225,12 +226,13 @@ func projectEvent(repo *checkpoint.Repo, policy policyFile, event eventlog.Event
 		problem := sanitizeText(repo.WorkspaceRoot.String(), payload.Problem, policy.FieldLimit, truncations)
 		scope, scopeRedacted := sanitizeList(repo.WorkspaceRoot.String(), payload.Scope, policy.FieldLimit, truncations)
 		evidence, evidenceRedacted := sanitizeList(repo.WorkspaceRoot.String(), payload.Evidence, policy.FieldLimit, truncations)
+		agentType := sanitizeIdentifier(repo.WorkspaceRoot.String(), payload.AgentType, truncations)
 		projection.Intent = &IntentProjection{
 			Problem:   TextProjection{Text: problem.Text, Redacted: problem.Redacted, Truncated: problem.Truncated, Bytes: problem.OriginalBytes},
 			Scope:     scope,
 			Evidence:  evidence,
-			Redacted:  payload.Redacted || problem.Redacted || scopeRedacted || evidenceRedacted,
-			AgentType: sanitizeIdentifier(payload.AgentType),
+			Redacted:  payload.Redacted || problem.Redacted || scopeRedacted || evidenceRedacted || agentType.Redacted,
+			AgentType: agentType.Text,
 		}
 	case primitives.EventTypeAssistantMessage:
 		var payload struct {
@@ -251,7 +253,12 @@ func projectEvent(repo *checkpoint.Repo, policy policyFile, event eventlog.Event
 			omissions["invalid_tool_call_payload"]++
 			return ContextEvent{}, false, nil
 		}
-		projection.Tool = &ToolProjection{Name: sanitizeIdentifier(payload.ToolName), Category: toolCategory(payload.ToolName, payload.MutationCandidate), Status: "started", MutationCandidate: payload.MutationCandidate}
+		name := sanitizeIdentifier(repo.WorkspaceRoot.String(), payload.ToolName, truncations)
+		if name.Text == "" {
+			omissions["invalid_tool_call_name"]++
+			return ContextEvent{}, false, nil
+		}
+		projection.Tool = &ToolProjection{Name: name.Text, Category: toolCategory(payload.ToolName, payload.MutationCandidate), Status: "started", MutationCandidate: payload.MutationCandidate}
 		omissions["tool_input"]++
 	case primitives.EventTypeToolResult:
 		var payload struct {
@@ -262,7 +269,12 @@ func projectEvent(repo *checkpoint.Repo, policy policyFile, event eventlog.Event
 			omissions["invalid_tool_result_payload"]++
 			return ContextEvent{}, false, nil
 		}
-		projection.Tool = &ToolProjection{Name: sanitizeIdentifier(payload.ToolName), Category: toolCategory(payload.ToolName, false), Status: "completed"}
+		name := sanitizeIdentifier(repo.WorkspaceRoot.String(), payload.ToolName, truncations)
+		if name.Text == "" {
+			omissions["invalid_tool_result_name"]++
+			return ContextEvent{}, false, nil
+		}
+		projection.Tool = &ToolProjection{Name: name.Text, Category: toolCategory(payload.ToolName, false), Status: "completed"}
 		if len(bytes.TrimSpace(payload.Output)) > 0 && string(bytes.TrimSpace(payload.Output)) != "null" {
 			omissions["tool_output"]++
 		}
@@ -279,8 +291,23 @@ func projectEvent(repo *checkpoint.Repo, policy policyFile, event eventlog.Event
 			omissions["invalid_checkpoint_payload"]++
 			return ContextEvent{}, false, nil
 		}
-		projection.Checkpoint = &CheckpointProjection{Phase: payload.Phase, CheckpointID: payload.CheckpointID, SourceCommit: payload.UserGit.Head, Dirty: payload.UserGit.Dirty}
-		return projection, true, []SourceLink{{CommitSHA: payload.UserGit.Head, Checkpoint: payload.CheckpointID}}
+		phase, phaseErr := primitives.ParseCheckpointPhase(payload.Phase)
+		checkpointID, checkpointErr := primitives.ParseCheckpointID(payload.CheckpointID)
+		if phaseErr != nil || checkpointErr != nil {
+			omissions["invalid_checkpoint_identity"]++
+			return ContextEvent{}, false, nil
+		}
+		commit := ""
+		if strings.TrimSpace(payload.UserGit.Head) != "" {
+			parsed, err := primitives.ParseCommitSHA(payload.UserGit.Head)
+			if err != nil {
+				omissions["invalid_checkpoint_commit"]++
+				return ContextEvent{}, false, nil
+			}
+			commit = parsed.String()
+		}
+		projection.Checkpoint = &CheckpointProjection{Phase: phase.String(), CheckpointID: checkpointID.String(), SourceCommit: commit, Dirty: payload.UserGit.Dirty}
+		return projection, true, []SourceLink{{CommitSHA: commit, Checkpoint: checkpointID.String()}}
 	case primitives.EventTypeError:
 		projection.CaptureError = &CaptureErrorProjection{Kind: "capture_error"}
 		omissions["error_message"]++
@@ -341,18 +368,16 @@ func sanitizeList(workspaceRoot string, values []string, limit int, truncations 
 	return result, redacted
 }
 
-func sanitizeIdentifier(value string) string {
-	value = strings.TrimSpace(value)
-	if len(value) > 256 {
-		value = truncateUTF8(value, 256)
-	}
+func sanitizeIdentifier(workspaceRoot, value string, truncations *Truncations) sanitizedText {
+	result := sanitizeText(workspaceRoot, strings.TrimSpace(value), 256, truncations)
 	var builder strings.Builder
-	for _, character := range value {
+	for _, character := range result.Text {
 		if character >= 0x20 && character != 0x7f {
 			builder.WriteRune(character)
 		}
 	}
-	return builder.String()
+	result.Text = builder.String()
+	return result
 }
 
 func truncateUTF8(value string, limit int) string {

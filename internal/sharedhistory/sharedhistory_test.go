@@ -8,9 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/filelock"
 	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/AadiJo/turnal/internal/turnevents"
 	"github.com/AadiJo/turnal/internal/turns"
@@ -20,7 +22,7 @@ func TestPreviewProjectsOnlyAllowlistedRedactedContext(t *testing.T) {
 	repo := newSharedHistoryTestRepo(t)
 	sessionID, turnID := recordSharedHistoryTurn(t, repo)
 	remote := filepath.Join(t.TempDir(), "history.git")
-	if _, err := Configure(repo, remote, PromptModeRedactedText); err != nil {
+	if _, err := Configure(repo, ConfigureOptions{Remote: remote, PromptMode: PromptModeRedactedText}); err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
 
@@ -56,7 +58,7 @@ func TestPreviewProjectsOnlyAllowlistedRedactedContext(t *testing.T) {
 	if plan.Manifest.Omissions["tool_input"] != 1 || plan.Manifest.Omissions["tool_output"] != 1 || plan.Manifest.Omissions["event_type:adapter.raw"] != 1 {
 		t.Fatalf("omissions = %#v", plan.Manifest.Omissions)
 	}
-	if err := verifyStoredBundle(repo, StoredBundle{Manifest: plan.Manifest, Events: plan.Events, PublicKey: mustDevice(t, repo).PublicKey}); err != nil {
+	if err := verifyStoredBundle(repo.RepoID, StoredBundle{Manifest: plan.Manifest, Events: plan.Events, PublicKey: mustDevice(t, repo).PublicKey}); err != nil {
 		t.Fatalf("verify preview bundle: %v", err)
 	}
 }
@@ -64,7 +66,7 @@ func TestPreviewProjectsOnlyAllowlistedRedactedContext(t *testing.T) {
 func TestPromptOmissionIsTypedAndDoesNotPublishText(t *testing.T) {
 	repo := newSharedHistoryTestRepo(t)
 	sessionID, turnID := recordSharedHistoryTurn(t, repo)
-	if _, err := Configure(repo, filepath.Join(t.TempDir(), "history.git"), PromptModeOmit); err != nil {
+	if _, err := Configure(repo, ConfigureOptions{Remote: filepath.Join(t.TempDir(), "history.git"), PromptMode: PromptModeOmit}); err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
 	plan, err := New(repo).Preview(context.Background(), PreviewOptions{SessionID: sessionID, TurnID: turnID})
@@ -108,7 +110,7 @@ func TestProjectionLimitsTruncateFieldsAndBlockOversizeBundles(t *testing.T) {
 	if _, err := recorder.Finish(sessionID, turnID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Configure(repo, filepath.Join(t.TempDir(), "history.git"), PromptModeRedactedText); err != nil {
+	if _, err := Configure(repo, ConfigureOptions{Remote: filepath.Join(t.TempDir(), "history.git"), PromptMode: PromptModeRedactedText}); err != nil {
 		t.Fatal(err)
 	}
 	plan, err := New(repo).Preview(context.Background(), PreviewOptions{SessionID: sessionID, TurnID: turnID})
@@ -129,7 +131,7 @@ func TestProjectionLimitsTruncateFieldsAndBlockOversizeBundles(t *testing.T) {
 		t.Fatal(err)
 	}
 	policy.BundleLimit = 1024
-	digest, err := policyHash(repo, policy)
+	digest, err := policyHash(policy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +158,7 @@ func TestProjectionLimitsTruncateFieldsAndBlockOversizeBundles(t *testing.T) {
 func TestSignaturesAndClosedEventSchemaRejectTampering(t *testing.T) {
 	repo := newSharedHistoryTestRepo(t)
 	sessionID, turnID := recordSharedHistoryTurn(t, repo)
-	if _, err := Configure(repo, filepath.Join(t.TempDir(), "history.git"), PromptModeRedactedText); err != nil {
+	if _, err := Configure(repo, ConfigureOptions{Remote: filepath.Join(t.TempDir(), "history.git"), PromptMode: PromptModeRedactedText}); err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
 	plan, err := New(repo).Preview(context.Background(), PreviewOptions{SessionID: sessionID, TurnID: turnID})
@@ -192,7 +194,7 @@ func TestGitSyncReplicatesAndRejectsRefRewrite(t *testing.T) {
 
 	publisher := newSharedHistoryTestRepoAt(t, filepath.Join(testRoot, "publisher"))
 	sessionID, turnID := recordSharedHistoryTurn(t, publisher)
-	if _, err := Configure(publisher, remote, PromptModeRedactedText); err != nil {
+	if _, err := Configure(publisher, ConfigureOptions{Remote: remote, PromptMode: PromptModeRedactedText}); err != nil {
 		t.Fatalf("configure publisher: %v", err)
 	}
 	plan, err := New(publisher).Preview(context.Background(), PreviewOptions{SessionID: sessionID, TurnID: turnID, Approve: true})
@@ -211,8 +213,7 @@ func TestGitSyncReplicatesAndRejectsRefRewrite(t *testing.T) {
 	receiver := newSharedHistoryTestRepoAt(t, filepath.Join(testRoot, "receiver"))
 	// Both stores represent clones of the same logical project while retaining
 	// independent store, worktree, producer, and device identities.
-	receiver.RepoID = publisher.RepoID
-	if _, err := Configure(receiver, remote, PromptModeOmit); err != nil {
+	if _, err := Configure(receiver, ConfigureOptions{Remote: remote, PromptMode: PromptModeOmit, RepoID: publisher.RepoID}); err != nil {
 		t.Fatalf("configure receiver: %v", err)
 	}
 	pull, err := New(receiver).Sync(context.Background(), DirectionPull)
@@ -247,13 +248,157 @@ func TestGitSyncReplicatesAndRejectsRefRewrite(t *testing.T) {
 	}
 }
 
+func TestRemoteChangePushesApprovedLocalHistory(t *testing.T) {
+	testRoot := t.TempDir()
+	firstRemote := filepath.Join(testRoot, "first.git")
+	secondRemote := filepath.Join(testRoot, "second.git")
+	runTestGit(t, testRoot, "init", "--bare", firstRemote)
+	runTestGit(t, testRoot, "init", "--bare", secondRemote)
+
+	repo := newSharedHistoryTestRepoAt(t, filepath.Join(testRoot, "publisher"))
+	sessionID, turnID := recordSharedHistoryTurn(t, repo)
+	if _, err := Configure(repo, ConfigureOptions{Remote: firstRemote, PromptMode: PromptModeRedactedText}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(repo).Preview(context.Background(), PreviewOptions{SessionID: sessionID, TurnID: turnID, Approve: true}); err != nil {
+		t.Fatal(err)
+	}
+	firstPush, err := New(repo).Sync(context.Background(), DirectionPush)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := Configure(repo, ConfigureOptions{Remote: secondRemote, PromptMode: PromptModeRedactedText})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Approved {
+		t.Fatal("remote change retained approval")
+	}
+	if _, err := New(repo).Preview(context.Background(), PreviewOptions{SessionID: sessionID, TurnID: turnID, Approve: true}); err != nil {
+		t.Fatal(err)
+	}
+	secondPush, err := New(repo).Sync(context.Background(), DirectionPush)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondHead := runTestGit(t, testRoot, "ls-remote", "--refs", secondRemote, historyRef(status.DeviceID))
+	if secondPush.Published != 0 || secondPush.Head != firstPush.Head || !strings.Contains(secondHead, firstPush.Head) {
+		t.Fatalf("migrated push = %#v, remote head = %q, first push = %#v", secondPush, secondHead, firstPush)
+	}
+}
+
+func TestConfigureRejectsPolicyChangeWithUnpushedOutbox(t *testing.T) {
+	repo := newSharedHistoryTestRepo(t)
+	sessionID, turnID := recordSharedHistoryTurn(t, repo)
+	if _, err := Configure(repo, ConfigureOptions{Remote: filepath.Join(t.TempDir(), "first.git"), PromptMode: PromptModeRedactedText}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(repo).Preview(context.Background(), PreviewOptions{SessionID: sessionID, TurnID: turnID, Approve: true}); err != nil {
+		t.Fatal(err)
+	}
+	stageBundleWithoutState(t, repo, sessionID, turnID)
+
+	_, err := Configure(repo, ConfigureOptions{Remote: filepath.Join(t.TempDir(), "second.git"), PromptMode: PromptModeOmit})
+	if err == nil || !strings.Contains(err.Error(), "unpushed outbox") {
+		t.Fatalf("Configure policy change error = %v", err)
+	}
+}
+
+func TestProjectionRedactsIdentifierSecretsAndUNCPaths(t *testing.T) {
+	repo := newSharedHistoryTestRepo(t)
+	sessionID, err := primitives.ParseSessionID("identifier-redaction")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := turnevents.Recorder{Log: repo.EventLog(), Manager: turns.NewManager(repo), Adapter: primitives.AdapterCodex}
+	started, err := recorder.Start(sessionID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turnID := started.TurnID
+	secret := "ghp_0123456789abcdefghijklmnop"
+	for _, input := range []eventlog.AppendInput{
+		{SessionID: sessionID, TurnID: &turnID, Type: primitives.EventTypeAgentIntent, Adapter: primitives.AdapterCodex, SourceID: "identifier:intent", Payload: mustTestJSON(t, map[string]any{"problem": "Inspect identifiers", "agent_type": "codex token=" + secret})},
+		{SessionID: sessionID, TurnID: &turnID, Type: primitives.EventTypeToolCall, Adapter: primitives.AdapterCodex, SourceID: "identifier:tool", Payload: mustTestJSON(t, map[string]any{"tool_name": `shell \\server\share\private ` + secret})},
+	} {
+		if _, err := repo.EventLog().Append(input); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := recorder.Finish(sessionID, turnID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Configure(repo, ConfigureOptions{Remote: filepath.Join(t.TempDir(), "history.git"), PromptMode: PromptModeRedactedText}); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := New(repo).Preview(context.Background(), PreviewOptions{SessionID: sessionID, TurnID: turnID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), secret) || strings.Contains(string(encoded), `server\\share`) {
+		t.Fatalf("identifier projection leaked private text: %s", encoded)
+	}
+	if !strings.Contains(string(encoded), "[REDACTED]") || !strings.Contains(string(encoded), "[PATH_REDACTED]") {
+		t.Fatalf("identifier projection did not expose redaction markers: %s", encoded)
+	}
+}
+
+func TestStrictWireSchemaAndFieldLimits(t *testing.T) {
+	var event ContextEvent
+	data := []byte(`{"schema_version":1,"unexpected_stdout":"private"}`)
+	if err := decodeStrictJSON(data, &event); err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("strict decode error = %v", err)
+	}
+	if err := decodeStrictJSON([]byte(`{"schema_version":2,"schema_version":1}`), &event); err == nil || !strings.Contains(err.Error(), "duplicate JSON field") {
+		t.Fatalf("duplicate field error = %v", err)
+	}
+
+	oversized := ContextEvent{
+		SchemaVersion: SchemaVersion,
+		Type:          primitives.EventTypeAssistantMessage,
+		Seq:           1,
+		Source:        SourceRef{StreamID: primitives.EventStreamID("stream_0123456789abcdef0123456789abcdef"), Seq: 1, Hash: primitives.EventHash("sha256:" + strings.Repeat("a", 64))},
+		Assistant:     &TextProjection{Text: strings.Repeat("x", DefaultFieldLimit+1), Bytes: DefaultFieldLimit + 1},
+	}
+	if err := validateContextEvent(oversized); err == nil || !strings.Contains(err.Error(), "exceeds limits") {
+		t.Fatalf("oversized field validation error = %v", err)
+	}
+}
+
+func TestSharedHistoryOperationsUseDedicatedLock(t *testing.T) {
+	repo := newSharedHistoryTestRepo(t)
+	repo.LockTimeout = 20 * time.Millisecond
+	lock, err := filelock.Acquire(sharedHistoryLockPath(repo), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lock.Release() }()
+
+	_, err = Configure(repo, ConfigureOptions{Remote: filepath.Join(t.TempDir(), "history.git"), PromptMode: PromptModeOmit})
+	if err == nil || !strings.Contains(err.Error(), "lock busy") {
+		t.Fatalf("Configure lock error = %v", err)
+	}
+}
+
+func TestScrubGitEnvRemovesEveryGitVariable(t *testing.T) {
+	cleaned := scrubGitEnv([]string{"PATH=/bin", "GIT_CONFIG_COUNT=1", "GIT_SSH_COMMAND=private", "git_dir=private", "MALFORMED"})
+	if len(cleaned) != 1 || cleaned[0] != "PATH=/bin" {
+		t.Fatalf("scrubGitEnv = %#v", cleaned)
+	}
+}
+
 func stageBundleWithoutState(t *testing.T, repo *checkpoint.Repo, sessionID primitives.SessionID, turnID primitives.TurnID) {
 	t.Helper()
 	policy, err := loadPolicy(repo)
 	if err != nil {
 		t.Fatal(err)
 	}
-	digest, err := policyHash(repo, policy)
+	digest, err := policyHash(policy)
 	if err != nil {
 		t.Fatal(err)
 	}

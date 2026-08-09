@@ -2,7 +2,6 @@ package sharedhistory
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,8 +17,6 @@ type Manager struct {
 	now  func() time.Time
 }
 
-var _ Service = (*Manager)(nil)
-
 func New(repo *checkpoint.Repo) *Manager {
 	return &Manager{repo: repo, now: func() time.Time { return time.Now().UTC() }}
 }
@@ -28,6 +25,12 @@ func (manager *Manager) Status(ctx context.Context) (Status, error) {
 	if manager == nil || manager.repo == nil {
 		return Status{}, fmt.Errorf("shared history status requires checkpoint repo")
 	}
+	return withSharedHistoryLock(manager.repo, "inspect shared history", func() (Status, error) {
+		return manager.statusLocked(ctx)
+	})
+}
+
+func (manager *Manager) statusLocked(ctx context.Context) (Status, error) {
 	ctx = nonNilContext(ctx)
 	if _, err := os.Lstat(policyPath(manager.repo)); err != nil {
 		if os.IsNotExist(err) {
@@ -39,7 +42,7 @@ func (manager *Manager) Status(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	digest, err := policyHash(manager.repo, policy)
+	digest, err := policyHash(policy)
 	if err != nil {
 		return Status{}, err
 	}
@@ -51,13 +54,14 @@ func (manager *Manager) Status(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
+	alignStateRemote(&state, policy.Remote)
 	turns, err := listCompletedTurns(manager.repo)
 	if err != nil {
 		return Status{}, err
 	}
 	pending := 0
 	for _, turn := range turns {
-		bundleID, err := primitives.DeriveBundleID(manager.repo.RepoID, turn.Stream.StreamID, turn.TurnID)
+		bundleID, err := primitives.DeriveBundleID(policy.RepoID, turn.Stream.StreamID, turn.TurnID)
 		if err != nil {
 			return Status{}, err
 		}
@@ -73,6 +77,7 @@ func (manager *Manager) Status(ctx context.Context) (Status, error) {
 	status := Status{
 		Configured: true,
 		Remote:     policy.Remote,
+		RepoID:     policy.RepoID,
 		PromptMode: policy.PromptMode,
 		PolicyHash: digest,
 		Approved:   policy.ApprovedHash == digest,
@@ -107,6 +112,12 @@ func (manager *Manager) Preview(ctx context.Context, options PreviewOptions) (Pl
 	if manager == nil || manager.repo == nil {
 		return Plan{}, fmt.Errorf("shared history preview requires checkpoint repo")
 	}
+	return withSharedHistoryLock(manager.repo, "preview shared history", func() (Plan, error) {
+		return manager.previewLocked(ctx, options)
+	})
+}
+
+func (manager *Manager) previewLocked(ctx context.Context, options PreviewOptions) (Plan, error) {
 	ctx = nonNilContext(ctx)
 	if err := ctx.Err(); err != nil {
 		return Plan{}, err
@@ -115,7 +126,7 @@ func (manager *Manager) Preview(ctx context.Context, options PreviewOptions) (Pl
 	if err != nil {
 		return Plan{}, err
 	}
-	digest, err := policyHash(manager.repo, policy)
+	digest, err := policyHash(policy)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -151,6 +162,12 @@ func (manager *Manager) Sync(ctx context.Context, direction Direction) (Result, 
 	if manager == nil || manager.repo == nil {
 		return Result{}, fmt.Errorf("shared history sync requires checkpoint repo")
 	}
+	return withSharedHistoryLock(manager.repo, "synchronize shared history", func() (Result, error) {
+		return manager.syncLocked(ctx, direction)
+	})
+}
+
+func (manager *Manager) syncLocked(ctx context.Context, direction Direction) (Result, error) {
 	ctx = nonNilContext(ctx)
 	switch direction {
 	case DirectionPush:
@@ -167,7 +184,7 @@ func (manager *Manager) syncPush(ctx context.Context) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	digest, err := policyHash(manager.repo, policy)
+	digest, err := policyHash(policy)
 	if err != nil {
 		return Result{}, err
 	}
@@ -182,11 +199,15 @@ func (manager *Manager) syncPush(ctx context.Context) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	alignStateRemote(&state, policy.Remote)
 	store, err := openGitStore(ctx, manager.repo)
 	if err != nil {
 		return Result{}, err
 	}
 	if err := store.recoverCommittedState(ctx, identity, &state); err != nil {
+		return Result{}, err
+	}
+	if err := store.validateCommittedPolicy(ctx, state, digest); err != nil {
 		return Result{}, err
 	}
 
@@ -202,7 +223,7 @@ func (manager *Manager) syncPush(ctx context.Context) (Result, error) {
 		}
 	}
 	publishedThisRun := 0
-	if localHead != "" && len(state.Committed) > 0 {
+	if localHead != "" {
 		head, err := store.push(ctx, policy.Remote, identity.DeviceID, state.LastSeen[identity.DeviceID])
 		if err != nil {
 			return Result{Direction: DirectionPush}, err
@@ -221,7 +242,7 @@ func (manager *Manager) syncPush(ctx context.Context) (Result, error) {
 	var bundles []builtBundle
 	blockedThisRun := 0
 	for _, source := range turns {
-		bundleID, err := primitives.DeriveBundleID(manager.repo.RepoID, source.Stream.StreamID, source.TurnID)
+		bundleID, err := primitives.DeriveBundleID(policy.RepoID, source.Stream.StreamID, source.TurnID)
 		if err != nil {
 			return Result{}, err
 		}
@@ -302,6 +323,7 @@ func (manager *Manager) syncPull(ctx context.Context) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	alignStateRemote(&state, policy.Remote)
 	store, err := openGitStore(ctx, manager.repo)
 	if err != nil {
 		return Result{}, err
@@ -324,7 +346,7 @@ func (manager *Manager) syncPull(ctx context.Context) (Result, error) {
 	}
 	pulled := 0
 	for _, ref := range refs {
-		bundles, err := store.fetchAndIngest(ctx, policy.Remote, ref, state.LastSeen[ref.DeviceID])
+		bundles, err := store.fetchAndIngest(ctx, policy.Remote, ref, state.LastSeen[ref.DeviceID], policy.RepoID)
 		if err != nil {
 			return Result{Direction: DirectionPull, Pulled: pulled}, err
 		}
@@ -341,7 +363,17 @@ func (manager *Manager) Read(ctx context.Context, value string) (StoredBundle, e
 	if manager == nil || manager.repo == nil {
 		return StoredBundle{}, fmt.Errorf("read shared history requires checkpoint repo")
 	}
+	return withSharedHistoryLock(manager.repo, "read shared history", func() (StoredBundle, error) {
+		return manager.readLocked(ctx, value)
+	})
+}
+
+func (manager *Manager) readLocked(ctx context.Context, value string) (StoredBundle, error) {
 	ctx = nonNilContext(ctx)
+	policy, err := loadPolicy(manager.repo)
+	if err != nil {
+		return StoredBundle{}, err
+	}
 	deviceID, bundleID, err := parseLocator(value)
 	if err != nil {
 		return StoredBundle{}, err
@@ -364,7 +396,7 @@ func (manager *Manager) Read(ctx context.Context, value string) (StoredBundle, e
 			return StoredBundle{}, err
 		}
 		var manifest Manifest
-		if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		if err := decodeStrictJSON(manifestData, &manifest); err != nil {
 			return StoredBundle{}, err
 		}
 		events, err := decodeEventsJSONL(eventsData)
@@ -372,7 +404,7 @@ func (manager *Manager) Read(ctx context.Context, value string) (StoredBundle, e
 			return StoredBundle{}, err
 		}
 		bundle := StoredBundle{Manifest: manifest, Events: events, PublicKey: identity.PublicKey}
-		if err := verifyStoredBundle(manager.repo, bundle); err != nil {
+		if err := verifyStoredBundle(policy.RepoID, bundle); err != nil {
 			return StoredBundle{}, err
 		}
 		return bundle, nil
@@ -383,16 +415,16 @@ func (manager *Manager) Read(ctx context.Context, value string) (StoredBundle, e
 		return StoredBundle{}, err
 	}
 	var bundle StoredBundle
-	if err := json.Unmarshal(data, &bundle); err != nil {
+	if err := decodeStrictJSON(data, &bundle); err != nil {
 		return StoredBundle{}, err
 	}
-	if err := verifyStoredBundle(manager.repo, bundle); err != nil {
+	if err := verifyStoredBundle(policy.RepoID, bundle); err != nil {
 		return StoredBundle{}, err
 	}
 	return bundle, nil
 }
 
-func verifyStoredBundle(repo *checkpoint.Repo, bundle StoredBundle) error {
+func verifyStoredBundle(repoID primitives.RepoID, bundle StoredBundle) error {
 	public, err := publicKeyForDevice(bundle.PublicKey, bundle.Manifest.DeviceID)
 	if err != nil {
 		return err
@@ -405,7 +437,7 @@ func verifyStoredBundle(repo *checkpoint.Repo, bundle StoredBundle) error {
 		TurnID:    bundle.Manifest.TurnID,
 		Sequence:  bundle.Manifest.SourceSequence,
 	}
-	if err := validateManifest(repo, bundle.Manifest.DeviceID, item, bundle.Manifest); err != nil {
+	if err := validateManifest(repoID, bundle.Manifest.DeviceID, item, bundle.Manifest); err != nil {
 		return err
 	}
 	if err := verifyManifest(public, bundle.Manifest); err != nil {

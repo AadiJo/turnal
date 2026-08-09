@@ -201,6 +201,8 @@ turnal sync pull
 
 Use `turnal share status` to inspect consent, pending bundles, blocked projections, and unpushed history. A published locator such as `v1:<device-id>:<bundle-id>` can be opened with `turnal share show <locator>`. See [shared history](docs/shared-history.md) for the protocol, privacy boundary, and failure semantics.
 
+Teammates joining from independently initialized clones use the publisher's shared repository id: `turnal share enable --remote <same-remote> --repo-id <publisher-repo-id> --prompt-mode omit`, then `turnal sync pull`.
+
 ## How it works
 
 Turnal deliberately keeps four responsibilities separate:

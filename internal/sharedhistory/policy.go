@@ -1,7 +1,6 @@
 package sharedhistory
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,44 +8,128 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
+	"github.com/AadiJo/turnal/internal/filelock"
+	"github.com/AadiJo/turnal/internal/primitives"
 )
 
-func Configure(repo *checkpoint.Repo, remote string, promptMode PromptMode) (Status, error) {
+type ConfigureOptions struct {
+	Remote     string
+	PromptMode PromptMode
+	RepoID     primitives.RepoID
+}
+
+func Configure(repo *checkpoint.Repo, options ConfigureOptions) (Status, error) {
 	if repo == nil {
 		return Status{}, fmt.Errorf("configure shared history requires checkpoint repo")
 	}
-	remote = strings.TrimSpace(remote)
+	return withSharedHistoryLock(repo, "configure shared history", func() (Status, error) {
+		return configureLocked(repo, options)
+	})
+}
+
+func configureLocked(repo *checkpoint.Repo, options ConfigureOptions) (Status, error) {
+	remote := strings.TrimSpace(options.Remote)
 	if remote == "" {
 		return Status{}, fmt.Errorf("shared history remote is required")
 	}
 	if strings.ContainsAny(remote, "\r\n\x00") {
 		return Status{}, fmt.Errorf("shared history remote contains an invalid control character")
 	}
+	if strings.HasPrefix(remote, "-") {
+		return Status{}, fmt.Errorf("shared history remote must not begin with '-'")
+	}
 	remote, err := normalizeRemote(remote)
 	if err != nil {
 		return Status{}, err
 	}
-	if err := validatePromptMode(promptMode); err != nil {
+	if err := validatePromptMode(options.PromptMode); err != nil {
 		return Status{}, err
+	}
+	sharedRepoID := options.RepoID
+	if sharedRepoID == "" {
+		sharedRepoID = repo.RepoID
+	}
+	sharedRepoID, err = primitives.ParseRepoID(sharedRepoID.String())
+	if err != nil {
+		return Status{}, fmt.Errorf("configure shared history repository identity: %w", err)
 	}
 	policy := policyFile{
 		Version:          1,
 		Remote:           remote,
-		PromptMode:       promptMode,
+		RepoID:           sharedRepoID,
+		PromptMode:       options.PromptMode,
 		AllowlistVersion: AllowlistVersion,
 		ScannerVersion:   ScannerVersion,
 		FieldLimit:       DefaultFieldLimit,
 		BundleLimit:      DefaultBundleLimit,
 	}
+	var previous policyFile
+	previousConfigured := false
+	if _, err := os.Lstat(policyPath(repo)); err == nil {
+		previous, err = loadPolicy(repo)
+		if err != nil {
+			return Status{}, err
+		}
+		previousConfigured = true
+	} else if !os.IsNotExist(err) {
+		return Status{}, err
+	}
+	identity, err := loadOrCreateDevice(repo)
+	if err != nil {
+		return Status{}, err
+	}
+	state, err := loadState(repo)
+	if err != nil {
+		return Status{}, err
+	}
+	if previousConfigured {
+		ctx := nonNilContext(nil)
+		store, err := openGitStore(ctx, repo)
+		if err != nil {
+			return Status{}, err
+		}
+		if err := store.recoverCommittedState(ctx, identity, &state); err != nil {
+			return Status{}, err
+		}
+		previousDigest, err := policyHash(previous)
+		if err != nil {
+			return Status{}, err
+		}
+		newDigest, err := policyHash(policy)
+		if err != nil {
+			return Status{}, err
+		}
+		if previousDigest != newDigest && len(state.Committed) > 0 {
+			return Status{}, fmt.Errorf("shared history has an unpushed outbox under the current policy; publish it before changing the remote or privacy policy")
+		}
+		if previous.RepoID != policy.RepoID {
+			head, err := store.localHead(ctx)
+			if err != nil {
+				return Status{}, err
+			}
+			if head != "" {
+				return Status{}, fmt.Errorf("shared history repository identity cannot change after this device has published history")
+			}
+			state.Published = map[string]string{}
+			state.Committed = map[string]string{}
+			state.Blocked = map[string]string{}
+			state.LastSeen = map[string]string{}
+		}
+		if previousDigest == newDigest {
+			policy.ApprovedHash = previous.ApprovedHash
+		}
+	}
 	if err := writeJSONAtomic(policyPath(repo), policy, 0o600); err != nil {
 		return Status{}, err
 	}
-	if _, err := loadOrCreateDevice(repo); err != nil {
+	alignStateRemote(&state, remote)
+	if err := saveState(repo, state); err != nil {
 		return Status{}, err
 	}
-	return New(repo).Status(nilContext())
+	return New(repo).statusLocked(nil)
 }
 
 func normalizeRemote(remote string) (string, error) {
@@ -96,6 +179,12 @@ func loadPolicy(repo *checkpoint.Repo) (policyFile, error) {
 	if strings.TrimSpace(policy.Remote) == "" {
 		return policyFile{}, fmt.Errorf("shared history policy remote is empty")
 	}
+	if strings.HasPrefix(policy.Remote, "-") || strings.ContainsAny(policy.Remote, "\r\n\x00") {
+		return policyFile{}, fmt.Errorf("shared history policy remote is invalid")
+	}
+	if _, err := primitives.ParseRepoID(policy.RepoID.String()); err != nil {
+		return policyFile{}, fmt.Errorf("shared history policy repository identity: %w", err)
+	}
 	if err := validatePromptMode(policy.PromptMode); err != nil {
 		return policyFile{}, err
 	}
@@ -111,7 +200,7 @@ func loadPolicy(repo *checkpoint.Repo) (policyFile, error) {
 	return policy, nil
 }
 
-func policyHash(repo *checkpoint.Repo, policy policyFile) (string, error) {
+func policyHash(policy policyFile) (string, error) {
 	input := struct {
 		SchemaVersion int        `json:"schema_version"`
 		RepoID        string     `json:"repo_id"`
@@ -121,7 +210,7 @@ func policyHash(repo *checkpoint.Repo, policy policyFile) (string, error) {
 		Scanner       string     `json:"scanner_version"`
 		FieldLimit    int        `json:"field_limit"`
 		BundleLimit   int        `json:"bundle_limit"`
-	}{SchemaVersion, repo.RepoID.String(), policy.Remote, policy.PromptMode, policy.AllowlistVersion, policy.ScannerVersion, policy.FieldLimit, policy.BundleLimit}
+	}{SchemaVersion, policy.RepoID.String(), policy.Remote, policy.PromptMode, policy.AllowlistVersion, policy.ScannerVersion, policy.FieldLimit, policy.BundleLimit}
 	data, err := json.Marshal(input)
 	if err != nil {
 		return "", fmt.Errorf("encode shared history policy hash: %w", err)
@@ -177,6 +266,14 @@ func loadState(repo *checkpoint.Repo) (stateFile, error) {
 	return state, nil
 }
 
+func alignStateRemote(state *stateFile, remote string) {
+	if state.Remote == remote {
+		return
+	}
+	state.Remote = remote
+	state.LastSeen = map[string]string{}
+}
+
 func saveState(repo *checkpoint.Repo, state stateFile) error {
 	state.Version = 1
 	return writeJSONAtomic(statePath(repo), state, 0o600)
@@ -220,6 +317,9 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	if err := os.Rename(tempPath, path); err != nil {
 		return fmt.Errorf("install shared history file %s: %w", path, err)
 	}
+	if err := syncDirectory(dir); err != nil {
+		return fmt.Errorf("sync shared history directory %s: %w", dir, err)
+	}
 	return nil
 }
 
@@ -237,6 +337,28 @@ func readRegularFile(path string, limit int64) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
-// nilContext keeps Configure independent from caller cancellation while using
-// the same public Status path as normal commands.
-func nilContext() context.Context { return context.Background() }
+func sharedHistoryLockPath(repo *checkpoint.Repo) string {
+	return filepath.Join(sharedRoot(repo), "operation.lock")
+}
+
+func withSharedHistoryLock[T any](repo *checkpoint.Repo, operation string, fn func() (T, error)) (T, error) {
+	timeout := repo.LockTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	lock, err := filelock.Acquire(sharedHistoryLockPath(repo), timeout)
+	if err != nil {
+		var zero T
+		return zero, fmt.Errorf("%s: %w", operation, err)
+	}
+	value, operationErr := fn()
+	releaseErr := lock.Release()
+	if operationErr != nil {
+		return value, operationErr
+	}
+	if releaseErr != nil {
+		var zero T
+		return zero, fmt.Errorf("%s: %w", operation, releaseErr)
+	}
+	return value, nil
+}

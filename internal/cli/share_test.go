@@ -65,6 +65,30 @@ func TestSharedHistoryCLIEndToEnd(t *testing.T) {
 	if bundle.Manifest.BundleID != plan.Manifest.BundleID {
 		t.Fatalf("shown bundle = %#v", bundle.Manifest)
 	}
+
+	receiverRoot, err := primitives.ParseWorkspaceRoot(filepath.Join(temp, "receiver"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := checkpoint.Init(receiverRoot); err != nil {
+		t.Fatalf("initialize receiver: %v", err)
+	}
+	t.Chdir(receiverRoot.String())
+	var joined sharedhistory.Status
+	decodeCLIJSON(t, runRootStdout(t, "share", "enable", "--remote", remote, "--repo-id", status.RepoID.String(), "--prompt-mode", "omit", "--json"), &joined)
+	if joined.RepoID != status.RepoID {
+		t.Fatalf("joined repository id = %s, want %s", joined.RepoID, status.RepoID)
+	}
+	var pulled sharedhistory.Result
+	decodeCLIJSON(t, runRootStdout(t, "sync", "pull", "--json"), &pulled)
+	if pulled.Pulled != 1 {
+		t.Fatalf("pull result = %#v", pulled)
+	}
+	var pulledBundle sharedhistory.StoredBundle
+	decodeCLIJSON(t, runRootStdout(t, "share", "show", plan.Locator, "--json"), &pulledBundle)
+	if pulledBundle.Manifest.BundleID != plan.Manifest.BundleID {
+		t.Fatalf("pulled bundle = %#v", pulledBundle.Manifest)
+	}
 }
 
 func decodeCLIJSON(t *testing.T, output string, target any) {
