@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
@@ -348,8 +349,9 @@ type sanitizedText struct {
 func sanitizeText(workspaceRoot, value string, limit int, truncations *Truncations) sanitizedText {
 	result := sanitizedText{Text: value, OriginalBytes: len(value)}
 	for _, variant := range workspaceRootVariants(workspaceRoot) {
-		if strings.Contains(result.Text, variant) {
-			result.Text = strings.ReplaceAll(result.Text, variant, "$WORKSPACE")
+		var redacted bool
+		result.Text, redacted = replaceWorkspaceRoot(result.Text, variant)
+		if redacted {
 			result.Redacted = true
 		}
 	}
@@ -417,6 +419,55 @@ func workspaceRootVariants(workspaceRoot string) []string {
 		return len(variants[i]) > len(variants[j])
 	})
 	return variants
+}
+
+func replaceWorkspaceRoot(value, workspaceRoot string) (string, bool) {
+	if workspaceRoot == "" {
+		return value, false
+	}
+
+	var result strings.Builder
+	remaining := value
+	replaced := false
+	for {
+		index := strings.Index(remaining, workspaceRoot)
+		if index < 0 {
+			result.WriteString(remaining)
+			break
+		}
+
+		end := index + len(workspaceRoot)
+		startsAtBoundary := workspacePathStartBoundary(remaining, index)
+		endsAtBoundary := end == len(remaining) || isPathSeparator(remaining[end]) || isPathSeparator(workspaceRoot[len(workspaceRoot)-1])
+		if startsAtBoundary && endsAtBoundary {
+			result.WriteString(remaining[:index])
+			result.WriteString("$WORKSPACE")
+			remaining = remaining[end:]
+			replaced = true
+			continue
+		}
+
+		// A root-like substring outside path boundaries may be a sibling or an
+		// enclosing path. Redact the field rather than create a misleading,
+		// partially scrubbed $WORKSPACE value.
+		return "[PATH_REDACTED]", true
+	}
+	return result.String(), replaced
+}
+
+func workspacePathStartBoundary(value string, index int) bool {
+	if index == 0 {
+		return true
+	}
+	previous, _ := utf8.DecodeLastRuneInString(value[:index])
+	if unicode.IsSpace(previous) {
+		return true
+	}
+	return strings.ContainsRune("\"'`()[]{}<>=,;:", previous)
+}
+
+func isPathSeparator(character byte) bool {
+	return character == '/' || character == '\\'
 }
 
 func containsDetectedSecret(value string) bool {

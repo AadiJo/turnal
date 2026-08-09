@@ -164,6 +164,45 @@ func TestSanitizeTextNormalizesMacOSPrivateWorkspaceAliases(t *testing.T) {
 	}
 }
 
+func TestSanitizeTextDoesNotPartiallyReplaceSiblingPaths(t *testing.T) {
+	tests := []struct {
+		name          string
+		workspaceRoot string
+		text          string
+	}{
+		{
+			name:          "unix sibling",
+			workspaceRoot: "/home/alice/project",
+			text:          "Inspect /home/alice/project-secret/private.txt",
+		},
+		{
+			name:          "windows sibling",
+			workspaceRoot: `C:\Users\alice\project`,
+			text:          `Inspect C:\Users\alice\project-secret\private.txt`,
+		},
+		{
+			name:          "sibling with spaces",
+			workspaceRoot: "/home/alice/project",
+			text:          "Inspect /home/alice/project secret/private.txt",
+		},
+		{
+			name:          "embedded in enclosing path",
+			workspaceRoot: "/home/alice/project",
+			text:          "Inspect /srv/home/alice/project/private.txt",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			truncations := Truncations{}
+			got := sanitizeText(test.workspaceRoot, test.text, DefaultFieldLimit, &truncations)
+			if got.Text != "[PATH_REDACTED]" || !got.Redacted {
+				t.Fatalf("ambiguous path was not redacted as a whole: %#v", got)
+			}
+		})
+	}
+}
+
 func TestPromptOmissionIsTypedAndDoesNotPublishText(t *testing.T) {
 	repo := newSharedHistoryTestRepo(t)
 	sessionID, turnID := recordSharedHistoryTurn(t, repo)
