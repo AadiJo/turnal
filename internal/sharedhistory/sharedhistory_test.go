@@ -132,6 +132,38 @@ func TestLinkedWorktreeProjectionUsesSourceWorkspaceRoot(t *testing.T) {
 	}
 }
 
+func TestSanitizeTextNormalizesMacOSPrivateWorkspaceAliases(t *testing.T) {
+	tests := []struct {
+		name          string
+		workspaceRoot string
+		text          string
+	}{
+		{
+			name:          "registered private path",
+			workspaceRoot: "/private/var/folders/demo/linked secret project",
+			text:          "Inspect /var/folders/demo/linked secret project/private.txt",
+		},
+		{
+			name:          "captured private path",
+			workspaceRoot: "/var/folders/demo/linked secret project",
+			text:          "Inspect /private/var/folders/demo/linked secret project/private.txt",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			truncations := Truncations{}
+			got := sanitizeText(test.workspaceRoot, test.text, DefaultFieldLimit, &truncations)
+			if got.Text != "Inspect $WORKSPACE/private.txt" {
+				t.Fatalf("sanitized text = %q", got.Text)
+			}
+			if !got.Redacted {
+				t.Fatal("workspace alias was not marked redacted")
+			}
+		})
+	}
+}
+
 func TestPromptOmissionIsTypedAndDoesNotPublishText(t *testing.T) {
 	repo := newSharedHistoryTestRepo(t)
 	sessionID, turnID := recordSharedHistoryTurn(t, repo)

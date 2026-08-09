@@ -347,13 +347,10 @@ type sanitizedText struct {
 
 func sanitizeText(workspaceRoot, value string, limit int, truncations *Truncations) sanitizedText {
 	result := sanitizedText{Text: value, OriginalBytes: len(value)}
-	if workspaceRoot != "" {
-		variants := []string{workspaceRoot, filepath.ToSlash(workspaceRoot), filepath.FromSlash(filepath.ToSlash(workspaceRoot))}
-		for _, variant := range variants {
-			if variant != "" && strings.Contains(result.Text, variant) {
-				result.Text = strings.ReplaceAll(result.Text, variant, "$WORKSPACE")
-				result.Redacted = true
-			}
+	for _, variant := range workspaceRootVariants(workspaceRoot) {
+		if strings.Contains(result.Text, variant) {
+			result.Text = strings.ReplaceAll(result.Text, variant, "$WORKSPACE")
+			result.Redacted = true
 		}
 	}
 	for _, pattern := range absolutePathPatterns {
@@ -375,6 +372,51 @@ func sanitizeText(workspaceRoot, value string, limit int, truncations *Truncatio
 		truncations.OriginalBytes += result.OriginalBytes
 	}
 	return result
+}
+
+// workspaceRootVariants covers filesystem aliases that can appear in captured
+// events even when Git registered a different spelling of the same worktree.
+// In particular, macOS commonly exposes /var and /tmp through /private symlinks.
+func workspaceRootVariants(workspaceRoot string) []string {
+	if workspaceRoot == "" {
+		return nil
+	}
+
+	roots := []string{workspaceRoot, filepath.Clean(workspaceRoot)}
+	if resolved, err := filepath.EvalSymlinks(workspaceRoot); err == nil {
+		roots = append(roots, resolved)
+	}
+	for _, root := range append([]string(nil), roots...) {
+		slashRoot := filepath.ToSlash(root)
+		switch {
+		case strings.HasPrefix(slashRoot, "/private/var/") || strings.HasPrefix(slashRoot, "/private/tmp/"):
+			roots = append(roots, strings.TrimPrefix(slashRoot, "/private"))
+		case strings.HasPrefix(slashRoot, "/var/") || strings.HasPrefix(slashRoot, "/tmp/"):
+			roots = append(roots, "/private"+slashRoot)
+		}
+	}
+
+	seen := make(map[string]struct{}, len(roots)*3)
+	variants := make([]string, 0, len(roots)*3)
+	add := func(value string) {
+		if value == "" {
+			return
+		}
+		if _, ok := seen[value]; ok {
+			return
+		}
+		seen[value] = struct{}{}
+		variants = append(variants, value)
+	}
+	for _, root := range roots {
+		add(root)
+		add(filepath.ToSlash(root))
+		add(filepath.FromSlash(filepath.ToSlash(root)))
+	}
+	sort.Slice(variants, func(i, j int) bool {
+		return len(variants[i]) > len(variants[j])
+	})
+	return variants
 }
 
 func containsDetectedSecret(value string) bool {
