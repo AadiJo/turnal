@@ -563,6 +563,9 @@ func redactAbsolutePaths(value string) (string, bool) {
 }
 
 func containsUnprotectedAbsolutePath(value string) bool {
+	if containsUnprotectedFileURI(value) {
+		return true
+	}
 	for index := 0; index < len(value); index++ {
 		if strings.HasPrefix(value[index:], workspaceProjectionMarker) {
 			index += len(workspaceProjectionMarker) - 1
@@ -582,6 +585,45 @@ func containsUnprotectedAbsolutePath(value string) bool {
 		}
 	}
 	return false
+}
+
+func containsUnprotectedFileURI(value string) bool {
+	searchFrom := 0
+	for searchFrom < len(value) {
+		relative := indexASCIIFold(value[searchFrom:], "file:")
+		if relative < 0 {
+			return false
+		}
+		index := searchFrom + relative
+		if index > 0 {
+			previous, _ := utf8.DecodeLastRuneInString(value[:index])
+			if !unicode.IsSpace(previous) && !strings.ContainsRune("\"'`()[]{}<>=,;", previous) {
+				searchFrom = index + len("file:")
+				continue
+			}
+		}
+		remainder := value[index+len("file:"):]
+		if strings.HasPrefix(remainder, workspaceProjectionMarker) ||
+			strings.HasPrefix(remainder, "//"+workspaceProjectionMarker) ||
+			strings.HasPrefix(remainder, `\\`+workspaceProjectionMarker) {
+			searchFrom = index + len("file:")
+			continue
+		}
+		if strings.HasPrefix(remainder, "/") || strings.HasPrefix(remainder, `\`) {
+			return true
+		}
+		searchFrom = index + len("file:")
+	}
+	return false
+}
+
+func indexASCIIFold(value, target string) int {
+	for index := 0; index+len(target) <= len(value); index++ {
+		if strings.EqualFold(value[index:index+len(target)], target) {
+			return index
+		}
+	}
+	return -1
 }
 
 func windowsDrivePathStart(value string, index int) bool {
@@ -647,9 +689,34 @@ func quotedWorkspacePaths(value string) []string {
 			continue
 		}
 		closeIndex := markerIndex + len(workspaceProjectionMarker) + closeOffset
-		preserved = append(preserved, remaining[markerIndex-1:closeIndex+1])
+		suffix := remaining[markerIndex+len(workspaceProjectionMarker) : closeIndex]
+		if safeQuotedWorkspaceSuffix(suffix) {
+			preserved = append(preserved, remaining[markerIndex-1:closeIndex+1])
+		}
 		remaining = remaining[closeIndex+1:]
 	}
+}
+
+func safeQuotedWorkspaceSuffix(suffix string) bool {
+	if suffix == "" {
+		return true
+	}
+	if !isPathSeparator(suffix[0]) || containsParentPathComponent(suffix) {
+		return false
+	}
+	ambiguousDelimiter := false
+	for _, character := range suffix[1:] {
+		if character == '/' || character == '\\' {
+			if ambiguousDelimiter {
+				return false
+			}
+			continue
+		}
+		if unicode.IsSpace(character) || strings.ContainsRune("\"'`()[]{}<>=,;:!?|&", character) {
+			ambiguousDelimiter = true
+		}
+	}
+	return true
 }
 
 func containsDetectedSecret(value string) bool {

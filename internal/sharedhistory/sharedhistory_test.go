@@ -372,12 +372,22 @@ func TestSanitizeTextFailsClosedOnAnyAbsolutePath(t *testing.T) {
 		"Inspect →/secret.txt",
 		`Inspect C:\secret.txt`,
 		"Inspect file:///secret.txt",
+		"Inspect file://localhost/secret.txt",
+		"Inspect file://server/share/private.txt",
 	} {
 		truncations := Truncations{}
 		got := sanitizeText("/workspace", text, DefaultFieldLimit, &truncations)
 		if got.Text != "[PATH_REDACTED]" || !got.Redacted {
 			t.Fatalf("absolute path was not redacted as a whole: %#v", got)
 		}
+	}
+}
+
+func TestSanitizeTextDoesNotPreserveSecondPathInsideWorkspaceQuote(t *testing.T) {
+	truncations := Truncations{}
+	got := sanitizeText("/workspace", `Inspect '/workspace/a and /etc/shadow'`, DefaultFieldLimit, &truncations)
+	if got.Text != "[PATH_REDACTED]" || !got.Redacted {
+		t.Fatalf("second quoted absolute path was preserved: %#v", got)
 	}
 }
 
