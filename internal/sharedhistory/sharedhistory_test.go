@@ -186,6 +186,16 @@ func TestSanitizeTextDoesNotPartiallyReplaceSiblingPaths(t *testing.T) {
 			text:          `Inspect "/home/alice/project secret/private.txt"`,
 		},
 		{
+			name:          "unquoted sibling with spaces",
+			workspaceRoot: "/home/alice/project",
+			text:          "Inspect /home/alice/project secret/private.txt",
+		},
+		{
+			name:          "punctuated sibling",
+			workspaceRoot: "/home/alice/project",
+			text:          "Inspect /home/alice/project,secret/private.txt",
+		},
+		{
 			name:          "embedded in enclosing path",
 			workspaceRoot: "/home/alice/project",
 			text:          "Inspect /srv/home/alice/project/private.txt",
@@ -226,6 +236,12 @@ func TestSanitizeTextRecognizesWorkspacePathDelimiters(t *testing.T) {
 			workspaceRoot: "/home/alice/project",
 			text:          "See /home/alice/project, then continue",
 			want:          "See $WORKSPACE, then continue",
+		},
+		{
+			name:          "terminal period",
+			workspaceRoot: "/home/alice/project",
+			text:          "See /home/alice/project.",
+			want:          "See $WORKSPACE.",
 		},
 		{
 			name:          "quoted",
