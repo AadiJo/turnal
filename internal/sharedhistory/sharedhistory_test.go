@@ -348,6 +348,55 @@ func TestSanitizeTextPreservesNestedNormalizedWorkspacePath(t *testing.T) {
 	}
 }
 
+func TestSanitizeTextRejectsWorkspaceParentTraversal(t *testing.T) {
+	for _, test := range []struct {
+		workspaceRoot string
+		text          string
+	}{
+		{workspaceRoot: "/home/alice/project", text: "Inspect /home/alice/project/../private-sibling/secret.txt"},
+		{workspaceRoot: `C:\Users\Alice\Project`, text: `Inspect C:\Users\Alice\Project\..\private-sibling\secret.txt`},
+	} {
+		truncations := Truncations{}
+		got := sanitizeText(test.workspaceRoot, test.text, DefaultFieldLimit, &truncations)
+		if got.Text != "[PATH_REDACTED]" || !got.Redacted {
+			t.Fatalf("parent traversal was not redacted as a whole: %#v", got)
+		}
+	}
+}
+
+func TestSanitizeTextFailsClosedOnAnyAbsolutePath(t *testing.T) {
+	for _, text := range []string{
+		"Inspect /secret.txt",
+		"Inspect /opt/秘密/file",
+		"Inspect /opt/secret,name",
+		"Inspect →/secret.txt",
+		`Inspect C:\secret.txt`,
+		"Inspect file:///secret.txt",
+	} {
+		truncations := Truncations{}
+		got := sanitizeText("/workspace", text, DefaultFieldLimit, &truncations)
+		if got.Text != "[PATH_REDACTED]" || !got.Redacted {
+			t.Fatalf("absolute path was not redacted as a whole: %#v", got)
+		}
+	}
+}
+
+func TestSanitizeTextNeutralizesInternalWorkspaceMarkerInput(t *testing.T) {
+	truncations := Truncations{}
+	got := sanitizeText("/workspace", "literal "+workspaceProjectionMarker+"/private.txt", DefaultFieldLimit, &truncations)
+	if got.Text != "[PATH_REDACTED]" || strings.Contains(got.Text, workspaceProjectionMarker) || !got.Redacted {
+		t.Fatalf("internal marker input was not neutralized: %#v", got)
+	}
+}
+
+func TestSanitizeTextDoesNotTreatURLAsAbsolutePath(t *testing.T) {
+	truncations := Truncations{}
+	got := sanitizeText("/workspace", "Visit https://example.com/private/path", DefaultFieldLimit, &truncations)
+	if got.Text != "Visit https://example.com/private/path" || got.Redacted {
+		t.Fatalf("URL was treated as an absolute path: %#v", got)
+	}
+}
+
 func TestSanitizeTextMatchesCaseInsensitiveWorkspaceAliases(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -1418,7 +1467,7 @@ func recordSharedHistoryTurn(t *testing.T, repo *checkpoint.Repo) (primitives.Se
 		{SessionID: sessionID, TurnID: &turnID, Type: primitives.EventTypeAgentIntent, Adapter: primitives.AdapterCodex, SourceID: "test:intent", Payload: mustTestJSON(t, map[string]any{"problem": "Fix the shared history sync", "scope": []string{"internal/sharedhistory"}, "evidence": []string{repo.WorkspaceRoot.String() + "/private.txt"}, "agent_type": "codex"})},
 		{SessionID: sessionID, TurnID: &turnID, Type: primitives.EventTypeToolCall, Adapter: primitives.AdapterCodex, SourceID: "test:tool-call", Payload: mustTestJSON(t, map[string]any{"tool_name": "shell", "input": map[string]any{"command": "cat private.txt"}, "mutation_candidate": true})},
 		{SessionID: sessionID, TurnID: &turnID, Type: primitives.EventTypeToolResult, Adapter: primitives.AdapterCodex, SourceID: "test:tool-result", Payload: mustTestJSON(t, map[string]any{"tool_name": "shell", "output": "raw tool result"})},
-		{SessionID: sessionID, TurnID: &turnID, Type: primitives.EventTypeAssistantMessage, Adapter: primitives.AdapterCodex, SourceID: "test:assistant", Payload: mustTestJSON(t, map[string]any{"text": "Implemented the projection."})},
+		{SessionID: sessionID, TurnID: &turnID, Type: primitives.EventTypeAssistantMessage, Adapter: primitives.AdapterCodex, SourceID: "test:assistant", Payload: mustTestJSON(t, map[string]any{"text": "Implemented token=ghp_0123456789abcdefghijklmnop"})},
 		{SessionID: sessionID, TurnID: &turnID, Type: primitives.EventTypeAdapterRaw, Adapter: primitives.AdapterCodex, SourceID: "test:raw", Payload: mustTestJSON(t, map[string]any{"raw": "provider-private-payload"})},
 	}
 	for _, input := range inputs {

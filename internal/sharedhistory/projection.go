@@ -37,14 +37,6 @@ var secretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://[^\s/@:]+:[^\s/@]+@`),
 }
 
-var absolutePathPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)(?:[a-z]:\\Users\\[^\\\s]+\\[^\s]*)`),
-	regexp.MustCompile(`\\\\[^\\\s]+\\[^\s]+`),
-	regexp.MustCompile(`(?:/(?:home|Users)/[^/\s]+/[^\s]*)`),
-	regexp.MustCompile(`(?i)\b[a-z]:[\\/](?:[^\\/\s"'()]+[\\/])*[^\\/\s"'()]+`),
-	regexp.MustCompile(`/(?:[a-zA-Z0-9._~-]+/)+[a-zA-Z0-9._~-]+`),
-}
-
 func listCompletedTurns(repo *checkpoint.Repo) ([]turnSource, error) {
 	worktrees, err := repo.ListWorktrees()
 	if err != nil {
@@ -460,6 +452,13 @@ func replaceWorkspaceRoot(value, workspaceRoot string) (string, bool) {
 			// misleading, partially scrubbed $WORKSPACE value.
 			return "[PATH_REDACTED]", true
 		}
+		continuation := value[end:]
+		if isPathSeparator(workspaceRoot[len(workspaceRoot)-1]) {
+			continuation = workspaceRoot[len(workspaceRoot)-1:] + continuation
+		}
+		if containsParentPathComponent(continuation) {
+			return "[PATH_REDACTED]", true
+		}
 
 		result.WriteString(value[last:start])
 		result.WriteString(workspaceProjectionMarker)
@@ -500,12 +499,15 @@ func workspaceSeparatorStartBoundary(value string, index int) bool {
 	if unicode.IsSpace(previous) {
 		return true
 	}
+	if previous == '/' || previous == '\\' {
+		return false
+	}
 	if previous == ':' {
 		// Skip the first separator in :// while accepting a colon-delimited
 		// filesystem path such as path:/private.txt.
 		return index+1 == len(value) || !isPathSeparator(value[index+1])
 	}
-	return strings.ContainsRune("\"'`()[]{}<>=,;", previous)
+	return unicode.IsPunct(previous) || unicode.IsSymbol(previous)
 }
 
 func workspacePathEndBoundary(value string, start, end int, workspaceRoot string) bool {
@@ -554,48 +556,64 @@ func isPathSeparator(character byte) bool {
 }
 
 func redactAbsolutePaths(value string) (string, bool) {
-	redacted := false
-	for _, pattern := range absolutePathPatterns {
-		var patternRedacted bool
-		value, patternRedacted = redactAbsolutePathPattern(value, pattern)
-		redacted = redacted || patternRedacted
-		if value == "[PATH_REDACTED]" {
-			return value, true
-		}
+	if !containsUnprotectedAbsolutePath(value) {
+		return value, false
 	}
-	return value, redacted
+	return redactAmbiguousAbsolutePath(value), true
 }
 
-func redactAbsolutePathPattern(value string, pattern *regexp.Regexp) (string, bool) {
-	matches := pattern.FindAllStringIndex(value, -1)
-	if len(matches) == 0 {
-		return value, false
-	}
-
-	var result strings.Builder
-	last := 0
-	replaced := false
-	for _, match := range matches {
-		start, end := match[0], match[1]
-		if strings.HasSuffix(value[:start], workspaceProjectionMarker) {
+func containsUnprotectedAbsolutePath(value string) bool {
+	for index := 0; index < len(value); index++ {
+		if strings.HasPrefix(value[index:], workspaceProjectionMarker) {
+			index += len(workspaceProjectionMarker) - 1
 			continue
 		}
-		if end < len(value) {
-			next, _ := utf8.DecodeRuneInString(value[end:])
-			if unicode.IsSpace(next) {
-				return redactAmbiguousAbsolutePath(value), true
+		if isPathSeparator(value[index]) {
+			if strings.HasSuffix(value[:index], workspaceProjectionMarker) {
+				continue
 			}
+			if workspaceSeparatorStartBoundary(value, index) {
+				return true
+			}
+			continue
 		}
-		result.WriteString(value[last:start])
-		result.WriteString("[PATH_REDACTED]")
-		last = end
-		replaced = true
+		if windowsDrivePathStart(value, index) {
+			return true
+		}
 	}
-	if !replaced {
-		return value, false
+	return false
+}
+
+func windowsDrivePathStart(value string, index int) bool {
+	if index+2 >= len(value) || value[index+1] != ':' || !isPathSeparator(value[index+2]) {
+		return false
 	}
-	result.WriteString(value[last:])
-	return result.String(), true
+	letter := value[index]
+	if !((letter >= 'a' && letter <= 'z') || (letter >= 'A' && letter <= 'Z')) {
+		return false
+	}
+	if index == 0 {
+		return true
+	}
+	previous, _ := utf8.DecodeLastRuneInString(value[:index])
+	return unicode.IsSpace(previous) || unicode.IsPunct(previous) || unicode.IsSymbol(previous)
+}
+
+func containsParentPathComponent(value string) bool {
+	for index := 0; index+2 < len(value); index++ {
+		if !isPathSeparator(value[index]) || value[index+1:index+3] != ".." {
+			continue
+		}
+		end := index + 3
+		if end == len(value) || isPathSeparator(value[end]) {
+			return true
+		}
+		next, _ := utf8.DecodeRuneInString(value[end:])
+		if unicode.IsSpace(next) || strings.ContainsRune("\"'`.)]}>,;:!?", next) {
+			return true
+		}
+	}
+	return false
 }
 
 func redactAmbiguousAbsolutePath(value string) string {
