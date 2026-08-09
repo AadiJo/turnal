@@ -769,7 +769,7 @@ func TestMaterializedBundleDoesNotHTMLEscapeAllowedText(t *testing.T) {
 	if err := materializePulled(repo, bundle); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(sharedRoot(repo), "pulled", plan.Manifest.DeviceID, plan.Manifest.BundleID.String()+".json")
+	path := pulledBundlePath(repo, plan.Manifest.RepoID, plan.Manifest.DeviceID, plan.Manifest.BundleID)
 	data, err := readRegularFile(path, MaxMaterializedLimit)
 	if err != nil {
 		t.Fatal(err)
@@ -895,6 +895,13 @@ func TestRepoIDChangeCannotReuseOldObservationCursorAfterCrash(t *testing.T) {
 	if err := writeJSONAtomic(policyPath(receiver), policy, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	status, err := New(receiver).Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Pulled != 0 {
+		t.Fatalf("new RepoID counted %d materializations from the old scope", status.Pulled)
+	}
 	if _, err := New(receiver).Sync(context.Background(), DirectionPull); err == nil || !strings.Contains(err.Error(), "identity") {
 		t.Fatalf("RepoID transition reused the old observation cursor: %v", err)
 	}
@@ -971,7 +978,7 @@ func TestPullDoesNotExposeEarlierBundleWhenLaterBundleIsInvalid(t *testing.T) {
 	if _, err := New(receiver).Sync(context.Background(), DirectionPull); err == nil || !strings.Contains(err.Error(), "content hash mismatch") {
 		t.Fatalf("invalid batch pull error = %v", err)
 	}
-	firstPath := filepath.Join(sharedRoot(receiver), "pulled", identity.DeviceID, bundles[0].Stored.Manifest.BundleID.String()+".json")
+	firstPath := pulledBundlePath(receiver, bundles[0].Stored.Manifest.RepoID, identity.DeviceID, bundles[0].Stored.Manifest.BundleID)
 	if _, err := os.Stat(firstPath); !os.IsNotExist(err) {
 		t.Fatalf("earlier bundle became visible before full batch validation: %v", err)
 	}

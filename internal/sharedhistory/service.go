@@ -69,7 +69,7 @@ func (manager *Manager) statusLocked(ctx context.Context) (Status, error) {
 		}
 		pending++
 	}
-	pulled, err := countPulled(manager.repo)
+	pulled, err := countPulled(manager.repo, policy.RepoID)
 	if err != nil {
 		return Status{}, err
 	}
@@ -421,7 +421,7 @@ func (manager *Manager) readLocked(ctx context.Context, value string) (StoredBun
 		}
 		return bundle, nil
 	}
-	path := filepath.Join(sharedRoot(manager.repo), "pulled", deviceID, bundleID.String()+".json")
+	path := pulledBundlePath(manager.repo, policy.RepoID, deviceID, bundleID)
 	data, err := readRegularFile(path, MaxMaterializedLimit)
 	if err != nil {
 		return StoredBundle{}, err
@@ -476,8 +476,8 @@ func promoteCommitted(state *stateFile, head string) int {
 	return count
 }
 
-func countPulled(repo *checkpoint.Repo) (int, error) {
-	root := filepath.Join(sharedRoot(repo), "pulled")
+func countPulled(repo *checkpoint.Repo, repoID primitives.RepoID) (int, error) {
+	root := filepath.Join(sharedRoot(repo), "pulled", repoID.String())
 	count := 0
 	err := filepath.WalkDir(root, func(_ string, entry os.DirEntry, err error) error {
 		if err != nil {

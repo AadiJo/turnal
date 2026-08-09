@@ -50,7 +50,7 @@ turnal sync status
 turnal share show v1:<device-id>:<bundle-id> --json
 ```
 
-Pull writes verified bundles beneath `.turnal/shared-history/pulled/`. It does not change the workspace, the project's `.git/`, or Turnal's private checkpoint repository. The pulled JSON files are a derived local materialization; signed Git history remains the transport source.
+Pull writes verified bundles beneath `.turnal/shared-history/pulled/<repo-id>/`. It does not change the workspace, the project's `.git/`, or Turnal's private checkpoint repository. The RepoID namespace keeps reconfigured project scopes separate. The pulled JSON files are a derived local materialization; signed Git history remains the transport source.
 
 Each publishing device owns an advancing ref:
 

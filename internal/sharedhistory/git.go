@@ -592,7 +592,7 @@ func (store *gitStore) showFile(ctx context.Context, commit, path string, limit 
 }
 
 func materializePulled(repo *checkpoint.Repo, bundle StoredBundle) error {
-	path := filepath.Join(sharedRoot(repo), "pulled", bundle.Manifest.DeviceID, bundle.Manifest.BundleID.String()+".json")
+	path := pulledBundlePath(repo, bundle.Manifest.RepoID, bundle.Manifest.DeviceID, bundle.Manifest.BundleID)
 	if existingData, err := readRegularFile(path, MaxMaterializedLimit); err == nil {
 		var existing StoredBundle
 		if err := decodeStrictJSON(existingData, &existing); err != nil {
@@ -624,6 +624,10 @@ func materializePulled(repo *checkpoint.Repo, bundle StoredBundle) error {
 		return fmt.Errorf("shared history materialized bundle %s exceeds %d bytes", bundle.Manifest.BundleID, MaxMaterializedLimit)
 	}
 	return writeFileAtomic(path, encoded.Bytes(), 0o600)
+}
+
+func pulledBundlePath(repo *checkpoint.Repo, repoID primitives.RepoID, deviceID string, bundleID primitives.BundleID) string {
+	return filepath.Join(sharedRoot(repo), "pulled", repoID.String(), deviceID, bundleID.String()+".json")
 }
 
 func validateManifest(repoID primitives.RepoID, deviceID string, item BatchBundle, manifest Manifest) error {
