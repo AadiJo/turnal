@@ -257,9 +257,13 @@ turnal reindex
 turnal search "invoice duplicate"
 turnal search "stripe" --session codex-b91e
 turnal search "timeout" --all-worktrees --json
+turnal search "push must fail open" --all-projects
+turnal search "why did sync block push" --all-projects --semantic
 ```
 
-Search defaults to the current worktree and 20 results. Use `--all-worktrees` for attached or imported worktrees and `--limit 0` for every result. Re-run `turnal reindex` whenever newer activity is absent from results.
+Search defaults to the current worktree and 20 results. Use `--all-worktrees` for attached or imported worktrees in the same store, `--all-projects` for every project registered on this machine, and `--limit 0` for every result. Cross-project results identify their project, root, and store; an unhealthy project index produces a warning without suppressing healthy results.
+
+Keyword search is offline. Add `--semantic` for hybrid keyword and local meaning matching. The first semantic search downloads the 8 MB `minishlab/potion-base-2M` model from Hugging Face into the user cache. Recorded history never leaves the machine. Re-run `turnal reindex` inside a project whenever its newer activity is absent from results.
 
 ---
 
@@ -745,18 +749,20 @@ turnal reindex [--quiet]
 Search indexed prompts, replies, tools, paths, and normalized event text.
 
 ```text
-turnal search QUERY [--session ID] [--all-worktrees]
-              [-n N] [--json]
+turnal search QUERY [--session ID] [--all-worktrees|--all-projects]
+              [--semantic] [-n N] [--json]
 ```
 
 | Flag | Description |
 | --- | --- |
 | `--session ID` | Restrict results to one session. |
 | `--all-worktrees` | Search attached and imported worktrees instead of only the current one. |
+| `--all-projects` | Search every healthy local project index registered on this machine. |
+| `--semantic` | Add local meaning matching; downloads an 8 MB model on first use. |
 | `-n, --limit N` | Maximum results; 0 shows all. Default: 20. |
 | `--json` | Emit structured ranked results. |
 
-Run `turnal reindex` after new activity. Every whitespace-separated query term must match.
+Run `turnal reindex` inside a project after new activity. Without `--semantic`, every whitespace-separated query term must match. Results explain whether they matched by keyword, meaning, or both.
 
 ### `turnal rollback`
 

@@ -2,6 +2,7 @@ package index
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -124,5 +125,28 @@ func TestSearchFindsPromptToolPathAndEventOnlyTurns(t *testing.T) {
 	}
 	if len(filtered) != 0 {
 		t.Fatalf("filtered results = %#v, want none", filtered)
+	}
+
+	documents, err := store.SearchDocuments(SearchQuery{})
+	if err != nil {
+		t.Fatalf("SearchDocuments: %v", err)
+	}
+	if len(documents) != 2 {
+		t.Fatalf("search documents = %d, want 2", len(documents))
+	}
+	if documents[0].Result.TurnID != firstTurn {
+		t.Fatalf("first search document turn = %s, want %s", documents[0].Result.TurnID, firstTurn)
+	}
+	for _, want := range []string{"update the app file", "apply_patch", "app.txt", "retry delay survives a successful request"} {
+		if !strings.Contains(documents[0].Text, want) {
+			t.Fatalf("first search document missing %q:\n%s", want, documents[0].Text)
+		}
+	}
+	filteredDocuments, err := store.SearchDocuments(SearchQuery{Session: otherSession})
+	if err != nil {
+		t.Fatalf("SearchDocuments filtered: %v", err)
+	}
+	if len(filteredDocuments) != 0 {
+		t.Fatalf("filtered search documents = %#v, want none", filteredDocuments)
 	}
 }

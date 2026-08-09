@@ -160,88 +160,160 @@ func (s *Store) Search(query SearchQuery) ([]SearchResult, error) {
 
 	var results []SearchResult
 	for rows.Next() {
-		var streamText string
-		var worktreeText sql.NullString
-		var sessionText string
-		var turnText string
-		var firstText sql.NullString
-		var lastText sql.NullString
-		var adapter sql.NullString
-		var model sql.NullString
-		var prompt sql.NullString
-		var assistant sql.NullString
-		var tools sql.NullString
-		var paths sql.NullString
-		var snippet sql.NullString
-		var rank float64
-		if err := rows.Scan(
-			&streamText,
-			&worktreeText,
-			&sessionText,
-			&turnText,
-			&firstText,
-			&lastText,
-			&adapter,
-			&model,
-			&prompt,
-			&assistant,
-			&tools,
-			&paths,
-			&snippet,
-			&rank,
-		); err != nil {
+		row := searchResultRow{}
+		if err := rows.Scan(row.destinations(true)...); err != nil {
 			return nil, fmt.Errorf("scan search result: %w", err)
 		}
-
-		sessionID, err := primitives.ParseSessionID(sessionText)
+		result, err := row.result()
 		if err != nil {
-			return nil, fmt.Errorf("index search session invariant failed: %w", err)
+			return nil, err
 		}
-		streamID, err := primitives.ParseEventStreamID(streamText)
-		if err != nil {
-			return nil, fmt.Errorf("index search stream invariant failed: %w", err)
-		}
-		var worktreeID primitives.WorktreeID
-		if worktreeText.Valid && worktreeText.String != "" {
-			worktreeID, err = primitives.ParseWorktreeID(worktreeText.String)
-			if err != nil {
-				return nil, fmt.Errorf("index search worktree invariant failed: %w", err)
-			}
-		}
-		turnID, err := primitives.ParseTurnID(turnText)
-		if err != nil {
-			return nil, fmt.Errorf("index search turn invariant failed for session %s: %w", sessionID, err)
-		}
-		first, err := parseOptionalTime(firstText)
-		if err != nil {
-			return nil, fmt.Errorf("parse indexed search first event time for %s:%s: %w", sessionID, turnID, err)
-		}
-		last, err := parseOptionalTime(lastText)
-		if err != nil {
-			return nil, fmt.Errorf("parse indexed search last event time for %s:%s: %w", sessionID, turnID, err)
-		}
-
-		results = append(results, SearchResult{
-			SessionID:  sessionID,
-			WorktreeID: worktreeID,
-			StreamID:   streamID,
-			TurnID:     turnID,
-			First:      first,
-			Last:       last,
-			Adapter:    nullableString(adapter),
-			Model:      nullableString(model),
-			Prompt:     nullableString(prompt),
-			Assistant:  nullableString(assistant),
-			ToolNames:  splitSearchList(nullableString(tools)),
-			Paths:      splitSearchList(nullableString(paths)),
-			Snippet:    nullableString(snippet),
-			Rank:       rank,
-		})
+		results = append(results, result)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate search results: %w", err)
 	}
 	return results, nil
+}
+
+// SearchDocuments returns the indexed text in stable turn order. Filtering
+// mirrors Search, but no FTS predicate is applied because semantic matching
+// must be able to find turns that share no literal query terms.
+func (s *Store) SearchDocuments(query SearchQuery) ([]SearchDocument, error) {
+	args := make([]any, 0, 2)
+	sqlText := `
+		SELECT stream_id, worktree_id, session_id, turn_id, first_at, last_at, adapter, model, prompt, assistant, tools, paths,
+		       event_text
+		FROM turn_search
+		WHERE 1 = 1`
+	if query.Session != "" {
+		sqlText += ` AND session_id = ?`
+		args = append(args, query.Session.String())
+	}
+	if query.WorktreeID != "" {
+		sqlText += ` AND worktree_id = ?`
+		args = append(args, query.WorktreeID.String())
+	}
+	sqlText += ` ORDER BY session_id, CAST(turn_id AS INTEGER), stream_id`
+
+	rows, err := s.db.QueryContext(context.Background(), sqlText, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query semantic search documents: %w", err)
+	}
+	defer rows.Close()
+
+	var documents []SearchDocument
+	for rows.Next() {
+		row := searchResultRow{}
+		var eventText sql.NullString
+		if err := rows.Scan(append(row.destinations(false), &eventText)...); err != nil {
+			return nil, fmt.Errorf("scan semantic search document: %w", err)
+		}
+		result, err := row.result()
+		if err != nil {
+			return nil, err
+		}
+		documents = append(documents, SearchDocument{
+			Result: result,
+			Text: strings.Join(nonEmptyStrings([]string{
+				result.Adapter,
+				result.Model,
+				result.Prompt,
+				result.Assistant,
+				strings.Join(result.ToolNames, "\n"),
+				strings.Join(result.Paths, "\n"),
+				nullableString(eventText),
+			}), "\n"),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate semantic search documents: %w", err)
+	}
+	return documents, nil
+}
+
+type searchResultRow struct {
+	streamText  string
+	worktree    sql.NullString
+	sessionText string
+	turnText    string
+	first       sql.NullString
+	last        sql.NullString
+	adapter     sql.NullString
+	model       sql.NullString
+	prompt      sql.NullString
+	assistant   sql.NullString
+	tools       sql.NullString
+	paths       sql.NullString
+	snippet     sql.NullString
+	rank        float64
+}
+
+func (row *searchResultRow) destinations(withMatch bool) []any {
+	values := []any{
+		&row.streamText,
+		&row.worktree,
+		&row.sessionText,
+		&row.turnText,
+		&row.first,
+		&row.last,
+		&row.adapter,
+		&row.model,
+		&row.prompt,
+		&row.assistant,
+		&row.tools,
+		&row.paths,
+	}
+	if withMatch {
+		values = append(values, &row.snippet, &row.rank)
+	}
+	return values
+}
+
+func (row searchResultRow) result() (SearchResult, error) {
+	sessionID, err := primitives.ParseSessionID(row.sessionText)
+	if err != nil {
+		return SearchResult{}, fmt.Errorf("index search session invariant failed: %w", err)
+	}
+	streamID, err := primitives.ParseEventStreamID(row.streamText)
+	if err != nil {
+		return SearchResult{}, fmt.Errorf("index search stream invariant failed: %w", err)
+	}
+	var worktreeID primitives.WorktreeID
+	if row.worktree.Valid && row.worktree.String != "" {
+		worktreeID, err = primitives.ParseWorktreeID(row.worktree.String)
+		if err != nil {
+			return SearchResult{}, fmt.Errorf("index search worktree invariant failed: %w", err)
+		}
+	}
+	turnID, err := primitives.ParseTurnID(row.turnText)
+	if err != nil {
+		return SearchResult{}, fmt.Errorf("index search turn invariant failed for session %s: %w", sessionID, err)
+	}
+	first, err := parseOptionalTime(row.first)
+	if err != nil {
+		return SearchResult{}, fmt.Errorf("parse indexed search first event time for %s:%s: %w", sessionID, turnID, err)
+	}
+	last, err := parseOptionalTime(row.last)
+	if err != nil {
+		return SearchResult{}, fmt.Errorf("parse indexed search last event time for %s:%s: %w", sessionID, turnID, err)
+	}
+	return SearchResult{
+		SessionID:  sessionID,
+		WorktreeID: worktreeID,
+		StreamID:   streamID,
+		TurnID:     turnID,
+		First:      first,
+		Last:       last,
+		Adapter:    nullableString(row.adapter),
+		Model:      nullableString(row.model),
+		Prompt:     nullableString(row.prompt),
+		Assistant:  nullableString(row.assistant),
+		ToolNames:  splitSearchList(nullableString(row.tools)),
+		Paths:      splitSearchList(nullableString(row.paths)),
+		Snippet:    nullableString(row.snippet),
+		Rank:       row.rank,
+	}, nil
 }
 
 func (s *Store) LoadGraph(query GraphQuery) ([]GraphSession, error) {

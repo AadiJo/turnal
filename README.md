@@ -295,6 +295,8 @@ turnal show <session>:<turn>             # Normalized events for one turn
 turnal show <session>:<turn> --full      # Include raw records/transcript text
 turnal diff <session>:<turn>             # Pre-to-post patch
 turnal search "authentication failure"  # Search the SQLite projection
+turnal search "push must fail open" --all-projects
+turnal search "why did sync block push" --all-projects --semantic
 turnal blame src/auth.go:42              # Agent intent behind a line
 turnal blame src/auth.go:42 --verbose    # Intent, evidence, human request, and action facts
 ```
@@ -310,6 +312,18 @@ turnal reindex
 ```
 
 Reindexing rebuilds SQLite from the event logs and private checkpoint refs.
+
+Search defaults to the current worktree. `--all-worktrees` broadens the query
+within its Turnal store; `--all-projects` searches the healthy indexes of every
+project registered on this machine and labels each result with its project,
+root, and store. Missing or stale project indexes are reported without hiding
+results from healthy projects.
+
+Keyword search remains the offline default. Add `--semantic` to combine exact
+matches with local meaning similarity. The first semantic search downloads the
+8 MB `minishlab/potion-base-2M` model from Hugging Face into the user cache.
+Turnal sends no prompts, transcripts, tool data, or other recorded history.
+Every result states whether it matched by keyword, meaning, or both.
 
 ### Local viewer
 

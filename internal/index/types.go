@@ -99,6 +99,14 @@ type SearchResult struct {
 	Rank       float64                  `json:"rank"`
 }
 
+// SearchDocument is the complete indexed text for one turn. It is exposed to
+// local discovery so semantic ranking can reuse the disposable projection
+// without reading private event logs a second time.
+type SearchDocument struct {
+	Result SearchResult
+	Text   string
+}
+
 type BlameCacheQuery struct {
 	ScopeSession  primitives.SessionID
 	Path          primitives.RepoPath
