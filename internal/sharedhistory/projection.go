@@ -559,7 +559,7 @@ func redactAbsolutePaths(value string) (string, bool) {
 	if !containsUnprotectedAbsolutePath(value) {
 		return value, false
 	}
-	return redactAmbiguousAbsolutePath(value), true
+	return "[PATH_REDACTED]", true
 }
 
 func containsUnprotectedAbsolutePath(value string) bool {
@@ -597,7 +597,7 @@ func containsUnprotectedFileURI(value string) bool {
 		index := searchFrom + relative
 		if index > 0 {
 			previous, _ := utf8.DecodeLastRuneInString(value[:index])
-			if !unicode.IsSpace(previous) && !strings.ContainsRune("\"'`()[]{}<>=,;", previous) {
+			if !unicode.IsSpace(previous) && !unicode.IsPunct(previous) && !unicode.IsSymbol(previous) {
 				searchFrom = index + len("file:")
 				continue
 			}
@@ -656,67 +656,6 @@ func containsParentPathComponent(value string) bool {
 		}
 	}
 	return false
-}
-
-func redactAmbiguousAbsolutePath(value string) string {
-	preserved := quotedWorkspacePaths(value)
-	if len(preserved) == 0 {
-		return "[PATH_REDACTED]"
-	}
-	return "[PATH_REDACTED] " + strings.Join(preserved, " ")
-}
-
-func quotedWorkspacePaths(value string) []string {
-	var preserved []string
-	remaining := value
-	for {
-		markerIndex := strings.Index(remaining, workspaceProjectionMarker)
-		if markerIndex < 0 {
-			return preserved
-		}
-		if markerIndex == 0 {
-			remaining = remaining[len(workspaceProjectionMarker):]
-			continue
-		}
-		quote := remaining[markerIndex-1]
-		if quote != '\'' && quote != '"' && quote != '`' {
-			remaining = remaining[markerIndex+len(workspaceProjectionMarker):]
-			continue
-		}
-		closeOffset := strings.IndexByte(remaining[markerIndex+len(workspaceProjectionMarker):], quote)
-		if closeOffset < 0 {
-			remaining = remaining[markerIndex+len(workspaceProjectionMarker):]
-			continue
-		}
-		closeIndex := markerIndex + len(workspaceProjectionMarker) + closeOffset
-		suffix := remaining[markerIndex+len(workspaceProjectionMarker) : closeIndex]
-		if safeQuotedWorkspaceSuffix(suffix) {
-			preserved = append(preserved, remaining[markerIndex-1:closeIndex+1])
-		}
-		remaining = remaining[closeIndex+1:]
-	}
-}
-
-func safeQuotedWorkspaceSuffix(suffix string) bool {
-	if suffix == "" {
-		return true
-	}
-	if !isPathSeparator(suffix[0]) || containsParentPathComponent(suffix) {
-		return false
-	}
-	ambiguousDelimiter := false
-	for _, character := range suffix[1:] {
-		if character == '/' || character == '\\' {
-			if ambiguousDelimiter {
-				return false
-			}
-			continue
-		}
-		if unicode.IsSpace(character) || strings.ContainsRune("\"'`()[]{}<>=,;:!?|&", character) {
-			ambiguousDelimiter = true
-		}
-	}
-	return true
 }
 
 func containsDetectedSecret(value string) bool {

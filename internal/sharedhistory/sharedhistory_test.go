@@ -250,13 +250,13 @@ func TestSanitizeTextRecognizesUnambiguousWorkspacePathBoundaries(t *testing.T) 
 			name:          "quoted after another path",
 			workspaceRoot: "/home/alice/project",
 			text:          `Compare /tmp/input with "/home/alice/project/file"`,
-			want:          `[PATH_REDACTED] "$WORKSPACE/file"`,
+			want:          `[PATH_REDACTED]`,
 		},
 		{
 			name:          "quoted before ambiguous path",
 			workspaceRoot: "/home/alice/project",
 			text:          `Use "/home/alice/project/file" then /opt/Secret Project/private.txt`,
-			want:          `[PATH_REDACTED] "$WORKSPACE/file"`,
+			want:          `[PATH_REDACTED]`,
 		},
 		{
 			name:          "unix trailing separator",
@@ -374,6 +374,8 @@ func TestSanitizeTextFailsClosedOnAnyAbsolutePath(t *testing.T) {
 		"Inspect file:///secret.txt",
 		"Inspect file://localhost/secret.txt",
 		"Inspect file://server/share/private.txt",
+		"Inspect →file://server/share/private.txt",
+		"Inspect uri:file://server/share/private.txt",
 	} {
 		truncations := Truncations{}
 		got := sanitizeText("/workspace", text, DefaultFieldLimit, &truncations)
