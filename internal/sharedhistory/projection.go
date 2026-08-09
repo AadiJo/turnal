@@ -387,6 +387,9 @@ func workspaceRootVariants(workspaceRoot string) []string {
 		roots = append(roots, trimWorkspaceTrailingSeparators(resolved))
 	}
 	for _, root := range append([]string(nil), roots...) {
+		roots = append(roots, platformWorkspaceRootAliases(root)...)
+	}
+	for _, root := range append([]string(nil), roots...) {
 		slashRoot := filepath.ToSlash(root)
 		switch {
 		case strings.HasPrefix(slashRoot, "/private/var/") || strings.HasPrefix(slashRoot, "/private/tmp/"):

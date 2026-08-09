@@ -165,6 +165,10 @@ func historyRef(deviceID string) string {
 	return "refs/turnal/v1/history/" + deviceID
 }
 
+func incomingRef(deviceID string) string {
+	return "refs/turnal/v1/incoming/" + deviceID + "/tip"
+}
+
 func trackingRefPrefix(remote string, repoID primitives.RepoID) string {
 	digest := strings.TrimPrefix(sha256Bytes([]byte(publicRemoteIdentity(remote)+"\x00"+repoID.String())), "sha256:")
 	return "refs/turnal/v1/tracking/" + digest[:32] + "/"
@@ -254,7 +258,7 @@ func (store *gitStore) push(ctx context.Context, remote, deviceID, lastSeen stri
 		return "", fmt.Errorf("shared history remote ref rewound or was replaced after head %s was observed; current head is %s", lastSeen, remoteHead)
 	}
 	if remoteHead != "" && remoteHead != local {
-		incoming := fmt.Sprintf("refs/turnal/v1/incoming/%s/%s", deviceID, remoteHead)
+		incoming := incomingRef(deviceID)
 		if _, err := store.run(ctx, "fetch", "--no-tags", remote, "+"+ref+":"+incoming); err != nil {
 			return "", err
 		}
@@ -309,7 +313,7 @@ func (store *gitStore) fetchAndIngest(ctx context.Context, remote string, remote
 	if remoteRef.Head == lastSeen {
 		return nil, lastSeen, nil
 	}
-	incoming := fmt.Sprintf("refs/turnal/v1/incoming/%s/%s", remoteRef.DeviceID, remoteRef.Head)
+	incoming := incomingRef(remoteRef.DeviceID)
 	if _, err := store.run(ctx, "fetch", "--no-tags", remote, "+"+remoteRef.Ref+":"+incoming); err != nil {
 		return nil, lastSeen, err
 	}
