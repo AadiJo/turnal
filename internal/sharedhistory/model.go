@@ -13,7 +13,9 @@ const (
 	EvidencePublisherClaim = "publisher_attested_projection"
 	DefaultFieldLimit      = 64 << 10
 	DefaultBundleLimit     = 2 << 20
-	MaxBundlesPerBatch     = 256
+	MaxMaterializedLimit   = 8 << 20
+	MaxBatchBytes          = 16 << 20
+	MaxBundlesPerBatch     = 16
 )
 
 type PromptMode string

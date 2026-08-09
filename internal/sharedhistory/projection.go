@@ -17,9 +17,10 @@ import (
 )
 
 type turnSource struct {
-	Stream eventlog.DurableStream
-	TurnID primitives.TurnID
-	Events []eventlog.Event
+	Stream        eventlog.DurableStream
+	WorkspaceRoot string
+	TurnID        primitives.TurnID
+	Events        []eventlog.Event
 }
 
 type builtBundle struct {
@@ -44,6 +45,14 @@ var absolutePathPatterns = []*regexp.Regexp{
 }
 
 func listCompletedTurns(repo *checkpoint.Repo) ([]turnSource, error) {
+	worktrees, err := repo.ListWorktrees()
+	if err != nil {
+		return nil, err
+	}
+	workspaceRoots := make(map[primitives.WorktreeID]string, len(worktrees))
+	for _, worktree := range worktrees {
+		workspaceRoots[worktree.WorktreeID] = worktree.Root
+	}
 	streams, err := eventlog.ListDurableStreams(repo.MetadataDir)
 	if err != nil {
 		return nil, err
@@ -62,7 +71,7 @@ func listCompletedTurns(repo *checkpoint.Repo) ([]turnSource, error) {
 		}
 		for turnID, events := range byTurn {
 			if turnCompleted(events) {
-				turns = append(turns, turnSource{Stream: stream, TurnID: turnID, Events: events})
+				turns = append(turns, turnSource{Stream: stream, WorkspaceRoot: workspaceRoots[stream.WorktreeID], TurnID: turnID, Events: events})
 			}
 		}
 	}
@@ -118,6 +127,9 @@ func findCompletedTurn(repo *checkpoint.Repo, sessionID primitives.SessionID, tu
 }
 
 func buildBundle(repo *checkpoint.Repo, identity deviceIdentity, policy policyFile, policyDigest string, source turnSource) (builtBundle, error) {
+	if strings.TrimSpace(source.WorkspaceRoot) == "" {
+		return builtBundle{}, fmt.Errorf("source worktree root is unavailable for stream %s; refusing to project paths without its privacy boundary", source.Stream.StreamID)
+	}
 	bundleID, err := primitives.DeriveBundleID(policy.RepoID, source.Stream.StreamID, source.TurnID)
 	if err != nil {
 		return builtBundle{}, err
@@ -132,7 +144,7 @@ func buildBundle(repo *checkpoint.Repo, identity deviceIdentity, policy policyFi
 	for _, event := range source.Events {
 		ref := SourceRef{StreamID: source.Stream.StreamID, Seq: event.Seq, Hash: event.Hash}
 		sourceRefs = append(sourceRefs, ref)
-		projection, included, links := projectEvent(repo, policy, event, ref, omissions, &truncations)
+		projection, included, links := projectEvent(source.WorkspaceRoot, policy, event, ref, omissions, &truncations)
 		if included {
 			projected = append(projected, projection)
 		}
@@ -194,7 +206,7 @@ func buildBundle(repo *checkpoint.Repo, identity deviceIdentity, policy policyFi
 	}, nil
 }
 
-func projectEvent(repo *checkpoint.Repo, policy policyFile, event eventlog.Event, ref SourceRef, omissions map[string]int, truncations *Truncations) (ContextEvent, bool, []SourceLink) {
+func projectEvent(workspaceRoot string, policy policyFile, event eventlog.Event, ref SourceRef, omissions map[string]int, truncations *Truncations) (ContextEvent, bool, []SourceLink) {
 	projection := ContextEvent{SchemaVersion: SchemaVersion, Type: event.Type, Seq: event.Seq, Time: event.Time, Adapter: event.Adapter, Source: ref}
 	switch event.Type {
 	case primitives.EventTypeTurnStart:
@@ -215,7 +227,7 @@ func projectEvent(repo *checkpoint.Repo, policy policyFile, event eventlog.Event
 			omissions["prompt_policy"]++
 			return projection, true, nil
 		}
-		text := sanitizeText(repo.WorkspaceRoot.String(), payload.Text, policy.FieldLimit, truncations)
+		text := sanitizeText(workspaceRoot, payload.Text, policy.FieldLimit, truncations)
 		projection.Prompt = &PromptProjection{Text: text.Text, Redacted: payload.Redacted || text.Redacted, Truncated: text.Truncated, Bytes: text.OriginalBytes}
 	case primitives.EventTypeAgentIntent:
 		payload, err := provenance.ParseIntentPayload(event.Payload)
@@ -223,10 +235,10 @@ func projectEvent(repo *checkpoint.Repo, policy policyFile, event eventlog.Event
 			omissions["invalid_intent_payload"]++
 			return ContextEvent{}, false, nil
 		}
-		problem := sanitizeText(repo.WorkspaceRoot.String(), payload.Problem, policy.FieldLimit, truncations)
-		scope, scopeRedacted := sanitizeList(repo.WorkspaceRoot.String(), payload.Scope, policy.FieldLimit, truncations)
-		evidence, evidenceRedacted := sanitizeList(repo.WorkspaceRoot.String(), payload.Evidence, policy.FieldLimit, truncations)
-		agentType := sanitizeIdentifier(repo.WorkspaceRoot.String(), payload.AgentType, truncations)
+		problem := sanitizeText(workspaceRoot, payload.Problem, policy.FieldLimit, truncations)
+		scope, scopeRedacted := sanitizeList(workspaceRoot, payload.Scope, policy.FieldLimit, truncations)
+		evidence, evidenceRedacted := sanitizeList(workspaceRoot, payload.Evidence, policy.FieldLimit, truncations)
+		agentType := sanitizeIdentifier(workspaceRoot, payload.AgentType, truncations)
 		projection.Intent = &IntentProjection{
 			Problem:   TextProjection{Text: problem.Text, Redacted: problem.Redacted, Truncated: problem.Truncated, Bytes: problem.OriginalBytes},
 			Scope:     scope,
@@ -242,7 +254,7 @@ func projectEvent(repo *checkpoint.Repo, policy policyFile, event eventlog.Event
 			omissions["invalid_assistant_payload"]++
 			return ContextEvent{}, false, nil
 		}
-		text := sanitizeText(repo.WorkspaceRoot.String(), payload.Text, policy.FieldLimit, truncations)
+		text := sanitizeText(workspaceRoot, payload.Text, policy.FieldLimit, truncations)
 		projection.Assistant = &TextProjection{Text: text.Text, Redacted: text.Redacted, Truncated: text.Truncated, Bytes: text.OriginalBytes}
 	case primitives.EventTypeToolCall:
 		var payload struct {
@@ -253,7 +265,7 @@ func projectEvent(repo *checkpoint.Repo, policy policyFile, event eventlog.Event
 			omissions["invalid_tool_call_payload"]++
 			return ContextEvent{}, false, nil
 		}
-		name := sanitizeIdentifier(repo.WorkspaceRoot.String(), payload.ToolName, truncations)
+		name := sanitizeIdentifier(workspaceRoot, payload.ToolName, truncations)
 		if name.Text == "" {
 			omissions["invalid_tool_call_name"]++
 			return ContextEvent{}, false, nil
@@ -269,7 +281,7 @@ func projectEvent(repo *checkpoint.Repo, policy policyFile, event eventlog.Event
 			omissions["invalid_tool_result_payload"]++
 			return ContextEvent{}, false, nil
 		}
-		name := sanitizeIdentifier(repo.WorkspaceRoot.String(), payload.ToolName, truncations)
+		name := sanitizeIdentifier(workspaceRoot, payload.ToolName, truncations)
 		if name.Text == "" {
 			omissions["invalid_tool_result_name"]++
 			return ContextEvent{}, false, nil

@@ -4,7 +4,7 @@ Turnal shared history publishes review context without publishing the exact loca
 
 ## Configure and publish
 
-The remote must be a Git URL or filesystem path reachable by Git from the current machine. It must accept custom refs under `refs/turnal/`.
+The remote must be a trusted Git URL or filesystem path reachable by Git from the current machine. It must accept custom refs under `refs/turnal/`. Projection limits bound data Turnal accepts and publishes; they do not sandbox Git's packfile transport, so use a dedicated remote with server-side storage quotas when publishers are not equally trusted.
 
 ```sh
 turnal share enable \
@@ -82,7 +82,7 @@ The isolated repository beneath `.turnal/shared-history/repository/` is a crash-
 
 Turnal will not change the remote or privacy policy while that outbox is pending, because the queued projection was approved under the previous policy. Publish it first. After the outbox is clear, changing the remote requires both `share enable --include-existing-history` and a new preview approval. The next push copies the device's existing approved Git history to the new remote even when no new turns are pending. That existing history is copied unchanged; a new prompt mode applies only to turns that have not already been published.
 
-One publication batch contains at most 256 turns. If more are pending, rerun `turnal sync push`; status continues to report the remainder. Remote URL userinfo is retained only in the private policy used for Git transport and is redacted from status and Git diagnostics.
+One publication batch contains at most 16 turns and 16 MiB of encoded bundle data. If more are pending, rerun `turnal sync push`; status continues to report the remainder. Pull advances each publishing device by one verified batch per run, so rerun `turnal sync pull` until it reports `pulled: 0`. Remote URL credentials and query parameters are retained only in the private policy used for Git transport and are redacted from status, consent hashes, and Git diagnostics.
 
 Shared-history Git operations use the configured remote directly, scrub inherited `GIT_*` variables, and never update source Git refs. `turnal sync push` reports transport failures; normal Turnal capture and project Git commands do not invoke it.
 

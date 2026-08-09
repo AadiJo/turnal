@@ -110,7 +110,7 @@ func configureLocked(repo *checkpoint.Repo, options ConfigureOptions) (Status, e
 		if err != nil {
 			return Status{}, err
 		}
-		if previous.Remote != policy.Remote && head != "" && !options.IncludeExistingHistory {
+		if publicRemoteIdentity(previous.Remote) != publicRemoteIdentity(policy.Remote) && head != "" && !options.IncludeExistingHistory {
 			return Status{}, fmt.Errorf("changing the remote will copy all previously approved shared history; rerun with --include-existing-history to consent")
 		}
 		if previous.RepoID != policy.RepoID {
@@ -137,7 +137,19 @@ func configureLocked(repo *checkpoint.Repo, options ConfigureOptions) (Status, e
 }
 
 func normalizeRemote(remote string) (string, error) {
-	if strings.Contains(remote, "://") || looksLikeSCPRemote(remote) || filepath.IsAbs(remote) {
+	if strings.Contains(remote, "::") {
+		return "", fmt.Errorf("shared history remote helpers are not supported")
+	}
+	if separator := strings.Index(remote, "://"); separator >= 0 {
+		scheme := strings.ToLower(remote[:separator])
+		switch scheme {
+		case "file", "git", "http", "https", "ssh", "ftp", "ftps":
+			return remote, nil
+		default:
+			return "", fmt.Errorf("unsupported shared history remote scheme %q", scheme)
+		}
+	}
+	if looksLikeSCPRemote(remote) || filepath.IsAbs(remote) {
 		return remote, nil
 	}
 	absolute, err := filepath.Abs(remote)
@@ -153,8 +165,41 @@ func redactRemote(remote string) string {
 		return remote
 	}
 	authorityStart := scheme + 3
-	if at := strings.IndexByte(remote[authorityStart:], '@'); at >= 0 {
-		return remote[:authorityStart] + "[REDACTED]@" + remote[authorityStart+at+1:]
+	authorityEnd := len(remote)
+	if delimiter := strings.IndexAny(remote[authorityStart:], "/?#"); delimiter >= 0 {
+		authorityEnd = authorityStart + delimiter
+	}
+	if at := strings.LastIndexByte(remote[authorityStart:authorityEnd], '@'); at >= 0 {
+		remote = remote[:authorityStart] + "[REDACTED]@" + remote[authorityStart+at+1:]
+	}
+	if secretSuffix := strings.IndexAny(remote, "?#"); secretSuffix >= 0 {
+		return remote[:secretSuffix] + remote[secretSuffix:secretSuffix+1] + "[REDACTED]"
+	}
+	return remote
+}
+
+// publicRemoteIdentity removes transport credentials from values that leave
+// policy.json or identify durable observation state. Credential rotation must
+// not alter consent hashes or make an observed Git endpoint look new.
+func publicRemoteIdentity(remote string) string {
+	if scheme := strings.Index(remote, "://"); scheme >= 0 {
+		if suffix := strings.IndexAny(remote, "?#"); suffix >= 0 {
+			remote = remote[:suffix]
+		}
+		authorityStart := scheme + 3
+		authorityEnd := len(remote)
+		if slash := strings.IndexByte(remote[authorityStart:], '/'); slash >= 0 {
+			authorityEnd = authorityStart + slash
+		}
+		if at := strings.LastIndexByte(remote[authorityStart:authorityEnd], '@'); at >= 0 {
+			remote = remote[:authorityStart] + remote[authorityStart+at+1:]
+		}
+		return remote
+	}
+	if colon := strings.IndexByte(remote, ':'); colon > 0 {
+		if at := strings.LastIndexByte(remote[:colon], '@'); at >= 0 {
+			return remote[at+1:]
+		}
 	}
 	return remote
 }
@@ -226,7 +271,7 @@ func policyHash(policy policyFile) (string, error) {
 		Scanner       string     `json:"scanner_version"`
 		FieldLimit    int        `json:"field_limit"`
 		BundleLimit   int        `json:"bundle_limit"`
-	}{SchemaVersion, policy.RepoID.String(), policy.Remote, policy.PromptMode, policy.AllowlistVersion, policy.ScannerVersion, policy.FieldLimit, policy.BundleLimit}
+	}{SchemaVersion, policy.RepoID.String(), publicRemoteIdentity(policy.Remote), policy.PromptMode, policy.AllowlistVersion, policy.ScannerVersion, policy.FieldLimit, policy.BundleLimit}
 	data, err := json.Marshal(input)
 	if err != nil {
 		return "", fmt.Errorf("encode shared history policy hash: %w", err)
@@ -283,6 +328,7 @@ func loadState(repo *checkpoint.Repo) (stateFile, error) {
 }
 
 func alignStateRemote(state *stateFile, remote string) {
+	remote = publicRemoteIdentity(remote)
 	if state.Remote == remote {
 		return
 	}

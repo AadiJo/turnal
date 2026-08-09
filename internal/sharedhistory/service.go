@@ -239,6 +239,7 @@ func (manager *Manager) syncPush(ctx context.Context) (Result, error) {
 		return Result{}, err
 	}
 	var bundles []builtBundle
+	batchBytes := 0
 	blockedThisRun := 0
 	for _, source := range turns {
 		bundleID, err := primitives.DeriveBundleID(policy.RepoID, source.Stream.StreamID, source.TurnID)
@@ -257,8 +258,13 @@ func (manager *Manager) syncPush(ctx context.Context) (Result, error) {
 			blockedThisRun++
 			continue
 		}
+		bundleBytes := len(bundle.Manifest) + len(bundle.EventsJSON)
+		if len(bundles) > 0 && batchBytes+bundleBytes > MaxBatchBytes {
+			break
+		}
 		delete(state.Blocked, bundleID.String())
 		bundles = append(bundles, bundle)
+		batchBytes += bundleBytes
 		if len(bundles) == MaxBundlesPerBatch {
 			break
 		}
@@ -352,12 +358,12 @@ func (manager *Manager) syncPull(ctx context.Context) (Result, error) {
 	}
 	pulled := 0
 	for _, ref := range refs {
-		bundles, err := store.fetchAndIngest(ctx, policy.Remote, ref, state.LastSeen[ref.DeviceID], policy.RepoID)
+		bundles, observedHead, err := store.fetchAndIngest(ctx, policy.Remote, ref, state.LastSeen[ref.DeviceID], policy.RepoID)
 		if err != nil {
 			return Result{Direction: DirectionPull, Pulled: pulled}, err
 		}
 		pulled += len(bundles)
-		state.LastSeen[ref.DeviceID] = ref.Head
+		state.LastSeen[ref.DeviceID] = observedHead
 		if err := saveState(manager.repo, state); err != nil {
 			return Result{Direction: DirectionPull, Pulled: pulled}, err
 		}
@@ -416,7 +422,7 @@ func (manager *Manager) readLocked(ctx context.Context, value string) (StoredBun
 		return bundle, nil
 	}
 	path := filepath.Join(sharedRoot(manager.repo), "pulled", deviceID, bundleID.String()+".json")
-	data, err := readRegularFile(path, DefaultBundleLimit*2)
+	data, err := readRegularFile(path, MaxMaterializedLimit)
 	if err != nil {
 		return StoredBundle{}, err
 	}

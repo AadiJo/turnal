@@ -78,6 +78,13 @@ func (store *gitStore) commitBatch(ctx context.Context, batch Batch, bundles []b
 	if len(bundles) == 0 {
 		return store.localHead(ctx)
 	}
+	batchBytes := 0
+	for _, bundle := range bundles {
+		batchBytes += len(bundle.Manifest) + len(bundle.EventsJSON)
+	}
+	if len(bundles) > MaxBundlesPerBatch || batchBytes > MaxBatchBytes {
+		return "", fmt.Errorf("shared history batch exceeds %d bundles or %d bytes", MaxBundlesPerBatch, MaxBatchBytes)
+	}
 	head, err := store.localHead(ctx)
 	if err != nil {
 		return "", err
@@ -149,7 +156,7 @@ func historyRef(deviceID string) string {
 }
 
 func trackingRefPrefix(remote string) string {
-	digest := strings.TrimPrefix(sha256Bytes([]byte(remote)), "sha256:")
+	digest := strings.TrimPrefix(sha256Bytes([]byte(publicRemoteIdentity(remote))), "sha256:")
 	return "refs/turnal/v1/tracking/" + digest[:32] + "/"
 }
 
@@ -227,6 +234,12 @@ func (store *gitStore) push(ctx context.Context, remote, deviceID, lastSeen stri
 	if remoteHead == "" && lastSeen != "" {
 		return "", fmt.Errorf("shared history remote ref disappeared after head %s was observed", lastSeen)
 	}
+	// A previous attempt may have completed the network push and crashed before
+	// promoting the durable outbox in state.json. The remote already matching the
+	// local tip is the idempotent success case, not a ref rewrite.
+	if remoteHead == local {
+		return local, nil
+	}
 	if remoteHead != "" && lastSeen != "" && remoteHead != lastSeen {
 		return "", fmt.Errorf("shared history remote ref rewound or was replaced after head %s was observed; current head is %s", lastSeen, remoteHead)
 	}
@@ -282,17 +295,17 @@ func (store *gitStore) listRemoteHistory(ctx context.Context, remote string) ([]
 	return refs, nil
 }
 
-func (store *gitStore) fetchAndIngest(ctx context.Context, remote string, remoteRef remoteRef, lastSeen string, repoID primitives.RepoID) ([]StoredBundle, error) {
+func (store *gitStore) fetchAndIngest(ctx context.Context, remote string, remoteRef remoteRef, lastSeen string, repoID primitives.RepoID) ([]StoredBundle, string, error) {
 	if remoteRef.Head == lastSeen {
-		return nil, nil
+		return nil, lastSeen, nil
 	}
 	incoming := fmt.Sprintf("refs/turnal/v1/incoming/%s/%s", remoteRef.DeviceID, remoteRef.Head)
 	if _, err := store.run(ctx, "fetch", "--no-tags", remote, "+"+remoteRef.Ref+":"+incoming); err != nil {
-		return nil, err
+		return nil, lastSeen, err
 	}
 	if lastSeen != "" {
 		if _, err := store.run(ctx, "merge-base", "--is-ancestor", lastSeen, remoteRef.Head); err != nil {
-			return nil, fmt.Errorf("shared history ref %s rewound from %s to %s", remoteRef.Ref, lastSeen, remoteRef.Head)
+			return nil, lastSeen, fmt.Errorf("shared history ref %s rewound from %s to %s", remoteRef.Ref, lastSeen, remoteRef.Head)
 		}
 	}
 	rangeArg := remoteRef.Head
@@ -301,98 +314,125 @@ func (store *gitStore) fetchAndIngest(ctx context.Context, remote string, remote
 	}
 	output, err := store.run(ctx, "rev-list", "--reverse", rangeArg)
 	if err != nil {
-		return nil, err
+		return nil, lastSeen, err
 	}
 	commits := strings.Fields(output)
+	if len(commits) == 0 {
+		return nil, lastSeen, fmt.Errorf("shared history ref %s has no commits after observed head %s", remoteRef.Ref, lastSeen)
+	}
+	// A pull advances each device by one bounded publication batch. This keeps
+	// validation memory bounded and leaves the tracking ref as a durable cursor.
+	if len(commits) > 1 {
+		commits = commits[:1]
+	}
 	var ingested []StoredBundle
+	batchBytes := 0
 	previous := lastSeen
 	for _, commit := range commits {
 		treeOutput, err := store.run(ctx, "ls-tree", "-rz", "--name-only", commit)
 		if err != nil {
-			return nil, err
+			return nil, lastSeen, err
 		}
 		if err := validateSharedTreePaths(splitNULPaths(treeOutput)); err != nil {
-			return nil, fmt.Errorf("shared history commit %s: %w", commit, err)
+			return nil, lastSeen, fmt.Errorf("shared history commit %s: %w", commit, err)
 		}
 		parents, err := store.run(ctx, "show", "-s", "--format=%P", commit)
 		if err != nil {
-			return nil, err
+			return nil, lastSeen, err
 		}
 		parentFields := strings.Fields(parents)
 		if len(parentFields) > 1 {
-			return nil, fmt.Errorf("shared history commit %s is a merge; device history must be linear", commit)
+			return nil, lastSeen, fmt.Errorf("shared history commit %s is a merge; device history must be linear", commit)
 		}
 		actualPrevious := ""
 		if len(parentFields) > 0 {
 			actualPrevious = parentFields[0]
 		}
 		if previous != "" && actualPrevious != previous {
-			return nil, fmt.Errorf("shared history commit %s does not extend observed head %s", commit, previous)
+			return nil, lastSeen, fmt.Errorf("shared history commit %s does not extend observed head %s", commit, previous)
+		}
+		if previous == "" && actualPrevious != "" {
+			return nil, lastSeen, fmt.Errorf("shared history commit %s does not begin at the device history root", commit)
 		}
 		batchData, err := store.showFile(ctx, commit, "batch.json", 8<<20)
 		if err != nil {
-			return nil, err
+			return nil, lastSeen, err
 		}
 		var batch Batch
 		if err := decodeStrictJSON(batchData, &batch); err != nil {
-			return nil, fmt.Errorf("parse shared history batch at %s: %w", commit, err)
+			return nil, lastSeen, fmt.Errorf("parse shared history batch at %s: %w", commit, err)
 		}
 		public, err := verifyBatch(batch)
 		if err != nil {
-			return nil, err
+			return nil, lastSeen, err
 		}
 		if batch.SchemaVersion != SchemaVersion || len(batch.Bundles) == 0 || len(batch.Bundles) > MaxBundlesPerBatch {
-			return nil, fmt.Errorf("shared history batch %s has an invalid schema or no bundles", commit)
+			return nil, lastSeen, fmt.Errorf("shared history batch %s has an invalid schema or bundle count", commit)
 		}
 		if batch.DeviceID != remoteRef.DeviceID || batch.PreviousHead != actualPrevious {
-			return nil, fmt.Errorf("shared history batch %s has invalid device or previous head", commit)
+			return nil, lastSeen, fmt.Errorf("shared history batch %s has invalid device or previous head", commit)
 		}
 		changedOutput, err := store.run(ctx, "diff-tree", "--root", "--no-commit-id", "--name-only", "-r", "-z", commit)
 		if err != nil {
-			return nil, err
+			return nil, lastSeen, err
 		}
 		if err := validateBatchChanges(splitNULPaths(changedOutput), batch); err != nil {
-			return nil, fmt.Errorf("shared history batch %s: %w", commit, err)
+			return nil, lastSeen, fmt.Errorf("shared history batch %s: %w", commit, err)
 		}
 		seenBundles := make(map[primitives.BundleID]struct{}, len(batch.Bundles))
 		for _, item := range batch.Bundles {
 			if _, exists := seenBundles[item.BundleID]; exists {
-				return nil, fmt.Errorf("shared history batch %s repeats bundle %s", commit, item.BundleID)
+				return nil, lastSeen, fmt.Errorf("shared history batch %s repeats bundle %s", commit, item.BundleID)
 			}
 			seenBundles[item.BundleID] = struct{}{}
 			if item.Path != bundlePath(item.BundleID) {
-				return nil, fmt.Errorf("shared history bundle %s has non-canonical path %s", item.BundleID, item.Path)
+				return nil, lastSeen, fmt.Errorf("shared history bundle %s has non-canonical path %s", item.BundleID, item.Path)
+			}
+			if actualPrevious != "" {
+				for _, name := range []string{"manifest.json", "events.jsonl"} {
+					exists, err := store.fileExistsAtCommit(ctx, actualPrevious, item.Path+"/"+name)
+					if err != nil {
+						return nil, lastSeen, err
+					}
+					if exists {
+						return nil, lastSeen, fmt.Errorf("shared history bundle %s rewrites an existing immutable path", item.BundleID)
+					}
+				}
 			}
 			manifestData, err := store.showFile(ctx, commit, item.Path+"/manifest.json", DefaultBundleLimit)
 			if err != nil {
-				return nil, err
+				return nil, lastSeen, err
 			}
 			eventsData, err := store.showFile(ctx, commit, item.Path+"/events.jsonl", DefaultBundleLimit)
 			if err != nil {
-				return nil, err
+				return nil, lastSeen, err
 			}
 			var manifest Manifest
 			if err := decodeStrictJSON(manifestData, &manifest); err != nil {
-				return nil, fmt.Errorf("parse shared history manifest %s: %w", item.BundleID, err)
+				return nil, lastSeen, fmt.Errorf("parse shared history manifest %s: %w", item.BundleID, err)
 			}
 			if err := validateManifest(repoID, remoteRef.DeviceID, item, manifest); err != nil {
-				return nil, fmt.Errorf("validate shared history manifest %s: %w", item.BundleID, err)
+				return nil, lastSeen, fmt.Errorf("validate shared history manifest %s: %w", item.BundleID, err)
 			}
 			if len(manifestData)+len(eventsData) > DefaultBundleLimit {
-				return nil, fmt.Errorf("shared history bundle %s exceeds %d bytes", item.BundleID, DefaultBundleLimit)
+				return nil, lastSeen, fmt.Errorf("shared history bundle %s exceeds %d bytes", item.BundleID, DefaultBundleLimit)
+			}
+			batchBytes += len(manifestData) + len(eventsData)
+			if batchBytes > MaxBatchBytes {
+				return nil, lastSeen, fmt.Errorf("shared history batch %s exceeds %d bytes", commit, MaxBatchBytes)
 			}
 			if manifest.ContentHashes["events.jsonl"] != sha256Bytes(eventsData) {
-				return nil, fmt.Errorf("shared history event content hash mismatch for %s", item.BundleID)
+				return nil, lastSeen, fmt.Errorf("shared history event content hash mismatch for %s", item.BundleID)
 			}
 			if err := verifyManifest(public, manifest); err != nil {
-				return nil, err
+				return nil, lastSeen, err
 			}
 			events, err := decodeEventsJSONL(eventsData)
 			if err != nil {
-				return nil, fmt.Errorf("decode shared history bundle %s: %w", item.BundleID, err)
+				return nil, lastSeen, fmt.Errorf("decode shared history bundle %s: %w", item.BundleID, err)
 			}
 			if err := validateProjectedEvents(manifest, events); err != nil {
-				return nil, fmt.Errorf("validate shared history bundle %s events: %w", item.BundleID, err)
+				return nil, lastSeen, fmt.Errorf("validate shared history bundle %s events: %w", item.BundleID, err)
 			}
 			stored := StoredBundle{Manifest: manifest, Events: events, PublicKey: batch.PublicKey}
 			ingested = append(ingested, stored)
@@ -401,21 +441,25 @@ func (store *gitStore) fetchAndIngest(ctx context.Context, remote string, remote
 	}
 	for _, bundle := range ingested {
 		if err := materializePulled(store.repo, bundle); err != nil {
-			return nil, err
+			return nil, lastSeen, err
 		}
+	}
+	observedHead := lastSeen
+	if len(commits) > 0 {
+		observedHead = commits[len(commits)-1]
 	}
 	oldTracking, err := store.refValue(ctx, trackingRef(remote, remoteRef.DeviceID))
 	if err != nil {
-		return nil, err
+		return nil, lastSeen, err
 	}
-	args := []string{"update-ref", trackingRef(remote, remoteRef.DeviceID), remoteRef.Head}
+	args := []string{"update-ref", trackingRef(remote, remoteRef.DeviceID), observedHead}
 	if oldTracking != "" {
 		args = append(args, oldTracking)
 	}
 	if _, err := store.run(ctx, args...); err != nil {
-		return nil, err
+		return nil, lastSeen, err
 	}
-	return ingested, nil
+	return ingested, observedHead, nil
 }
 
 // recoverCommittedState reconstructs the outbox after a crash between the Git
@@ -518,6 +562,17 @@ func (store *gitStore) refValue(ctx context.Context, ref string) (string, error)
 	return strings.TrimSpace(output), nil
 }
 
+func (store *gitStore) fileExistsAtCommit(ctx context.Context, commit, path string) (bool, error) {
+	_, err := store.run(ctx, "cat-file", "-e", commit+":"+path)
+	if err == nil {
+		return true, nil
+	}
+	if isGitExitCode(err, 128) {
+		return false, nil
+	}
+	return false, err
+}
+
 func (store *gitStore) showFile(ctx context.Context, commit, path string, limit int64) ([]byte, error) {
 	data, err := store.runBytesLimit(ctx, limit, "show", commit+":"+path)
 	if err != nil {
@@ -528,7 +583,7 @@ func (store *gitStore) showFile(ctx context.Context, commit, path string, limit 
 
 func materializePulled(repo *checkpoint.Repo, bundle StoredBundle) error {
 	path := filepath.Join(sharedRoot(repo), "pulled", bundle.Manifest.DeviceID, bundle.Manifest.BundleID.String()+".json")
-	if existingData, err := readRegularFile(path, DefaultBundleLimit*2); err == nil {
+	if existingData, err := readRegularFile(path, MaxMaterializedLimit); err == nil {
 		var existing StoredBundle
 		if err := decodeStrictJSON(existingData, &existing); err != nil {
 			return fmt.Errorf("parse existing shared history bundle %s: %w", bundle.Manifest.BundleID, err)
@@ -548,7 +603,17 @@ func materializePulled(repo *checkpoint.Repo, bundle StoredBundle) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	return writeJSONAtomic(path, bundle, 0o600)
+	var encoded bytes.Buffer
+	encoder := json.NewEncoder(&encoded)
+	encoder.SetEscapeHTML(false)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(bundle); err != nil {
+		return err
+	}
+	if encoded.Len() > MaxMaterializedLimit {
+		return fmt.Errorf("shared history materialized bundle %s exceeds %d bytes", bundle.Manifest.BundleID, MaxMaterializedLimit)
+	}
+	return writeFileAtomic(path, encoded.Bytes(), 0o600)
 }
 
 func validateManifest(repoID primitives.RepoID, deviceID string, item BatchBundle, manifest Manifest) error {
@@ -558,7 +623,7 @@ func validateManifest(repoID primitives.RepoID, deviceID string, item BatchBundl
 	if err := validatePromptMode(manifest.PromptMode); err != nil {
 		return err
 	}
-	if manifest.BundleID != item.BundleID || manifest.DeviceID != deviceID || manifest.RepoID != repoID {
+	if manifest.BundleID != item.BundleID || manifest.DeviceID != deviceID || item.RepoID != repoID || manifest.RepoID != item.RepoID {
 		return fmt.Errorf("manifest identity does not match its batch and repository")
 	}
 	if manifest.SessionID != item.SessionID || manifest.TurnID != item.TurnID || manifest.SourceSequence != item.Sequence {
