@@ -346,8 +346,14 @@ type sanitizedText struct {
 	OriginalBytes int
 }
 
+const workspaceProjectionMarker = "\x00turnal-workspace\x00"
+
 func sanitizeText(workspaceRoot, value string, limit int, truncations *Truncations) sanitizedText {
 	result := sanitizedText{Text: value, OriginalBytes: len(value)}
+	if strings.Contains(result.Text, workspaceProjectionMarker) {
+		result.Text = strings.ReplaceAll(result.Text, workspaceProjectionMarker, "[REDACTED]")
+		result.Redacted = true
+	}
 	for _, variant := range workspaceRootVariants(workspaceRoot) {
 		var redacted bool
 		result.Text, redacted = replaceWorkspaceRoot(result.Text, variant)
@@ -355,11 +361,10 @@ func sanitizeText(workspaceRoot, value string, limit int, truncations *Truncatio
 			result.Redacted = true
 		}
 	}
-	for _, pattern := range absolutePathPatterns {
-		if pattern.MatchString(result.Text) {
-			result.Text = pattern.ReplaceAllString(result.Text, "[PATH_REDACTED]")
-			result.Redacted = true
-		}
+	var pathRedacted bool
+	result.Text, pathRedacted = redactAbsolutePaths(result.Text)
+	if pathRedacted {
+		result.Redacted = true
 	}
 	for _, pattern := range secretPatterns {
 		if pattern.MatchString(result.Text) {
@@ -367,6 +372,7 @@ func sanitizeText(workspaceRoot, value string, limit int, truncations *Truncatio
 			result.Redacted = true
 		}
 	}
+	result.Text = strings.ReplaceAll(result.Text, workspaceProjectionMarker, "$WORKSPACE")
 	if len(result.Text) > limit {
 		result.Text = truncateUTF8(result.Text, limit)
 		result.Truncated = true
@@ -456,7 +462,7 @@ func replaceWorkspaceRoot(value, workspaceRoot string) (string, bool) {
 		}
 
 		result.WriteString(value[last:start])
-		result.WriteString("$WORKSPACE")
+		result.WriteString(workspaceProjectionMarker)
 		if isPathSeparator(workspaceRoot[len(workspaceRoot)-1]) && end < len(value) && !isPathSeparator(value[end]) {
 			result.WriteByte(workspaceRoot[len(workspaceRoot)-1])
 		}
@@ -487,12 +493,18 @@ func workspaceSeparatorStartBoundary(value string, index int) bool {
 	if index == 0 {
 		return true
 	}
+	if index >= len("file://") && strings.EqualFold(value[index-len("file://"):index], "file://") {
+		return true
+	}
 	previous, _ := utf8.DecodeLastRuneInString(value[:index])
 	if unicode.IsSpace(previous) {
 		return true
 	}
-	// A colon is excluded so the slashes in URL schemes are not interpreted
-	// as filesystem-root paths.
+	if previous == ':' {
+		// Skip the first separator in :// while accepting a colon-delimited
+		// filesystem path such as path:/private.txt.
+		return index+1 == len(value) || !isPathSeparator(value[index+1])
+	}
 	return strings.ContainsRune("\"'`()[]{}<>=,;", previous)
 }
 
@@ -539,6 +551,87 @@ func isPathSeparatorOnly(value string) bool {
 
 func isPathSeparator(character byte) bool {
 	return character == '/' || character == '\\'
+}
+
+func redactAbsolutePaths(value string) (string, bool) {
+	redacted := false
+	for _, pattern := range absolutePathPatterns {
+		var patternRedacted bool
+		value, patternRedacted = redactAbsolutePathPattern(value, pattern)
+		redacted = redacted || patternRedacted
+		if value == "[PATH_REDACTED]" {
+			return value, true
+		}
+	}
+	return value, redacted
+}
+
+func redactAbsolutePathPattern(value string, pattern *regexp.Regexp) (string, bool) {
+	matches := pattern.FindAllStringIndex(value, -1)
+	if len(matches) == 0 {
+		return value, false
+	}
+
+	var result strings.Builder
+	last := 0
+	replaced := false
+	for _, match := range matches {
+		start, end := match[0], match[1]
+		if strings.HasSuffix(value[:start], workspaceProjectionMarker) {
+			continue
+		}
+		if end < len(value) {
+			next, _ := utf8.DecodeRuneInString(value[end:])
+			if unicode.IsSpace(next) {
+				return redactAmbiguousAbsolutePath(value), true
+			}
+		}
+		result.WriteString(value[last:start])
+		result.WriteString("[PATH_REDACTED]")
+		last = end
+		replaced = true
+	}
+	if !replaced {
+		return value, false
+	}
+	result.WriteString(value[last:])
+	return result.String(), true
+}
+
+func redactAmbiguousAbsolutePath(value string) string {
+	preserved := quotedWorkspacePaths(value)
+	if len(preserved) == 0 {
+		return "[PATH_REDACTED]"
+	}
+	return "[PATH_REDACTED] " + strings.Join(preserved, " ")
+}
+
+func quotedWorkspacePaths(value string) []string {
+	var preserved []string
+	remaining := value
+	for {
+		markerIndex := strings.Index(remaining, workspaceProjectionMarker)
+		if markerIndex < 0 {
+			return preserved
+		}
+		if markerIndex == 0 {
+			remaining = remaining[len(workspaceProjectionMarker):]
+			continue
+		}
+		quote := remaining[markerIndex-1]
+		if quote != '\'' && quote != '"' && quote != '`' {
+			remaining = remaining[markerIndex+len(workspaceProjectionMarker):]
+			continue
+		}
+		closeOffset := strings.IndexByte(remaining[markerIndex+len(workspaceProjectionMarker):], quote)
+		if closeOffset < 0 {
+			remaining = remaining[markerIndex+len(workspaceProjectionMarker):]
+			continue
+		}
+		closeIndex := markerIndex + len(workspaceProjectionMarker) + closeOffset
+		preserved = append(preserved, remaining[markerIndex-1:closeIndex+1])
+		remaining = remaining[closeIndex+1:]
+	}
 }
 
 func containsDetectedSecret(value string) bool {

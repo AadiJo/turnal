@@ -250,7 +250,13 @@ func TestSanitizeTextRecognizesUnambiguousWorkspacePathBoundaries(t *testing.T) 
 			name:          "quoted after another path",
 			workspaceRoot: "/home/alice/project",
 			text:          `Compare /tmp/input with "/home/alice/project/file"`,
-			want:          `Compare [PATH_REDACTED] with "$WORKSPACE/file"`,
+			want:          `[PATH_REDACTED] "$WORKSPACE/file"`,
+		},
+		{
+			name:          "quoted before ambiguous path",
+			workspaceRoot: "/home/alice/project",
+			text:          `Use "/home/alice/project/file" then /opt/Secret Project/private.txt`,
+			want:          `[PATH_REDACTED] "$WORKSPACE/file"`,
 		},
 		{
 			name:          "unix trailing separator",
@@ -275,6 +281,18 @@ func TestSanitizeTextRecognizesUnambiguousWorkspacePathBoundaries(t *testing.T) 
 			workspaceRoot: "/",
 			text:          "URL https://example.com then /private.txt",
 			want:          "URL https://example.com then $WORKSPACE/private.txt",
+		},
+		{
+			name:          "unix filesystem root after colon",
+			workspaceRoot: "/",
+			text:          "path:/private.txt",
+			want:          "path:$WORKSPACE/private.txt",
+		},
+		{
+			name:          "unix filesystem root in file URI",
+			workspaceRoot: "/",
+			text:          "file:///private.txt",
+			want:          "file://$WORKSPACE/private.txt",
 		},
 		{
 			name:          "windows drive root",
@@ -306,6 +324,27 @@ func TestSanitizeTextFailsClosedOnAmbiguousWorkspaceRootMentions(t *testing.T) {
 		if got.Text != "[PATH_REDACTED]" || !got.Redacted {
 			t.Fatalf("ambiguous root mention was not redacted as a whole: %#v", got)
 		}
+	}
+}
+
+func TestSanitizeTextFailsClosedOnAbsolutePathsWithSpaces(t *testing.T) {
+	for _, text := range []string{
+		"Inspect /opt/Secret Project/private.txt",
+		`Inspect C:\Users\Alice\Secret Project\private.txt`,
+	} {
+		truncations := Truncations{}
+		got := sanitizeText("/workspace", text, DefaultFieldLimit, &truncations)
+		if got.Text != "[PATH_REDACTED]" || !got.Redacted {
+			t.Fatalf("ambiguous absolute path was not redacted as a whole: %#v", got)
+		}
+	}
+}
+
+func TestSanitizeTextPreservesNestedNormalizedWorkspacePath(t *testing.T) {
+	truncations := Truncations{}
+	got := sanitizeText("/home/alice/project", "Inspect /home/alice/project/private/nested.txt", DefaultFieldLimit, &truncations)
+	if got.Text != "Inspect $WORKSPACE/private/nested.txt" || !got.Redacted {
+		t.Fatalf("normalized workspace path was rescrubbed: %#v", got)
 	}
 }
 
@@ -1375,7 +1414,7 @@ func recordSharedHistoryTurn(t *testing.T, repo *checkpoint.Repo) (primitives.Se
 	}
 	turnID := started.TurnID
 	inputs := []eventlog.AppendInput{
-		{SessionID: sessionID, TurnID: &turnID, Type: primitives.EventTypePromptUser, Adapter: primitives.AdapterCodex, SourceID: "test:prompt", Payload: mustTestJSON(t, map[string]any{"text": "Inspect " + repo.WorkspaceRoot.String() + "/private.txt and /etc/passwd token=ghp_0123456789abcdefghijklmnop"})},
+		{SessionID: sessionID, TurnID: &turnID, Type: primitives.EventTypePromptUser, Adapter: primitives.AdapterCodex, SourceID: "test:prompt", Payload: mustTestJSON(t, map[string]any{"text": "Inspect " + repo.WorkspaceRoot.String() + "/private.txt token=ghp_0123456789abcdefghijklmnop and /etc/passwd"})},
 		{SessionID: sessionID, TurnID: &turnID, Type: primitives.EventTypeAgentIntent, Adapter: primitives.AdapterCodex, SourceID: "test:intent", Payload: mustTestJSON(t, map[string]any{"problem": "Fix the shared history sync", "scope": []string{"internal/sharedhistory"}, "evidence": []string{repo.WorkspaceRoot.String() + "/private.txt"}, "agent_type": "codex"})},
 		{SessionID: sessionID, TurnID: &turnID, Type: primitives.EventTypeToolCall, Adapter: primitives.AdapterCodex, SourceID: "test:tool-call", Payload: mustTestJSON(t, map[string]any{"tool_name": "shell", "input": map[string]any{"command": "cat private.txt"}, "mutation_candidate": true})},
 		{SessionID: sessionID, TurnID: &turnID, Type: primitives.EventTypeToolResult, Adapter: primitives.AdapterCodex, SourceID: "test:tool-result", Payload: mustTestJSON(t, map[string]any{"tool_name": "shell", "output": "raw tool result"})},
