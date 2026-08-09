@@ -32,16 +32,22 @@ type remoteRef struct {
 func openGitStore(ctx context.Context, repo *checkpoint.Repo) (*gitStore, error) {
 	root := filepath.Join(sharedRoot(repo), "repository")
 	store := &gitStore{repo: repo, root: root}
-	if _, err := os.Stat(filepath.Join(root, ".git")); err == nil {
-		return store, nil
-	} else if !os.IsNotExist(err) {
+	gitDir := filepath.Join(root, ".git")
+	info, err := os.Lstat(gitDir)
+	if err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("inspect shared history Git repository: %w", err)
+	}
+	initialized := err == nil
+	if initialized && (!info.IsDir() || info.Mode()&os.ModeSymlink != 0) {
+		return nil, fmt.Errorf("shared history Git metadata is not a regular directory: %s", gitDir)
 	}
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, err
 	}
-	if _, err := store.run(ctx, "init", "--initial-branch=local"); err != nil {
-		return nil, err
+	if !initialized {
+		if _, err := store.run(ctx, "init", "--initial-branch=local"); err != nil {
+			return nil, err
+		}
 	}
 	for _, setting := range [][2]string{
 		{"user.name", "Turnal Shared History"},
@@ -72,6 +78,17 @@ func (store *gitStore) commitBatch(ctx context.Context, batch Batch, bundles []b
 	if len(bundles) == 0 {
 		return store.localHead(ctx)
 	}
+	head, err := store.localHead(ctx)
+	if err != nil {
+		return "", err
+	}
+	if head == "" {
+		if _, err := store.run(ctx, "read-tree", "--empty"); err != nil {
+			return "", err
+		}
+	} else if _, err := store.run(ctx, "read-tree", head); err != nil {
+		return "", err
+	}
 	for _, bundle := range bundles {
 		dir := filepath.Join(store.root, filepath.FromSlash(bundle.Path))
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -89,7 +106,18 @@ func (store *gitStore) commitBatch(ctx context.Context, batch Batch, bundles []b
 	if err := writeJSONAtomic(filepath.Join(store.root, "batch.json"), batch, 0o600); err != nil {
 		return "", err
 	}
-	if _, err := store.run(ctx, "add", "--", "batch.json", "bundles"); err != nil {
+	addArgs := []string{"add", "--", "batch.json"}
+	for _, bundle := range bundles {
+		addArgs = append(addArgs, bundle.Path+"/manifest.json", bundle.Path+"/events.jsonl")
+	}
+	if _, err := store.run(ctx, addArgs...); err != nil {
+		return "", err
+	}
+	tracked, err := store.run(ctx, "ls-files", "-z")
+	if err != nil {
+		return "", err
+	}
+	if err := validateSharedTreePaths(splitNULPaths(tracked)); err != nil {
 		return "", err
 	}
 	message := fmt.Sprintf("turnal shared history: %d bundle", len(bundles))
@@ -120,8 +148,52 @@ func historyRef(deviceID string) string {
 	return "refs/turnal/v1/history/" + deviceID
 }
 
-func trackingRef(deviceID string) string {
-	return "refs/turnal/v1/tracking/" + deviceID
+func trackingRefPrefix(remote string) string {
+	digest := strings.TrimPrefix(sha256Bytes([]byte(remote)), "sha256:")
+	return "refs/turnal/v1/tracking/" + digest[:32] + "/"
+}
+
+func trackingRef(remote, deviceID string) string {
+	return trackingRefPrefix(remote) + deviceID
+}
+
+func (store *gitStore) recoverTrackingState(ctx context.Context, remote string, state *stateFile) (bool, error) {
+	prefix := trackingRefPrefix(remote)
+	output, err := store.run(ctx, "for-each-ref", "--format=%(objectname) %(refname)", prefix)
+	if err != nil {
+		return false, err
+	}
+	changed := false
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 2 || !strings.HasPrefix(fields[1], prefix) {
+			return false, fmt.Errorf("shared history tracking ref is malformed")
+		}
+		deviceID := strings.TrimPrefix(fields[1], prefix)
+		if !validDeviceID(deviceID) {
+			return false, fmt.Errorf("shared history tracking ref has invalid device id")
+		}
+		head, err := primitives.ParseCommitSHA(fields[0])
+		if err != nil {
+			return false, err
+		}
+		tracked := head.String()
+		observed := state.LastSeen[deviceID]
+		if observed == tracked {
+			continue
+		}
+		if observed != "" {
+			if _, err := store.run(ctx, "merge-base", "--is-ancestor", observed, tracked); err != nil {
+				return false, fmt.Errorf("shared history tracking ref for device %s does not extend remembered head %s", deviceID, observed)
+			}
+		}
+		state.LastSeen[deviceID] = tracked
+		changed = true
+	}
+	return changed, nil
 }
 
 func (store *gitStore) remoteHead(ctx context.Context, remote, ref string) (string, error) {
@@ -154,6 +226,9 @@ func (store *gitStore) push(ctx context.Context, remote, deviceID, lastSeen stri
 	}
 	if remoteHead == "" && lastSeen != "" {
 		return "", fmt.Errorf("shared history remote ref disappeared after head %s was observed", lastSeen)
+	}
+	if remoteHead != "" && lastSeen != "" && remoteHead != lastSeen {
+		return "", fmt.Errorf("shared history remote ref rewound or was replaced after head %s was observed; current head is %s", lastSeen, remoteHead)
 	}
 	if remoteHead != "" && remoteHead != local {
 		incoming := fmt.Sprintf("refs/turnal/v1/incoming/%s/%s", deviceID, remoteHead)
@@ -232,6 +307,13 @@ func (store *gitStore) fetchAndIngest(ctx context.Context, remote string, remote
 	var ingested []StoredBundle
 	previous := lastSeen
 	for _, commit := range commits {
+		treeOutput, err := store.run(ctx, "ls-tree", "-rz", "--name-only", commit)
+		if err != nil {
+			return nil, err
+		}
+		if err := validateSharedTreePaths(splitNULPaths(treeOutput)); err != nil {
+			return nil, fmt.Errorf("shared history commit %s: %w", commit, err)
+		}
 		parents, err := store.run(ctx, "show", "-s", "--format=%P", commit)
 		if err != nil {
 			return nil, err
@@ -259,14 +341,18 @@ func (store *gitStore) fetchAndIngest(ctx context.Context, remote string, remote
 		if err != nil {
 			return nil, err
 		}
-		if batch.SchemaVersion != SchemaVersion || len(batch.Bundles) == 0 {
+		if batch.SchemaVersion != SchemaVersion || len(batch.Bundles) == 0 || len(batch.Bundles) > MaxBundlesPerBatch {
 			return nil, fmt.Errorf("shared history batch %s has an invalid schema or no bundles", commit)
-		}
-		if err := validateChainAnchor(batch.ChainAnchor); err != nil {
-			return nil, fmt.Errorf("shared history batch %s: %w", commit, err)
 		}
 		if batch.DeviceID != remoteRef.DeviceID || batch.PreviousHead != actualPrevious {
 			return nil, fmt.Errorf("shared history batch %s has invalid device or previous head", commit)
+		}
+		changedOutput, err := store.run(ctx, "diff-tree", "--root", "--no-commit-id", "--name-only", "-r", "-z", commit)
+		if err != nil {
+			return nil, err
+		}
+		if err := validateBatchChanges(splitNULPaths(changedOutput), batch); err != nil {
+			return nil, fmt.Errorf("shared history batch %s: %w", commit, err)
 		}
 		seenBundles := make(map[primitives.BundleID]struct{}, len(batch.Bundles))
 		for _, item := range batch.Bundles {
@@ -309,18 +395,20 @@ func (store *gitStore) fetchAndIngest(ctx context.Context, remote string, remote
 				return nil, fmt.Errorf("validate shared history bundle %s events: %w", item.BundleID, err)
 			}
 			stored := StoredBundle{Manifest: manifest, Events: events, PublicKey: batch.PublicKey}
-			if err := materializePulled(store.repo, stored); err != nil {
-				return nil, err
-			}
 			ingested = append(ingested, stored)
 		}
 		previous = commit
 	}
-	oldTracking, err := store.refValue(ctx, trackingRef(remoteRef.DeviceID))
+	for _, bundle := range ingested {
+		if err := materializePulled(store.repo, bundle); err != nil {
+			return nil, err
+		}
+	}
+	oldTracking, err := store.refValue(ctx, trackingRef(remote, remoteRef.DeviceID))
 	if err != nil {
 		return nil, err
 	}
-	args := []string{"update-ref", trackingRef(remoteRef.DeviceID), remoteRef.Head}
+	args := []string{"update-ref", trackingRef(remote, remoteRef.DeviceID), remoteRef.Head}
 	if oldTracking != "" {
 		args = append(args, oldTracking)
 	}
@@ -352,11 +440,8 @@ func (store *gitStore) recoverCommittedState(ctx context.Context, identity devic
 	if _, err := verifyBatch(batch); err != nil {
 		return fmt.Errorf("recover shared history outbox: %w", err)
 	}
-	if batch.SchemaVersion != SchemaVersion || batch.DeviceID != identity.DeviceID || batch.PublicKey != identity.PublicKey || len(batch.Bundles) == 0 {
+	if batch.SchemaVersion != SchemaVersion || batch.DeviceID != identity.DeviceID || batch.PublicKey != identity.PublicKey || len(batch.Bundles) == 0 || len(batch.Bundles) > MaxBundlesPerBatch {
 		return fmt.Errorf("recover shared history outbox: local tip has an invalid batch")
-	}
-	if err := validateChainAnchor(batch.ChainAnchor); err != nil {
-		return fmt.Errorf("recover shared history outbox: %w", err)
 	}
 	parents, err := store.run(ctx, "show", "-s", "--format=%P", head)
 	if err != nil {
@@ -553,13 +638,49 @@ func validateProjectedEvents(manifest Manifest, events []ContextEvent) error {
 	return nil
 }
 
-func validateChainAnchor(anchor map[string]string) error {
-	for stream, hash := range anchor {
-		if strings.TrimSpace(stream) == "" || len(stream) > 256 || strings.ContainsAny(stream, "\r\n\x00") || !validSHA256(hash) {
-			return fmt.Errorf("chain anchor contains an invalid stream or hash")
+func validateSharedTreePaths(paths []string) error {
+	if len(paths) == 0 {
+		return fmt.Errorf("shared history tree is empty")
+	}
+	for _, path := range paths {
+		if path == "batch.json" {
+			continue
+		}
+		parts := strings.Split(filepath.ToSlash(path), "/")
+		if len(parts) != 4 || parts[0] != "bundles" || (parts[3] != "manifest.json" && parts[3] != "events.jsonl") {
+			return fmt.Errorf("shared history tree contains forbidden path %q", path)
+		}
+		bundleID, err := primitives.ParseBundleID(parts[2])
+		if err != nil || filepath.ToSlash(filepath.Join(parts[0], parts[1], parts[2])) != bundlePath(bundleID) {
+			return fmt.Errorf("shared history tree contains non-canonical bundle path %q", path)
 		}
 	}
 	return nil
+}
+
+func validateBatchChanges(paths []string, batch Batch) error {
+	expected := map[string]struct{}{"batch.json": {}}
+	for _, item := range batch.Bundles {
+		expected[item.Path+"/manifest.json"] = struct{}{}
+		expected[item.Path+"/events.jsonl"] = struct{}{}
+	}
+	if len(paths) != len(expected) {
+		return fmt.Errorf("commit changes %d paths, expected %d closed-schema paths", len(paths), len(expected))
+	}
+	for _, path := range paths {
+		if _, allowed := expected[filepath.ToSlash(path)]; !allowed {
+			return fmt.Errorf("commit changes forbidden path %q", path)
+		}
+	}
+	return nil
+}
+
+func splitNULPaths(value string) []string {
+	value = strings.TrimSuffix(value, "\x00")
+	if value == "" {
+		return nil
+	}
+	return strings.Split(value, "\x00")
 }
 
 func validSHA256(value string) bool {
@@ -742,10 +863,10 @@ func (store *gitStore) runBytesLimit(ctx context.Context, limit int64, args ...s
 	cmd.Stderr = stderr
 	err := cmd.Run()
 	if err != nil {
-		return nil, gitCommandError{args: args, output: strings.TrimSpace(stderr.String()), err: err}
+		return nil, gitCommandError{args: args, output: strings.TrimSpace(redactGitOutput(stderr.String(), args)), err: err}
 	}
 	if stdout.overflow {
-		return nil, fmt.Errorf("git %s output exceeds %d bytes", strings.Join(args, " "), limit)
+		return nil, fmt.Errorf("git %s output exceeds %d bytes", formatGitArgs(args), limit)
 	}
 	return stdout.Bytes(), nil
 }
@@ -783,12 +904,30 @@ type gitCommandError struct {
 
 func (err gitCommandError) Error() string {
 	if err.output == "" {
-		return fmt.Sprintf("git %s: %v", strings.Join(err.args, " "), err.err)
+		return fmt.Sprintf("git %s: %v", formatGitArgs(err.args), err.err)
 	}
-	return fmt.Sprintf("git %s: %s", strings.Join(err.args, " "), err.output)
+	return fmt.Sprintf("git %s: %s", formatGitArgs(err.args), err.output)
 }
 
 func (err gitCommandError) Unwrap() error { return err.err }
+
+func formatGitArgs(args []string) string {
+	redacted := make([]string, len(args))
+	for index, arg := range args {
+		redacted[index] = redactRemote(arg)
+	}
+	return strings.Join(redacted, " ")
+}
+
+func redactGitOutput(output string, args []string) string {
+	for _, arg := range args {
+		redacted := redactRemote(arg)
+		if redacted != arg {
+			output = strings.ReplaceAll(output, arg, redacted)
+		}
+	}
+	return output
+}
 
 func isGitExitCode(err error, code int) bool {
 	var exitErr *exec.ExitError
@@ -860,10 +999,14 @@ func walkJSONValue(decoder *json.Decoder) error {
 			if !ok {
 				return fmt.Errorf("JSON object key is not a string")
 			}
-			if _, duplicate := seen[key]; duplicate {
+			canonicalKey := strings.ToLower(key)
+			if key != canonicalKey {
+				return fmt.Errorf("non-canonical JSON field %q", key)
+			}
+			if _, duplicate := seen[canonicalKey]; duplicate {
 				return fmt.Errorf("duplicate JSON field %q", key)
 			}
-			seen[key] = struct{}{}
+			seen[canonicalKey] = struct{}{}
 			if err := walkJSONValue(decoder); err != nil {
 				return err
 			}

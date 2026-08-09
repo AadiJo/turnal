@@ -13,6 +13,7 @@ const (
 	EvidencePublisherClaim = "publisher_attested_projection"
 	DefaultFieldLimit      = 64 << 10
 	DefaultBundleLimit     = 2 << 20
+	MaxBundlesPerBatch     = 256
 )
 
 type PromptMode string
@@ -32,6 +33,7 @@ const (
 type PreviewOptions struct {
 	SessionID primitives.SessionID
 	TurnID    primitives.TurnID
+	StreamID  primitives.EventStreamID
 	Approve   bool
 }
 
@@ -179,14 +181,13 @@ type CaptureErrorProjection struct {
 }
 
 type Batch struct {
-	SchemaVersion int               `json:"schema_version"`
-	DeviceID      string            `json:"device_id"`
-	PublicKey     string            `json:"public_key"`
-	PreviousHead  string            `json:"previous_head,omitempty"`
-	Bundles       []BatchBundle     `json:"bundles"`
-	ChainAnchor   map[string]string `json:"chain_anchor"`
-	CreatedAt     time.Time         `json:"created_at"`
-	Signature     string            `json:"signature"`
+	SchemaVersion int           `json:"schema_version"`
+	DeviceID      string        `json:"device_id"`
+	PublicKey     string        `json:"public_key"`
+	PreviousHead  string        `json:"previous_head,omitempty"`
+	Bundles       []BatchBundle `json:"bundles"`
+	CreatedAt     time.Time     `json:"created_at"`
+	Signature     string        `json:"signature"`
 }
 
 type BatchBundle struct {

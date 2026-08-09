@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
@@ -64,6 +65,9 @@ func TestSharedHistoryCLIEndToEnd(t *testing.T) {
 	decodeCLIJSON(t, runRootStdout(t, "share", "show", plan.Locator, "--json"), &bundle)
 	if bundle.Manifest.BundleID != plan.Manifest.BundleID {
 		t.Fatalf("shown bundle = %#v", bundle.Manifest)
+	}
+	if output := runRootStdout(t, "share", "enable", "--remote", remote, "--prompt-mode", "omit"); !strings.Contains(output, "approval:    current") {
+		t.Fatalf("unchanged configuration output = %q", output)
 	}
 
 	receiverRoot, err := primitives.ParseWorkspaceRoot(filepath.Join(temp, "receiver"))

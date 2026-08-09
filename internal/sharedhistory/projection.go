@@ -97,14 +97,14 @@ func turnCompleted(events []eventlog.Event) bool {
 	return finished && postCheckpoint
 }
 
-func findCompletedTurn(repo *checkpoint.Repo, sessionID primitives.SessionID, turnID primitives.TurnID) (turnSource, error) {
+func findCompletedTurn(repo *checkpoint.Repo, sessionID primitives.SessionID, turnID primitives.TurnID, streamID primitives.EventStreamID) (turnSource, error) {
 	turns, err := listCompletedTurns(repo)
 	if err != nil {
 		return turnSource{}, err
 	}
 	var matches []turnSource
 	for _, source := range turns {
-		if source.Stream.SessionID == sessionID && source.TurnID == turnID {
+		if source.Stream.SessionID == sessionID && source.TurnID == turnID && (streamID == "" || source.Stream.StreamID == streamID) {
 			matches = append(matches, source)
 		}
 	}
@@ -112,7 +112,7 @@ func findCompletedTurn(repo *checkpoint.Repo, sessionID primitives.SessionID, tu
 		return turnSource{}, fmt.Errorf("completed turn not found: %s:%s", sessionID, turnID)
 	}
 	if len(matches) > 1 {
-		return turnSource{}, fmt.Errorf("turn %s:%s is ambiguous across %d streams; select it by canonical locator", sessionID, turnID, len(matches))
+		return turnSource{}, fmt.Errorf("turn %s:%s is ambiguous across %d streams; rerun preview with --stream <stream-id>", sessionID, turnID, len(matches))
 	}
 	return matches[0], nil
 }

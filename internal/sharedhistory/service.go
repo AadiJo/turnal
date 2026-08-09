@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
-	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/primitives"
 )
 
@@ -76,7 +75,7 @@ func (manager *Manager) statusLocked(ctx context.Context) (Status, error) {
 	}
 	status := Status{
 		Configured: true,
-		Remote:     policy.Remote,
+		Remote:     redactRemote(policy.Remote),
 		RepoID:     policy.RepoID,
 		PromptMode: policy.PromptMode,
 		PolicyHash: digest,
@@ -134,7 +133,7 @@ func (manager *Manager) previewLocked(ctx context.Context, options PreviewOption
 	if err != nil {
 		return Plan{}, err
 	}
-	source, err := findCompletedTurn(manager.repo, options.SessionID, options.TurnID)
+	source, err := findCompletedTurn(manager.repo, options.SessionID, options.TurnID, options.StreamID)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -260,6 +259,9 @@ func (manager *Manager) syncPush(ctx context.Context) (Result, error) {
 		}
 		delete(state.Blocked, bundleID.String())
 		bundles = append(bundles, bundle)
+		if len(bundles) == MaxBundlesPerBatch {
+			break
+		}
 	}
 	if len(bundles) == 0 {
 		if err := saveState(manager.repo, state); err != nil {
@@ -277,12 +279,7 @@ func (manager *Manager) syncPush(ctx context.Context) (Result, error) {
 		DeviceID:      identity.DeviceID,
 		PublicKey:     identity.PublicKey,
 		PreviousHead:  previousHead,
-		ChainAnchor:   nil,
 		CreatedAt:     manager.now(),
-	}
-	batch.ChainAnchor, err = chainAnchor(manager.repo)
-	if err != nil {
-		return Result{}, err
 	}
 	for _, bundle := range bundles {
 		manifest := bundle.Stored.Manifest
@@ -328,6 +325,15 @@ func (manager *Manager) syncPull(ctx context.Context) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	recovered, err := store.recoverTrackingState(ctx, policy.Remote, &state)
+	if err != nil {
+		return Result{}, err
+	}
+	if recovered {
+		if err := saveState(manager.repo, state); err != nil {
+			return Result{}, err
+		}
+	}
 	refs, err := store.listRemoteHistory(ctx, policy.Remote)
 	if err != nil {
 		return Result{}, err
@@ -352,9 +358,9 @@ func (manager *Manager) syncPull(ctx context.Context) (Result, error) {
 		}
 		pulled += len(bundles)
 		state.LastSeen[ref.DeviceID] = ref.Head
-	}
-	if err := saveState(manager.repo, state); err != nil {
-		return Result{}, err
+		if err := saveState(manager.repo, state); err != nil {
+			return Result{Direction: DirectionPull, Pulled: pulled}, err
+		}
 	}
 	return Result{Direction: DirectionPull, Pulled: pulled}, nil
 }
@@ -451,22 +457,6 @@ func verifyStoredBundle(repoID primitives.RepoID, bundle StoredBundle) error {
 		return fmt.Errorf("shared history event content hash mismatch for %s", bundle.Manifest.BundleID)
 	}
 	return validateProjectedEvents(bundle.Manifest, bundle.Events)
-}
-
-func chainAnchor(repo *checkpoint.Repo) (map[string]string, error) {
-	anchor := map[string]string{}
-	streams, err := eventlog.ListDurableStreams(repo.MetadataDir)
-	if err != nil {
-		return nil, fmt.Errorf("build shared history chain anchor: %w", err)
-	}
-	for _, stream := range streams {
-		if stream.Workspace || stream.RepoID != repo.RepoID || len(stream.Events) == 0 {
-			continue
-		}
-		key := stream.ProducerID.String() + "/" + stream.SessionID.String()
-		anchor[key] = stream.Events[len(stream.Events)-1].Hash.String()
-	}
-	return anchor, nil
 }
 
 func promoteCommitted(state *stateFile, head string) int {

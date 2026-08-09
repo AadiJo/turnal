@@ -32,6 +32,8 @@ The explicit id prevents a remote that contains history for another project from
 
 `preview --json` is the complete bundle projection: signed manifest, projected events, omissions, truncations, evidence class, source links, and stable locator. Preview remains important because secret scanning is best-effort and allowed text can contain source fragments.
 
+If imported history contains the same session and turn number in more than one event stream, preview reports the ambiguity. Select the intended source with `turnal share preview <session>:<turn> --stream <stream-id>`.
+
 The locator can also connect a source commit to its context without putting published data in the source repository:
 
 ```sh
@@ -78,7 +80,9 @@ Every manifest labels its evidence as `publisher_attested_projection`. Source ev
 
 The isolated repository beneath `.turnal/shared-history/repository/` is a crash-safe local outbox. A network failure leaves its commit queued for a later `turnal sync push`. If Turnal stops after committing a batch but before updating local state, the next push reconstructs the outbox from the signed local tip.
 
-Turnal will not change the remote or privacy policy while that outbox is pending, because the queued projection was approved under the previous policy. Publish it first. After the outbox is clear, changing the remote requires a new preview approval; the next push copies the device's existing approved Git history to the new remote even when no new turns are pending.
+Turnal will not change the remote or privacy policy while that outbox is pending, because the queued projection was approved under the previous policy. Publish it first. After the outbox is clear, changing the remote requires both `share enable --include-existing-history` and a new preview approval. The next push copies the device's existing approved Git history to the new remote even when no new turns are pending. That existing history is copied unchanged; a new prompt mode applies only to turns that have not already been published.
+
+One publication batch contains at most 256 turns. If more are pending, rerun `turnal sync push`; status continues to report the remainder. Remote URL userinfo is retained only in the private policy used for Git transport and is redacted from status and Git diagnostics.
 
 Shared-history Git operations use the configured remote directly, scrub inherited `GIT_*` variables, and never update source Git refs. `turnal sync push` reports transport failures; normal Turnal capture and project Git commands do not invoke it.
 

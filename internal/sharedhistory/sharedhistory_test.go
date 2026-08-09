@@ -3,6 +3,7 @@ package sharedhistory
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -201,6 +202,17 @@ func TestGitSyncReplicatesAndRejectsRefRewrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("approve preview: %v", err)
 	}
+	publisherStore, err := openGitStore(context.Background(), publisher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privatePath := filepath.Join(publisherStore.root, "bundles", "private-tool-output.txt")
+	if err := os.MkdirAll(filepath.Dir(privatePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(privatePath, []byte("must never be staged\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	stageBundleWithoutState(t, publisher, sessionID, turnID)
 	result, err := New(publisher).Sync(context.Background(), DirectionPush)
 	if err != nil {
@@ -208,6 +220,9 @@ func TestGitSyncReplicatesAndRejectsRefRewrite(t *testing.T) {
 	}
 	if result.Published != 1 || result.Head == "" {
 		t.Fatalf("push result = %#v", result)
+	}
+	if tree := runTestGit(t, publisherStore.root, "ls-tree", "-r", "--name-only", result.Head); strings.Contains(tree, "private-tool-output") {
+		t.Fatalf("shared history tree staged a forbidden file: %s", tree)
 	}
 
 	receiver := newSharedHistoryTestRepoAt(t, filepath.Join(testRoot, "receiver"))
@@ -268,7 +283,10 @@ func TestRemoteChangePushesApprovedLocalHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	status, err := Configure(repo, ConfigureOptions{Remote: secondRemote, PromptMode: PromptModeRedactedText})
+	if _, err := Configure(repo, ConfigureOptions{Remote: secondRemote, PromptMode: PromptModeRedactedText}); err == nil || !strings.Contains(err.Error(), "--include-existing-history") {
+		t.Fatalf("remote migration without consent error = %v", err)
+	}
+	status, err := Configure(repo, ConfigureOptions{Remote: secondRemote, PromptMode: PromptModeRedactedText, IncludeExistingHistory: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,6 +375,9 @@ func TestStrictWireSchemaAndFieldLimits(t *testing.T) {
 	if err := decodeStrictJSON([]byte(`{"schema_version":2,"schema_version":1}`), &event); err == nil || !strings.Contains(err.Error(), "duplicate JSON field") {
 		t.Fatalf("duplicate field error = %v", err)
 	}
+	if err := decodeStrictJSON([]byte(`{"schema_version":1,"SCHEMA_VERSION":1}`), &event); err == nil || !strings.Contains(err.Error(), "non-canonical JSON field") {
+		t.Fatalf("case-variant field error = %v", err)
+	}
 
 	oversized := ContextEvent{
 		SchemaVersion: SchemaVersion,
@@ -392,6 +413,189 @@ func TestScrubGitEnvRemovesEveryGitVariable(t *testing.T) {
 	}
 }
 
+func TestPushRejectsObservedAncestorRewind(t *testing.T) {
+	testRoot := t.TempDir()
+	remote := filepath.Join(testRoot, "history.git")
+	runTestGit(t, testRoot, "init", "--bare", remote)
+	repo := newSharedHistoryTestRepoAt(t, filepath.Join(testRoot, "publisher"))
+	sessionID, turnID := recordSharedHistoryTurn(t, repo)
+	if _, err := Configure(repo, ConfigureOptions{Remote: remote, PromptMode: PromptModeOmit}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(repo).Preview(context.Background(), PreviewOptions{SessionID: sessionID, TurnID: turnID, Approve: true}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := New(repo).Sync(context.Background(), DirectionPush)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = recordSharedHistoryTurn(t, repo)
+	second, err := New(repo).Sync(context.Background(), DirectionPush)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Head == second.Head {
+		t.Fatalf("two pushes retained one head: %#v %#v", first, second)
+	}
+	store, err := openGitStore(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runTestGit(t, store.root, "push", "--force", remote, first.Head+":"+historyRef(mustDevice(t, repo).DeviceID))
+	if _, err := New(repo).Sync(context.Background(), DirectionPush); err == nil || !strings.Contains(err.Error(), "rewound or was replaced") {
+		t.Fatalf("rewound push error = %v", err)
+	}
+}
+
+func TestPullRecoversObservedHeadFromTrackingRef(t *testing.T) {
+	testRoot := t.TempDir()
+	remote := filepath.Join(testRoot, "history.git")
+	runTestGit(t, testRoot, "init", "--bare", remote)
+	publisher := newSharedHistoryTestRepoAt(t, filepath.Join(testRoot, "publisher"))
+	sessionID, turnID := recordSharedHistoryTurn(t, publisher)
+	if _, err := Configure(publisher, ConfigureOptions{Remote: remote, PromptMode: PromptModeOmit}); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := New(publisher).Preview(context.Background(), PreviewOptions{SessionID: sessionID, TurnID: turnID, Approve: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(publisher).Sync(context.Background(), DirectionPush); err != nil {
+		t.Fatal(err)
+	}
+	receiver := newSharedHistoryTestRepoAt(t, filepath.Join(testRoot, "receiver"))
+	if _, err := Configure(receiver, ConfigureOptions{Remote: remote, RepoID: publisher.RepoID, PromptMode: PromptModeOmit}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(receiver).Sync(context.Background(), DirectionPull); err != nil {
+		t.Fatal(err)
+	}
+	state, err := loadState(receiver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.LastSeen = map[string]string{}
+	if err := saveState(receiver, state); err != nil {
+		t.Fatal(err)
+	}
+	publisherStore, err := openGitStore(context.Background(), publisher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runTestGit(t, publisherStore.root, "push", remote, ":"+historyRef(plan.Manifest.DeviceID))
+	if _, err := New(receiver).Sync(context.Background(), DirectionPull); err == nil || !strings.Contains(err.Error(), "disappeared") {
+		t.Fatalf("tracking recovery disappearance error = %v", err)
+	}
+}
+
+func TestCredentialRemoteIsRedactedFromStatusAndErrors(t *testing.T) {
+	repo := newSharedHistoryTestRepo(t)
+	remote := "https://user:private-token@example.invalid/history.git"
+	status, err := Configure(repo, ConfigureOptions{Remote: remote, PromptMode: PromptModeOmit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(status.Remote, "private-token") || !strings.Contains(status.Remote, "[REDACTED]") {
+		t.Fatalf("status remote = %q", status.Remote)
+	}
+	message := gitCommandError{args: []string{"ls-remote", remote}, output: redactGitOutput("fatal: "+remote, []string{remote}), err: errors.New("failed")}.Error()
+	if strings.Contains(message, "private-token") || !strings.Contains(message, "[REDACTED]") {
+		t.Fatalf("Git error leaked remote credentials: %s", message)
+	}
+}
+
+func TestOpenGitStoreRepairsInterruptedConfiguration(t *testing.T) {
+	repo := newSharedHistoryTestRepo(t)
+	store, err := openGitStore(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runTestGit(t, store.root, "config", "--unset", "user.name")
+	if _, err := openGitStore(context.Background(), repo); err != nil {
+		t.Fatal(err)
+	}
+	if name := runTestGit(t, store.root, "config", "--local", "--get", "user.name"); name != "Turnal Shared History" {
+		t.Fatalf("repaired user.name = %q", name)
+	}
+}
+
+func TestPullDoesNotExposeEarlierBundleWhenLaterBundleIsInvalid(t *testing.T) {
+	testRoot := t.TempDir()
+	remote := filepath.Join(testRoot, "history.git")
+	runTestGit(t, testRoot, "init", "--bare", remote)
+	publisher := newSharedHistoryTestRepoAt(t, filepath.Join(testRoot, "publisher"))
+	_, _ = recordSharedHistoryTurn(t, publisher)
+	_, _ = recordSharedHistoryTurn(t, publisher)
+	if _, err := Configure(publisher, ConfigureOptions{Remote: remote, PromptMode: PromptModeOmit}); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := loadPolicy(publisher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := policyHash(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := mustDevice(t, publisher)
+	sources, err := listCompletedTurns(publisher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sources) != 2 {
+		t.Fatalf("completed turns = %d", len(sources))
+	}
+	bundles := make([]builtBundle, 0, len(sources))
+	batch := Batch{SchemaVersion: SchemaVersion, DeviceID: identity.DeviceID, PublicKey: identity.PublicKey, CreatedAt: time.Now().UTC()}
+	for _, source := range sources {
+		bundle, err := buildBundle(publisher, identity, policy, digest, source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		bundles = append(bundles, bundle)
+		manifest := bundle.Stored.Manifest
+		batch.Bundles = append(batch.Bundles, BatchBundle{BundleID: manifest.BundleID, Path: bundle.Path, RepoID: manifest.RepoID, SessionID: manifest.SessionID, TurnID: manifest.TurnID, Sequence: manifest.SourceSequence})
+	}
+	batch, err = signBatch(identity, batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := openGitStore(context.Background(), publisher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.commitBatch(context.Background(), batch, bundles); err != nil {
+		t.Fatal(err)
+	}
+	secondEvents := filepath.Join(store.root, filepath.FromSlash(bundles[1].Path), "events.jsonl")
+	file, err := os.OpenFile(secondEvents, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("tampered\n"); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	runTestGit(t, store.root, "add", "--", filepath.ToSlash(filepath.Join(bundles[1].Path, "events.jsonl")))
+	runTestGit(t, store.root, "commit", "--amend", "--no-edit", "--no-verify")
+	runTestGit(t, store.root, "push", remote, "HEAD:"+historyRef(identity.DeviceID))
+
+	receiver := newSharedHistoryTestRepoAt(t, filepath.Join(testRoot, "receiver"))
+	if _, err := Configure(receiver, ConfigureOptions{Remote: remote, RepoID: publisher.RepoID, PromptMode: PromptModeOmit}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(receiver).Sync(context.Background(), DirectionPull); err == nil || !strings.Contains(err.Error(), "content hash mismatch") {
+		t.Fatalf("invalid batch pull error = %v", err)
+	}
+	firstPath := filepath.Join(sharedRoot(receiver), "pulled", identity.DeviceID, bundles[0].Stored.Manifest.BundleID.String()+".json")
+	if _, err := os.Stat(firstPath); !os.IsNotExist(err) {
+		t.Fatalf("earlier bundle became visible before full batch validation: %v", err)
+	}
+}
+
 func stageBundleWithoutState(t *testing.T, repo *checkpoint.Repo, sessionID primitives.SessionID, turnID primitives.TurnID) {
 	t.Helper()
 	policy, err := loadPolicy(repo)
@@ -403,15 +607,11 @@ func stageBundleWithoutState(t *testing.T, repo *checkpoint.Repo, sessionID prim
 		t.Fatal(err)
 	}
 	identity := mustDevice(t, repo)
-	source, err := findCompletedTurn(repo, sessionID, turnID)
+	source, err := findCompletedTurn(repo, sessionID, turnID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	bundle, err := buildBundle(repo, identity, policy, digest, source)
-	if err != nil {
-		t.Fatal(err)
-	}
-	anchor, err := chainAnchor(repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,8 +627,7 @@ func stageBundleWithoutState(t *testing.T, repo *checkpoint.Repo, sessionID prim
 			TurnID:    bundle.Stored.Manifest.TurnID,
 			Sequence:  bundle.Stored.Manifest.SourceSequence,
 		}},
-		ChainAnchor: anchor,
-		CreatedAt:   New(repo).now(),
+		CreatedAt: New(repo).now(),
 	})
 	if err != nil {
 		t.Fatal(err)

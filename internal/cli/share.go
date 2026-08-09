@@ -26,6 +26,7 @@ func shareEnableCmd() *cobra.Command {
 	var remote string
 	var promptMode string
 	var repoID string
+	var includeExistingHistory bool
 	var jsonOutput bool
 	cmd := &cobra.Command{
 		Use:          "enable",
@@ -49,7 +50,12 @@ func shareEnableCmd() *cobra.Command {
 					return err
 				}
 			}
-			status, err := sharedhistory.Configure(repo, sharedhistory.ConfigureOptions{Remote: remote, PromptMode: sharedhistory.PromptMode(promptMode), RepoID: sharedRepoID})
+			status, err := sharedhistory.Configure(repo, sharedhistory.ConfigureOptions{
+				Remote:                 remote,
+				PromptMode:             sharedhistory.PromptMode(promptMode),
+				RepoID:                 sharedRepoID,
+				IncludeExistingHistory: includeExistingHistory,
+			})
 			if err != nil {
 				return err
 			}
@@ -62,13 +68,18 @@ func shareEnableCmd() *cobra.Command {
 			fmt.Fprintf(cmd.OutOrStdout(), "device:      %s\n", status.DeviceID)
 			fmt.Fprintf(cmd.OutOrStdout(), "prompt mode: %s\n", status.PromptMode)
 			fmt.Fprintf(cmd.OutOrStdout(), "policy:      %s\n", status.PolicyHash)
-			fmt.Fprintln(cmd.OutOrStdout(), "approval:    required (preview a completed turn with --approve)")
+			if status.Approved {
+				fmt.Fprintln(cmd.OutOrStdout(), "approval:    current")
+			} else {
+				fmt.Fprintln(cmd.OutOrStdout(), "approval:    required (preview a completed turn with --approve)")
+			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&remote, "remote", "", "Git URL or path that will receive shared history refs")
 	cmd.Flags().StringVar(&promptMode, "prompt-mode", "", "Prompt publication policy: redacted_text or omit")
 	cmd.Flags().StringVar(&repoID, "repo-id", "", "Shared repository ID supplied by a publisher when joining existing history")
+	cmd.Flags().BoolVar(&includeExistingHistory, "include-existing-history", false, "Copy this device's previously approved history when changing remotes")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit structured JSON")
 	return cmd
 }
@@ -76,6 +87,7 @@ func shareEnableCmd() *cobra.Command {
 func sharePreviewCmd() *cobra.Command {
 	var approve bool
 	var jsonOutput bool
+	var stream string
 	cmd := &cobra.Command{
 		Use:          "preview <session>:<turn>",
 		Short:        "Show the exact context projection before publication",
@@ -86,11 +98,18 @@ func sharePreviewCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			var streamID primitives.EventStreamID
+			if stream != "" {
+				streamID, err = primitives.ParseEventStreamID(stream)
+				if err != nil {
+					return err
+				}
+			}
 			repo, err := openCheckpointRepo()
 			if err != nil {
 				return err
 			}
-			plan, err := sharedhistory.New(repo).Preview(cmd.Context(), sharedhistory.PreviewOptions{SessionID: sessionID, TurnID: turnID, Approve: approve})
+			plan, err := sharedhistory.New(repo).Preview(cmd.Context(), sharedhistory.PreviewOptions{SessionID: sessionID, TurnID: turnID, StreamID: streamID, Approve: approve})
 			if err != nil {
 				return err
 			}
@@ -117,6 +136,7 @@ func sharePreviewCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&approve, "approve", false, "Approve this schema and policy hash for future publications")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit the complete publication projection as JSON")
+	cmd.Flags().StringVar(&stream, "stream", "", "Select an event stream when session and turn are ambiguous")
 	return cmd
 }
 

@@ -16,9 +16,10 @@ import (
 )
 
 type ConfigureOptions struct {
-	Remote     string
-	PromptMode PromptMode
-	RepoID     primitives.RepoID
+	Remote                 string
+	PromptMode             PromptMode
+	RepoID                 primitives.RepoID
+	IncludeExistingHistory bool
 }
 
 func Configure(repo *checkpoint.Repo, options ConfigureOptions) (Status, error) {
@@ -105,11 +106,14 @@ func configureLocked(repo *checkpoint.Repo, options ConfigureOptions) (Status, e
 		if previousDigest != newDigest && len(state.Committed) > 0 {
 			return Status{}, fmt.Errorf("shared history has an unpushed outbox under the current policy; publish it before changing the remote or privacy policy")
 		}
+		head, err := store.localHead(ctx)
+		if err != nil {
+			return Status{}, err
+		}
+		if previous.Remote != policy.Remote && head != "" && !options.IncludeExistingHistory {
+			return Status{}, fmt.Errorf("changing the remote will copy all previously approved shared history; rerun with --include-existing-history to consent")
+		}
 		if previous.RepoID != policy.RepoID {
-			head, err := store.localHead(ctx)
-			if err != nil {
-				return Status{}, err
-			}
 			if head != "" {
 				return Status{}, fmt.Errorf("shared history repository identity cannot change after this device has published history")
 			}
@@ -141,6 +145,18 @@ func normalizeRemote(remote string) (string, error) {
 		return "", fmt.Errorf("resolve shared history remote: %w", err)
 	}
 	return filepath.Clean(absolute), nil
+}
+
+func redactRemote(remote string) string {
+	scheme := strings.Index(remote, "://")
+	if scheme < 0 {
+		return remote
+	}
+	authorityStart := scheme + 3
+	if at := strings.IndexByte(remote[authorityStart:], '@'); at >= 0 {
+		return remote[:authorityStart] + "[REDACTED]@" + remote[authorityStart+at+1:]
+	}
+	return remote
 }
 
 func looksLikeSCPRemote(remote string) bool {
@@ -314,7 +330,7 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	if err := temp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tempPath, path); err != nil {
+	if err := replaceFile(tempPath, path); err != nil {
 		return fmt.Errorf("install shared history file %s: %w", path, err)
 	}
 	if err := syncDirectory(dir); err != nil {
