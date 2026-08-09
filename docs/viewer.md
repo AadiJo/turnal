@@ -68,7 +68,7 @@ The viewer retries a transient partial event tail only while an event-writer loc
 - The cross-project activity feed is capped per request and defaults to the most recent 40 sessions.
 - Truncation is reported in the response and UI.
 
-Prism intentionally omits rollback buttons, editing, cloud accounts, automatic uploads, arbitrary network binding, Electron packaging, and raw adapter-record browsing. Cross-project search is not implemented yet; the index makes it possible but the query surface is still CLI-only.
+Prism intentionally omits rollback buttons, editing, cloud accounts, automatic uploads, arbitrary network binding, Electron packaging, raw adapter-record browsing, and a search UI. Machine-wide local search is available through `turnal search --all-projects`.
 
 ## Build and release
 

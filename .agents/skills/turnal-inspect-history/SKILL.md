@@ -18,7 +18,7 @@ Once history exists, work through the CLI: when it rejects a documented flag, ru
 The lead is the phrase in the prompt that points at work outside this conversation. Search for that, not for the whole task.
 
 1. Build a narrow search query from the lead — the feature name, error text, file path, command, or distinctive terminology it names.
-2. Run `turnal search "<query>" --json`. If it misses, try one alternate query using a filename or error string rather than broadening to the entire history.
+2. Run `turnal search "<query>" --json`. If the lead may belong to another local project, retry with `--all-projects --semantic`; otherwise try one alternate filename or error query.
 3. Inspect plausible matches with `turnal show <session>:<turn> --json` to recover the recorded user instruction, normalized events, tools, and checkpoint metadata.
 4. Use `turnal diff <session>:<turn>` to see what that Attempt actually changed. Use `blame` first when the question starts from a particular line.
 5. Add `--transcript`, `--raw`, or `--full` only if normalized events do not establish the prior intent; recorded provider data may be sensitive.

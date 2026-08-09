@@ -99,6 +99,14 @@ type SearchResult struct {
 	Rank       float64                  `json:"rank"`
 }
 
+// SearchDocument is one indexed turn plus the text used for meaning matching.
+// Exposing it lets local discovery rank turns from the disposable projection
+// without opening durable event logs a second time.
+type SearchDocument struct {
+	Result SearchResult
+	Text   string
+}
+
 type BlameCacheQuery struct {
 	ScopeSession  primitives.SessionID
 	Path          primitives.RepoPath
