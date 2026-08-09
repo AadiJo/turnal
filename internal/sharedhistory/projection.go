@@ -466,6 +466,9 @@ func workspacePathStartBoundary(value string, index int) bool {
 	if index == 0 {
 		return true
 	}
+	if strings.ContainsAny(value[:index], `/\`) {
+		return false
+	}
 	previous, _ := utf8.DecodeLastRuneInString(value[:index])
 	if unicode.IsSpace(previous) {
 		return true
@@ -477,56 +480,11 @@ func workspacePathEndBoundary(value string, start, end int, workspaceRoot string
 	if end == len(value) || isPathSeparator(value[end]) || isPathSeparator(workspaceRoot[len(workspaceRoot)-1]) {
 		return true
 	}
-	next, size := utf8.DecodeRuneInString(value[end:])
+	next, _ := utf8.DecodeRuneInString(value[end:])
 	if quote := workspacePathOpeningQuote(value, start); quote != 0 {
 		return next == quote
 	}
-	if unicode.IsSpace(next) {
-		return workspaceProseBoundary(value[end:])
-	}
-	if strings.ContainsRune("\"'`.)]}>,;:!?", next) {
-		return workspacePunctuationBoundary(value[end+size:])
-	}
 	return false
-}
-
-func workspaceProseBoundary(value string) bool {
-	remainder := strings.TrimSpace(value)
-	if remainder == "" {
-		return true
-	}
-	if strings.ContainsAny(remainder, `/\`) {
-		return false
-	}
-	wordEnd := 0
-	for _, character := range remainder {
-		if !unicode.IsLetter(character) {
-			break
-		}
-		wordEnd += utf8.RuneLen(character)
-	}
-	if wordEnd == 0 {
-		return false
-	}
-	_, ok := workspaceProseConnectors[strings.ToLower(remainder[:wordEnd])]
-	return ok
-}
-
-var workspaceProseConnectors = map[string]struct{}{
-	"after": {}, "and": {}, "at": {}, "before": {}, "but": {}, "for": {}, "from": {},
-	"in": {}, "is": {}, "on": {}, "or": {}, "that": {}, "then": {}, "to": {}, "was": {},
-	"when": {}, "where": {}, "which": {}, "while": {}, "with": {}, "without": {},
-}
-
-func workspacePunctuationBoundary(value string) bool {
-	if value == "" {
-		return true
-	}
-	next, _ := utf8.DecodeRuneInString(value)
-	if !unicode.IsSpace(next) && !strings.ContainsRune("\"'`.)]}>,;:!?", next) {
-		return false
-	}
-	return !strings.ContainsAny(value, `/\`)
 }
 
 func workspacePathOpeningQuote(value string, start int) rune {

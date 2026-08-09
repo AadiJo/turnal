@@ -205,6 +205,21 @@ func TestSanitizeTextDoesNotPartiallyReplaceSiblingPaths(t *testing.T) {
 			workspaceRoot: "/Users/Alice/Secret Project",
 			text:          "Inspect /users/alice/secret project-secret/private.txt",
 		},
+		{
+			name:          "connector sibling without separator",
+			workspaceRoot: "/home/alice/project",
+			text:          "Inspect /home/alice/project and secret",
+		},
+		{
+			name:          "repeated punctuation sibling",
+			workspaceRoot: "/home/alice/project",
+			text:          "Inspect /home/alice/project..private",
+		},
+		{
+			name:          "unquoted enclosing path with spaces",
+			workspaceRoot: "/home/alice/project",
+			text:          "Inspect /srv /home/alice/project/private.txt",
+		},
 	}
 
 	for _, test := range tests {
@@ -218,31 +233,13 @@ func TestSanitizeTextDoesNotPartiallyReplaceSiblingPaths(t *testing.T) {
 	}
 }
 
-func TestSanitizeTextRecognizesWorkspacePathDelimiters(t *testing.T) {
+func TestSanitizeTextRecognizesUnambiguousWorkspacePathBoundaries(t *testing.T) {
 	tests := []struct {
 		name          string
 		workspaceRoot string
 		text          string
 		want          string
 	}{
-		{
-			name:          "whitespace",
-			workspaceRoot: "/home/alice/project",
-			text:          "Working in /home/alice/project and testing",
-			want:          "Working in $WORKSPACE and testing",
-		},
-		{
-			name:          "punctuation",
-			workspaceRoot: "/home/alice/project",
-			text:          "See /home/alice/project, then continue",
-			want:          "See $WORKSPACE, then continue",
-		},
-		{
-			name:          "terminal period",
-			workspaceRoot: "/home/alice/project",
-			text:          "See /home/alice/project.",
-			want:          "See $WORKSPACE.",
-		},
 		{
 			name:          "quoted",
 			workspaceRoot: "/home/alice/project",
@@ -283,6 +280,20 @@ func TestSanitizeTextRecognizesWorkspacePathDelimiters(t *testing.T) {
 				t.Fatalf("sanitized text = %#v, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestSanitizeTextFailsClosedOnAmbiguousWorkspaceRootMentions(t *testing.T) {
+	for _, text := range []string{
+		"Working in /home/alice/project and testing",
+		"See /home/alice/project, then continue",
+		"See /home/alice/project.",
+	} {
+		truncations := Truncations{}
+		got := sanitizeText("/home/alice/project", text, DefaultFieldLimit, &truncations)
+		if got.Text != "[PATH_REDACTED]" || !got.Redacted {
+			t.Fatalf("ambiguous root mention was not redacted as a whole: %#v", got)
+		}
 	}
 }
 
