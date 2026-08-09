@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/AadiJo/turnal/internal/discovery"
+	queryindex "github.com/AadiJo/turnal/internal/index"
 )
 
 // requireModel loads the real encoder, skipping when the model is not already
@@ -60,6 +61,22 @@ func TestMetadataDilutesMeaningMatch(t *testing.T) {
 		t.Fatalf("diluted similarity %.3f >= focused %.3f; the premise of the narrow document is wrong", diluted, focused)
 	}
 	t.Logf("focused=%.3f diluted=%.3f", focused, diluted)
+}
+
+func TestPromptOnlyExampleIsMeaningMatch(t *testing.T) {
+	encoder := requireModel(t)
+
+	const query = "why does history sync fail open"
+	const prompt = "Context upload must not block the source push."
+	results, err := discovery.Rank(query, []discovery.Candidate{{
+		Document: queryindex.SearchDocument{Text: prompt},
+	}}, encoder, 20)
+	if err != nil {
+		t.Fatalf("Rank: %v", err)
+	}
+	if len(results) != 1 || results[0].Match.Kind != "meaning" {
+		t.Fatalf("results = %#v, want the prompt-only meaning match", results)
+	}
 }
 
 // A genuinely related turn must clear the floor, and unrelated work must not.

@@ -14,9 +14,9 @@ import (
 const (
 	// similarityFloor is the cosine score a meaning-only match must clear.
 	// Calibrated against potion-base-2M, whose 64-dimensional vectors put
-	// loosely-worded development text in the 0.2-0.3 band; a lower floor
-	// admits unrelated turns that merely share a register.
-	similarityFloor = float32(0.35)
+	// loosely-worded development text in the 0.2-0.3 band. The floor keeps the
+	// calibrated prompt-only match at 0.334 while rejecting diluted noise.
+	similarityFloor = float32(0.30)
 
 	// maxSemanticTextLen bounds one document before embedding. Mean pooling
 	// dilutes the vector as text grows, so an unusually long prompt is
