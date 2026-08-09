@@ -10,6 +10,7 @@ import (
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	"github.com/AadiJo/turnal/internal/discovery"
 	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/fsidentity"
 	"github.com/AadiJo/turnal/internal/primitives"
 )
 
@@ -90,25 +91,35 @@ func TestSearchCommandSearchesEveryRegisteredProject(t *testing.T) {
 	if len(results) != 2 {
 		t.Fatalf("cross-project results = %#v, want 2", results)
 	}
-	roots := map[string]bool{
-		firstRoot.String():  false,
-		secondRoot.String(): false,
+	roots := []struct {
+		path  string
+		found bool
+	}{
+		{path: firstRoot.String()},
+		{path: secondRoot.String()},
 	}
 	for _, result := range results {
 		if result.Project == nil {
 			t.Fatalf("cross-project result omitted project: %#v", result)
 		}
-		if _, ok := roots[result.Project.Root]; !ok {
+		matchedRoot := false
+		for index := range roots {
+			if fsidentity.Same(result.Project.Root, roots[index].path) {
+				roots[index].found = true
+				matchedRoot = true
+				break
+			}
+		}
+		if !matchedRoot {
 			t.Fatalf("unexpected project root in result: %#v", result.Project)
 		}
-		roots[result.Project.Root] = true
 		if result.Match.Kind != "keyword" {
 			t.Fatalf("cross-project match = %#v, want keyword", result.Match)
 		}
 	}
-	for root, found := range roots {
-		if !found {
-			t.Fatalf("cross-project search omitted %s", root)
+	for _, root := range roots {
+		if !root.found {
+			t.Fatalf("cross-project search omitted %s", root.path)
 		}
 	}
 }
