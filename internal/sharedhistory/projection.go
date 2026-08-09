@@ -384,9 +384,9 @@ func workspaceRootVariants(workspaceRoot string) []string {
 		return nil
 	}
 
-	roots := []string{workspaceRoot, filepath.Clean(workspaceRoot)}
+	roots := []string{trimWorkspaceTrailingSeparators(workspaceRoot), trimWorkspaceTrailingSeparators(filepath.Clean(workspaceRoot))}
 	if resolved, err := filepath.EvalSymlinks(workspaceRoot); err == nil {
-		roots = append(roots, resolved)
+		roots = append(roots, trimWorkspaceTrailingSeparators(resolved))
 	}
 	for _, root := range append([]string(nil), roots...) {
 		slashRoot := filepath.ToSlash(root)
@@ -401,6 +401,7 @@ func workspaceRootVariants(workspaceRoot string) []string {
 	seen := make(map[string]struct{}, len(roots)*3)
 	variants := make([]string, 0, len(roots)*3)
 	add := func(value string) {
+		value = trimWorkspaceTrailingSeparators(value)
 		if value == "" {
 			return
 		}
@@ -426,33 +427,39 @@ func replaceWorkspaceRoot(value, workspaceRoot string) (string, bool) {
 		return value, false
 	}
 
-	var result strings.Builder
-	remaining := value
-	replaced := false
-	for {
-		index := strings.Index(remaining, workspaceRoot)
-		if index < 0 {
-			result.WriteString(remaining)
-			break
-		}
+	// Match conservatively across case-insensitive Windows and macOS aliases.
+	// On a case-sensitive filesystem, an extra redaction is safer than exposing
+	// a path whose captured spelling differs from the registered worktree.
+	matcher := regexp.MustCompile(`(?i:` + regexp.QuoteMeta(workspaceRoot) + `)`)
+	matches := matcher.FindAllStringIndex(value, -1)
+	if len(matches) == 0 {
+		return value, false
+	}
 
-		end := index + len(workspaceRoot)
-		startsAtBoundary := workspacePathStartBoundary(remaining, index)
-		endsAtBoundary := end == len(remaining) || isPathSeparator(remaining[end]) || isPathSeparator(workspaceRoot[len(workspaceRoot)-1])
-		if startsAtBoundary && endsAtBoundary {
-			result.WriteString(remaining[:index])
-			result.WriteString("$WORKSPACE")
-			remaining = remaining[end:]
-			replaced = true
+	var result strings.Builder
+	last := 0
+	for _, match := range matches {
+		start, end := match[0], match[1]
+		startsAtBoundary := workspacePathStartBoundary(value, start)
+		if isPathSeparatorOnly(workspaceRoot) && !startsAtBoundary {
 			continue
 		}
+		if !startsAtBoundary || !workspacePathEndBoundary(value, start, end, workspaceRoot) {
+			// A root-like substring outside path boundaries may be a sibling or
+			// an enclosing path. Redact the field rather than create a
+			// misleading, partially scrubbed $WORKSPACE value.
+			return "[PATH_REDACTED]", true
+		}
 
-		// A root-like substring outside path boundaries may be a sibling or an
-		// enclosing path. Redact the field rather than create a misleading,
-		// partially scrubbed $WORKSPACE value.
-		return "[PATH_REDACTED]", true
+		result.WriteString(value[last:start])
+		result.WriteString("$WORKSPACE")
+		if isPathSeparator(workspaceRoot[len(workspaceRoot)-1]) && end < len(value) && !isPathSeparator(value[end]) {
+			result.WriteByte(workspaceRoot[len(workspaceRoot)-1])
+		}
+		last = end
 	}
-	return result.String(), replaced
+	result.WriteString(value[last:])
+	return result.String(), last > 0
 }
 
 func workspacePathStartBoundary(value string, index int) bool {
@@ -464,6 +471,50 @@ func workspacePathStartBoundary(value string, index int) bool {
 		return true
 	}
 	return strings.ContainsRune("\"'`()[]{}<>=,;:", previous)
+}
+
+func workspacePathEndBoundary(value string, start, end int, workspaceRoot string) bool {
+	if end == len(value) || isPathSeparator(value[end]) || isPathSeparator(workspaceRoot[len(workspaceRoot)-1]) {
+		return true
+	}
+	next, _ := utf8.DecodeRuneInString(value[end:])
+	if quote := workspacePathOpeningQuote(value, start); quote != 0 {
+		return next == quote
+	}
+	if unicode.IsSpace(next) {
+		return true
+	}
+	return strings.ContainsRune("\"'`)]}>,;:!?", next)
+}
+
+func workspacePathOpeningQuote(value string, start int) rune {
+	if start == 0 {
+		return 0
+	}
+	previous, _ := utf8.DecodeLastRuneInString(value[:start])
+	if strings.ContainsRune("\"'`", previous) {
+		return previous
+	}
+	return 0
+}
+
+func trimWorkspaceTrailingSeparators(value string) string {
+	for len(value) > 1 && isPathSeparator(value[len(value)-1]) && !isWindowsDriveRoot(value) {
+		value = value[:len(value)-1]
+	}
+	return value
+}
+
+func isWindowsDriveRoot(value string) bool {
+	if len(value) != 3 || value[1] != ':' || !isPathSeparator(value[2]) {
+		return false
+	}
+	letter := value[0]
+	return (letter >= 'a' && letter <= 'z') || (letter >= 'A' && letter <= 'Z')
+}
+
+func isPathSeparatorOnly(value string) bool {
+	return len(value) == 1 && isPathSeparator(value[0])
 }
 
 func isPathSeparator(character byte) bool {

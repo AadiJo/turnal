@@ -183,12 +183,17 @@ func TestSanitizeTextDoesNotPartiallyReplaceSiblingPaths(t *testing.T) {
 		{
 			name:          "sibling with spaces",
 			workspaceRoot: "/home/alice/project",
-			text:          "Inspect /home/alice/project secret/private.txt",
+			text:          `Inspect "/home/alice/project secret/private.txt"`,
 		},
 		{
 			name:          "embedded in enclosing path",
 			workspaceRoot: "/home/alice/project",
 			text:          "Inspect /srv/home/alice/project/private.txt",
+		},
+		{
+			name:          "case-insensitive sibling",
+			workspaceRoot: "/Users/Alice/Secret Project",
+			text:          "Inspect /users/alice/secret project-secret/private.txt",
 		},
 	}
 
@@ -198,6 +203,100 @@ func TestSanitizeTextDoesNotPartiallyReplaceSiblingPaths(t *testing.T) {
 			got := sanitizeText(test.workspaceRoot, test.text, DefaultFieldLimit, &truncations)
 			if got.Text != "[PATH_REDACTED]" || !got.Redacted {
 				t.Fatalf("ambiguous path was not redacted as a whole: %#v", got)
+			}
+		})
+	}
+}
+
+func TestSanitizeTextRecognizesWorkspacePathDelimiters(t *testing.T) {
+	tests := []struct {
+		name          string
+		workspaceRoot string
+		text          string
+		want          string
+	}{
+		{
+			name:          "whitespace",
+			workspaceRoot: "/home/alice/project",
+			text:          "Working in /home/alice/project and testing",
+			want:          "Working in $WORKSPACE and testing",
+		},
+		{
+			name:          "punctuation",
+			workspaceRoot: "/home/alice/project",
+			text:          "See /home/alice/project, then continue",
+			want:          "See $WORKSPACE, then continue",
+		},
+		{
+			name:          "quoted",
+			workspaceRoot: "/home/alice/project",
+			text:          `See "/home/alice/project", then continue`,
+			want:          `See "$WORKSPACE", then continue`,
+		},
+		{
+			name:          "unix trailing separator",
+			workspaceRoot: "/home/alice/project/",
+			text:          "Inspect /home/alice/project/private.txt",
+			want:          "Inspect $WORKSPACE/private.txt",
+		},
+		{
+			name:          "windows trailing separator",
+			workspaceRoot: `C:\Users\Alice\Project\`,
+			text:          `Inspect C:\Users\Alice\Project\private.txt`,
+			want:          `Inspect $WORKSPACE\private.txt`,
+		},
+		{
+			name:          "unix filesystem root",
+			workspaceRoot: "/",
+			text:          "Inspect /private.txt",
+			want:          "Inspect $WORKSPACE/private.txt",
+		},
+		{
+			name:          "windows drive root",
+			workspaceRoot: `C:\`,
+			text:          `Inspect C:\private.txt`,
+			want:          `Inspect $WORKSPACE\private.txt`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			truncations := Truncations{}
+			got := sanitizeText(test.workspaceRoot, test.text, DefaultFieldLimit, &truncations)
+			if got.Text != test.want || !got.Redacted {
+				t.Fatalf("sanitized text = %#v, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestSanitizeTextMatchesCaseInsensitiveWorkspaceAliases(t *testing.T) {
+	tests := []struct {
+		name          string
+		workspaceRoot string
+		text          string
+		want          string
+	}{
+		{
+			name:          "macos",
+			workspaceRoot: "/Users/Alice/Secret Project",
+			text:          "Inspect /users/alice/secret project/private.txt",
+			want:          "Inspect $WORKSPACE/private.txt",
+		},
+		{
+			name:          "windows",
+			workspaceRoot: `C:\Users\Alice\Secret Project`,
+			text:          `Inspect c:\users\alice\secret project\private.txt`,
+			want:          `Inspect $WORKSPACE\private.txt`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			truncations := Truncations{}
+			got := sanitizeText(test.workspaceRoot, test.text, DefaultFieldLimit, &truncations)
+			if got.Text != test.want || !got.Redacted {
+				t.Fatalf("sanitized text = %#v, want %q", got, test.want)
 			}
 		})
 	}
