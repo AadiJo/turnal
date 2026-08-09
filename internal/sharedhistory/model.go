@@ -222,6 +222,7 @@ type policyFile struct {
 type stateFile struct {
 	Version   int               `json:"version"`
 	Remote    string            `json:"remote,omitempty"`
+	RepoID    primitives.RepoID `json:"repo_id,omitempty"`
 	Committed map[string]string `json:"committed,omitempty"`
 	Published map[string]string `json:"published,omitempty"`
 	Blocked   map[string]string `json:"blocked,omitempty"`

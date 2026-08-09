@@ -130,6 +130,14 @@ func buildBundle(repo *checkpoint.Repo, identity deviceIdentity, policy policyFi
 	if strings.TrimSpace(source.WorkspaceRoot) == "" {
 		return builtBundle{}, fmt.Errorf("source worktree root is unavailable for stream %s; refusing to project paths without its privacy boundary", source.Stream.StreamID)
 	}
+	if containsDetectedSecret(source.Stream.SessionID.String()) {
+		return builtBundle{}, fmt.Errorf("source session id contains secret-like material; refusing to publish it as manifest metadata")
+	}
+	for _, event := range source.Events {
+		if containsDetectedSecret(event.Adapter.String()) {
+			return builtBundle{}, fmt.Errorf("source adapter id contains secret-like material; refusing to publish it as event metadata")
+		}
+	}
 	bundleID, err := primitives.DeriveBundleID(policy.RepoID, source.Stream.StreamID, source.TurnID)
 	if err != nil {
 		return builtBundle{}, err
@@ -367,6 +375,15 @@ func sanitizeText(workspaceRoot, value string, limit int, truncations *Truncatio
 		truncations.OriginalBytes += result.OriginalBytes
 	}
 	return result
+}
+
+func containsDetectedSecret(value string) bool {
+	for _, pattern := range secretPatterns {
+		if pattern.MatchString(value) {
+			return true
+		}
+	}
+	return false
 }
 
 func sanitizeList(workspaceRoot string, values []string, limit int, truncations *Truncations) ([]string, bool) {

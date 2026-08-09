@@ -37,17 +37,16 @@ func openGitStore(ctx context.Context, repo *checkpoint.Repo) (*gitStore, error)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("inspect shared history Git repository: %w", err)
 	}
-	initialized := err == nil
-	if initialized && (!info.IsDir() || info.Mode()&os.ModeSymlink != 0) {
+	if err == nil && (!info.IsDir() || info.Mode()&os.ModeSymlink != 0) {
 		return nil, fmt.Errorf("shared history Git metadata is not a regular directory: %s", gitDir)
 	}
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, err
 	}
-	if !initialized {
-		if _, err := store.run(ctx, "init", "--initial-branch=local"); err != nil {
-			return nil, err
-		}
+	// Reinitialization is idempotent and repairs a crash that left a partial
+	// .git directory before HEAD, objects, or configuration were installed.
+	if _, err := store.run(ctx, "init", "--initial-branch=local"); err != nil {
+		return nil, err
 	}
 	for _, setting := range [][2]string{
 		{"user.name", "Turnal Shared History"},
@@ -103,10 +102,18 @@ func (store *gitStore) commitBatch(ctx context.Context, batch Batch, bundles []b
 		}
 		manifestPath := filepath.Join(dir, "manifest.json")
 		eventsPath := filepath.Join(dir, "events.jsonl")
-		if err := ensureImmutableFile(manifestPath, bundle.Manifest); err != nil {
+		manifestTracked, err := store.fileExistsAtCommit(ctx, head, bundle.Path+"/manifest.json")
+		if err != nil {
 			return "", err
 		}
-		if err := ensureImmutableFile(eventsPath, bundle.EventsJSON); err != nil {
+		eventsTracked, err := store.fileExistsAtCommit(ctx, head, bundle.Path+"/events.jsonl")
+		if err != nil {
+			return "", err
+		}
+		if err := ensureImmutableFile(manifestPath, bundle.Manifest, !manifestTracked); err != nil {
+			return "", err
+		}
+		if err := ensureImmutableFile(eventsPath, bundle.EventsJSON, !eventsTracked); err != nil {
 			return "", err
 		}
 	}
@@ -137,7 +144,10 @@ func (store *gitStore) commitBatch(ctx context.Context, batch Batch, bundles []b
 	return store.localHead(ctx)
 }
 
-func ensureImmutableFile(path string, data []byte) error {
+func ensureImmutableFile(path string, data []byte, replaceUntracked bool) error {
+	if replaceUntracked {
+		return writeFileAtomic(path, data, 0o600)
+	}
 	existing, err := readRegularFile(path, DefaultBundleLimit)
 	if err == nil {
 		if !bytes.Equal(existing, data) {
@@ -155,17 +165,17 @@ func historyRef(deviceID string) string {
 	return "refs/turnal/v1/history/" + deviceID
 }
 
-func trackingRefPrefix(remote string) string {
-	digest := strings.TrimPrefix(sha256Bytes([]byte(publicRemoteIdentity(remote))), "sha256:")
+func trackingRefPrefix(remote string, repoID primitives.RepoID) string {
+	digest := strings.TrimPrefix(sha256Bytes([]byte(publicRemoteIdentity(remote)+"\x00"+repoID.String())), "sha256:")
 	return "refs/turnal/v1/tracking/" + digest[:32] + "/"
 }
 
-func trackingRef(remote, deviceID string) string {
-	return trackingRefPrefix(remote) + deviceID
+func trackingRef(remote string, repoID primitives.RepoID, deviceID string) string {
+	return trackingRefPrefix(remote, repoID) + deviceID
 }
 
-func (store *gitStore) recoverTrackingState(ctx context.Context, remote string, state *stateFile) (bool, error) {
-	prefix := trackingRefPrefix(remote)
+func (store *gitStore) recoverTrackingState(ctx context.Context, remote string, repoID primitives.RepoID, state *stateFile) (bool, error) {
+	prefix := trackingRefPrefix(remote, repoID)
 	output, err := store.run(ctx, "for-each-ref", "--format=%(objectname) %(refname)", prefix)
 	if err != nil {
 		return false, err
@@ -448,11 +458,11 @@ func (store *gitStore) fetchAndIngest(ctx context.Context, remote string, remote
 	if len(commits) > 0 {
 		observedHead = commits[len(commits)-1]
 	}
-	oldTracking, err := store.refValue(ctx, trackingRef(remote, remoteRef.DeviceID))
+	oldTracking, err := store.refValue(ctx, trackingRef(remote, repoID, remoteRef.DeviceID))
 	if err != nil {
 		return nil, lastSeen, err
 	}
-	args := []string{"update-ref", trackingRef(remote, remoteRef.DeviceID), observedHead}
+	args := []string{"update-ref", trackingRef(remote, repoID, remoteRef.DeviceID), observedHead}
 	if oldTracking != "" {
 		args = append(args, oldTracking)
 	}

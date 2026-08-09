@@ -53,7 +53,7 @@ func (manager *Manager) statusLocked(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	alignStateRemote(&state, policy.Remote)
+	alignStateScope(&state, policy.Remote, policy.RepoID)
 	turns, err := listCompletedTurns(manager.repo)
 	if err != nil {
 		return Status{}, err
@@ -198,7 +198,7 @@ func (manager *Manager) syncPush(ctx context.Context) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	alignStateRemote(&state, policy.Remote)
+	alignStateScope(&state, policy.Remote, policy.RepoID)
 	store, err := openGitStore(ctx, manager.repo)
 	if err != nil {
 		return Result{}, err
@@ -326,12 +326,12 @@ func (manager *Manager) syncPull(ctx context.Context) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	alignStateRemote(&state, policy.Remote)
+	alignStateScope(&state, policy.Remote, policy.RepoID)
 	store, err := openGitStore(ctx, manager.repo)
 	if err != nil {
 		return Result{}, err
 	}
-	recovered, err := store.recoverTrackingState(ctx, policy.Remote, &state)
+	recovered, err := store.recoverTrackingState(ctx, policy.Remote, policy.RepoID, &state)
 	if err != nil {
 		return Result{}, err
 	}

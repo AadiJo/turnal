@@ -129,7 +129,7 @@ func configureLocked(repo *checkpoint.Repo, options ConfigureOptions) (Status, e
 	if err := writeJSONAtomic(policyPath(repo), policy, 0o600); err != nil {
 		return Status{}, err
 	}
-	alignStateRemote(&state, remote)
+	alignStateScope(&state, remote, policy.RepoID)
 	if err := saveState(repo, state); err != nil {
 		return Status{}, err
 	}
@@ -162,6 +162,11 @@ func normalizeRemote(remote string) (string, error) {
 func redactRemote(remote string) string {
 	scheme := strings.Index(remote, "://")
 	if scheme < 0 {
+		if colon := strings.IndexByte(remote, ':'); colon > 0 {
+			if at := strings.LastIndexByte(remote[:colon], '@'); at >= 0 {
+				return "[REDACTED]@" + remote[at+1:]
+			}
+		}
 		return remote
 	}
 	authorityStart := scheme + 3
@@ -327,13 +332,19 @@ func loadState(repo *checkpoint.Repo) (stateFile, error) {
 	return state, nil
 }
 
-func alignStateRemote(state *stateFile, remote string) {
+func alignStateScope(state *stateFile, remote string, repoID primitives.RepoID) {
 	remote = publicRemoteIdentity(remote)
-	if state.Remote == remote {
-		return
+	if state.RepoID != repoID {
+		state.RepoID = repoID
+		state.Committed = map[string]string{}
+		state.Published = map[string]string{}
+		state.Blocked = map[string]string{}
+		state.LastSeen = map[string]string{}
 	}
-	state.Remote = remote
-	state.LastSeen = map[string]string{}
+	if state.Remote != remote {
+		state.Remote = remote
+		state.LastSeen = map[string]string{}
+	}
 }
 
 func saveState(repo *checkpoint.Repo, state stateFile) error {

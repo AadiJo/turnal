@@ -65,6 +65,20 @@ func TestPreviewProjectsOnlyAllowlistedRedactedContext(t *testing.T) {
 	}
 }
 
+func TestProjectionBlocksSecretLikeManifestIdentifiers(t *testing.T) {
+	sessionID, err := primitives.ParseSessionID("ghp_0123456789abcdefghijklmnop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = buildBundle(nil, deviceIdentity{}, policyFile{}, "", turnSource{
+		Stream:        eventlog.DurableStream{SessionID: sessionID},
+		WorkspaceRoot: "/workspace",
+	})
+	if err == nil || !strings.Contains(err.Error(), "secret-like") {
+		t.Fatalf("secret-like session id error = %v", err)
+	}
+}
+
 func TestLinkedWorktreeProjectionUsesSourceWorkspaceRoot(t *testing.T) {
 	t.Setenv("TURNAL_STATE_DIR", t.TempDir())
 	parent := t.TempDir()
@@ -571,6 +585,18 @@ func TestCredentialRemoteIsRedactedFromStatusAndErrors(t *testing.T) {
 	if strings.Contains(message, "private-token") || strings.Contains(message, "query-secret") || !strings.Contains(message, "[REDACTED]") {
 		t.Fatalf("Git error leaked remote credentials: %s", message)
 	}
+	scpRemote := "private-user@example.invalid:history.git"
+	scpStatus, err := Configure(repo, ConfigureOptions{Remote: scpRemote, PromptMode: PromptModeOmit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(scpStatus.Remote, "private-user") || !strings.Contains(scpStatus.Remote, "[REDACTED]@") {
+		t.Fatalf("SCP-style status remote = %q", scpStatus.Remote)
+	}
+	scpMessage := gitCommandError{args: []string{"ls-remote", scpRemote}, output: redactGitOutput("fatal: "+scpRemote, []string{scpRemote}), err: errors.New("failed")}.Error()
+	if strings.Contains(scpMessage, "private-user") || !strings.Contains(scpMessage, "[REDACTED]@") {
+		t.Fatalf("Git error leaked SCP-style userinfo: %s", scpMessage)
+	}
 }
 
 func TestCredentialRotationDoesNotChangePublicPolicyHash(t *testing.T) {
@@ -765,6 +791,112 @@ func TestOpenGitStoreRepairsInterruptedConfiguration(t *testing.T) {
 	}
 	if name := runTestGit(t, store.root, "config", "--local", "--get", "user.name"); name != "Turnal Shared History" {
 		t.Fatalf("repaired user.name = %q", name)
+	}
+	if err := os.Remove(filepath.Join(store.root, ".git", "HEAD")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openGitStore(context.Background(), repo); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(store.root, ".git", "HEAD")); err != nil {
+		t.Fatalf("reinitialized HEAD: %v", err)
+	}
+}
+
+func TestPreCommitCrashDoesNotPoisonProjectionAfterPolicyChange(t *testing.T) {
+	testRoot := t.TempDir()
+	remote := filepath.Join(testRoot, "history.git")
+	runTestGit(t, testRoot, "init", "--bare", remote)
+	repo := newSharedHistoryTestRepoAt(t, filepath.Join(testRoot, "publisher"))
+	sessionID, turnID := recordSharedHistoryTurn(t, repo)
+	if _, err := Configure(repo, ConfigureOptions{Remote: remote, PromptMode: PromptModeRedactedText}); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := loadPolicy(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := policyHash(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := findCompletedTurn(repo, sessionID, turnID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	orphan, err := buildBundle(repo, mustDevice(t, repo), policy, digest, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := openGitStore(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orphanDir := filepath.Join(store.root, filepath.FromSlash(orphan.Path))
+	if err := os.MkdirAll(orphanDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(orphanDir, "manifest.json"), orphan.Manifest, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(orphanDir, "events.jsonl"), orphan.EventsJSON, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Configure(repo, ConfigureOptions{Remote: remote, PromptMode: PromptModeOmit}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(repo).Preview(context.Background(), PreviewOptions{SessionID: sessionID, TurnID: turnID, Approve: true}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := New(repo).Sync(context.Background(), DirectionPush)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Published != 1 {
+		t.Fatalf("push after orphaned projection = %#v", result)
+	}
+}
+
+func TestRepoIDChangeCannotReuseOldObservationCursorAfterCrash(t *testing.T) {
+	testRoot := t.TempDir()
+	remote := filepath.Join(testRoot, "history.git")
+	runTestGit(t, testRoot, "init", "--bare", remote)
+	publisher := newSharedHistoryTestRepoAt(t, filepath.Join(testRoot, "publisher"))
+	sessionID, turnID := recordSharedHistoryTurn(t, publisher)
+	if _, err := Configure(publisher, ConfigureOptions{Remote: remote, PromptMode: PromptModeOmit}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(publisher).Preview(context.Background(), PreviewOptions{SessionID: sessionID, TurnID: turnID, Approve: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(publisher).Sync(context.Background(), DirectionPush); err != nil {
+		t.Fatal(err)
+	}
+	receiver := newSharedHistoryTestRepoAt(t, filepath.Join(testRoot, "receiver"))
+	if _, err := Configure(receiver, ConfigureOptions{Remote: remote, RepoID: publisher.RepoID, PromptMode: PromptModeOmit}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(receiver).Sync(context.Background(), DirectionPull); err != nil {
+		t.Fatal(err)
+	}
+	newRepoID, err := primitives.NewRepoID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := loadPolicy(receiver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy.RepoID = newRepoID
+	policy.ApprovedHash = ""
+	// Simulate a crash after the new policy is durable but before state.json is
+	// reset. The old tracking refs and LastSeen entries must not cross RepoIDs.
+	if err := writeJSONAtomic(policyPath(receiver), policy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(receiver).Sync(context.Background(), DirectionPull); err == nil || !strings.Contains(err.Error(), "identity") {
+		t.Fatalf("RepoID transition reused the old observation cursor: %v", err)
 	}
 }
 
