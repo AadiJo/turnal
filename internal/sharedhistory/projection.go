@@ -32,9 +32,16 @@ type builtBundle struct {
 }
 
 var secretPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)\b(?:gh[pousr]_[a-z0-9_]{20,}|sk-[a-z0-9_-]{20,}|akia[0-9a-z]{16})\b`),
-	regexp.MustCompile(`(?i)\b(?:password|passwd|pwd|secret|token|api[_-]?key)\s*[:=]\s*[^\s,;]+`),
+	regexp.MustCompile(`(?i)\b(?:gh[pousr]_[a-z0-9_]{20,}|github_pat_[a-z0-9_]{20,}|gl(?:pat|ptt|rt|soat|ft|cbt)-[a-z0-9_-]{20,}|npm_[a-z0-9]{30,}|pypi-[a-z0-9_-]{16,}|hf_[a-z0-9]{20,}|sk-[a-z0-9_-]{20,}|[sr]k_(?:live|test)_[a-z0-9]{16,}|(?:akia|asia|abia|acca)[0-9a-z]{16}|xox[baprs]-[a-z0-9-]{10,}|aiza[0-9a-z_-]{20,})\b`),
+	regexp.MustCompile(`(?i)\bhttps://hooks\.slack\.com/services/[a-z0-9/_-]{10,}`),
+	regexp.MustCompile(`(?i)\b[a-z0-9_]*(?:password|passwd|pwd|secret|token|api[_-]?key)[a-z0-9_]*\s*[:=]\s*[^\s,;]+`),
+	regexp.MustCompile(`(?i)\bbearer\s+[a-z0-9._~+/-]{16,}=*`),
+	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b`),
 	regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://[^\s/@:]+:[^\s/@]+@`),
+}
+
+var fullFieldSecretPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----`),
 }
 
 func listCompletedTurns(repo *checkpoint.Repo) ([]turnSource, error) {
@@ -118,7 +125,12 @@ func findCompletedTurn(repo *checkpoint.Repo, sessionID primitives.SessionID, tu
 		return turnSource{}, fmt.Errorf("completed turn not found: %s:%s", sessionID, turnID)
 	}
 	if len(matches) > 1 {
-		return turnSource{}, fmt.Errorf("turn %s:%s is ambiguous across %d streams; rerun preview with --stream <stream-id>", sessionID, turnID, len(matches))
+		streams := make([]string, 0, len(matches))
+		for _, match := range matches {
+			streams = append(streams, match.Stream.StreamID.String())
+		}
+		sort.Strings(streams)
+		return turnSource{}, fmt.Errorf("turn %s:%s is ambiguous; rerun preview with --stream followed by one of: %s", sessionID, turnID, strings.Join(streams, ", "))
 	}
 	return matches[0], nil
 }
@@ -143,6 +155,7 @@ func buildBundle(repo *checkpoint.Repo, identity deviceIdentity, policy policyFi
 		return builtBundle{}, err
 	}
 	omissions := map[string]int{}
+	redactions := map[string]int{}
 	truncations := Truncations{}
 	projected := make([]ContextEvent, 0, len(source.Events))
 	sourceRefs := make([]SourceRef, 0, len(source.Events))
@@ -152,7 +165,7 @@ func buildBundle(repo *checkpoint.Repo, identity deviceIdentity, policy policyFi
 	for _, event := range source.Events {
 		ref := SourceRef{StreamID: source.Stream.StreamID, Seq: event.Seq, Hash: event.Hash}
 		sourceRefs = append(sourceRefs, ref)
-		projection, included, links := projectEvent(source.WorkspaceRoot, policy, event, ref, omissions, &truncations)
+		projection, included, links := projectEvent(source.WorkspaceRoot, policy, event, ref, omissions, redactions, &truncations)
 		if included {
 			projected = append(projected, projection)
 		}
@@ -190,6 +203,7 @@ func buildBundle(repo *checkpoint.Repo, identity deviceIdentity, policy policyFi
 		EvidenceClass:  EvidencePublisherClaim,
 		SourceLinks:    sourceLinks,
 		Omissions:      omissions,
+		Redactions:     redactions,
 		Truncations:    truncations,
 		ContentHashes:  map[string]string{"events.jsonl": sha256Bytes(eventsJSON)},
 		CreatedAt:      source.Events[len(source.Events)-1].Time.Time,
@@ -214,7 +228,7 @@ func buildBundle(repo *checkpoint.Repo, identity deviceIdentity, policy policyFi
 	}, nil
 }
 
-func projectEvent(workspaceRoot string, policy policyFile, event eventlog.Event, ref SourceRef, omissions map[string]int, truncations *Truncations) (ContextEvent, bool, []SourceLink) {
+func projectEvent(workspaceRoot string, policy policyFile, event eventlog.Event, ref SourceRef, omissions, redactions map[string]int, truncations *Truncations) (ContextEvent, bool, []SourceLink) {
 	projection := ContextEvent{SchemaVersion: SchemaVersion, Type: event.Type, Seq: event.Seq, Time: event.Time, Adapter: event.Adapter, Source: ref}
 	switch event.Type {
 	case primitives.EventTypeTurnStart:
@@ -230,23 +244,30 @@ func projectEvent(workspaceRoot string, policy policyFile, event eventlog.Event,
 			omissions["invalid_prompt_payload"]++
 			return ContextEvent{}, false, nil
 		}
-		if policy.PromptMode == PromptModeOmit {
+		if policy.PromptMode != PromptModeRedactedText {
 			projection.Prompt = &PromptProjection{Omitted: true}
 			omissions["prompt_policy"]++
 			return projection, true, nil
 		}
 		text := sanitizeText(workspaceRoot, payload.Text, policy.FieldLimit, truncations)
+		recordRedactions(redactions, text)
 		projection.Prompt = &PromptProjection{Text: text.Text, Redacted: payload.Redacted || text.Redacted, Truncated: text.Truncated, Bytes: text.OriginalBytes}
 	case primitives.EventTypeAgentIntent:
+		if policy.PromptMode == PromptModeMetadataOnly {
+			omissions["intent_policy"]++
+			return ContextEvent{}, false, nil
+		}
 		payload, err := provenance.ParseIntentPayload(event.Payload)
 		if err != nil {
 			omissions["invalid_intent_payload"]++
 			return ContextEvent{}, false, nil
 		}
 		problem := sanitizeText(workspaceRoot, payload.Problem, policy.FieldLimit, truncations)
-		scope, scopeRedacted := sanitizeList(workspaceRoot, payload.Scope, policy.FieldLimit, truncations)
-		evidence, evidenceRedacted := sanitizeList(workspaceRoot, payload.Evidence, policy.FieldLimit, truncations)
+		recordRedactions(redactions, problem)
+		scope, scopeRedacted := sanitizeList(workspaceRoot, payload.Scope, policy.FieldLimit, redactions, truncations)
+		evidence, evidenceRedacted := sanitizeList(workspaceRoot, payload.Evidence, policy.FieldLimit, redactions, truncations)
 		agentType := sanitizeIdentifier(workspaceRoot, payload.AgentType, truncations)
+		recordRedactions(redactions, agentType)
 		projection.Intent = &IntentProjection{
 			Problem:   TextProjection{Text: problem.Text, Redacted: problem.Redacted, Truncated: problem.Truncated, Bytes: problem.OriginalBytes},
 			Scope:     scope,
@@ -255,6 +276,10 @@ func projectEvent(workspaceRoot string, policy policyFile, event eventlog.Event,
 			AgentType: agentType.Text,
 		}
 	case primitives.EventTypeAssistantMessage:
+		if policy.PromptMode == PromptModeMetadataOnly {
+			omissions["assistant_policy"]++
+			return ContextEvent{}, false, nil
+		}
 		var payload struct {
 			Text string `json:"text"`
 		}
@@ -263,6 +288,7 @@ func projectEvent(workspaceRoot string, policy policyFile, event eventlog.Event,
 			return ContextEvent{}, false, nil
 		}
 		text := sanitizeText(workspaceRoot, payload.Text, policy.FieldLimit, truncations)
+		recordRedactions(redactions, text)
 		projection.Assistant = &TextProjection{Text: text.Text, Redacted: text.Redacted, Truncated: text.Truncated, Bytes: text.OriginalBytes}
 	case primitives.EventTypeToolCall:
 		var payload struct {
@@ -274,6 +300,7 @@ func projectEvent(workspaceRoot string, policy policyFile, event eventlog.Event,
 			return ContextEvent{}, false, nil
 		}
 		name := sanitizeIdentifier(workspaceRoot, payload.ToolName, truncations)
+		recordRedactions(redactions, name)
 		if name.Text == "" {
 			omissions["invalid_tool_call_name"]++
 			return ContextEvent{}, false, nil
@@ -290,6 +317,7 @@ func projectEvent(workspaceRoot string, policy policyFile, event eventlog.Event,
 			return ContextEvent{}, false, nil
 		}
 		name := sanitizeIdentifier(workspaceRoot, payload.ToolName, truncations)
+		recordRedactions(redactions, name)
 		if name.Text == "" {
 			omissions["invalid_tool_result_name"]++
 			return ContextEvent{}, false, nil
@@ -339,10 +367,13 @@ func projectEvent(workspaceRoot string, policy policyFile, event eventlog.Event,
 }
 
 type sanitizedText struct {
-	Text          string
-	Redacted      bool
-	Truncated     bool
-	OriginalBytes int
+	Text                string
+	Redacted            bool
+	Truncated           bool
+	OriginalBytes       int
+	PathFullyRedacted   bool
+	WorkspaceNormalized bool
+	SecretRedacted      bool
 }
 
 const workspaceProjectionMarker = "\x00turnal-workspace\x00"
@@ -352,23 +383,39 @@ func sanitizeText(workspaceRoot, value string, limit int, truncations *Truncatio
 	if strings.Contains(result.Text, workspaceProjectionMarker) {
 		result.Text = strings.ReplaceAll(result.Text, workspaceProjectionMarker, "[REDACTED]")
 		result.Redacted = true
+		result.SecretRedacted = true
 	}
 	for _, variant := range workspaceRootVariants(workspaceRoot) {
 		var redacted bool
 		result.Text, redacted = replaceWorkspaceRoot(result.Text, variant)
 		if redacted {
 			result.Redacted = true
+			if result.Text == "[PATH_REDACTED]" {
+				result.PathFullyRedacted = true
+			} else {
+				result.WorkspaceNormalized = true
+			}
 		}
 	}
 	var pathRedacted bool
 	result.Text, pathRedacted = redactAbsolutePaths(result.Text)
 	if pathRedacted {
 		result.Redacted = true
+		result.PathFullyRedacted = true
+	}
+	for _, pattern := range fullFieldSecretPatterns {
+		if pattern.MatchString(result.Text) {
+			result.Text = "[REDACTED]"
+			result.Redacted = true
+			result.SecretRedacted = true
+			break
+		}
 	}
 	for _, pattern := range secretPatterns {
 		if pattern.MatchString(result.Text) {
 			result.Text = pattern.ReplaceAllString(result.Text, "[REDACTED]")
 			result.Redacted = true
+			result.SecretRedacted = true
 		}
 	}
 	result.Text = strings.ReplaceAll(result.Text, workspaceProjectionMarker, "$WORKSPACE")
@@ -695,6 +742,11 @@ func containsParentPathComponent(value string) bool {
 }
 
 func containsDetectedSecret(value string) bool {
+	for _, pattern := range fullFieldSecretPatterns {
+		if pattern.MatchString(value) {
+			return true
+		}
+	}
 	for _, pattern := range secretPatterns {
 		if pattern.MatchString(value) {
 			return true
@@ -703,22 +755,35 @@ func containsDetectedSecret(value string) bool {
 	return false
 }
 
-func sanitizeList(workspaceRoot string, values []string, limit int, truncations *Truncations) ([]string, bool) {
+func sanitizeList(workspaceRoot string, values []string, limit int, redactions map[string]int, truncations *Truncations) ([]string, bool) {
 	result := make([]string, 0, len(values))
 	redacted := false
 	for _, value := range values {
 		sanitized := sanitizeText(workspaceRoot, value, limit, truncations)
+		recordRedactions(redactions, sanitized)
 		result = append(result, sanitized.Text)
 		redacted = redacted || sanitized.Redacted
 	}
 	return result, redacted
 }
 
+func recordRedactions(redactions map[string]int, text sanitizedText) {
+	if text.PathFullyRedacted {
+		redactions["path_full"]++
+	}
+	if text.WorkspaceNormalized {
+		redactions["workspace_path"]++
+	}
+	if text.SecretRedacted {
+		redactions["secret"]++
+	}
+}
+
 func sanitizeIdentifier(workspaceRoot, value string, truncations *Truncations) sanitizedText {
 	result := sanitizeText(workspaceRoot, strings.TrimSpace(value), 256, truncations)
 	var builder strings.Builder
 	for _, character := range result.Text {
-		if character >= 0x20 && character != 0x7f {
+		if character >= 0x20 && character != 0x7f && !unicode.Is(unicode.Cf, character) {
 			builder.WriteRune(character)
 		}
 	}

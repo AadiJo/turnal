@@ -13,10 +13,11 @@ turnal share enable \
 
 turnal share preview <session>:<turn> --json
 turnal share preview <session>:<turn> --approve
+turnal sync push --dry-run
 turnal sync push
 ```
 
-`redacted_text` publishes prompt text after workspace-path normalization, secret scanning, and deterministic size limits. `omit` publishes a typed prompt omission instead of prompt text. Changing the remote, prompt mode, schema, scanner, allowlist, or limits changes the policy hash and requires approval again.
+`redacted_text` publishes prompt text after workspace-path normalization, secret scanning, and deterministic size limits. `omit` publishes a typed prompt omission instead of prompt text but retains redacted assistant and compact intent text. `metadata_only` omits prompt, assistant, and intent text while retaining lifecycle, tool classification, and checkpoint metadata. Changing the remote, prompt mode, schema, scanner, allowlist, or limits changes the policy hash and requires approval again.
 
 Workspace paths normalize to `$WORKSPACE` only when their boundary is unambiguous: the root ends the field, continues through a path separator without a `..` component, or is enclosed by matching quotes. Because Unix permits whitespace and punctuation inside filenames, an unquoted workspace-root mention followed by either is ambiguous and causes the entire field to become `[PATH_REDACTED]`. Any other absolute path also redacts the entire field. This fail-closed rule trades some shared prose for a stable privacy boundary; quote a standalone path when precise normalization matters.
 
@@ -34,6 +35,8 @@ The explicit id prevents a remote that contains history for another project from
 
 `preview --json` is the complete bundle projection: signed manifest, projected events, omissions, truncations, evidence class, source links, and stable locator. Preview remains important because secret scanning is best-effort and allowed text can contain source fragments.
 
+Approval applies to the policy hash, not only to the previewed turn. `sync push --dry-run` lists every pending turn, its locator and projected size, the next bounded batch, and any blocked projection before anything contacts the remote. Preview and dry-run also distinguish path and secret redactions from typed omissions.
+
 If imported history contains the same session and turn number in more than one event stream, preview reports the ambiguity. Select the intended source with `turnal share preview <session>:<turn> --stream <stream-id>`.
 
 The locator can also connect a source commit to its context without putting published data in the source repository:
@@ -49,10 +52,13 @@ The manifest records the source Git heads observed at checkpoints independently 
 ```sh
 turnal sync pull
 turnal sync status
+turnal share list
 turnal share show v1:<device-id>:<bundle-id> --json
 ```
 
 Pull writes verified bundles beneath `.turnal/shared-history/pulled/<repo-id>/`. It does not change the workspace, the project's `.git/`, or Turnal's private checkpoint repository. The RepoID namespace keeps reconfigured project scopes separate. The pulled JSON files are a derived local materialization; signed Git history remains the transport source.
+
+`share list` discovers local and pulled locators, with optional `--session` and `--device` filters. `share show` renders the projected context for people by default; use `--json` for the complete signed representation.
 
 Each publishing device owns an advancing ref:
 
@@ -62,9 +68,11 @@ refs/turnal/v1/history/<device-id>
 
 The device id is derived from its Ed25519 public key. Publication batches and bundle manifests are signed. Turnal remembers every observed device head and rejects a rewind, replacement, disappearance, merge commit, key substitution, changed bundle, or invalid content hash. This makes history tamper-evident after observation; it does not claim that the Git server is globally append-only.
 
+A malformed ref outside the exact protocol namespace is ignored and reported as a warning. A publisher whose previously observed ref disappears or fails verification is quarantined without advancing its observation cursor; healthy publishers continue to pull and their progress is saved. The command reports that partial result and exits nonzero while any quarantine remains. `turnal share status` reports quarantined device ids and reasons so the failure is never silent. If a teammate intentionally retired and deleted a device ref, acknowledge that specific disappearance with `turnal share forget-device <device-id> --yes`; Turnal keeps its last verified head pinned so a later reappearance must still extend the trusted history.
+
 ## Publication boundary
 
-The version 1 schema can contain:
+The version 1 schema can contain the fields below. Shared history v1 is introduced by this PR and had no released receiver before the `redactions` metadata and `metadata_only` policy were included; its signing bytes are frozen from this complete initial contract.
 
 - turn lifecycle events;
 - prompt text or a typed prompt omission, according to policy;
@@ -84,8 +92,16 @@ The isolated repository beneath `.turnal/shared-history/repository/` is a crash-
 
 Turnal will not change the remote or privacy policy while that outbox is pending, because the queued projection was approved under the previous policy. Publish it first. After the outbox is clear, changing the remote requires both `share enable --include-existing-history` and a new preview approval. The next push copies the device's existing approved Git history to the new remote even when no new turns are pending. That existing history is copied unchanged; a new prompt mode applies only to turns that have not already been published.
 
-One publication batch contains at most 16 turns and 16 MiB of encoded bundle data. If more are pending, rerun `turnal sync push`; status continues to report the remainder. Pull advances each publishing device by one verified batch per run, so rerun `turnal sync pull` until it reports `pulled: 0`. Remote URL credentials and query parameters are retained only in the private policy used for Git transport and are redacted from status, consent hashes, and Git diagnostics.
+One publication batch contains at most 16 turns and 16 MiB of encoded bundle data. `turnal sync push --dry-run` distinguishes an already-queued outbox from the next new batch and follows the same first-overflow boundary as a real push. If more publishable turns remain, rerun `turnal sync push`; permanently blocked turns are reported separately rather than keeping `remaining` above zero. Pull advances each publishing device by one verified batch per run, so rerun `turnal sync pull` until it reports `pulled: 0`. Remote URL credentials and query parameters are retained only in the private policy used for Git transport and are redacted from status, consent hashes, and Git diagnostics.
+
+After a scanner or allowlist upgrade, an outbox already approved under the prior projection can still be drained with `turnal sync push`; Turnal will not project new turns under that older policy. Then rerun `turnal share enable` and approve the updated policy.
+
+`turnal share status` is local-only and fast by default. Use `turnal share status --check-remote` for a bounded remote comparison. Shared-history sync commands are interruptible and use bounded command contexts.
+
+To stop future synchronization without deleting local inspection data, run `turnal share disable --yes`. This takes effect immediately and preserves any queued outbox locally; re-running `share enable` resumes the same policy and makes that queue eligible for a later push. Disabling cannot recall history that another device already fetched.
 
 Shared-history Git operations use the configured remote directly, scrub inherited `GIT_*` variables, and never update source Git refs. `turnal sync push` reports transport failures; normal Turnal capture and project Git commands do not invoke it.
 
 Credential rotation comes before history cleanup after a secret incident. Deleting remote history cannot recall copies another consumer already fetched.
+
+`turnal session drop` removes private source history but deliberately does not rewrite append-only shared history. When sharing is configured, it reports shared history as a residual deletion boundary. Published copies and teammate materializations remain outside session deletion.

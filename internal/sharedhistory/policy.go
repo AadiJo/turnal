@@ -31,8 +31,85 @@ func Configure(repo *checkpoint.Repo, options ConfigureOptions) (Status, error) 
 	})
 }
 
+func Disable(repo *checkpoint.Repo) (Status, error) {
+	if repo == nil {
+		return Status{}, fmt.Errorf("disable shared history requires checkpoint repo")
+	}
+	return withSharedHistoryLock(repo, "disable shared history", func() (Status, error) {
+		policy, err := loadPolicyForUpdate(repo)
+		if err != nil {
+			return Status{}, err
+		}
+		policy.Disabled = true
+		if err := writeJSONAtomic(policyPath(repo), policy, 0o600); err != nil {
+			return Status{}, err
+		}
+		return New(repo).statusLocked(nil, false)
+	})
+}
+
+// ForgetDevice acknowledges that a previously observed teammate ref was
+// intentionally removed. The last verified head is retained so a later
+// reappearance still has to extend the trusted history.
+func ForgetDevice(repo *checkpoint.Repo, deviceID string) (Status, error) {
+	if repo == nil {
+		return Status{}, fmt.Errorf("forget shared history device requires checkpoint repo")
+	}
+	if !validDeviceID(deviceID) {
+		return Status{}, fmt.Errorf("invalid shared history device id %q", deviceID)
+	}
+	return withSharedHistoryLock(repo, "forget shared history device", func() (Status, error) {
+		if _, err := loadPolicyForUpdate(repo); err != nil {
+			return Status{}, err
+		}
+		identity, err := loadDevice(repo)
+		if err != nil {
+			return Status{}, err
+		}
+		if deviceID == identity.DeviceID {
+			return Status{}, fmt.Errorf("cannot forget this device's own shared history ref")
+		}
+		state, err := loadState(repo)
+		if err != nil {
+			return Status{}, err
+		}
+		reason := state.Quarantined[deviceID]
+		if !strings.Contains(reason, "disappeared") || state.LastSeen[deviceID] == "" {
+			return Status{}, fmt.Errorf("device %s is not quarantined for an acknowledged ref removal", deviceID)
+		}
+		state.Retired[deviceID] = state.LastSeen[deviceID]
+		delete(state.Quarantined, deviceID)
+		if err := saveState(repo, state); err != nil {
+			return Status{}, err
+		}
+		return New(repo).statusLocked(nil, false)
+	})
+}
+
 func configureLocked(repo *checkpoint.Repo, options ConfigureOptions) (Status, error) {
+	var previous policyFile
+	previousConfigured := false
+	if _, err := os.Lstat(policyPath(repo)); err == nil {
+		previous, err = loadPolicyForUpdate(repo)
+		if err != nil {
+			return Status{}, err
+		}
+		previousConfigured = true
+	} else if !os.IsNotExist(err) {
+		return Status{}, err
+	}
+	resumeOnly := previousConfigured && previous.Disabled && strings.TrimSpace(options.Remote) == "" && options.PromptMode == "" && options.RepoID == "" && !options.IncludeExistingHistory
+
 	remote := strings.TrimSpace(options.Remote)
+	if remote == "" && previousConfigured {
+		remote = previous.Remote
+	}
+	if options.PromptMode == "" && previousConfigured {
+		options.PromptMode = previous.PromptMode
+	}
+	if options.RepoID == "" && previousConfigured {
+		options.RepoID = previous.RepoID
+	}
 	if remote == "" {
 		return Status{}, fmt.Errorf("shared history remote is required")
 	}
@@ -67,17 +144,6 @@ func configureLocked(repo *checkpoint.Repo, options ConfigureOptions) (Status, e
 		FieldLimit:       DefaultFieldLimit,
 		BundleLimit:      DefaultBundleLimit,
 	}
-	var previous policyFile
-	previousConfigured := false
-	if _, err := os.Lstat(policyPath(repo)); err == nil {
-		previous, err = loadPolicy(repo)
-		if err != nil {
-			return Status{}, err
-		}
-		previousConfigured = true
-	} else if !os.IsNotExist(err) {
-		return Status{}, err
-	}
 	identity, err := loadOrCreateDevice(repo)
 	if err != nil {
 		return Status{}, err
@@ -103,6 +169,16 @@ func configureLocked(repo *checkpoint.Repo, options ConfigureOptions) (Status, e
 		if err != nil {
 			return Status{}, err
 		}
+		if previousDigest != newDigest && len(state.Committed) > 0 && resumeOnly {
+			previous.Disabled = false
+			if err := writeJSONAtomic(policyPath(repo), previous, 0o600); err != nil {
+				return Status{}, err
+			}
+			if err := saveState(repo, state); err != nil {
+				return Status{}, err
+			}
+			return New(repo).statusLocked(nil, false)
+		}
 		if previousDigest != newDigest && len(state.Committed) > 0 {
 			return Status{}, fmt.Errorf("shared history has an unpushed outbox under the current policy; publish it before changing the remote or privacy policy")
 		}
@@ -121,6 +197,7 @@ func configureLocked(repo *checkpoint.Repo, options ConfigureOptions) (Status, e
 			state.Committed = map[string]string{}
 			state.Blocked = map[string]string{}
 			state.LastSeen = map[string]string{}
+			state.Quarantined = map[string]string{}
 		}
 		if previousDigest == newDigest {
 			policy.ApprovedHash = previous.ApprovedHash
@@ -133,7 +210,7 @@ func configureLocked(repo *checkpoint.Repo, options ConfigureOptions) (Status, e
 	if err := saveState(repo, state); err != nil {
 		return Status{}, err
 	}
-	return New(repo).statusLocked(nil)
+	return New(repo).statusLocked(nil, false)
 }
 
 func normalizeRemote(remote string) (string, error) {
@@ -220,14 +297,28 @@ func looksLikeSCPRemote(remote string) bool {
 
 func validatePromptMode(mode PromptMode) error {
 	switch mode {
-	case PromptModeRedactedText, PromptModeOmit:
+	case PromptModeRedactedText, PromptModeOmit, PromptModeMetadataOnly:
 		return nil
 	default:
-		return fmt.Errorf("invalid prompt mode %q; expected redacted_text or omit", mode)
+		return fmt.Errorf("invalid prompt mode %q; expected redacted_text, omit, or metadata_only", mode)
 	}
 }
 
 func loadPolicy(repo *checkpoint.Repo) (policyFile, error) {
+	policy, err := loadPolicyForUpdate(repo)
+	if err != nil {
+		return policyFile{}, err
+	}
+	if !policy.Disabled && (policy.AllowlistVersion != AllowlistVersion || policy.ScannerVersion != ScannerVersion) {
+		return policyFile{}, fmt.Errorf("shared history policy uses unavailable projection versions; rerun turnal share enable and approve the updated policy")
+	}
+	return policy, nil
+}
+
+// loadPolicyForUpdate accepts an older projection version so sharing can
+// always be disabled and share enable can migrate it to the current scanner.
+// Projection and synchronization paths use loadPolicy, which remains strict.
+func loadPolicyForUpdate(repo *checkpoint.Repo) (policyFile, error) {
 	data, err := readRegularFile(policyPath(repo), 1<<20)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -254,8 +345,8 @@ func loadPolicy(repo *checkpoint.Repo) (policyFile, error) {
 	if err := validatePromptMode(policy.PromptMode); err != nil {
 		return policyFile{}, err
 	}
-	if policy.AllowlistVersion != AllowlistVersion || policy.ScannerVersion != ScannerVersion {
-		return policyFile{}, fmt.Errorf("shared history policy uses unavailable projection versions")
+	if strings.TrimSpace(policy.AllowlistVersion) == "" || strings.TrimSpace(policy.ScannerVersion) == "" {
+		return policyFile{}, fmt.Errorf("shared history policy projection versions are empty")
 	}
 	if policy.FieldLimit <= 0 || policy.FieldLimit > DefaultFieldLimit {
 		return policyFile{}, fmt.Errorf("shared history field limit must be between 1 and %d", DefaultFieldLimit)
@@ -303,7 +394,7 @@ func statePath(repo *checkpoint.Repo) string {
 }
 
 func loadState(repo *checkpoint.Repo) (stateFile, error) {
-	state := stateFile{Version: 1, Committed: map[string]string{}, Published: map[string]string{}, Blocked: map[string]string{}, LastSeen: map[string]string{}}
+	state := stateFile{Version: 1, Committed: map[string]string{}, Published: map[string]string{}, Blocked: map[string]string{}, LastSeen: map[string]string{}, Quarantined: map[string]string{}, Retired: map[string]string{}}
 	data, err := readRegularFile(statePath(repo), 8<<20)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -329,6 +420,12 @@ func loadState(repo *checkpoint.Repo) (stateFile, error) {
 	if state.LastSeen == nil {
 		state.LastSeen = map[string]string{}
 	}
+	if state.Quarantined == nil {
+		state.Quarantined = map[string]string{}
+	}
+	if state.Retired == nil {
+		state.Retired = map[string]string{}
+	}
 	return state, nil
 }
 
@@ -340,10 +437,14 @@ func alignStateScope(state *stateFile, remote string, repoID primitives.RepoID) 
 		state.Published = map[string]string{}
 		state.Blocked = map[string]string{}
 		state.LastSeen = map[string]string{}
+		state.Quarantined = map[string]string{}
+		state.Retired = map[string]string{}
 	}
 	if state.Remote != remote {
 		state.Remote = remote
 		state.LastSeen = map[string]string{}
+		state.Quarantined = map[string]string{}
+		state.Retired = map[string]string{}
 	}
 }
 

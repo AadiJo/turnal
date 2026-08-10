@@ -9,13 +9,14 @@ import (
 const (
 	SchemaVersion          = 1
 	AllowlistVersion       = "turnal-context-v1"
-	ScannerVersion         = "turnal-secrets-v1"
+	ScannerVersion         = "turnal-secrets-v2"
 	EvidencePublisherClaim = "publisher_attested_projection"
 	DefaultFieldLimit      = 64 << 10
 	DefaultBundleLimit     = 2 << 20
 	MaxMaterializedLimit   = 8 << 20
 	MaxBatchBytes          = 16 << 20
 	MaxBundlesPerBatch     = 16
+	DefaultNetworkTimeout  = 2 * time.Minute
 )
 
 type PromptMode string
@@ -23,6 +24,7 @@ type PromptMode string
 const (
 	PromptModeRedactedText PromptMode = "redacted_text"
 	PromptModeOmit         PromptMode = "omit"
+	PromptModeMetadataOnly PromptMode = "metadata_only"
 )
 
 type Direction string
@@ -41,6 +43,7 @@ type PreviewOptions struct {
 
 type Status struct {
 	Configured       bool              `json:"configured"`
+	Enabled          bool              `json:"enabled"`
 	Remote           string            `json:"remote,omitempty"`
 	RepoID           primitives.RepoID `json:"repo_id,omitempty"`
 	PromptMode       PromptMode        `json:"prompt_mode,omitempty"`
@@ -52,6 +55,9 @@ type Status struct {
 	Published        int               `json:"published"`
 	Pulled           int               `json:"pulled"`
 	LastSeen         map[string]string `json:"last_seen,omitempty"`
+	Quarantined      map[string]string `json:"quarantined,omitempty"`
+	Retired          map[string]string `json:"retired,omitempty"`
+	RemoteChecked    bool              `json:"remote_checked"`
 	UnpushedLocalTip bool              `json:"unpushed_local_tip"`
 	RemoteError      string            `json:"remote_error,omitempty"`
 }
@@ -66,11 +72,54 @@ type Plan struct {
 }
 
 type Result struct {
-	Direction Direction `json:"direction"`
-	Published int       `json:"published,omitempty"`
-	Pulled    int       `json:"pulled,omitempty"`
-	Blocked   int       `json:"blocked,omitempty"`
-	Head      string    `json:"head,omitempty"`
+	Direction   Direction         `json:"direction"`
+	Published   int               `json:"published,omitempty"`
+	Pulled      int               `json:"pulled,omitempty"`
+	Blocked     int               `json:"blocked,omitempty"`
+	Remaining   int               `json:"remaining,omitempty"`
+	Head        string            `json:"head,omitempty"`
+	Warnings    []string          `json:"warnings,omitempty"`
+	Quarantined map[string]string `json:"quarantined,omitempty"`
+}
+
+type PendingBundle struct {
+	Locator   string                   `json:"locator"`
+	SessionID primitives.SessionID     `json:"session_id"`
+	TurnID    primitives.TurnID        `json:"turn_id"`
+	StreamID  primitives.EventStreamID `json:"stream_id"`
+	Bytes     int                      `json:"bytes,omitempty"`
+	Blocked   string                   `json:"blocked,omitempty"`
+	Queued    bool                     `json:"queued,omitempty"`
+}
+
+type PushPlan struct {
+	PolicyHash        string          `json:"policy_hash"`
+	ApprovalRequired  bool            `json:"approval_required"`
+	MigrationRequired bool            `json:"migration_required"`
+	Pending           []PendingBundle `json:"pending"`
+	Publishable       int             `json:"publishable"`
+	Queued            int             `json:"queued"`
+	Blocked           int             `json:"blocked"`
+	BatchSize         int             `json:"batch_size"`
+	Remaining         int             `json:"remaining"`
+}
+
+type BundleSummary struct {
+	Locator    string                   `json:"locator"`
+	SessionID  primitives.SessionID     `json:"session_id"`
+	TurnID     primitives.TurnID        `json:"turn_id"`
+	StreamID   primitives.EventStreamID `json:"stream_id"`
+	DeviceID   string                   `json:"device_id"`
+	CreatedAt  time.Time                `json:"created_at"`
+	PromptMode PromptMode               `json:"prompt_mode"`
+	EventCount int                      `json:"event_count"`
+	Local      bool                     `json:"local"`
+	Error      string                   `json:"error,omitempty"`
+}
+
+type ListOptions struct {
+	SessionID primitives.SessionID
+	DeviceID  string
 }
 
 type SourceRef struct {
@@ -107,6 +156,7 @@ type Manifest struct {
 	EvidenceClass  string                     `json:"evidence_class"`
 	SourceLinks    []SourceLink               `json:"source_links,omitempty"`
 	Omissions      map[string]int             `json:"omissions"`
+	Redactions     map[string]int             `json:"redactions,omitempty"`
 	Truncations    Truncations                `json:"truncations"`
 	ContentHashes  map[string]string          `json:"content_hashes"`
 	CreatedAt      time.Time                  `json:"created_at"`
@@ -209,6 +259,7 @@ type StoredBundle struct {
 
 type policyFile struct {
 	Version          int               `json:"version"`
+	Disabled         bool              `json:"disabled,omitempty"`
 	Remote           string            `json:"remote"`
 	RepoID           primitives.RepoID `json:"repo_id"`
 	PromptMode       PromptMode        `json:"prompt_mode"`
@@ -220,13 +271,15 @@ type policyFile struct {
 }
 
 type stateFile struct {
-	Version   int               `json:"version"`
-	Remote    string            `json:"remote,omitempty"`
-	RepoID    primitives.RepoID `json:"repo_id,omitempty"`
-	Committed map[string]string `json:"committed,omitempty"`
-	Published map[string]string `json:"published,omitempty"`
-	Blocked   map[string]string `json:"blocked,omitempty"`
-	LastSeen  map[string]string `json:"last_seen,omitempty"`
+	Version     int               `json:"version"`
+	Remote      string            `json:"remote,omitempty"`
+	RepoID      primitives.RepoID `json:"repo_id,omitempty"`
+	Committed   map[string]string `json:"committed,omitempty"`
+	Published   map[string]string `json:"published,omitempty"`
+	Blocked     map[string]string `json:"blocked,omitempty"`
+	LastSeen    map[string]string `json:"last_seen,omitempty"`
+	Quarantined map[string]string `json:"quarantined,omitempty"`
+	Retired     map[string]string `json:"retired,omitempty"`
 }
 
 type unsignedManifest Manifest

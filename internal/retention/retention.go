@@ -212,6 +212,11 @@ func planDropSession(repo *checkpoint.Repo, sessionID primitives.SessionID, dryR
 
 	paths, residuals := sessionFiles(repo, sessionID)
 	result.Residuals = residuals
+	if _, err := os.Lstat(filepath.Join(repo.MetadataDir, "shared-history", "policy.json")); err == nil {
+		result.Residuals = append(result.Residuals, "shared-history bundles are outside session deletion; local materializations and published remote copies may retain this session")
+	} else if !os.IsNotExist(err) {
+		return Result{}, fmt.Errorf("inspect shared history policy before session drop: %w", err)
+	}
 	for _, path := range paths {
 		if _, err := os.Stat(path); err == nil {
 			result.DeletedFiles = append(result.DeletedFiles, path)

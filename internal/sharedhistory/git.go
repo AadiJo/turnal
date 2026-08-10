@@ -13,14 +13,17 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
+	"unicode"
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	"github.com/AadiJo/turnal/internal/primitives"
 )
 
 type gitStore struct {
-	repo *checkpoint.Repo
-	root string
+	repo           *checkpoint.Repo
+	root           string
+	networkTimeout time.Duration
 }
 
 type remoteRef struct {
@@ -29,9 +32,37 @@ type remoteRef struct {
 	Head     string
 }
 
+type retryablePullError struct {
+	err error
+}
+
+func (failure retryablePullError) Error() string { return failure.err.Error() }
+func (failure retryablePullError) Unwrap() error { return failure.err }
+
+func isRetryablePullError(err error) bool {
+	var failure retryablePullError
+	return errors.As(err, &failure)
+}
+
+func existingGitStore(repo *checkpoint.Repo) (*gitStore, bool, error) {
+	root := filepath.Join(sharedRoot(repo), "repository")
+	gitDir := filepath.Join(root, ".git")
+	info, err := os.Lstat(gitDir)
+	if os.IsNotExist(err) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("inspect shared history Git repository: %w", err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, false, fmt.Errorf("shared history Git metadata is not a regular directory: %s", gitDir)
+	}
+	return &gitStore{repo: repo, root: root, networkTimeout: DefaultNetworkTimeout}, true, nil
+}
+
 func openGitStore(ctx context.Context, repo *checkpoint.Repo) (*gitStore, error) {
 	root := filepath.Join(sharedRoot(repo), "repository")
-	store := &gitStore{repo: repo, root: root}
+	store := &gitStore{repo: repo, root: root, networkTimeout: DefaultNetworkTimeout}
 	gitDir := filepath.Join(root, ".git")
 	info, err := os.Lstat(gitDir)
 	if err != nil && !os.IsNotExist(err) {
@@ -218,21 +249,25 @@ func (store *gitStore) recoverTrackingState(ctx context.Context, remote string, 
 }
 
 func (store *gitStore) remoteHead(ctx context.Context, remote, ref string) (string, error) {
-	output, err := store.run(ctx, "ls-remote", "--refs", remote, ref)
+	output, err := store.runNetwork(ctx, "ls-remote", "--refs", remote, ref)
 	if err != nil {
 		return "", err
 	}
-	fields := strings.Fields(output)
-	if len(fields) == 0 {
-		return "", nil
+	var head string
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 || fields[1] != ref {
+			continue
+		}
+		if head != "" {
+			return "", fmt.Errorf("shared history remote returned duplicate ref %s", ref)
+		}
+		if _, err := primitives.ParseCommitSHA(fields[0]); err != nil {
+			return "", err
+		}
+		head = strings.ToLower(fields[0])
 	}
-	if len(fields) != 2 || fields[1] != ref {
-		return "", fmt.Errorf("unexpected shared history ls-remote response")
-	}
-	if _, err := primitives.ParseCommitSHA(fields[0]); err != nil {
-		return "", err
-	}
-	return strings.ToLower(fields[0]), nil
+	return head, nil
 }
 
 func (store *gitStore) push(ctx context.Context, remote, deviceID, lastSeen string) (string, error) {
@@ -259,7 +294,7 @@ func (store *gitStore) push(ctx context.Context, remote, deviceID, lastSeen stri
 	}
 	if remoteHead != "" && remoteHead != local {
 		incoming := incomingRef(deviceID)
-		if _, err := store.run(ctx, "fetch", "--no-tags", remote, "+"+ref+":"+incoming); err != nil {
+		if _, err := store.runNetwork(ctx, "fetch", "--no-tags", remote, "+"+ref+":"+incoming); err != nil {
 			return "", err
 		}
 		if _, err := store.run(ctx, "merge-base", "--is-ancestor", remoteHead, local); err != nil {
@@ -267,7 +302,7 @@ func (store *gitStore) push(ctx context.Context, remote, deviceID, lastSeen stri
 		}
 	}
 	if remoteHead != local {
-		if _, err := store.run(ctx, "push", remote, "HEAD:"+ref); err != nil {
+		if _, err := store.runNetwork(ctx, "push", remote, "HEAD:"+ref); err != nil {
 			return "", err
 		}
 	}
@@ -281,32 +316,40 @@ func (store *gitStore) push(ctx context.Context, remote, deviceID, lastSeen stri
 	return local, nil
 }
 
-func (store *gitStore) listRemoteHistory(ctx context.Context, remote string) ([]remoteRef, error) {
+func (store *gitStore) listRemoteHistory(ctx context.Context, remote string) ([]remoteRef, []string, error) {
 	prefix := "refs/turnal/v1/history/"
-	output, err := store.run(ctx, "ls-remote", "--refs", remote, prefix+"*")
+	output, err := store.runNetwork(ctx, "ls-remote", "--refs", remote, prefix+"*")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var refs []remoteRef
+	var warnings []string
 	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
 		fields := strings.Fields(line)
-		if len(fields) != 2 || !strings.HasPrefix(fields[1], prefix) {
-			return nil, fmt.Errorf("unexpected shared history remote ref response")
+		if len(fields) != 2 {
+			warnings = append(warnings, "ignored malformed shared history remote ref response")
+			continue
+		}
+		if !strings.HasPrefix(fields[1], prefix) {
+			warnings = append(warnings, fmt.Sprintf("ignored suffix-matching ref %s outside the shared history namespace", fields[1]))
+			continue
 		}
 		deviceID := strings.TrimPrefix(fields[1], prefix)
 		if !validDeviceID(deviceID) {
-			return nil, fmt.Errorf("invalid shared history device ref %q", fields[1])
+			warnings = append(warnings, fmt.Sprintf("ignored invalid shared history device ref %s", fields[1]))
+			continue
 		}
 		if _, err := primitives.ParseCommitSHA(fields[0]); err != nil {
-			return nil, err
+			warnings = append(warnings, fmt.Sprintf("ignored shared history device ref %s with invalid commit id", fields[1]))
+			continue
 		}
 		refs = append(refs, remoteRef{DeviceID: deviceID, Ref: fields[1], Head: strings.ToLower(fields[0])})
 	}
 	sort.Slice(refs, func(i, j int) bool { return refs[i].DeviceID < refs[j].DeviceID })
-	return refs, nil
+	return refs, warnings, nil
 }
 
 func (store *gitStore) fetchAndIngest(ctx context.Context, remote string, remoteRef remoteRef, lastSeen string, repoID primitives.RepoID) ([]StoredBundle, string, error) {
@@ -314,8 +357,8 @@ func (store *gitStore) fetchAndIngest(ctx context.Context, remote string, remote
 		return nil, lastSeen, nil
 	}
 	incoming := incomingRef(remoteRef.DeviceID)
-	if _, err := store.run(ctx, "fetch", "--no-tags", remote, "+"+remoteRef.Ref+":"+incoming); err != nil {
-		return nil, lastSeen, err
+	if _, err := store.runNetwork(ctx, "fetch", "--no-tags", remote, "+"+remoteRef.Ref+":"+incoming); err != nil {
+		return nil, lastSeen, retryablePullError{err: err}
 	}
 	if lastSeen != "" {
 		if _, err := store.run(ctx, "merge-base", "--is-ancestor", lastSeen, remoteRef.Head); err != nil {
@@ -455,7 +498,7 @@ func (store *gitStore) fetchAndIngest(ctx context.Context, remote string, remote
 	}
 	for _, bundle := range ingested {
 		if err := materializePulled(store.repo, bundle); err != nil {
-			return nil, lastSeen, err
+			return nil, lastSeen, retryablePullError{err: err}
 		}
 	}
 	observedHead := lastSeen
@@ -671,8 +714,13 @@ func validateManifest(repoID primitives.RepoID, deviceID string, item BatchBundl
 		return fmt.Errorf("manifest contains invalid creation or truncation metadata")
 	}
 	for reason, count := range manifest.Omissions {
-		if strings.TrimSpace(reason) == "" || len(reason) > 256 || count <= 0 {
+		if !validMetadataReason(reason) || count <= 0 {
 			return fmt.Errorf("manifest contains invalid omission metadata")
+		}
+	}
+	for reason, count := range manifest.Redactions {
+		if (reason != "path_full" && reason != "workspace_path" && reason != "secret") || count <= 0 {
+			return fmt.Errorf("manifest contains invalid redaction metadata")
 		}
 	}
 	for _, link := range manifest.SourceLinks {
@@ -706,7 +754,7 @@ func validateProjectedEvents(manifest Manifest, events []ContextEvent) error {
 		if err := validateContextEvent(event); err != nil {
 			return err
 		}
-		if event.Prompt != nil && event.Prompt.Omitted != (manifest.PromptMode == PromptModeOmit) {
+		if event.Prompt != nil && event.Prompt.Omitted != (manifest.PromptMode != PromptModeRedactedText) {
 			return fmt.Errorf("prompt projection does not match manifest prompt mode")
 		}
 		ref, exists := refs[event.Seq]
@@ -920,16 +968,43 @@ func validateProjectedText(text string, truncated bool, originalBytes int) error
 
 func containsControl(value string) bool {
 	for _, character := range value {
-		if character < 0x20 || character == 0x7f {
+		if character < 0x20 || character == 0x7f || unicode.Is(unicode.Cf, character) {
 			return true
 		}
 	}
 	return false
 }
 
+func validMetadataReason(value string) bool {
+	if value == "" || len(value) > 256 {
+		return false
+	}
+	for _, character := range value {
+		valid := character >= 'a' && character <= 'z' || character >= '0' && character <= '9' || strings.ContainsRune("_:+.-", character)
+		if !valid {
+			return false
+		}
+	}
+	return true
+}
+
 func (store *gitStore) run(ctx context.Context, args ...string) (string, error) {
 	data, err := store.runBytes(ctx, args...)
 	return string(data), err
+}
+
+func (store *gitStore) runNetwork(ctx context.Context, args ...string) (string, error) {
+	timeout := store.networkTimeout
+	if timeout <= 0 {
+		timeout = DefaultNetworkTimeout
+	}
+	networkCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	output, err := store.run(networkCtx, args...)
+	if err != nil && ctx.Err() == nil && errors.Is(networkCtx.Err(), context.DeadlineExceeded) {
+		return "", fmt.Errorf("shared history remote operation git %s exceeded %s", formatGitArgs(args), timeout)
+	}
+	return output, err
 }
 
 func (store *gitStore) runBytes(ctx context.Context, args ...string) ([]byte, error) {
@@ -946,6 +1021,9 @@ func (store *gitStore) runBytesLimit(ctx context.Context, limit int64, args ...s
 	cmd.Stderr = stderr
 	err := cmd.Run()
 	if err != nil {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return nil, fmt.Errorf("git %s: %w", formatGitArgs(args), contextErr)
+		}
 		return nil, gitCommandError{args: args, output: strings.TrimSpace(redactGitOutput(stderr.String(), args)), err: err}
 	}
 	if stdout.overflow {

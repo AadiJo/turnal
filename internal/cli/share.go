@@ -1,9 +1,16 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/signal"
 	"sort"
+	"strings"
+	"syscall"
+	"time"
+	"unicode"
 
 	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/AadiJo/turnal/internal/sharedhistory"
@@ -16,9 +23,64 @@ func shareCmd() *cobra.Command {
 		Short: "Publish privacy-controlled agent context",
 	}
 	cmd.AddCommand(shareEnableCmd())
+	cmd.AddCommand(shareDisableCmd())
+	cmd.AddCommand(shareForgetDeviceCmd())
 	cmd.AddCommand(sharePreviewCmd())
 	cmd.AddCommand(shareStatusCmd())
+	cmd.AddCommand(shareListCmd())
 	cmd.AddCommand(shareShowCmd())
+	return cmd
+}
+
+func shareForgetDeviceCmd() *cobra.Command {
+	var yes bool
+	cmd := &cobra.Command{
+		Use:          "forget-device <device-id>",
+		Short:        "Acknowledge an intentionally removed teammate device ref",
+		Args:         cobra.ExactArgs(1),
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !yes {
+				return fmt.Errorf("rerun with --yes to acknowledge the removed device ref; its last verified head will remain pinned")
+			}
+			repo, err := openCheckpointRepo()
+			if err != nil {
+				return err
+			}
+			if _, err := sharedhistory.ForgetDevice(repo, args[0]); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "acknowledged removed device %s; its last verified head remains pinned\n", args[0])
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&yes, "yes", false, "Confirm the device ref was intentionally removed")
+	return cmd
+}
+
+func shareDisableCmd() *cobra.Command {
+	var yes bool
+	cmd := &cobra.Command{
+		Use:          "disable",
+		Short:        "Stop shared history synchronization without deleting history",
+		Args:         cobra.NoArgs,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !yes {
+				return fmt.Errorf("rerun with --yes to disable future shared history synchronization; published copies cannot be recalled")
+			}
+			repo, err := openCheckpointRepo()
+			if err != nil {
+				return err
+			}
+			if _, err := sharedhistory.Disable(repo); err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "shared history disabled; local and published history was preserved")
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&yes, "yes", false, "Confirm synchronization should be disabled")
 	return cmd
 }
 
@@ -33,17 +95,11 @@ func shareEnableCmd() *cobra.Command {
 		Short:        "Configure a shared history remote and prompt policy",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if remote == "" {
-				return fmt.Errorf("--remote is required")
-			}
-			if promptMode == "" {
-				return fmt.Errorf("--prompt-mode is required; expected redacted_text or omit")
-			}
 			repo, err := openCheckpointRepo()
 			if err != nil {
 				return err
 			}
-			sharedRepoID := repo.RepoID
+			var sharedRepoID primitives.RepoID
 			if repoID != "" {
 				sharedRepoID, err = primitives.ParseRepoID(repoID)
 				if err != nil {
@@ -63,6 +119,7 @@ func shareEnableCmd() *cobra.Command {
 				return writeJSON(cmd, status)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "shared history configured\n")
+			fmt.Fprintf(cmd.OutOrStdout(), "enabled:     %t\n", status.Enabled)
 			fmt.Fprintf(cmd.OutOrStdout(), "remote:      %s\n", status.Remote)
 			fmt.Fprintf(cmd.OutOrStdout(), "repo:        %s\n", status.RepoID)
 			fmt.Fprintf(cmd.OutOrStdout(), "device:      %s\n", status.DeviceID)
@@ -77,7 +134,7 @@ func shareEnableCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&remote, "remote", "", "Git URL or path that will receive shared history refs")
-	cmd.Flags().StringVar(&promptMode, "prompt-mode", "", "Prompt publication policy: redacted_text or omit")
+	cmd.Flags().StringVar(&promptMode, "prompt-mode", "", "Text publication policy: redacted_text, omit, or metadata_only")
 	cmd.Flags().StringVar(&repoID, "repo-id", "", "Shared repository ID supplied by a publisher when joining existing history")
 	cmd.Flags().BoolVar(&includeExistingHistory, "include-existing-history", false, "Copy this device's previously approved history when changing remotes")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit structured JSON")
@@ -124,6 +181,7 @@ func sharePreviewCmd() *cobra.Command {
 			fmt.Fprintf(cmd.OutOrStdout(), "prompt mode:   %s\n", plan.Manifest.PromptMode)
 			fmt.Fprintf(cmd.OutOrStdout(), "source commit: %s\n", firstSourceCommit(plan.Manifest.SourceLinks))
 			writeOmissions(cmd, plan.Manifest.Omissions)
+			writeCounts(cmd, "redactions", plan.Manifest.Redactions)
 			if approve {
 				fmt.Fprintln(cmd.OutOrStdout(), "approval:      recorded for this policy hash")
 			} else if plan.ApprovalRequired {
@@ -142,6 +200,7 @@ func sharePreviewCmd() *cobra.Command {
 
 func shareStatusCmd() *cobra.Command {
 	var jsonOutput bool
+	var checkRemote bool
 	cmd := &cobra.Command{
 		Use:          "status",
 		Short:        "Inspect shared history consent and synchronization state",
@@ -151,7 +210,15 @@ func shareStatusCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			status, err := sharedhistory.New(repo).Status(cmd.Context())
+			ctx, stop := sharedHistoryCommandContext(cmd.Context(), sharedHistoryStatusTimeout)
+			defer stop()
+			manager := sharedhistory.New(repo)
+			var status sharedhistory.Status
+			if checkRemote {
+				status, err = manager.StatusWithRemote(ctx)
+			} else {
+				status, err = manager.Status(ctx)
+			}
 			if err != nil {
 				return err
 			}
@@ -163,6 +230,60 @@ func shareStatusCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit structured JSON")
+	cmd.Flags().BoolVar(&checkRemote, "check-remote", false, "Contact the configured remote with a bounded timeout")
+	return cmd
+}
+
+func shareListCmd() *cobra.Command {
+	var jsonOutput bool
+	var session string
+	var device string
+	cmd := &cobra.Command{
+		Use:          "list",
+		Short:        "List local and pulled shared-history bundles",
+		Args:         cobra.NoArgs,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var sessionID primitives.SessionID
+			var err error
+			if session != "" {
+				sessionID, err = primitives.ParseSessionID(session)
+				if err != nil {
+					return err
+				}
+			}
+			repo, err := openCheckpointRepo()
+			if err != nil {
+				return err
+			}
+			bundles, err := sharedhistory.New(repo).List(cmd.Context(), sharedhistory.ListOptions{SessionID: sessionID, DeviceID: device})
+			if err != nil {
+				return err
+			}
+			if jsonOutput {
+				return writeJSON(cmd, bundles)
+			}
+			if len(bundles) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "no shared history bundles")
+				return nil
+			}
+			for _, bundle := range bundles {
+				if bundle.Error != "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "%s  pulled  unreadable: %s\n", bundle.Locator, indentSharedText(bundle.Error))
+					continue
+				}
+				location := "pulled"
+				if bundle.Local {
+					location = "local"
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "%s  %s:%s  %s  %s  events=%d\n", bundle.Locator, bundle.SessionID, bundle.TurnID, location, bundle.CreatedAt.Format(time.RFC3339), bundle.EventCount)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit structured JSON")
+	cmd.Flags().StringVar(&session, "session", "", "Filter by session ID")
+	cmd.Flags().StringVar(&device, "device", "", "Filter by publishing device ID")
 	return cmd
 }
 
@@ -193,6 +314,9 @@ func shareShowCmd() *cobra.Command {
 			fmt.Fprintf(cmd.OutOrStdout(), "prompt mode: %s\n", bundle.Manifest.PromptMode)
 			fmt.Fprintf(cmd.OutOrStdout(), "events:      %d\n", len(bundle.Events))
 			writeOmissions(cmd, bundle.Manifest.Omissions)
+			writeCounts(cmd, "redactions", bundle.Manifest.Redactions)
+			fmt.Fprintln(cmd.OutOrStdout(), "context:")
+			writeBundleContext(cmd, bundle.Events)
 			return nil
 		},
 	}
@@ -210,6 +334,7 @@ func syncCmd() *cobra.Command {
 
 func syncDirectionCmd(direction sharedhistory.Direction) *cobra.Command {
 	var jsonOutput bool
+	var dryRun bool
 	cmd := &cobra.Command{
 		Use:          string(direction),
 		Short:        "Synchronize shared history " + string(direction),
@@ -219,28 +344,65 @@ func syncDirectionCmd(direction sharedhistory.Direction) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			result, err := sharedhistory.New(repo).Sync(cmd.Context(), direction)
-			if err != nil {
+			manager := sharedhistory.New(repo)
+			if dryRun {
+				if direction != sharedhistory.DirectionPush {
+					return fmt.Errorf("--dry-run is only valid for sync push")
+				}
+				plan, err := manager.PlanPush(cmd.Context())
+				if err != nil {
+					return err
+				}
+				if jsonOutput {
+					return writeJSON(cmd, plan)
+				}
+				writePushPlan(cmd, plan)
+				return nil
+			}
+			ctx, stop := sharedHistoryCommandContext(cmd.Context(), sharedHistorySyncTimeout)
+			defer stop()
+			result, err := manager.Sync(ctx, direction)
+			if jsonOutput {
+				if result.Direction != "" {
+					if writeErr := writeJSON(cmd, result); writeErr != nil {
+						return writeErr
+					}
+				}
 				return err
 			}
-			if jsonOutput {
-				return writeJSON(cmd, result)
+			if result.Direction != "" {
+				writeSyncResult(cmd, direction, result, err == nil)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "%s complete\n", direction)
-			if direction == sharedhistory.DirectionPush {
-				fmt.Fprintf(cmd.OutOrStdout(), "published: %d\n", result.Published)
-				fmt.Fprintf(cmd.OutOrStdout(), "blocked:   %d\n", result.Blocked)
-				if result.Head != "" {
-					fmt.Fprintf(cmd.OutOrStdout(), "head:      %s\n", result.Head)
-				}
-			} else {
-				fmt.Fprintf(cmd.OutOrStdout(), "pulled: %d\n", result.Pulled)
-			}
-			return nil
+			return err
 		},
 	}
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit structured JSON")
+	if direction == sharedhistory.DirectionPush {
+		cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show pending bundles without contacting the remote")
+	}
 	return cmd
+}
+
+func writeSyncResult(cmd *cobra.Command, direction sharedhistory.Direction, result sharedhistory.Result, completed bool) {
+	state := "complete"
+	if !completed {
+		state = "incomplete"
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "%s %s\n", direction, state)
+	if direction == sharedhistory.DirectionPush {
+		fmt.Fprintf(cmd.OutOrStdout(), "published: %d\n", result.Published)
+		fmt.Fprintf(cmd.OutOrStdout(), "blocked:   %d\n", result.Blocked)
+		fmt.Fprintf(cmd.OutOrStdout(), "remaining: %d\n", result.Remaining)
+		if result.Head != "" {
+			fmt.Fprintf(cmd.OutOrStdout(), "head:      %s\n", result.Head)
+		}
+	} else {
+		fmt.Fprintf(cmd.OutOrStdout(), "pulled: %d\n", result.Pulled)
+	}
+	for _, warning := range result.Warnings {
+		fmt.Fprintf(cmd.OutOrStdout(), "warning: %s\n", indentSharedText(warning))
+	}
+	writeQuarantined(cmd, result.Quarantined)
 }
 
 func writeJSON(cmd *cobra.Command, value any) error {
@@ -255,6 +417,7 @@ func writeShareStatus(cmd *cobra.Command, status sharedhistory.Status) {
 		return
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), "shared history: configured")
+	fmt.Fprintf(cmd.OutOrStdout(), "enabled:     %t\n", status.Enabled)
 	fmt.Fprintf(cmd.OutOrStdout(), "remote:      %s\n", status.Remote)
 	fmt.Fprintf(cmd.OutOrStdout(), "repo:        %s\n", status.RepoID)
 	fmt.Fprintf(cmd.OutOrStdout(), "device:      %s\n", status.DeviceID)
@@ -264,6 +427,7 @@ func writeShareStatus(cmd *cobra.Command, status sharedhistory.Status) {
 	fmt.Fprintf(cmd.OutOrStdout(), "published:   %d\n", status.Published)
 	fmt.Fprintf(cmd.OutOrStdout(), "pulled:      %d\n", status.Pulled)
 	fmt.Fprintf(cmd.OutOrStdout(), "local ahead: %t\n", status.UnpushedLocalTip)
+	fmt.Fprintf(cmd.OutOrStdout(), "remote checked: %t\n", status.RemoteChecked)
 	if status.RemoteError != "" {
 		fmt.Fprintf(cmd.OutOrStdout(), "remote error: %s\n", status.RemoteError)
 	}
@@ -278,21 +442,125 @@ func writeShareStatus(cmd *cobra.Command, status sharedhistory.Status) {
 			fmt.Fprintf(cmd.OutOrStdout(), "- %s: %s\n", key, status.Blocked[key])
 		}
 	}
+	writeQuarantined(cmd, status.Quarantined)
+	if len(status.Retired) > 0 {
+		fmt.Fprintln(cmd.OutOrStdout(), "acknowledged removed devices:")
+		keys := make([]string, 0, len(status.Retired))
+		for key := range status.Retired {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			fmt.Fprintf(cmd.OutOrStdout(), "- %s (last verified %s)\n", key, status.Retired[key])
+		}
+	}
 }
 
 func writeOmissions(cmd *cobra.Command, omissions map[string]int) {
-	if len(omissions) == 0 {
+	writeCounts(cmd, "omissions", omissions)
+}
+
+func writeCounts(cmd *cobra.Command, label string, counts map[string]int) {
+	if len(counts) == 0 {
 		return
 	}
-	keys := make([]string, 0, len(omissions))
-	for key := range omissions {
+	keys := make([]string, 0, len(counts))
+	for key := range counts {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	fmt.Fprintln(cmd.OutOrStdout(), "omissions:")
+	fmt.Fprintf(cmd.OutOrStdout(), "%s:\n", label)
 	for _, key := range keys {
-		fmt.Fprintf(cmd.OutOrStdout(), "- %s: %d\n", key, omissions[key])
+		fmt.Fprintf(cmd.OutOrStdout(), "- %s: %d\n", indentSharedText(key), counts[key])
 	}
+}
+
+const (
+	sharedHistoryStatusTimeout = 15 * time.Second
+	sharedHistorySyncTimeout   = 2 * time.Minute
+)
+
+func sharedHistoryCommandContext(parent context.Context, timeout time.Duration) (context.Context, func()) {
+	signaled, stopSignals := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
+	ctx, cancel := context.WithTimeout(signaled, timeout)
+	return ctx, func() {
+		cancel()
+		stopSignals()
+	}
+}
+
+func writePushPlan(cmd *cobra.Command, plan sharedhistory.PushPlan) {
+	fmt.Fprintf(cmd.OutOrStdout(), "policy:      %s\n", plan.PolicyHash)
+	fmt.Fprintf(cmd.OutOrStdout(), "approval required: %t\n", plan.ApprovalRequired)
+	fmt.Fprintf(cmd.OutOrStdout(), "migration required: %t\n", plan.MigrationRequired)
+	fmt.Fprintf(cmd.OutOrStdout(), "pending:     %d\n", len(plan.Pending))
+	fmt.Fprintf(cmd.OutOrStdout(), "publishable: %d\n", plan.Publishable)
+	fmt.Fprintf(cmd.OutOrStdout(), "queued outbox: %d\n", plan.Queued)
+	fmt.Fprintf(cmd.OutOrStdout(), "next new batch: %d\n", plan.BatchSize)
+	fmt.Fprintf(cmd.OutOrStdout(), "blocked:     %d\n", plan.Blocked)
+	fmt.Fprintf(cmd.OutOrStdout(), "remaining:   %d\n", plan.Remaining)
+	for _, pending := range plan.Pending {
+		status := fmt.Sprintf("%d bytes", pending.Bytes)
+		if pending.Queued {
+			status = "queued in outbox"
+		} else if pending.Blocked != "" {
+			status = "blocked: " + pending.Blocked
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "- %s:%s stream=%s locator=%s %s\n", pending.SessionID, pending.TurnID, pending.StreamID, pending.Locator, status)
+	}
+}
+
+func writeQuarantined(cmd *cobra.Command, quarantined map[string]string) {
+	if len(quarantined) == 0 {
+		return
+	}
+	keys := make([]string, 0, len(quarantined))
+	for key := range quarantined {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	fmt.Fprintln(cmd.OutOrStdout(), "quarantined publishers:")
+	for _, key := range keys {
+		fmt.Fprintf(cmd.OutOrStdout(), "- %s: %s\n", key, indentSharedText(quarantined[key]))
+	}
+}
+
+func writeBundleContext(cmd *cobra.Command, events []sharedhistory.ContextEvent) {
+	for _, event := range events {
+		switch {
+		case event.Prompt != nil:
+			if event.Prompt.Omitted {
+				fmt.Fprintln(cmd.OutOrStdout(), "  prompt: [omitted by policy]")
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "  prompt: %s\n", indentSharedText(event.Prompt.Text))
+			}
+		case event.Intent != nil:
+			fmt.Fprintf(cmd.OutOrStdout(), "  intent: %s\n", indentSharedText(event.Intent.Problem.Text))
+		case event.Assistant != nil:
+			fmt.Fprintf(cmd.OutOrStdout(), "  assistant: %s\n", indentSharedText(event.Assistant.Text))
+		case event.Tool != nil:
+			fmt.Fprintf(cmd.OutOrStdout(), "  tool: %s (%s, %s)\n", indentSharedText(event.Tool.Name), event.Tool.Category, event.Tool.Status)
+		case event.Checkpoint != nil:
+			fmt.Fprintf(cmd.OutOrStdout(), "  checkpoint: %s %s\n", event.Checkpoint.Phase, event.Checkpoint.SourceCommit)
+		case event.CaptureError != nil:
+			fmt.Fprintf(cmd.OutOrStdout(), "  capture error: %s\n", event.CaptureError.Kind)
+		}
+	}
+}
+
+func indentSharedText(value string) string {
+	var safe strings.Builder
+	for _, character := range value {
+		switch {
+		case character == '\n' || character == '\t':
+			safe.WriteRune(character)
+		case unicode.IsControl(character) || unicode.Is(unicode.Cf, character):
+			fmt.Fprintf(&safe, "\\u%04x", character)
+		default:
+			safe.WriteRune(character)
+		}
+	}
+	return strings.ReplaceAll(safe.String(), "\n", "\n    ")
 }
 
 func firstSourceCommit(links []sharedhistory.SourceLink) string {

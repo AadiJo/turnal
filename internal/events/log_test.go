@@ -183,6 +183,44 @@ func TestIndependentV2StreamsCanReuseSessionAndSequence(t *testing.T) {
 	}
 }
 
+func TestAppendBackfillsLegacyStreamWorkspaceRoot(t *testing.T) {
+	metadataDir := t.TempDir()
+	repoID, _ := primitives.NewRepoID()
+	storeID, _ := primitives.NewStoreID()
+	worktreeID, _ := primitives.NewWorktreeID()
+	producerID, _ := primitives.NewEventProducerID()
+	sessionID := sessionID(t, "legacy-root")
+	log := OpenFor(metadataDir, "/workspace/source", repoID, storeID, worktreeID, producerID)
+	first, err := log.Append(AppendInput{SessionID: sessionID, Type: primitives.EventTypePromptUser, Payload: json.RawMessage(`{"text":"first"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadataPath := filepath.Join(metadataDir, "log", "streams", first.StreamID.String()+".json")
+	data, err := os.ReadFile(metadataPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var metadata StreamMetadata
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		t.Fatal(err)
+	}
+	metadata.WorkspaceRoot = ""
+	legacy, err := json.MarshalIndent(metadata, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(metadataPath, append(legacy, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := log.Append(AppendInput{SessionID: sessionID, Type: primitives.EventTypeAssistantMessage, Payload: json.RawMessage(`{"text":"second"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	streams, err := ListDurableStreams(metadataDir)
+	if err != nil || len(streams) != 1 || streams[0].WorkspaceRoot != "/workspace/source" {
+		t.Fatalf("backfilled streams = %#v, %v", streams, err)
+	}
+}
+
 func TestListDurableStreamsRejectsSymlink(t *testing.T) {
 	metadataDir := t.TempDir()
 	dir := filepath.Join(metadataDir, "log", eventLogDirName)

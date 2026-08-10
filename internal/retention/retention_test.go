@@ -22,6 +22,7 @@ import (
 	"github.com/AadiJo/turnal/internal/primitives"
 	rollbackengine "github.com/AadiJo/turnal/internal/rollback"
 	"github.com/AadiJo/turnal/internal/runs"
+	"github.com/AadiJo/turnal/internal/sharedhistory"
 	"github.com/AadiJo/turnal/internal/turnevents"
 	"github.com/AadiJo/turnal/internal/turns"
 )
@@ -90,6 +91,44 @@ func TestDropSessionDeletesEventLogAndPrivateRefs(t *testing.T) {
 	}
 	if len(sessions) != 0 {
 		t.Fatalf("sessions after drop = %#v, want none", sessions)
+	}
+}
+
+func TestDropSessionReportsPublishedSharedHistoryResidual(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := sessionID(t, "shared-residual")
+	recorder := turnevents.Recorder{Log: repo.EventLog(), Manager: turns.NewManager(repo), Adapter: primitives.AdapterManual}
+	started, err := recorder.Start(sessionID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recorder.Finish(sessionID, started.TurnID); err != nil {
+		t.Fatal(err)
+	}
+	remote := filepath.Join(t.TempDir(), "history.git")
+	if output, err := exec.Command("git", "init", "--bare", remote).CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare: %v\n%s", err, output)
+	}
+	if _, err := sharedhistory.Configure(repo, sharedhistory.ConfigureOptions{Remote: remote, PromptMode: sharedhistory.PromptModeOmit}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sharedhistory.New(repo).Preview(context.Background(), sharedhistory.PreviewOptions{SessionID: sessionID, TurnID: started.TurnID, Approve: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sharedhistory.New(repo).Sync(context.Background(), sharedhistory.DirectionPush); err != nil {
+		t.Fatal(err)
+	}
+	result, err := DropSession(repo, sessionID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Residuals) == 0 || !strings.Contains(strings.Join(result.Residuals, "\n"), "shared-history bundle") {
+		t.Fatalf("shared history residuals = %#v", result.Residuals)
 	}
 }
 

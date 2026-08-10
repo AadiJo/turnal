@@ -195,11 +195,12 @@ Shared history is opt-in. It publishes a signed, context-only projection to a Gi
 turnal share enable --remote <git-url-or-path> --prompt-mode redacted_text
 turnal share preview <session>:<turn> --json
 turnal share preview <session>:<turn> --approve
+turnal sync push --dry-run
 turnal sync push
 turnal sync pull
 ```
 
-Use `turnal share status` to inspect consent, pending bundles, blocked projections, and unpushed history. A published locator such as `v1:<device-id>:<bundle-id>` can be opened with `turnal share show <locator>`. See [shared history](docs/shared-history.md) for the protocol, privacy boundary, and failure semantics.
+Use `turnal share status` to inspect consent, pending bundles, blocked projections, and quarantined publishers without contacting the network; add `--check-remote` for a bounded remote check. Discover local and pulled bundles with `turnal share list`, and open a locator such as `v1:<device-id>:<bundle-id>` with `turnal share show <locator>`. Stop future synchronization with `turnal share disable --yes`; this preserves existing history and cannot recall published copies. See [shared history](docs/shared-history.md) for the protocol, privacy boundary, and failure semantics.
 
 Teammates joining from independently initialized clones use the publisher's shared repository id: `turnal share enable --remote <same-remote> --repo-id <publisher-repo-id> --prompt-mode omit`, then `turnal sync pull`.
 

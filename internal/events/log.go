@@ -974,12 +974,13 @@ func (log Log) ensureStreamMetadata(sessionID primitives.SessionID, streamID pri
 		if metadata.StreamID != streamID || metadata.ProducerID != log.ProducerID || metadata.SessionID != sessionID || metadata.WorktreeID != log.WorktreeID || metadata.RepoID != log.RepoID {
 			return fmt.Errorf("event stream metadata invariant failed at %s: identity mismatch", path)
 		}
+		if metadata.WorkspaceRoot == "" && log.WorkspaceRoot != "" {
+			metadata.WorkspaceRoot = log.WorkspaceRoot
+			return writeStreamMetadataFile(metadataDir, path, metadata)
+		}
 		return nil
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("read event stream metadata: %w", err)
-	}
-	if err := os.MkdirAll(metadataDir, 0o755); err != nil {
-		return fmt.Errorf("create event stream metadata dir: %w", err)
 	}
 	metadata := StreamMetadata{
 		Version:       1,
@@ -991,12 +992,19 @@ func (log Log) ensureStreamMetadata(sessionID primitives.SessionID, streamID pri
 		WorkspaceRoot: log.WorkspaceRoot,
 		CreatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
 	}
+	return writeStreamMetadataFile(metadataDir, path, metadata)
+}
+
+func writeStreamMetadataFile(dir, path string, metadata StreamMetadata) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create event stream metadata dir: %w", err)
+	}
 	data, err := json.MarshalIndent(metadata, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal event stream metadata: %w", err)
 	}
 	data = append(data, '\n')
-	tmp, err := os.CreateTemp(metadataDir, ".stream-*")
+	tmp, err := os.CreateTemp(dir, ".stream-*")
 	if err != nil {
 		return fmt.Errorf("create event stream metadata temp file: %w", err)
 	}
@@ -1017,7 +1025,7 @@ func (log Log) ensureStreamMetadata(sessionID primitives.SessionID, streamID pri
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := replaceEventFile(tmpPath, path); err != nil {
 		return fmt.Errorf("commit event stream metadata: %w", err)
 	}
 	return nil
@@ -1057,15 +1065,7 @@ func writeStreamMetadata(dir string, metadata StreamMetadata) error {
 	if metadata.CreatedAt == "" {
 		metadata.CreatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create event stream metadata dir: %w", err)
-	}
 	path := filepath.Join(dir, streamID.String()+".json")
-	data, err := json.MarshalIndent(metadata, "", "  ")
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
 	if existing, readErr := os.ReadFile(path); readErr == nil {
 		var parsed StreamMetadata
 		if json.Unmarshal(existing, &parsed) != nil {
@@ -1077,11 +1077,15 @@ func writeStreamMetadata(dir string, metadata StreamMetadata) error {
 		if parsed.StreamID != metadata.StreamID || parsed.RepoID != metadata.RepoID || parsed.WorktreeID != metadata.WorktreeID || parsed.SessionID != metadata.SessionID || workspaceRootConflict {
 			return fmt.Errorf("event stream metadata collision at %s", path)
 		}
+		if parsed.WorkspaceRoot == "" && metadata.WorkspaceRoot != "" {
+			parsed.WorkspaceRoot = metadata.WorkspaceRoot
+			return writeStreamMetadataFile(dir, path, parsed)
+		}
 		return nil
 	} else if !os.IsNotExist(readErr) {
 		return readErr
 	}
-	return os.WriteFile(path, data, 0o600)
+	return writeStreamMetadataFile(dir, path, metadata)
 }
 
 func (log Log) readStreamMetadata(streamID primitives.EventStreamID) (StreamMetadata, bool) {
