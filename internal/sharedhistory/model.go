@@ -7,8 +7,11 @@ import (
 )
 
 const (
-	SchemaVersion          = 1
-	AllowlistVersion       = "turnal-context-v1"
+	SchemaVersion = 1
+	// AllowlistVersion changes whenever the set of publishable fields widens.
+	// v2 added the source branch, which leaves the machine only after the
+	// publisher approves the resulting policy hash again.
+	AllowlistVersion       = "turnal-context-v2"
 	ScannerVersion         = "turnal-secrets-v2"
 	EvidencePublisherClaim = "publisher_attested_projection"
 	DefaultFieldLimit      = 64 << 10
@@ -128,9 +131,13 @@ type SourceRef struct {
 	Hash     primitives.EventHash     `json:"hash"`
 }
 
+// SourceLink connects a bundle to the source history it describes. Branch is a
+// short ref name such as "main"; it is omitted for detached HEAD and under
+// metadata_only, which publishes no source naming.
 type SourceLink struct {
 	CommitSHA  string `json:"commit_sha,omitempty"`
 	Checkpoint string `json:"checkpoint_id,omitempty"`
+	Branch     string `json:"branch,omitempty"`
 }
 
 type SequenceRange struct {
@@ -154,13 +161,19 @@ type Manifest struct {
 	PolicyHash     string                     `json:"policy_hash"`
 	PromptMode     PromptMode                 `json:"prompt_mode"`
 	EvidenceClass  string                     `json:"evidence_class"`
-	SourceLinks    []SourceLink               `json:"source_links,omitempty"`
-	Omissions      map[string]int             `json:"omissions"`
-	Redactions     map[string]int             `json:"redactions,omitempty"`
-	Truncations    Truncations                `json:"truncations"`
-	ContentHashes  map[string]string          `json:"content_hashes"`
-	CreatedAt      time.Time                  `json:"created_at"`
-	Signature      string                     `json:"signature"`
+	// The policy hash is opaque to a receiver, so these name the projection
+	// that produced the bundle. They let a reader tell which allowlist and
+	// secret scanner applied without asking the publisher to re-derive it.
+	AllowlistVersion string            `json:"allowlist_version,omitempty"`
+	ScannerVersion   string            `json:"scanner_version,omitempty"`
+	ProducerVersion  string            `json:"producer_version,omitempty"`
+	SourceLinks      []SourceLink      `json:"source_links,omitempty"`
+	Omissions        map[string]int    `json:"omissions"`
+	Redactions       map[string]int    `json:"redactions,omitempty"`
+	Truncations      Truncations       `json:"truncations"`
+	ContentHashes    map[string]string `json:"content_hashes"`
+	CreatedAt        time.Time         `json:"created_at"`
+	Signature        string            `json:"signature"`
 }
 
 type Truncations struct {

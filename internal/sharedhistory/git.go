@@ -737,8 +737,39 @@ func validateManifest(repoID primitives.RepoID, deviceID string, item BatchBundl
 				return fmt.Errorf("manifest contains an invalid checkpoint link")
 			}
 		}
+		if link.Branch != "" && !validProjectionLabel(link.Branch, 256, "._/-") {
+			return fmt.Errorf("manifest contains an invalid source branch")
+		}
+	}
+	if manifest.AllowlistVersion != "" && !validProjectionLabel(manifest.AllowlistVersion, 64, "._-") {
+		return fmt.Errorf("manifest contains an invalid allowlist version")
+	}
+	if manifest.ScannerVersion != "" && !validProjectionLabel(manifest.ScannerVersion, 64, "._-") {
+		return fmt.Errorf("manifest contains an invalid scanner version")
+	}
+	if manifest.ProducerVersion != "" && !validProjectionLabel(manifest.ProducerVersion, 64, "._+-") {
+		return fmt.Errorf("manifest contains an invalid producer version")
 	}
 	return nil
+}
+
+// validProjectionLabel bounds a publisher-supplied descriptive string. These
+// values are rendered and may be indexed, so the character set is an allowlist
+// and control characters can never survive it.
+func validProjectionLabel(value string, limit int, punctuation string) bool {
+	if value == "" || len(value) > limit {
+		return false
+	}
+	for _, character := range value {
+		valid := character >= 'a' && character <= 'z' ||
+			character >= 'A' && character <= 'Z' ||
+			character >= '0' && character <= '9' ||
+			strings.ContainsRune(punctuation, character)
+		if !valid {
+			return false
+		}
+	}
+	return true
 }
 
 func validateProjectedEvents(manifest Manifest, events []ContextEvent) error {

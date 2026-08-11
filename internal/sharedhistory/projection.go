@@ -11,6 +11,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/AadiJo/turnal/internal/buildinfo"
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/primitives"
@@ -186,27 +187,30 @@ func buildBundle(repo *checkpoint.Repo, identity deviceIdentity, policy policyFi
 		return builtBundle{}, err
 	}
 	manifest := Manifest{
-		SchemaVersion:  SchemaVersion,
-		BundleID:       bundleID,
-		RepoID:         policy.RepoID,
-		DeviceID:       identity.DeviceID,
-		ProducerID:     source.Stream.ProducerID,
-		StoreID:        repo.StoreID,
-		WorktreeID:     source.Stream.WorktreeID,
-		StreamID:       source.Stream.StreamID,
-		SessionID:      source.Stream.SessionID,
-		TurnID:         source.TurnID,
-		SourceSequence: SequenceRange{First: sourceRefs[0].Seq, Last: sourceRefs[len(sourceRefs)-1].Seq},
-		SourceRefs:     sourceRefs,
-		PolicyHash:     policyDigest,
-		PromptMode:     policy.PromptMode,
-		EvidenceClass:  EvidencePublisherClaim,
-		SourceLinks:    sourceLinks,
-		Omissions:      omissions,
-		Redactions:     redactions,
-		Truncations:    truncations,
-		ContentHashes:  map[string]string{"events.jsonl": sha256Bytes(eventsJSON)},
-		CreatedAt:      source.Events[len(source.Events)-1].Time.Time,
+		SchemaVersion:    SchemaVersion,
+		BundleID:         bundleID,
+		RepoID:           policy.RepoID,
+		DeviceID:         identity.DeviceID,
+		ProducerID:       source.Stream.ProducerID,
+		StoreID:          repo.StoreID,
+		WorktreeID:       source.Stream.WorktreeID,
+		StreamID:         source.Stream.StreamID,
+		SessionID:        source.Stream.SessionID,
+		TurnID:           source.TurnID,
+		SourceSequence:   SequenceRange{First: sourceRefs[0].Seq, Last: sourceRefs[len(sourceRefs)-1].Seq},
+		SourceRefs:       sourceRefs,
+		PolicyHash:       policyDigest,
+		PromptMode:       policy.PromptMode,
+		EvidenceClass:    EvidencePublisherClaim,
+		AllowlistVersion: policy.AllowlistVersion,
+		ScannerVersion:   policy.ScannerVersion,
+		ProducerVersion:  producerVersion(),
+		SourceLinks:      sourceLinks,
+		Omissions:        omissions,
+		Redactions:       redactions,
+		Truncations:      truncations,
+		ContentHashes:    map[string]string{"events.jsonl": sha256Bytes(eventsJSON)},
+		CreatedAt:        source.Events[len(source.Events)-1].Time.Time,
 	}
 	manifest, err = signManifest(identity, manifest)
 	if err != nil {
@@ -331,8 +335,10 @@ func projectEvent(workspaceRoot string, policy policyFile, event eventlog.Event,
 			Phase        string `json:"phase"`
 			CheckpointID string `json:"checkpoint_id"`
 			UserGit      struct {
-				Head  string `json:"head"`
-				Dirty bool   `json:"dirty"`
+				Head     string `json:"head"`
+				Branch   string `json:"branch"`
+				Detached bool   `json:"detached"`
+				Dirty    bool   `json:"dirty"`
 			} `json:"user_git"`
 		}
 		if json.Unmarshal(event.Payload, &payload) != nil {
@@ -355,7 +361,11 @@ func projectEvent(workspaceRoot string, policy policyFile, event eventlog.Event,
 			commit = parsed.String()
 		}
 		projection.Checkpoint = &CheckpointProjection{Phase: phase.String(), CheckpointID: checkpointID.String(), SourceCommit: commit, Dirty: payload.UserGit.Dirty}
-		return projection, true, []SourceLink{{CommitSHA: commit, Checkpoint: checkpointID.String()}}
+		branch, branchOmitted := projectBranch(policy, payload.UserGit.Branch, payload.UserGit.Detached)
+		if branchOmitted != "" {
+			omissions[branchOmitted]++
+		}
+		return projection, true, []SourceLink{{CommitSHA: commit, Checkpoint: checkpointID.String(), Branch: branch}}
 	case primitives.EventTypeError:
 		projection.CaptureError = &CaptureErrorProjection{Kind: "capture_error"}
 		omissions["error_message"]++
@@ -777,6 +787,62 @@ func recordRedactions(redactions map[string]int, text sanitizedText) {
 	if text.SecretRedacted {
 		redactions["secret"]++
 	}
+}
+
+// producerVersion names the Turnal build that projected a bundle so a receiver
+// can attribute a projection defect to a specific version. Dev builds report
+// the placeholder version rather than omitting it, because "unknown producer"
+// and "no producer field" mean different things to a receiver.
+func producerVersion() string {
+	version := strings.TrimSpace(buildinfo.Current().Version)
+	if version == "" || len(version) > 64 {
+		return ""
+	}
+	for _, character := range version {
+		valid := character >= 'a' && character <= 'z' ||
+			character >= 'A' && character <= 'Z' ||
+			character >= '0' && character <= '9' ||
+			strings.ContainsRune("._+-", character)
+		if !valid {
+			return ""
+		}
+	}
+	return version
+}
+
+// projectBranch reduces a captured symbolic ref to a short branch name and
+// reports the omission reason when nothing is publishable. Branch names are
+// author-controlled, so the character set is an allowlist: anything outside it
+// is dropped rather than normalized. metadata_only publishes no source naming
+// at all, and a detached HEAD has no branch to name.
+func projectBranch(policy policyFile, branch string, detached bool) (string, string) {
+	if policy.PromptMode == PromptModeMetadataOnly {
+		if strings.TrimSpace(branch) != "" {
+			return "", "branch_policy"
+		}
+		return "", ""
+	}
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		if detached {
+			return "", "branch_detached"
+		}
+		return "", ""
+	}
+	branch = strings.TrimPrefix(branch, "refs/heads/")
+	if branch == "" || len(branch) > 256 {
+		return "", "invalid_branch"
+	}
+	for _, character := range branch {
+		valid := character >= 'a' && character <= 'z' ||
+			character >= 'A' && character <= 'Z' ||
+			character >= '0' && character <= '9' ||
+			strings.ContainsRune("._/-", character)
+		if !valid {
+			return "", "invalid_branch"
+		}
+	}
+	return branch, ""
 }
 
 func sanitizeIdentifier(workspaceRoot, value string, truncations *Truncations) sanitizedText {

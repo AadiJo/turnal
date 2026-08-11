@@ -583,6 +583,102 @@ func TestMetadataOnlyOmitsPromptIntentAndAssistantText(t *testing.T) {
 	}
 }
 
+func TestProjectBranchGatesOnPolicyAndRefShape(t *testing.T) {
+	redacted := policyFile{PromptMode: PromptModeRedactedText}
+	for _, testCase := range []struct {
+		name     string
+		policy   policyFile
+		branch   string
+		detached bool
+		want     string
+		omission string
+	}{
+		{name: "short name", policy: redacted, branch: "refs/heads/main", want: "main"},
+		{name: "nested name", policy: redacted, branch: "refs/heads/feature/retry-fix", want: "feature/retry-fix"},
+		{name: "omit still names the branch", policy: policyFile{PromptMode: PromptModeOmit}, branch: "refs/heads/main", want: "main"},
+		{name: "metadata only publishes no branch", policy: policyFile{PromptMode: PromptModeMetadataOnly}, branch: "refs/heads/main", omission: "branch_policy"},
+		{name: "detached head", policy: redacted, detached: true, omission: "branch_detached"},
+		{name: "control characters", policy: redacted, branch: "refs/heads/ma\x1b[31min", omission: "invalid_branch"},
+		{name: "spaces", policy: redacted, branch: "refs/heads/my branch", omission: "invalid_branch"},
+		{name: "bare refs prefix", policy: redacted, branch: "refs/heads/", omission: "invalid_branch"},
+		{name: "absent and attached", policy: redacted},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			branch, omission := projectBranch(testCase.policy, testCase.branch, testCase.detached)
+			if branch != testCase.want || omission != testCase.omission {
+				t.Fatalf("projectBranch = (%q, %q), want (%q, %q)", branch, omission, testCase.want, testCase.omission)
+			}
+			if omission != "" && !validMetadataReason(omission) {
+				t.Fatalf("omission reason %q is not wire-safe", omission)
+			}
+		})
+	}
+}
+
+func TestManifestNamesTheProjectionThatProducedIt(t *testing.T) {
+	repo := newSharedHistoryTestRepo(t)
+	sessionID, turnID := recordSharedHistoryTurn(t, repo)
+	if _, err := Configure(repo, ConfigureOptions{Remote: filepath.Join(t.TempDir(), "history.git"), PromptMode: PromptModeRedactedText}); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := New(repo).Preview(context.Background(), PreviewOptions{SessionID: sessionID, TurnID: turnID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Manifest.AllowlistVersion != AllowlistVersion || plan.Manifest.ScannerVersion != ScannerVersion {
+		t.Fatalf("manifest projection versions = (%q, %q)", plan.Manifest.AllowlistVersion, plan.Manifest.ScannerVersion)
+	}
+	if plan.Manifest.ProducerVersion == "" {
+		t.Fatal("manifest does not name the producing Turnal version")
+	}
+	// The receiver must accept what the publisher just produced.
+	if err := verifyStoredBundle(repo.RepoID, StoredBundle{Manifest: plan.Manifest, Events: plan.Events, PublicKey: mustDevice(t, repo).PublicKey}); err != nil {
+		t.Fatalf("verify bundle carrying projection versions: %v", err)
+	}
+}
+
+func TestReceiverRejectsUnsafeProjectionLabels(t *testing.T) {
+	repo := newSharedHistoryTestRepo(t)
+	sessionID, turnID := recordSharedHistoryTurn(t, repo)
+	if _, err := Configure(repo, ConfigureOptions{Remote: filepath.Join(t.TempDir(), "history.git"), PromptMode: PromptModeRedactedText}); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := New(repo).Preview(context.Background(), PreviewOptions{SessionID: sessionID, TurnID: turnID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := mustDevice(t, repo)
+	for _, testCase := range []struct {
+		name    string
+		corrupt func(Manifest) Manifest
+	}{
+		{name: "scanner version", corrupt: func(manifest Manifest) Manifest {
+			manifest.ScannerVersion = "turnal\x1b[31m-secrets"
+			return manifest
+		}},
+		{name: "producer version", corrupt: func(manifest Manifest) Manifest {
+			manifest.ProducerVersion = "0.0.5 rm -rf /"
+			return manifest
+		}},
+		{name: "source branch", corrupt: func(manifest Manifest) Manifest {
+			manifest.SourceLinks = []SourceLink{{CommitSHA: "4444444444444444444444444444444444444444", Branch: "main\x1b[31m"}}
+			return manifest
+		}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			// Re-sign so the rejection comes from validation, not the signature.
+			tampered, err := signManifest(identity, testCase.corrupt(plan.Manifest))
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = verifyStoredBundle(repo.RepoID, StoredBundle{Manifest: tampered, Events: plan.Events, PublicKey: identity.PublicKey})
+			if err == nil {
+				t.Fatal("receiver accepted an unsafe projection label")
+			}
+		})
+	}
+}
+
 func TestProjectionLimitsTruncateFieldsAndBlockOversizeBundles(t *testing.T) {
 	repo := newSharedHistoryTestRepo(t)
 	sessionID, err := primitives.ParseSessionID("limit-test")

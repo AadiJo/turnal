@@ -156,28 +156,34 @@ func verifyBatch(batch Batch) (ed25519.PublicKey, error) {
 // the in-memory structs. Adding fields for a future schema must not silently
 // change the bytes used to verify already-published version 1 history.
 type manifestSignatureV1 struct {
-	SchemaVersion  int                        `json:"schema_version"`
-	BundleID       primitives.BundleID        `json:"bundle_id"`
-	RepoID         primitives.RepoID          `json:"repo_id"`
-	DeviceID       string                     `json:"device_id"`
-	ProducerID     primitives.EventProducerID `json:"producer_id"`
-	StoreID        primitives.StoreID         `json:"store_id"`
-	WorktreeID     primitives.WorktreeID      `json:"worktree_id"`
-	StreamID       primitives.EventStreamID   `json:"stream_id"`
-	SessionID      primitives.SessionID       `json:"session_id"`
-	TurnID         primitives.TurnID          `json:"turn_id"`
-	SourceSequence sequenceRangeSignatureV1   `json:"source_sequence_range"`
-	SourceRefs     []sourceRefSignatureV1     `json:"source_ref"`
-	PolicyHash     string                     `json:"policy_hash"`
-	PromptMode     PromptMode                 `json:"prompt_mode"`
-	EvidenceClass  string                     `json:"evidence_class"`
-	SourceLinks    []sourceLinkSignatureV1    `json:"source_links,omitempty"`
-	Omissions      map[string]int             `json:"omissions"`
-	Redactions     map[string]int             `json:"redactions,omitempty"`
-	Truncations    truncationsSignatureV1     `json:"truncations"`
-	ContentHashes  map[string]string          `json:"content_hashes"`
-	CreatedAt      time.Time                  `json:"created_at"`
-	Signature      string                     `json:"signature"`
+	SchemaVersion    int                        `json:"schema_version"`
+	BundleID         primitives.BundleID        `json:"bundle_id"`
+	RepoID           primitives.RepoID          `json:"repo_id"`
+	DeviceID         string                     `json:"device_id"`
+	ProducerID       primitives.EventProducerID `json:"producer_id"`
+	StoreID          primitives.StoreID         `json:"store_id"`
+	WorktreeID       primitives.WorktreeID      `json:"worktree_id"`
+	StreamID         primitives.EventStreamID   `json:"stream_id"`
+	SessionID        primitives.SessionID       `json:"session_id"`
+	TurnID           primitives.TurnID          `json:"turn_id"`
+	SourceSequence   sequenceRangeSignatureV1   `json:"source_sequence_range"`
+	SourceRefs       []sourceRefSignatureV1     `json:"source_ref"`
+	PolicyHash       string                     `json:"policy_hash"`
+	PromptMode       PromptMode                 `json:"prompt_mode"`
+	EvidenceClass    string                     `json:"evidence_class"`
+	AllowlistVersion string                     `json:"allowlist_version,omitempty"`
+	ScannerVersion   string                     `json:"scanner_version,omitempty"`
+	ProducerVersion  string                     `json:"producer_version,omitempty"`
+	SourceLinks      []sourceLinkSignatureV1    `json:"source_links,omitempty"`
+	Omissions        map[string]int             `json:"omissions"`
+	Redactions       map[string]int             `json:"redactions,omitempty"`
+	Truncations      truncationsSignatureV1     `json:"truncations"`
+	ContentHashes    map[string]string          `json:"content_hashes"`
+	CreatedAt        time.Time                  `json:"created_at"`
+	// Signature is always empty in the signing bytes: a signature cannot cover
+	// itself. The field is part of the frozen v1 payload, so it must keep
+	// serializing as "" rather than being removed.
+	Signature string `json:"signature"`
 }
 
 type sequenceRangeSignatureV1 struct {
@@ -194,6 +200,7 @@ type sourceRefSignatureV1 struct {
 type sourceLinkSignatureV1 struct {
 	CommitSHA  string `json:"commit_sha,omitempty"`
 	Checkpoint string `json:"checkpoint_id,omitempty"`
+	Branch     string `json:"branch,omitempty"`
 }
 
 type truncationsSignatureV1 struct {
@@ -213,7 +220,7 @@ func manifestSigningPayloadV1(manifest Manifest) manifestSignatureV1 {
 	if manifest.SourceLinks != nil {
 		sourceLinks = make([]sourceLinkSignatureV1, 0, len(manifest.SourceLinks))
 		for _, link := range manifest.SourceLinks {
-			sourceLinks = append(sourceLinks, sourceLinkSignatureV1{CommitSHA: link.CommitSHA, Checkpoint: link.Checkpoint})
+			sourceLinks = append(sourceLinks, sourceLinkSignatureV1{CommitSHA: link.CommitSHA, Checkpoint: link.Checkpoint, Branch: link.Branch})
 		}
 	}
 	return manifestSignatureV1{
@@ -224,7 +231,9 @@ func manifestSigningPayloadV1(manifest Manifest) manifestSignatureV1 {
 		SourceSequence: sequenceRangeSignatureV1{First: manifest.SourceSequence.First, Last: manifest.SourceSequence.Last},
 		SourceRefs:     sourceRefs,
 		PolicyHash:     manifest.PolicyHash, PromptMode: manifest.PromptMode, EvidenceClass: manifest.EvidenceClass,
-		SourceLinks: sourceLinks, Omissions: manifest.Omissions, Redactions: manifest.Redactions,
+		AllowlistVersion: manifest.AllowlistVersion, ScannerVersion: manifest.ScannerVersion,
+		ProducerVersion: manifest.ProducerVersion,
+		SourceLinks:     sourceLinks, Omissions: manifest.Omissions, Redactions: manifest.Redactions,
 		Truncations:   truncationsSignatureV1{Count: manifest.Truncations.Count, OriginalBytes: manifest.Truncations.OriginalBytes},
 		ContentHashes: manifest.ContentHashes, CreatedAt: manifest.CreatedAt,
 	}

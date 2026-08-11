@@ -180,6 +180,9 @@ func sharePreviewCmd() *cobra.Command {
 			fmt.Fprintf(cmd.OutOrStdout(), "events:        %d\n", len(plan.Events))
 			fmt.Fprintf(cmd.OutOrStdout(), "prompt mode:   %s\n", plan.Manifest.PromptMode)
 			fmt.Fprintf(cmd.OutOrStdout(), "source commit: %s\n", firstSourceCommit(plan.Manifest.SourceLinks))
+			if branch := firstSourceBranch(plan.Manifest.SourceLinks); branch != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "source branch: %s\n", indentSharedText(branch))
+			}
 			writeOmissions(cmd, plan.Manifest.Omissions)
 			writeCounts(cmd, "redactions", plan.Manifest.Redactions)
 			if approve {
@@ -312,6 +315,10 @@ func shareShowCmd() *cobra.Command {
 			fmt.Fprintf(cmd.OutOrStdout(), "publisher:   %s\n", bundle.Manifest.DeviceID)
 			fmt.Fprintf(cmd.OutOrStdout(), "evidence:    %s\n", bundle.Manifest.EvidenceClass)
 			fmt.Fprintf(cmd.OutOrStdout(), "prompt mode: %s\n", bundle.Manifest.PromptMode)
+			if branch := firstSourceBranch(bundle.Manifest.SourceLinks); branch != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "branch:      %s\n", indentSharedText(branch))
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "projection:  %s\n", sharedProjectionLabel(bundle.Manifest))
 			fmt.Fprintf(cmd.OutOrStdout(), "events:      %d\n", len(bundle.Events))
 			writeOmissions(cmd, bundle.Manifest.Omissions)
 			writeCounts(cmd, "redactions", bundle.Manifest.Redactions)
@@ -570,4 +577,31 @@ func firstSourceCommit(links []sharedhistory.SourceLink) string {
 		}
 	}
 	return "none"
+}
+
+// sharedProjectionLabel names the allowlist, scanner, and Turnal build that
+// produced a bundle. Bundles published before these fields existed report
+// "unknown" rather than silently looking like the current projection.
+func sharedProjectionLabel(manifest sharedhistory.Manifest) string {
+	allowlist := manifest.AllowlistVersion
+	scanner := manifest.ScannerVersion
+	if allowlist == "" || scanner == "" {
+		return "unknown (published before projection versions were recorded)"
+	}
+	label := fmt.Sprintf("%s, %s", allowlist, scanner)
+	if manifest.ProducerVersion != "" {
+		label += ", turnal " + manifest.ProducerVersion
+	}
+	return indentSharedText(label)
+}
+
+// firstSourceBranch returns "" when no link names a branch, which happens under
+// metadata_only, on a detached HEAD, and outside a Git workspace.
+func firstSourceBranch(links []sharedhistory.SourceLink) string {
+	for _, link := range links {
+		if link.Branch != "" {
+			return link.Branch
+		}
+	}
+	return ""
 }

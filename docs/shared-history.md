@@ -17,7 +17,7 @@ turnal sync push --dry-run
 turnal sync push
 ```
 
-`redacted_text` publishes prompt text after workspace-path normalization, secret scanning, and deterministic size limits. `omit` publishes a typed prompt omission instead of prompt text but retains redacted assistant and compact intent text. `metadata_only` omits prompt, assistant, and intent text while retaining lifecycle, tool classification, and checkpoint metadata. Changing the remote, prompt mode, schema, scanner, allowlist, or limits changes the policy hash and requires approval again.
+`redacted_text` publishes prompt text after workspace-path normalization, secret scanning, and deterministic size limits. `omit` publishes a typed prompt omission instead of prompt text but retains redacted assistant and compact intent text. `metadata_only` omits prompt, assistant, intent, and source-branch text while retaining lifecycle, tool classification, and checkpoint metadata. Changing the remote, prompt mode, schema, scanner, allowlist, or limits changes the policy hash and requires approval again.
 
 Workspace paths normalize to `$WORKSPACE` only when their boundary is unambiguous: the root ends the field, continues through a path separator without a `..` component, or is enclosed by matching quotes. Because Unix permits whitespace and punctuation inside filenames, an unquoted workspace-root mention followed by either is ambiguous and causes the entire field to become `[PATH_REDACTED]`. Any other absolute path also redacts the entire field. This fail-closed rule trades some shared prose for a stable privacy boundary; quote a standalone path when precise normalization matters.
 
@@ -72,15 +72,20 @@ A malformed ref outside the exact protocol namespace is ignored and reported as 
 
 ## Publication boundary
 
-The version 1 schema can contain the fields below. Shared history v1 is introduced by this PR and had no released receiver before the `redactions` metadata and `metadata_only` policy were included; its signing bytes are frozen from this complete initial contract.
+The version 1 schema can contain the fields below. Shared history v1 is introduced by this PR and had no released receiver before the `redactions` metadata, `metadata_only` policy, source branch, and projection versions were included; its signing bytes are frozen from this complete initial contract. Later additive fields are optional in the signing payload, so a bundle that omits them signs and verifies exactly as it did before they existed.
 
 - turn lifecycle events;
 - prompt text or a typed prompt omission, according to policy;
 - compact agent intent, scope, and evidence strings;
 - assistant text;
 - tool name, category, status, and mutation classification;
-- checkpoint and source-commit references;
+- checkpoint, source-commit, and source-branch references;
+- the allowlist, scanner, and Turnal versions that produced the projection;
 - a typed capture-error marker.
+
+Source branch names are published under `redacted_text` and `omit` because review questions are usually branch-shaped. `metadata_only` publishes no source naming and records a typed `branch_policy` omission instead. A detached HEAD has no branch to name. Branch names are author-controlled, so a name containing anything outside letters, digits, `.`, `_`, `/`, and `-` is dropped as `invalid_branch` rather than normalized, and receivers reject a bundle whose branch falls outside that set.
+
+`allowlist_version` and `scanner_version` name the projection contract, and `producer_version` names the Turnal build that applied it. The policy hash is opaque to a receiver, so these make it possible to tell which bundles predate a scanner upgrade without asking the publisher to re-derive them. Bundles published before these fields existed report an unknown projection rather than defaulting to the current one.
 
 It cannot contain snapshots, patches, file bodies, raw provider payloads, tool commands, stdin, stdout, or stderr. Unknown and malformed source events are omitted and counted. Fields are limited to 64 KiB and an uncompressed bundle is limited to 2 MiB. A bundle that cannot pass projection is marked blocked while other eligible turns continue.
 
