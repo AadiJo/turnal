@@ -58,7 +58,7 @@ turnal share show v1:<device-id>:<bundle-id> --json
 
 Pull writes verified bundles beneath `.turnal/shared-history/pulled/<repo-id>/`. It does not change the workspace, the project's `.git/`, or Turnal's private checkpoint repository. The RepoID namespace keeps reconfigured project scopes separate. The pulled JSON files are a derived local materialization; signed Git history remains the transport source.
 
-`share list` discovers local and pulled locators, with optional `--session` and `--device` filters. `share show` renders the projected context for people by default; use `--json` for the complete signed representation.
+`share list` discovers local and pulled locators, with optional `--session`, `--device`, and `--commit` filters. Each row names the bundle's source commit and branch, and `--commit` accepts a SHA or prefix so a reviewer can move from a commit to its context. When sharing is configured, `turnal status` reports a one-line publication summary covering pending, unapproved, blocked, and quarantined state. `share show` renders the projected context for people by default; use `--json` for the complete signed representation.
 
 Each publishing device owns an advancing ref:
 

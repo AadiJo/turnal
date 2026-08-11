@@ -615,6 +615,97 @@ func TestProjectBranchGatesOnPolicyAndRefShape(t *testing.T) {
 	}
 }
 
+func TestSummarizeReportsPendingWithoutConfiguringOrLocking(t *testing.T) {
+	repo := newSharedHistoryTestRepo(t)
+	sessionID, turnID := recordSharedHistoryTurn(t, repo)
+
+	// An unconfigured workspace is not an error: turnal status renders this
+	// unconditionally and must stay silent for people who never share.
+	summary, err := Summarize(repo)
+	if err != nil || summary.Configured {
+		t.Fatalf("unconfigured summary = %#v, %v", summary, err)
+	}
+
+	if _, err := Configure(repo, ConfigureOptions{Remote: filepath.Join(t.TempDir(), "history.git"), PromptMode: PromptModeRedactedText}); err != nil {
+		t.Fatal(err)
+	}
+	summary, err = Summarize(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !summary.Configured || !summary.Enabled || summary.Approved || summary.Pending != 1 {
+		t.Fatalf("configured summary = %#v", summary)
+	}
+
+	if _, err := New(repo).Preview(context.Background(), PreviewOptions{SessionID: sessionID, TurnID: turnID, Approve: true}); err != nil {
+		t.Fatal(err)
+	}
+	if summary, err = Summarize(repo); err != nil || !summary.Approved || summary.Pending != 1 {
+		t.Fatalf("approved summary = %#v, %v", summary, err)
+	}
+
+	// Summarize must not take the shared-history lock, or turnal status would
+	// block behind a concurrent sync. Calling it from inside the lock proves it
+	// does not try to reacquire.
+	if _, err := withSharedHistoryLock(repo, "test hold", func() (struct{}, error) {
+		held, holdErr := Summarize(repo)
+		if holdErr != nil || held.Pending != 1 {
+			t.Fatalf("summary under held lock = %#v, %v", held, holdErr)
+		}
+		return struct{}{}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Disable(repo); err != nil {
+		t.Fatal(err)
+	}
+	if summary, err = Summarize(repo); err != nil || !summary.Configured || summary.Enabled {
+		t.Fatalf("disabled summary = %#v, %v", summary, err)
+	}
+}
+
+func TestListSurfacesSourceCommitAndFiltersByPrefix(t *testing.T) {
+	testRoot := t.TempDir()
+	remote := filepath.Join(testRoot, "history.git")
+	runTestGit(t, testRoot, "init", "--bare", remote)
+	repo := newSharedHistoryTestRepoAt(t, filepath.Join(testRoot, "publisher"))
+	sessionID, turnID := recordSharedHistoryTurn(t, repo)
+	if _, err := Configure(repo, ConfigureOptions{Remote: remote, PromptMode: PromptModeRedactedText}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(repo).Preview(context.Background(), PreviewOptions{SessionID: sessionID, TurnID: turnID, Approve: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(repo).Sync(context.Background(), DirectionPush); err != nil {
+		t.Fatal(err)
+	}
+	bundles, err := New(repo).List(context.Background(), ListOptions{})
+	if err != nil || len(bundles) != 1 {
+		t.Fatalf("listed bundles = %d, %v", len(bundles), err)
+	}
+	// The test recorder captures no workspace Git context, so there is no source
+	// commit to surface. Filtering on any commit must therefore exclude it
+	// rather than matching everything.
+	if bundles[0].SourceCommit != "" {
+		t.Fatalf("unexpected source commit %q", bundles[0].SourceCommit)
+	}
+	filtered, err := New(repo).List(context.Background(), ListOptions{CommitSHA: "abc123"})
+	if err != nil || len(filtered) != 0 {
+		t.Fatalf("commit filter matched %d bundles, %v", len(filtered), err)
+	}
+}
+
+func TestSummarizeBundleTakesFirstCommitAndBranch(t *testing.T) {
+	summary := summarizeBundle("v1:device:bundle", StoredBundle{Manifest: Manifest{SourceLinks: []SourceLink{
+		{Checkpoint: "ckpt_0123456789abcdef0123456789abcdef"},
+		{CommitSHA: "4444444444444444444444444444444444444444", Branch: "release-2"},
+	}}}, true)
+	if summary.SourceCommit != "4444444444444444444444444444444444444444" || summary.Branch != "release-2" {
+		t.Fatalf("summary = %#v", summary)
+	}
+}
+
 func TestManifestNamesTheProjectionThatProducedIt(t *testing.T) {
 	repo := newSharedHistoryTestRepo(t)
 	sessionID, turnID := recordSharedHistoryTurn(t, repo)

@@ -483,8 +483,11 @@ A reviewer pulls and reads bundles without touching their workspace, project `.g
 ```sh
 turnal sync pull
 turnal share list
+turnal share list --commit <sha>
 turnal share show v1:DEVICE:BUNDLE
 ```
+
+`share list` shows each bundle's source commit and branch, and `--commit` accepts a SHA or prefix, so you can go from a commit you are reviewing to the context behind it. When sharing is configured, `turnal status` also reports pending, unapproved, blocked, and quarantined publication state.
 
 Teammates working from independently initialized clones join the publisher's history by passing its shared repository id, which `turnal share status` prints:
 
@@ -982,7 +985,7 @@ turnal share enable --remote REMOTE --prompt-mode MODE [--repo-id ID]
                     [--include-existing-history] [--json]
 turnal share preview SESSION:TURN [--approve] [--json] [--stream ID]
 turnal share status [--check-remote] [--json]
-turnal share list [--session ID] [--device ID] [--json]
+turnal share list [--session ID] [--device ID] [--commit SHA] [--json]
 turnal share show LOCATOR [--json]
 turnal share disable --yes
 turnal share forget-device DEVICE_ID --yes
@@ -996,6 +999,7 @@ turnal share forget-device DEVICE_ID --yes
 | `--include-existing-history` | Copy this device's previously approved history when changing remotes. |
 | `--approve` | Approve the current schema and policy hash for future publications. |
 | `--stream` | Select an event stream when a session and turn are ambiguous. |
+| `--commit` | Filter listed bundles by source commit SHA or prefix. |
 | `--check-remote` | Contact the configured remote with a bounded timeout. |
 
 `share status` is local-only and fast unless `--check-remote` is passed. Approval applies to the policy hash rather than to one previewed turn, so changing the remote, prompt mode, schema, scanner, allowlist, or limits requires approving again. `forget-device` acknowledges an intentionally retired teammate ref while keeping its last verified head pinned.

@@ -200,7 +200,7 @@ turnal sync push
 turnal sync pull
 ```
 
-Use `turnal share status` to inspect consent, pending bundles, blocked projections, and quarantined publishers without contacting the network; add `--check-remote` for a bounded remote check. Discover local and pulled bundles with `turnal share list`, and open a locator such as `v1:<device-id>:<bundle-id>` with `turnal share show <locator>`. Stop future synchronization with `turnal share disable --yes`; this preserves existing history and cannot recall published copies. See [shared history](docs/shared-history.md) for the protocol, privacy boundary, and failure semantics.
+Use `turnal share status` to inspect consent, pending bundles, blocked projections, and quarantined publishers without contacting the network; add `--check-remote` for a bounded remote check. When sharing is configured, `turnal status` also reports a one-line publication summary. Discover local and pulled bundles with `turnal share list`, which names each source commit and branch and accepts `--commit <sha>`, and open a locator such as `v1:<device-id>:<bundle-id>` with `turnal share show <locator>`. Stop future synchronization with `turnal share disable --yes`; this preserves existing history and cannot recall published copies. See [shared history](docs/shared-history.md) for the protocol, privacy boundary, and failure semantics.
 
 Teammates joining from independently initialized clones use the publisher's shared repository id: `turnal share enable --remote <same-remote> --repo-id <publisher-repo-id> --prompt-mode omit`, then `turnal sync pull`.
 

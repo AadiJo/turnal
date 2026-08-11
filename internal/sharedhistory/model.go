@@ -108,21 +108,26 @@ type PushPlan struct {
 }
 
 type BundleSummary struct {
-	Locator    string                   `json:"locator"`
-	SessionID  primitives.SessionID     `json:"session_id"`
-	TurnID     primitives.TurnID        `json:"turn_id"`
-	StreamID   primitives.EventStreamID `json:"stream_id"`
-	DeviceID   string                   `json:"device_id"`
-	CreatedAt  time.Time                `json:"created_at"`
-	PromptMode PromptMode               `json:"prompt_mode"`
-	EventCount int                      `json:"event_count"`
-	Local      bool                     `json:"local"`
-	Error      string                   `json:"error,omitempty"`
+	Locator      string                   `json:"locator"`
+	SessionID    primitives.SessionID     `json:"session_id"`
+	TurnID       primitives.TurnID        `json:"turn_id"`
+	StreamID     primitives.EventStreamID `json:"stream_id"`
+	DeviceID     string                   `json:"device_id"`
+	CreatedAt    time.Time                `json:"created_at"`
+	PromptMode   PromptMode               `json:"prompt_mode"`
+	EventCount   int                      `json:"event_count"`
+	SourceCommit string                   `json:"source_commit,omitempty"`
+	Branch       string                   `json:"branch,omitempty"`
+	Local        bool                     `json:"local"`
+	Error        string                   `json:"error,omitempty"`
 }
 
 type ListOptions struct {
 	SessionID primitives.SessionID
 	DeviceID  string
+	// CommitSHA matches a bundle whose source links reference this commit. A
+	// prefix is accepted so it can be used with abbreviated Git SHAs.
+	CommitSHA string
 }
 
 type SourceRef struct {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/AadiJo/turnal/internal/adapters"
 	"github.com/AadiJo/turnal/internal/checkpoint"
@@ -12,6 +13,7 @@ import (
 	"github.com/AadiJo/turnal/internal/importer"
 	"github.com/AadiJo/turnal/internal/integrity"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/sharedhistory"
 	"github.com/spf13/cobra"
 )
 
@@ -42,6 +44,8 @@ func statusCmdWithProbe(codexProbe compatibility.CodexProbe) *cobra.Command {
 			}
 
 			status := checkpoint.Inspect(root)
+			var shared sharedhistory.Summary
+			var sharedErr error
 			if rootErr != nil {
 				status.Problems = append([]string{rootErr.Error()}, status.Problems...)
 			} else {
@@ -58,6 +62,10 @@ func statusCmdWithProbe(codexProbe compatibility.CodexProbe) *cobra.Command {
 						for _, journal := range pending {
 							status.Problems = append(status.Problems, fmt.Sprintf("import journal pending: %s state=%s; run turnal merge --recover or turnal merge --abort", journal.ImportID, journal.State))
 						}
+					}
+					shared, sharedErr = sharedhistory.Summarize(repo)
+					if sharedErr != nil {
+						status.Problems = append(status.Problems, fmt.Sprintf("inspect shared history: %s; run turnal share status", sharedErr))
 					}
 				}
 			}
@@ -124,6 +132,9 @@ func statusCmdWithProbe(codexProbe compatibility.CodexProbe) *cobra.Command {
 					fmt.Fprintln(out, "hooks:      needs attention")
 				}
 			}
+			if shared.Configured && sharedErr == nil {
+				fmt.Fprintf(out, "sharing:    %s\n", sharedSummaryLine(shared))
+			}
 			if probeAgentCapture {
 				if !effective.Init.InstallHooks {
 					fmt.Fprintln(out, "\nAgent capture compatibility\n  probe skipped: hook installation is disabled in Turnal configuration")
@@ -146,6 +157,26 @@ func statusCmdWithProbe(codexProbe compatibility.CodexProbe) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&probeAgentCapture, "probe-agent-capture", false, "Probe capture compatibility for configured agent execution surfaces")
 	return cmd
+}
+
+// sharedSummaryLine keeps turnal status to one line about publication. It names
+// the state that needs an action, because pending bundles are otherwise
+// invisible until someone remembers turnal share status exists.
+func sharedSummaryLine(summary sharedhistory.Summary) string {
+	if !summary.Enabled {
+		return "disabled"
+	}
+	parts := []string{fmt.Sprintf("%d pending", summary.Pending)}
+	if !summary.Approved {
+		parts = append(parts, "policy needs approval")
+	}
+	if summary.Blocked > 0 {
+		parts = append(parts, fmt.Sprintf("%d blocked", summary.Blocked))
+	}
+	if summary.Quarantined > 0 {
+		parts = append(parts, fmt.Sprintf("%d quarantined publisher(s)", summary.Quarantined))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func printCaptureCompatibility(out interface{ Write([]byte) (int, error) }, report compatibility.Report) {

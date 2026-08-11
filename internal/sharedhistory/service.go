@@ -22,6 +22,68 @@ func New(repo *checkpoint.Repo) *Manager {
 	return &Manager{repo: repo, now: func() time.Time { return time.Now().UTC() }}
 }
 
+// Summary is the small shared-history view that turnal status renders. It reads
+// only the policy and state files, so it takes no lock, contacts no remote, and
+// never recovers or writes state. Use Status for the full picture.
+type Summary struct {
+	Configured  bool `json:"configured"`
+	Enabled     bool `json:"enabled"`
+	Approved    bool `json:"approved"`
+	Pending     int  `json:"pending"`
+	Blocked     int  `json:"blocked"`
+	Quarantined int  `json:"quarantined"`
+}
+
+// Summarize reports whether publication is configured and whether anything is
+// waiting. A workspace without shared history returns a zero Summary and no
+// error, so callers can render this unconditionally.
+func Summarize(repo *checkpoint.Repo) (Summary, error) {
+	if repo == nil {
+		return Summary{}, fmt.Errorf("shared history summary requires checkpoint repo")
+	}
+	if _, err := os.Lstat(policyPath(repo)); err != nil {
+		if os.IsNotExist(err) {
+			return Summary{}, nil
+		}
+		return Summary{}, err
+	}
+	policy, err := loadPolicyForUpdate(repo)
+	if err != nil {
+		return Summary{}, err
+	}
+	digest, err := policyHash(policy)
+	if err != nil {
+		return Summary{}, err
+	}
+	state, err := loadState(repo)
+	if err != nil {
+		return Summary{}, err
+	}
+	alignStateScope(&state, policy.Remote, policy.RepoID)
+	turns, err := listCompletedTurns(repo)
+	if err != nil {
+		return Summary{}, err
+	}
+	pending := 0
+	for _, turn := range turns {
+		bundleID, err := primitives.DeriveBundleID(policy.RepoID, turn.Stream.StreamID, turn.TurnID)
+		if err != nil {
+			return Summary{}, err
+		}
+		if _, published := state.Published[bundleID.String()]; !published {
+			pending++
+		}
+	}
+	return Summary{
+		Configured:  true,
+		Enabled:     !policy.Disabled,
+		Approved:    policy.ApprovedHash == digest,
+		Pending:     pending,
+		Blocked:     len(state.Blocked),
+		Quarantined: len(state.Quarantined),
+	}, nil
+}
+
 func (manager *Manager) Status(ctx context.Context) (Status, error) {
 	if manager == nil || manager.repo == nil {
 		return Status{}, fmt.Errorf("shared history status requires checkpoint repo")
@@ -378,12 +440,16 @@ func (manager *Manager) List(ctx context.Context, options ListOptions) ([]Bundle
 		if err != nil && !os.IsNotExist(err) {
 			return nil, err
 		}
+		commitFilter := strings.ToLower(strings.TrimSpace(options.CommitSHA))
 		result := make([]BundleSummary, 0, len(seen))
 		for _, summary := range seen {
 			if options.SessionID != "" && summary.SessionID != options.SessionID {
 				continue
 			}
 			if options.DeviceID != "" && summary.DeviceID != options.DeviceID {
+				continue
+			}
+			if commitFilter != "" && !strings.HasPrefix(strings.ToLower(summary.SourceCommit), commitFilter) {
 				continue
 			}
 			result = append(result, summary)
@@ -399,12 +465,23 @@ func (manager *Manager) List(ctx context.Context, options ListOptions) ([]Bundle
 }
 
 func summarizeBundle(value string, bundle StoredBundle, local bool) BundleSummary {
-	return BundleSummary{
+	summary := BundleSummary{
 		Locator: value, SessionID: bundle.Manifest.SessionID, TurnID: bundle.Manifest.TurnID,
 		StreamID: bundle.Manifest.StreamID, DeviceID: bundle.Manifest.DeviceID,
 		CreatedAt: bundle.Manifest.CreatedAt, PromptMode: bundle.Manifest.PromptMode,
 		EventCount: len(bundle.Events), Local: local,
 	}
+	// Surfacing the source commit and branch is what lets a reviewer find the
+	// context for a commit they are looking at instead of needing its locator.
+	for _, link := range bundle.Manifest.SourceLinks {
+		if summary.SourceCommit == "" && link.CommitSHA != "" {
+			summary.SourceCommit = link.CommitSHA
+		}
+		if summary.Branch == "" && link.Branch != "" {
+			summary.Branch = link.Branch
+		}
+	}
+	return summary
 }
 
 func (manager *Manager) syncLocked(ctx context.Context, direction Direction) (Result, error) {

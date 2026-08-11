@@ -241,6 +241,7 @@ func shareListCmd() *cobra.Command {
 	var jsonOutput bool
 	var session string
 	var device string
+	var commit string
 	cmd := &cobra.Command{
 		Use:          "list",
 		Short:        "List local and pulled shared-history bundles",
@@ -259,7 +260,7 @@ func shareListCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			bundles, err := sharedhistory.New(repo).List(cmd.Context(), sharedhistory.ListOptions{SessionID: sessionID, DeviceID: device})
+			bundles, err := sharedhistory.New(repo).List(cmd.Context(), sharedhistory.ListOptions{SessionID: sessionID, DeviceID: device, CommitSHA: commit})
 			if err != nil {
 				return err
 			}
@@ -279,7 +280,14 @@ func shareListCmd() *cobra.Command {
 				if bundle.Local {
 					location = "local"
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "%s  %s:%s  %s  %s  events=%d\n", bundle.Locator, bundle.SessionID, bundle.TurnID, location, bundle.CreatedAt.Format(time.RFC3339), bundle.EventCount)
+				source := ""
+				if bundle.SourceCommit != "" {
+					source = "  commit=" + shortCommit(bundle.SourceCommit)
+				}
+				if bundle.Branch != "" {
+					source += "  branch=" + indentSharedText(bundle.Branch)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "%s  %s:%s  %s  %s  events=%d%s\n", bundle.Locator, bundle.SessionID, bundle.TurnID, location, bundle.CreatedAt.Format(time.RFC3339), bundle.EventCount, source)
 			}
 			return nil
 		},
@@ -287,6 +295,7 @@ func shareListCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit structured JSON")
 	cmd.Flags().StringVar(&session, "session", "", "Filter by session ID")
 	cmd.Flags().StringVar(&device, "device", "", "Filter by publishing device ID")
+	cmd.Flags().StringVar(&commit, "commit", "", "Filter by source commit SHA or prefix")
 	return cmd
 }
 
@@ -593,6 +602,15 @@ func sharedProjectionLabel(manifest sharedhistory.Manifest) string {
 		label += ", turnal " + manifest.ProducerVersion
 	}
 	return indentSharedText(label)
+}
+
+// shortCommit abbreviates to Git's conventional display length. The full SHA
+// stays available in --json output.
+func shortCommit(value string) string {
+	if len(value) <= 12 {
+		return value
+	}
+	return value[:12]
 }
 
 // firstSourceBranch returns "" when no link names a branch, which happens under
