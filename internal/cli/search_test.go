@@ -187,6 +187,32 @@ func TestSearchAllProjectsWarnsWhenEveryIndexIsUnusable(t *testing.T) {
 	}
 }
 
+// Each store stops at the limit, so a keyword hit past it never reaches
+// ranking. SearchDocuments still returns that turn, and it must not come back
+// relabelled as a meaning-only match: keyword hits fill the requested count
+// first, so the truncated ones stay out of the output entirely.
+func TestSearchSemanticDoesNotRelabelTruncatedKeywordHits(t *testing.T) {
+	root, repo, sessionID, _ := createTurnWithDiff(t)
+	for turn := 1; turn <= 5; turn++ {
+		turnID, err := primitives.NewTurnID(uint64(turn))
+		if err != nil {
+			t.Fatal(err)
+		}
+		appendSearchPrompt(t, repo.MetadataDir, sessionID, turnID, "sharedneedle occurrence")
+	}
+	t.Chdir(root.String())
+	_ = runRootStdout(t, "reindex")
+	stubSearchEncoder(t)
+
+	output := stripANSI(runRootStdout(t, "search", "sharedneedle", "--semantic", "-n", "2"))
+	if got := strings.Count(output, "why: keyword"); got != 2 {
+		t.Fatalf("keyword results = %d, want the 2 requested:\n%s", got, output)
+	}
+	if strings.Contains(output, "why: meaning similarity") {
+		t.Fatalf("a truncated keyword hit was relabelled as meaning-only:\n%s", output)
+	}
+}
+
 func TestSearchCommandFindsMeaningWithoutSharedTerms(t *testing.T) {
 	root, repo, sessionID, turnID := createTurnWithDiff(t)
 	appendSearchPrompt(t, repo.MetadataDir, sessionID, turnID, "Context upload must not block the source push.")

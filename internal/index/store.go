@@ -178,7 +178,9 @@ func (s *Store) Search(query SearchQuery) ([]SearchResult, error) {
 
 // SearchDocuments returns indexed turns in stable order without applying a
 // full-text predicate, because meaning matching must reach turns that share no
-// literal query term. Session and worktree filters mirror Search.
+// literal query term. Session and worktree filters mirror Search. The query's
+// Limit is deliberately ignored: a limit belongs to ranking, which cannot pick
+// the most similar turns from a set already truncated by another ordering.
 //
 // Each document carries only the turn's prompt and assistant text. The indexed
 // row also holds the adapter, model, tool names, paths, and raw event text, but

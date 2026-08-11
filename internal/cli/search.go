@@ -158,16 +158,11 @@ type localSearch struct {
 }
 
 func (s localSearch) run(ctx context.Context, scopes []searchScope) ([]discovery.Result, []string, error) {
-	// SQLite can apply the limit itself only when one index is queried by
-	// keyword alone. Ranking across several stores, or against meaning
-	// matches, needs every hit before it can pick a global top N.
-	pushLimit := len(scopes) == 1 && s.newEncoder == nil
-
 	var candidates []discovery.Candidate
 	var warnings []string
 	searched := 0
 	for _, scope := range scopes {
-		scopeCandidates, err := s.collect(scope, pushLimit)
+		scopeCandidates, err := s.collect(scope)
 		if err != nil {
 			// One unreadable project must not hide the healthy ones, but the
 			// project the user is standing in has nothing to fall back to.
@@ -201,7 +196,7 @@ func (s localSearch) run(ctx context.Context, scopes []searchScope) ([]discovery
 
 // collect runs both retrieval passes against one index and merges them, so a
 // turn matched by keyword and by meaning is a single candidate.
-func (s localSearch) collect(scope searchScope, pushLimit bool) ([]discovery.Candidate, error) {
+func (s localSearch) collect(scope searchScope) ([]discovery.Candidate, error) {
 	store, err := openHealthySearchIndex(scope.metadataDir)
 	if err != nil {
 		return nil, err
@@ -210,10 +205,11 @@ func (s localSearch) collect(scope searchScope, pushLimit bool) ([]discovery.Can
 
 	query := s.query
 	query.WorktreeID = scope.worktreeID
-	if !pushLimit {
-		query.Limit = 0
-	}
 
+	// Ranking interleaves projects by within-project keyword position, so a hit
+	// below the requested rank cannot reach the global top N however many
+	// projects are searched. Each store therefore still stops at the limit even
+	// when it is one of several. A zero limit means every result.
 	matches, err := store.Search(query)
 	if err != nil {
 		return nil, err
@@ -234,6 +230,9 @@ func (s localSearch) collect(scope searchScope, pushLimit bool) ([]discovery.Can
 		return candidates, nil
 	}
 
+	// SearchDocuments applies the session and worktree filters but not the
+	// limit, which is what meaning matching needs: the turns worth surfacing
+	// are precisely the ones the keyword query did not return.
 	documents, err := store.SearchDocuments(query)
 	if err != nil {
 		return nil, err
