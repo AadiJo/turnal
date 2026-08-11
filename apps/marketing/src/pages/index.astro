@@ -7,6 +7,7 @@ import TurnalWorkflow from '../components/TurnalWorkflow.astro';
 import SnapshotComparison from '../components/SnapshotComparison.astro';
 import AgentHistoryDemo from '../components/AgentHistoryDemo.astro';
 import CaseForkDemo from '../components/CaseForkDemo.astro';
+import StarOnGitHub from '../components/StarOnGitHub.astro';
 import { commandPanels, graphOutput } from '../data/terminalHome';
 import { product } from '../data/content';
 import prismScreenshotUrl from '../../../../docs/turnal-viewer-sessions.png?url';
@@ -49,7 +50,7 @@ const capabilities = [
         <a class="nav-brand" href="#top" aria-label="Turnal home"><Logo size={27} /></a>
         <nav class="nav-links" aria-label="Primary navigation">
           <a href="/docs">Docs</a>
-          <a href={`https://${product.repo}`} target="_blank" rel="noopener noreferrer">GitHub</a>
+          <StarOnGitHub />
         </nav>
       </div>
     </header>
@@ -348,7 +349,9 @@ const capabilities = [
     backdrop-filter: blur(16px);
   }
   .terminal-home-theme .nav-row { display: flex; height: 68px; align-items: center; gap: 26px; }
-  .terminal-home-theme .nav-brand { flex: none; color: var(--fg); }
+  /* inline-flex so the mark centers on the row instead of baseline-aligning to
+     the wordmark's line box; keeps it level with the docs header. */
+  .terminal-home-theme .nav-brand { display: inline-flex; flex: none; align-items: center; color: var(--fg); }
   .terminal-home-theme .nav-links { display: flex; margin-left: auto; align-items: center; gap: 28px; color: var(--muted); font-size: 13px; font-weight: 500; }
   .terminal-home-theme .nav-links a,
   .terminal-home-theme .nav-install,

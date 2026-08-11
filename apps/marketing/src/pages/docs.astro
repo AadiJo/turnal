@@ -2,6 +2,7 @@
 import Base from '../layouts/Base.astro';
 import DocsNav from '../components/DocsNav.astro';
 import Logo from '../components/Logo.astro';
+import StarOnGitHub from '../components/StarOnGitHub.astro';
 import { product } from '../data/content';
 import { docsNav } from '../data/docs';
 import { Content, frontmatter } from '../content/docs/index.md';
@@ -17,14 +18,14 @@ const githubUrl = `https://${product.repo}`;
     <header class="docs-header">
       <div class="header-inner">
         <div class="header-product">
-          <a href="/" class="brand" aria-label="Turnal home"><Logo size={25} /></a>
+          <a href="/" class="brand" aria-label="Turnal home"><Logo size={27} /></a>
           <a href="/docs" class="docs-label" aria-current="page">docs</a>
         </div>
 
         <nav class="header-links" aria-label="Site">
           <a href="/">Home</a>
-          <a href={githubUrl}>GitHub</a>
           <a class="install-link" href="#installation">Install</a>
+          <StarOnGitHub />
         </nav>
       </div>
     </header>
@@ -106,19 +107,21 @@ const githubUrl = `https://${product.repo}`;
     backdrop-filter: blur(14px);
   }
 
+  /* Width, height, and padding intentionally match the home page's .th-wrap
+     .nav-row so the logo and Star on GitHub button do not shift between pages. */
   .header-inner {
     display: flex;
-    width: 100%;
-    max-width: 1400px;
-    height: 64px;
+    width: min(100%, 1240px);
+    height: 68px;
     margin-inline: auto;
     padding-inline: 28px;
     align-items: center;
   }
 
+  /* No fixed height here: the logo must sit on the same baseline as the home
+     page's .nav-brand, which is sized by its own line box. */
   .header-product {
     display: flex;
-    height: 28px;
     align-items: center;
     gap: 6px;
   }
@@ -126,7 +129,6 @@ const githubUrl = `https://${product.repo}`;
   .brand,
   .docs-label {
     display: inline-flex;
-    height: 28px;
     align-items: center;
     line-height: 1;
   }
@@ -144,17 +146,25 @@ const githubUrl = `https://${product.repo}`;
     display: flex;
     margin-left: auto;
     align-items: center;
-    gap: 24px;
+    gap: 28px;
     color: var(--muted);
     font-size: 13px;
+    font-weight: 500;
   }
   .header-links a { transition: color 120ms ease; }
   .header-links a:hover { color: var(--fg); }
+  /* Matches the Star on GitHub button's box so the two sit level. */
   .header-links .install-link {
-    padding: 7px 13px;
+    display: inline-flex;
+    align-items: center;
+    padding: 8px 13px;
     border: 1px solid var(--hair-strong);
-    border-radius: 999px;
+    border-radius: 10px;
     color: var(--fg);
+    font-size: 12.5px;
+    font-weight: 600;
+    /* 15px matches the button's icon height, so both boxes resolve to 33px. */
+    line-height: 15px;
   }
   .header-links .install-link:hover { background: rgba(236, 227, 212, 0.06); }
 
@@ -376,15 +386,23 @@ const githubUrl = `https://${product.repo}`;
     .mobile-toc[open] summary { border-bottom: 1px solid var(--hair); }
   }
 
+  /* Header breakpoints mirror the home page's .th-wrap / .nav-row values. */
+  @media (max-width: 820px) {
+    .header-inner { padding-inline: 20px; }
+    .header-links { gap: 18px; font-size: 12px; }
+  }
+
   @media (max-width: 720px) {
-    .header-inner { height: 58px; padding-inline: 18px; }
-    .header-links { gap: 14px; }
-    .header-links > a:not(.install-link) { display: none; }
+    .header-links > a:not(.install-link, .star-cta) { display: none; }
     .docs-layout { padding: 0 18px 80px; }
     .typeset-docs { --typeset-size: 15px; --typeset-flow: 1.35em; }
     .typeset-docs :where(table) { font-size: 0.9em; }
     .docs-footer { align-items: flex-start; flex-wrap: wrap; }
     .docs-footer > p { flex-basis: calc(100% - 50px); }
+  }
+
+  @media (max-width: 560px) {
+    .header-inner { height: 62px; padding-inline: 16px; }
   }
 
   @media (max-width: 440px) {
