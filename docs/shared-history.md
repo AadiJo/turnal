@@ -21,6 +21,8 @@ turnal sync push
 
 Workspace paths normalize to `$WORKSPACE` only when their boundary is unambiguous: the root ends the field, continues through a path separator without a `..` component, or is enclosed by matching quotes. Because Unix permits whitespace and punctuation inside filenames, an unquoted workspace-root mention followed by either is ambiguous and causes the entire field to become `[PATH_REDACTED]`. Any other absolute path also redacts the entire field. This fail-closed rule trades some shared prose for a stable privacy boundary; quote a standalone path when precise normalization matters.
 
+Zero-width and other invisible characters are removed before scanning, so text is matched as a reader sees it. Otherwise a zero-width space in front of a separator would hide a path from the boundary rules and a later display pass would reassemble it.
+
 `turnal share status` prints the shared repository id. A teammate with an independently initialized clone joins that history by supplying the publisher's id explicitly:
 
 ```sh
@@ -67,6 +69,8 @@ refs/turnal/v1/history/<device-id>
 ```
 
 The device id is derived from its Ed25519 public key. Publication batches and bundle manifests are signed. Turnal remembers every observed device head and rejects a rewind, replacement, disappearance, merge commit, key substitution, changed bundle, or invalid content hash. This makes history tamper-evident after observation; it does not claim that the Git server is globally append-only.
+
+A signature proves who published a bundle, not that the bundle is honest, so receivers also enforce the policy a manifest declares. A bundle labeled `metadata_only` is rejected when it carries intent text, assistant text, or a source branch, even when the publisher signed it consistently. Bounded reads abort the underlying Git command instead of draining an oversize object, and remote-supplied text is escaped before it reaches a terminal.
 
 A malformed ref outside the exact protocol namespace is ignored and reported as a warning. A publisher whose previously observed ref disappears or fails verification is quarantined without advancing its observation cursor; healthy publishers continue to pull and their progress is saved. The command reports that partial result and exits nonzero while any quarantine remains. `turnal share status` reports quarantined device ids and reasons so the failure is never silent. If a teammate intentionally retired and deleted a device ref, acknowledge that specific disappearance with `turnal share forget-device <device-id> --yes`; Turnal keeps its last verified head pinned so a later reappearance must still extend the trusted history.
 

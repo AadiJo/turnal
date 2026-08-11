@@ -47,17 +47,42 @@ func Summarize(repo *checkpoint.Repo) (Summary, error) {
 		}
 		return Summary{}, err
 	}
-	policy, err := loadPolicyForUpdate(repo)
-	if err != nil {
-		return Summary{}, err
-	}
-	digest, err := policyHash(policy)
-	if err != nil {
-		return Summary{}, err
-	}
-	state, err := loadState(repo)
-	if err != nil {
-		return Summary{}, err
+	// Policy and state are separate files, so a concurrent share enable can land
+	// between the two reads. Re-read the policy afterward and retry when it
+	// changed, so status never mixes one policy with another policy's state.
+	var policy policyFile
+	var digest string
+	var state stateFile
+	for attempt := 0; ; attempt++ {
+		var err error
+		policy, err = loadPolicyForUpdate(repo)
+		if err != nil {
+			return Summary{}, err
+		}
+		digest, err = policyHash(policy)
+		if err != nil {
+			return Summary{}, err
+		}
+		state, err = loadState(repo)
+		if err != nil {
+			return Summary{}, err
+		}
+		confirmed, err := loadPolicyForUpdate(repo)
+		if err != nil {
+			return Summary{}, err
+		}
+		confirmedDigest, err := policyHash(confirmed)
+		if err != nil {
+			return Summary{}, err
+		}
+		if confirmedDigest == digest && confirmed.ApprovedHash == policy.ApprovedHash {
+			break
+		}
+		if attempt >= 2 {
+			// Configuration is changing right now. Report the policy view
+			// without state-derived counts rather than a mismatched pair.
+			return Summary{Configured: true, Enabled: !confirmed.Disabled, Approved: confirmed.ApprovedHash == confirmedDigest}, nil
+		}
 	}
 	alignStateScope(&state, policy.Remote, policy.RepoID)
 	turns, err := listCompletedTurns(repo)

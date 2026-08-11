@@ -390,10 +390,21 @@ const workspaceProjectionMarker = "\x00turnal-workspace\x00"
 
 func sanitizeText(workspaceRoot, value string, limit int, truncations *Truncations) sanitizedText {
 	result := sanitizedText{Text: value, OriginalBytes: len(value)}
+	// The internal marker is neutralized first: it contains NUL bytes that the
+	// invisible-character pass would otherwise strip, turning attacker-supplied
+	// marker text into something that survives as a normalized path.
 	if strings.Contains(result.Text, workspaceProjectionMarker) {
 		result.Text = strings.ReplaceAll(result.Text, workspaceProjectionMarker, "[REDACTED]")
 		result.Redacted = true
 		result.SecretRedacted = true
+	}
+	// Invisible characters are removed before any path scanning. A zero-width
+	// space or BOM wedged in front of a separator would otherwise hide a path
+	// from the boundary checks below, and a later display or identifier pass
+	// that strips it would reassemble the exact path the scan should have caught.
+	if stripped, changed := stripInvisible(result.Text); changed {
+		result.Text = stripped
+		result.Redacted = true
 	}
 	for _, variant := range workspaceRootVariants(workspaceRoot) {
 		var redacted bool
@@ -845,11 +856,42 @@ func projectBranch(policy policyFile, branch string, detached bool) (string, str
 	return branch, ""
 }
 
+// stripInvisible removes characters that occupy no width, so scanning operates
+// on the text a reader actually sees. It reports whether anything was removed.
+func stripInvisible(value string) (string, bool) {
+	if strings.IndexFunc(value, isInvisible) < 0 {
+		return value, false
+	}
+	var builder strings.Builder
+	builder.Grow(len(value))
+	for _, character := range value {
+		if !isInvisible(character) {
+			builder.WriteRune(character)
+		}
+	}
+	return builder.String(), true
+}
+
+// isInvisible covers format characters, the zero-width space, and the BOM. Tabs
+// and newlines are deliberately excluded: they are visible as whitespace and
+// participate in the path boundary rules.
+func isInvisible(character rune) bool {
+	switch character {
+	case '\t', '\n', '\r':
+		return false
+	case '\u200b', '\ufeff':
+		return true
+	}
+	return unicode.Is(unicode.Cf, character) || (unicode.IsControl(character) && character != ' ')
+}
+
 func sanitizeIdentifier(workspaceRoot, value string, truncations *Truncations) sanitizedText {
 	result := sanitizeText(workspaceRoot, strings.TrimSpace(value), 256, truncations)
+	// sanitizeText already removed invisible characters, so this only drops the
+	// remaining unprintable control bytes an identifier must never carry.
 	var builder strings.Builder
 	for _, character := range result.Text {
-		if character >= 0x20 && character != 0x7f && !unicode.Is(unicode.Cf, character) {
+		if character >= 0x20 && character != 0x7f {
 			builder.WriteRune(character)
 		}
 	}

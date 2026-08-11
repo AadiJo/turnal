@@ -615,6 +615,123 @@ func TestProjectBranchGatesOnPolicyAndRefShape(t *testing.T) {
 	}
 }
 
+func TestInvisibleCharactersCannotSmuggleAnAbsolutePath(t *testing.T) {
+	// A zero-width character in front of a separator used to hide the path from
+	// boundary detection, and sanitizeIdentifier then removed it and published
+	// the exact path.
+	for _, value := range []string{
+		"\u200b/etc/passwd",
+		"\ufeff/etc/passwd",
+		"\u200d/etc/passwd",
+		"\u2060/etc/passwd",
+		"\u202e/etc/passwd",
+	} {
+		truncations := Truncations{}
+		if got := sanitizeText("/workspace", value, DefaultFieldLimit, &truncations); got.Text != "[PATH_REDACTED]" {
+			t.Fatalf("sanitizeText(%q) = %q, want redaction", value, got.Text)
+		}
+		got := sanitizeIdentifier("/workspace", value, &truncations)
+		if got.Text != "[PATH_REDACTED]" {
+			t.Fatalf("sanitizeIdentifier(%q) = %q, want redaction", value, got.Text)
+		}
+		if !got.Redacted {
+			t.Fatalf("sanitizeIdentifier(%q) did not report redaction", value)
+		}
+	}
+	// A workspace path hidden the same way must still normalize rather than leak.
+	truncations := Truncations{}
+	if got := sanitizeText("/workspace", "\u200b/workspace/private.txt", DefaultFieldLimit, &truncations); got.Text != "$WORKSPACE/private.txt" {
+		t.Fatalf("hidden workspace path = %q", got.Text)
+	}
+	// Ordinary text must survive untouched.
+	if got := sanitizeText("/workspace", "plain tool name", DefaultFieldLimit, &truncations); got.Text != "plain tool name" || got.Redacted {
+		t.Fatalf("benign text changed: %#v", got)
+	}
+}
+
+func TestReceiverRejectsBundlesThatViolateTheirDeclaredPromptMode(t *testing.T) {
+	repo := newSharedHistoryTestRepo(t)
+	sessionID, turnID := recordSharedHistoryTurn(t, repo)
+	if _, err := Configure(repo, ConfigureOptions{Remote: filepath.Join(t.TempDir(), "history.git"), PromptMode: PromptModeRedactedText}); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := New(repo).Preview(context.Background(), PreviewOptions{SessionID: sessionID, TurnID: turnID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := mustDevice(t, repo)
+
+	// Build a fully self-consistent forgery: drop the prompt event so the
+	// prompt-mode check is satisfied, then re-derive the source refs and content
+	// hash so nothing else objects. Only an explicit policy check can catch
+	// this, and without one the receiver accepts assistant text in a bundle
+	// labeled metadata_only.
+	forge := func(t *testing.T, extraLink *SourceLink) error {
+		t.Helper()
+		var events []ContextEvent
+		var refs []SourceRef
+		for _, event := range plan.Events {
+			if event.Prompt != nil {
+				continue
+			}
+			events = append(events, event)
+			refs = append(refs, event.Source)
+		}
+		carriesText := false
+		for _, event := range events {
+			if event.Intent != nil || event.Assistant != nil {
+				carriesText = true
+			}
+		}
+		if !carriesText {
+			t.Fatal("forged bundle carries no text, so it would not prove anything")
+		}
+		eventsJSON, err := marshalEventsJSONL(events)
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifest := plan.Manifest
+		manifest.PromptMode = PromptModeMetadataOnly
+		manifest.SourceRefs = refs
+		manifest.SourceSequence = SequenceRange{First: refs[0].Seq, Last: refs[len(refs)-1].Seq}
+		manifest.ContentHashes = map[string]string{"events.jsonl": sha256Bytes(eventsJSON)}
+		if extraLink != nil {
+			manifest.SourceLinks = append(append([]SourceLink{}, manifest.SourceLinks...), *extraLink)
+		}
+		signed, err := signManifest(identity, manifest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return verifyStoredBundle(repo.RepoID, StoredBundle{Manifest: signed, Events: events, PublicKey: identity.PublicKey})
+	}
+
+	if err := forge(t, nil); err == nil {
+		t.Fatal("receiver accepted metadata_only bundle carrying text projections")
+	}
+	if err := forge(t, &SourceLink{CommitSHA: "4444444444444444444444444444444444444444", Branch: "secret-branch"}); err == nil {
+		t.Fatal("receiver accepted metadata_only manifest naming a source branch")
+	}
+}
+
+func TestOversizeGitOutputStopsTheCommandInsteadOfDraining(t *testing.T) {
+	buffer := &limitedBuffer{limit: 8}
+	if written, err := buffer.Write([]byte("12345")); written != 5 || err != nil {
+		t.Fatalf("under-limit write = %d, %v", written, err)
+	}
+	// Once the limit is passed the writer must report an error so the producing
+	// command is torn down rather than allowed to stream an unbounded object.
+	written, err := buffer.Write([]byte("6789abcdef"))
+	if written != 10 || err == nil {
+		t.Fatalf("over-limit write = %d, %v", written, err)
+	}
+	if !buffer.overflow {
+		t.Fatal("overflow was not recorded")
+	}
+	if buffer.data.Len() > 8 {
+		t.Fatalf("buffer retained %d bytes beyond its limit", buffer.data.Len())
+	}
+}
+
 func TestSummarizeReportsPendingWithoutConfiguringOrLocking(t *testing.T) {
 	repo := newSharedHistoryTestRepo(t)
 	sessionID, turnID := recordSharedHistoryTurn(t, repo)

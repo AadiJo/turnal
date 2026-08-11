@@ -740,6 +740,9 @@ func validateManifest(repoID primitives.RepoID, deviceID string, item BatchBundl
 		if link.Branch != "" && !validProjectionLabel(link.Branch, 256, "._/-") {
 			return fmt.Errorf("manifest contains an invalid source branch")
 		}
+		if link.Branch != "" && manifest.PromptMode == PromptModeMetadataOnly {
+			return fmt.Errorf("metadata-only manifest contains a source branch")
+		}
 	}
 	if manifest.AllowlistVersion != "" && !validProjectionLabel(manifest.AllowlistVersion, 64, "._-") {
 		return fmt.Errorf("manifest contains an invalid allowlist version")
@@ -788,6 +791,18 @@ func validateProjectedEvents(manifest Manifest, events []ContextEvent) error {
 		if event.Prompt != nil && event.Prompt.Omitted != (manifest.PromptMode != PromptModeRedactedText) {
 			return fmt.Errorf("prompt projection does not match manifest prompt mode")
 		}
+		// A signed manifest asserts its prompt mode, so the events must actually
+		// honor it. A publisher can otherwise forge a self-consistent bundle
+		// labeled metadata_only that still ships intent and assistant text,
+		// which share show would then render under that label.
+		if manifest.PromptMode == PromptModeMetadataOnly && (event.Intent != nil || event.Assistant != nil) {
+			return fmt.Errorf("metadata-only bundle contains text projections")
+		}
+		// A signed manifest asserts its prompt mode, so the events must actually
+		// honor it. Otherwise a publisher could label a bundle metadata_only and
+		// still ship intent and assistant text that share show would render
+		// under that label.
+
 		ref, exists := refs[event.Seq]
 		if !exists || ref != event.Source {
 			return fmt.Errorf("event %s is not bound to its manifest source reference", event.Seq)
@@ -1051,14 +1066,17 @@ func (store *gitStore) runBytesLimit(ctx context.Context, limit int64, args ...s
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	err := cmd.Run()
+	// Overflow is checked before the command error: stopping an oversize write
+	// makes git fail, and that failure must be reported as the limit it hit
+	// rather than as an opaque Git error.
+	if stdout.overflow {
+		return nil, fmt.Errorf("git %s output exceeds %d bytes", formatGitArgs(args), limit)
+	}
 	if err != nil {
 		if contextErr := ctx.Err(); contextErr != nil {
 			return nil, fmt.Errorf("git %s: %w", formatGitArgs(args), contextErr)
 		}
 		return nil, gitCommandError{args: args, output: strings.TrimSpace(redactGitOutput(stderr.String(), args)), err: err}
-	}
-	if stdout.overflow {
-		return nil, fmt.Errorf("git %s output exceeds %d bytes", formatGitArgs(args), limit)
 	}
 	return stdout.Bytes(), nil
 }
@@ -1068,6 +1086,11 @@ type limitedBuffer struct {
 	limit    int64
 	overflow bool
 }
+
+// errLimitedBufferOverflow stops the writing command instead of letting it
+// stream an unbounded object into a buffer that is discarding it. Git sees the
+// closed pipe and exits, which bounds pull time as well as pull memory.
+var errLimitedBufferOverflow = fmt.Errorf("output limit exceeded")
 
 func (buffer *limitedBuffer) Write(value []byte) (int, error) {
 	written := len(value)
@@ -1081,6 +1104,7 @@ func (buffer *limitedBuffer) Write(value []byte) (int, error) {
 	}
 	if int64(written) > remaining {
 		buffer.overflow = true
+		return written, errLimitedBufferOverflow
 	}
 	return written, nil
 }

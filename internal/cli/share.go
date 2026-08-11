@@ -445,7 +445,9 @@ func writeShareStatus(cmd *cobra.Command, status sharedhistory.Status) {
 	fmt.Fprintf(cmd.OutOrStdout(), "local ahead: %t\n", status.UnpushedLocalTip)
 	fmt.Fprintf(cmd.OutOrStdout(), "remote checked: %t\n", status.RemoteChecked)
 	if status.RemoteError != "" {
-		fmt.Fprintf(cmd.OutOrStdout(), "remote error: %s\n", status.RemoteError)
+		// Remote-supplied Git stderr reaches here, so it must be escaped like
+		// every other untrusted string before it touches a terminal.
+		fmt.Fprintf(cmd.OutOrStdout(), "remote error: %s\n", indentSharedText(status.RemoteError))
 	}
 	if len(status.Blocked) > 0 {
 		fmt.Fprintln(cmd.OutOrStdout(), "blocked:")
@@ -455,7 +457,7 @@ func writeShareStatus(cmd *cobra.Command, status sharedhistory.Status) {
 		}
 		sort.Strings(keys)
 		for _, key := range keys {
-			fmt.Fprintf(cmd.OutOrStdout(), "- %s: %s\n", key, status.Blocked[key])
+			fmt.Fprintf(cmd.OutOrStdout(), "- %s: %s\n", indentSharedText(key), indentSharedText(status.Blocked[key]))
 		}
 	}
 	writeQuarantined(cmd, status.Quarantined)
