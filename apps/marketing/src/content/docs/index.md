@@ -600,7 +600,9 @@ snapshot_deny_globs = [
 
 ## Privacy and storage
 
-Turnal does not upload recording data during normal recording. Event logs, snapshots, and the search index stay in the local Turnal store. The explicit [shared history](#shared-history) workflow is the only exception: it publishes an approved, privacy-filtered projection to a Git remote you configure, and it never publishes snapshots, patches, raw hook payloads, tool inputs, or tool outputs. The npm launcher may contact npm for an interactive update notice unless `TURNAL_NO_UPDATE_CHECK` is set.
+Turnal does not upload recording data during normal recording. Event logs, snapshots, and the search index stay in the local Turnal store. The explicit [shared history](#shared-history) workflow is the only exception: it publishes an approved, privacy-filtered projection to a Git remote you configure, and it never publishes snapshots, patches, raw hook payloads, tool inputs, or tool outputs.
+
+Two other features contact the network without sending recorded history. The first `turnal search --semantic` run downloads the `minishlab/potion-base-2M` model from Hugging Face into the user cache; the query and the turns it matches are embedded on this machine and are never sent. The npm launcher may contact npm for an interactive update notice unless `TURNAL_NO_UPDATE_CHECK` is set.
 
 | Layer | Contains | Policy |
 | --- | --- | --- |

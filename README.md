@@ -244,6 +244,8 @@ Ignored and secrets-denied files are left untouched during checkpoint rollback. 
 
 Turnal stores history locally under `.turnal/` and does not upload it during normal recording. The explicit `turnal sync push` shared-history workflow is the exception. It publishes only the approved projection described above. Prompts and tool payloads can contain credentials or proprietary data, so review both the recording and publication policies before sensitive work.
 
+`turnal search --semantic` also contacts the network, but only to download its embedding model on first use. Queries and the turns they match are embedded on this machine and are never sent.
+
 Workspace configuration lives at `.turnal/config.toml`. Global defaults live at the platform-specific user configuration path, normally `~/.config/turnal/config.toml` on Linux.
 
 ```toml
