@@ -159,6 +159,34 @@ func TestSearchAllProjectsWarnsAboutUnusableIndex(t *testing.T) {
 	}
 }
 
+// When no project is searchable the error says only that, so the per-project
+// warnings are the user's only record of which projects failed and why.
+func TestSearchAllProjectsWarnsWhenEveryIndexIsUnusable(t *testing.T) {
+	t.Setenv("TURNAL_STATE_DIR", t.TempDir())
+
+	brokenRoot, brokenRepo, brokenSession, brokenTurn := createRegisteredSearchTurn(t)
+	appendSearchPrompt(t, brokenRepo.MetadataDir, brokenSession, brokenTurn, "broken discoveryneedle")
+
+	t.Chdir(t.TempDir())
+	cmd := NewRootCmd()
+	var out, stderr bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"search", "discoveryneedle", "--all-projects"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "no local project has a usable search index") {
+		t.Fatalf("search --all-projects error = %v, want no usable index", err)
+	}
+
+	warning := stderr.String()
+	if !strings.Contains(warning, filepath.Base(brokenRoot.String())) {
+		t.Fatalf("stderr did not name the unusable project:\n%s", warning)
+	}
+	if !strings.Contains(warning, "turnal reindex") {
+		t.Fatalf("warning did not say how to fix the project:\n%s", warning)
+	}
+}
+
 func TestSearchCommandFindsMeaningWithoutSharedTerms(t *testing.T) {
 	root, repo, sessionID, turnID := createTurnWithDiff(t)
 	appendSearchPrompt(t, repo.MetadataDir, sessionID, turnID, "Context upload must not block the source push.")

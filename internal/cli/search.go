@@ -70,14 +70,14 @@ func searchCmd() *cobra.Command {
 				search.newEncoder = newSearchEncoder
 			}
 			results, searchWarnings, err := search.run(cmd.Context(), scopes)
+			// Warnings are reported even when the search failed. When every
+			// project is unusable the error says only that, and these lines
+			// are the sole record of which projects failed and why.
+			if writeErr := writeSearchWarnings(cmd.ErrOrStderr(), append(warnings, searchWarnings...)); writeErr != nil {
+				return writeErr
+			}
 			if err != nil {
 				return err
-			}
-
-			for _, warning := range append(warnings, searchWarnings...) {
-				if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", warning); err != nil {
-					return err
-				}
 			}
 
 			out := cmd.OutOrStdout()
@@ -172,7 +172,7 @@ func (s localSearch) run(ctx context.Context, scopes []searchScope) ([]discovery
 			// One unreadable project must not hide the healthy ones, but the
 			// project the user is standing in has nothing to fall back to.
 			if scope.project == nil {
-				return nil, nil, err
+				return nil, warnings, err
 			}
 			detail := strings.TrimSuffix(err.Error(), "; run turnal reindex")
 			warnings = append(warnings, fmt.Sprintf(
@@ -254,6 +254,17 @@ func (s localSearch) collect(scope searchScope, pushLimit bool) ([]discovery.Can
 
 func searchTurnKey(result queryindex.SearchResult) string {
 	return result.StreamID.String() + "\x00" + result.TurnID.String()
+}
+
+// writeSearchWarnings reports skipped projects on stderr, keeping stdout to
+// results alone so piped output stays parseable.
+func writeSearchWarnings(w io.Writer, warnings []string) error {
+	for _, warning := range warnings {
+		if _, err := fmt.Fprintf(w, "warning: %s\n", warning); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func openHealthySearchIndex(metadataDir string) (*queryindex.Store, error) {
