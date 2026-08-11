@@ -57,6 +57,7 @@ export const docsNav: DocsNavGroup[] = [
     items: [
       { id: 'git-worktrees', label: 'Git worktrees' },
       { id: 'merge-stores', label: 'Merge stores' },
+      { id: 'shared-history', label: 'Shared history' },
       { id: 'configuration', label: 'Configuration' },
       { id: 'privacy-and-storage', label: 'Privacy and storage' },
       { id: 'retention-and-removal', label: 'Retention' },

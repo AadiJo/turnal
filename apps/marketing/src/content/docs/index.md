@@ -466,6 +466,54 @@ turnal merge --abort
 
 ---
 
+## Shared history
+
+Shared history publishes review context to a Git remote so a teammate can read why a change was made. It is opt-in, disabled until you configure a remote and a prompt policy, and it will not push until you have previewed a bundle and approved its policy hash.
+
+```sh
+turnal share enable --remote <git-url-or-path> --prompt-mode redacted_text
+turnal share preview SESSION:TURN --json
+turnal share preview SESSION:TURN --approve
+turnal sync push --dry-run
+turnal sync push
+```
+
+A reviewer pulls and reads bundles without touching their workspace, project `.git/`, or checkpoint store:
+
+```sh
+turnal sync pull
+turnal share list
+turnal share list --commit <sha>
+turnal share show v1:DEVICE:BUNDLE
+```
+
+`share list` shows each bundle's source commit and branch, and `--commit` accepts a SHA or prefix, so you can go from a commit you are reviewing to the context behind it. When sharing is configured, `turnal status` also reports pending, unapproved, blocked, and quarantined publication state.
+
+Teammates working from independently initialized clones join the publisher's history by passing its shared repository id, which `turnal share status` prints:
+
+```sh
+turnal share enable --remote <same-remote> --repo-id <publisher-repo-id> --prompt-mode omit
+turnal sync pull
+```
+
+### What gets published
+
+| Prompt mode | Publishes | Omits |
+| --- | --- | --- |
+| `redacted_text` | Redacted prompt, assistant, and intent text, plus lifecycle, tool classification, checkpoint, commit, and branch metadata | Snapshots, patches, raw payloads, tool input and output |
+| `omit` | Everything above except prompt text, replaced by a typed prompt omission | Prompt text |
+| `metadata_only` | Lifecycle, tool classification, and checkpoint metadata only | Prompt, assistant, intent, and branch names |
+
+Absolute paths are normalized to `$WORKSPACE` only when their boundary is unambiguous. Because Unix filenames may contain whitespace and punctuation, an ambiguous mention redacts the whole field instead of guessing. Quote a standalone path when precise normalization matters.
+
+Each publishing device owns an advancing ref under `refs/turnal/v1/history/<device-id>`, and bundles and batches are signed with its Ed25519 key. Turnal remembers every observed device head and rejects a rewind, replacement, disappearance, merge commit, key substitution, or changed bundle, so history is tamper-evident after observation. A publisher that fails verification is quarantined without blocking healthy publishers; `turnal share status` reports why.
+
+> **Secret scanning is best-effort.** Always read `turnal share preview --json` before approving a policy. Allowed text can still contain source fragments, and the scanner detects common credential shapes rather than every possible secret. Note that `omit` withholds only the prompt: assistant and intent text still pass through the same scanner, so it is not a materially smaller exposure than `redacted_text`. Choose `metadata_only` when no free text may leave the machine at all.
+
+Publication is manual by design. Normal recording and project Git commands never contact the remote; only `turnal sync push` does. A failed push leaves a crash-safe local outbox that the next push drains, and `turnal share disable --yes` stops future synchronization while preserving local history. Published copies cannot be recalled, and shared history is outside the `turnal session drop` deletion boundary. See the [shared history reference](https://github.com/AadiJo/turnal/blob/main/docs/shared-history.md) for the full protocol and failure semantics.
+
+---
+
 ## Configuration
 
 Configuration is layered from broad defaults to workspace-specific behavior. Later sources override earlier ones:
@@ -548,7 +596,7 @@ snapshot_deny_globs = [
 
 ## Privacy and storage
 
-Turnal does not upload recording data. Event logs, snapshots, and the search index stay in the local Turnal store. The npm launcher may contact npm for an interactive update notice unless `TURNAL_NO_UPDATE_CHECK` is set.
+Turnal does not upload recording data during normal recording. Event logs, snapshots, and the search index stay in the local Turnal store. The explicit [shared history](#shared-history) workflow is the only exception: it publishes an approved, privacy-filtered projection to a Git remote you configure, and it never publishes snapshots, patches, raw hook payloads, tool inputs, or tool outputs. The npm launcher may contact npm for an interactive update notice unless `TURNAL_NO_UPDATE_CHECK` is set.
 
 | Layer | Contains | Policy |
 | --- | --- | --- |
@@ -927,6 +975,46 @@ turnal merge --abort
 | `--abort` | Remove staging data for the single pending import journal. |
 
 A successful merge rebuilds the destination index. Durable history remains imported if that rebuild fails.
+
+### `turnal share`
+
+Configure and inspect the opt-in publication of privacy-filtered review context.
+
+```text
+turnal share enable --remote REMOTE --prompt-mode MODE [--repo-id ID]
+                    [--include-existing-history] [--json]
+turnal share preview SESSION:TURN [--approve] [--json] [--stream ID]
+turnal share status [--check-remote] [--json]
+turnal share list [--session ID] [--device ID] [--commit SHA] [--json]
+turnal share show LOCATOR [--json]
+turnal share disable --yes
+turnal share forget-device DEVICE_ID --yes
+```
+
+| Flag | Description |
+| --- | --- |
+| `--remote` | Git URL or path that will receive shared history refs. |
+| `--prompt-mode` | Text publication policy: `redacted_text`, `omit`, or `metadata_only`. |
+| `--repo-id` | Shared repository ID supplied by a publisher when joining existing history. |
+| `--include-existing-history` | Copy this device's previously approved history when changing remotes. |
+| `--approve` | Approve the current schema and policy hash for future publications. |
+| `--stream` | Select an event stream when a session and turn are ambiguous. |
+| `--commit` | Filter listed bundles by source commit SHA or prefix. |
+| `--check-remote` | Contact the configured remote with a bounded timeout. |
+
+`share status` is local-only and fast unless `--check-remote` is passed. Approval applies to the policy hash rather than to one previewed turn, so changing the remote, prompt mode, schema, scanner, allowlist, or limits requires approving again. `forget-device` acknowledges an intentionally retired teammate ref while keeping its last verified head pinned.
+
+### `turnal sync`
+
+Synchronize shared history through Git.
+
+```text
+turnal sync push [--dry-run] [--json]
+turnal sync pull [--json]
+turnal sync status [--check-remote] [--json]
+```
+
+`--dry-run` lists every pending turn, its locator and projected size, the next bounded batch, and any blocked projection without contacting the remote. One push publishes at most 16 turns; rerun it while turns remain. Pull advances each publishing device by one verified batch per run, so rerun it until it reports `pulled: 0`. Both commands are interruptible, use bounded contexts, and never update source Git refs.
 
 ### `turnal session drop`
 

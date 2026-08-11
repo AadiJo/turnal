@@ -58,6 +58,8 @@ func NewRootCmd() *cobra.Command {
 	rootCmd.AddCommand(claudeHookCmd())
 	rootCmd.AddCommand(codexHookCmd())
 	rootCmd.AddCommand(adapterCmd())
+	rootCmd.AddCommand(shareCmd())
+	rootCmd.AddCommand(syncCmd())
 	silenceSubcommandErrors(rootCmd)
 
 	return rootCmd

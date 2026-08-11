@@ -199,9 +199,6 @@ func (log Log) Append(input AppendInput) (Event, error) {
 		}
 		version = 2
 		path = log.streamPath(sessionID, streamID)
-		if err := log.ensureStreamMetadata(sessionID, streamID); err != nil {
-			return Event{}, err
-		}
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return Event{}, fmt.Errorf("create event stream dir: %w", err)
@@ -211,6 +208,11 @@ func (log Log) Append(input AppendInput) (Event, error) {
 		return Event{}, err
 	}
 	defer func() { _ = lock.Release() }()
+	if streamID != "" {
+		if err := log.ensureStreamMetadata(sessionID, streamID); err != nil {
+			return Event{}, err
+		}
+	}
 
 	if _, err := recoverTrailingPartialPath(path); err != nil {
 		return Event{}, err
@@ -951,13 +953,14 @@ func StreamPath(metadataDir string, sessionID primitives.SessionID, streamID pri
 }
 
 type StreamMetadata struct {
-	Version    int                        `json:"version"`
-	StreamID   primitives.EventStreamID   `json:"stream_id"`
-	ProducerID primitives.EventProducerID `json:"event_producer_id"`
-	RepoID     primitives.RepoID          `json:"repo_id"`
-	WorktreeID primitives.WorktreeID      `json:"worktree_id"`
-	SessionID  primitives.SessionID       `json:"session_id"`
-	CreatedAt  string                     `json:"created_at"`
+	Version       int                        `json:"version"`
+	StreamID      primitives.EventStreamID   `json:"stream_id"`
+	ProducerID    primitives.EventProducerID `json:"event_producer_id"`
+	RepoID        primitives.RepoID          `json:"repo_id"`
+	WorktreeID    primitives.WorktreeID      `json:"worktree_id"`
+	SessionID     primitives.SessionID       `json:"session_id"`
+	WorkspaceRoot string                     `json:"workspace_root,omitempty"`
+	CreatedAt     string                     `json:"created_at"`
 }
 
 func (log Log) ensureStreamMetadata(sessionID primitives.SessionID, streamID primitives.EventStreamID) error {
@@ -971,28 +974,37 @@ func (log Log) ensureStreamMetadata(sessionID primitives.SessionID, streamID pri
 		if metadata.StreamID != streamID || metadata.ProducerID != log.ProducerID || metadata.SessionID != sessionID || metadata.WorktreeID != log.WorktreeID || metadata.RepoID != log.RepoID {
 			return fmt.Errorf("event stream metadata invariant failed at %s: identity mismatch", path)
 		}
+		if metadata.WorkspaceRoot == "" && log.WorkspaceRoot != "" {
+			metadata.WorkspaceRoot = log.WorkspaceRoot
+			return writeStreamMetadataFile(metadataDir, path, metadata)
+		}
 		return nil
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("read event stream metadata: %w", err)
 	}
-	if err := os.MkdirAll(metadataDir, 0o755); err != nil {
-		return fmt.Errorf("create event stream metadata dir: %w", err)
-	}
 	metadata := StreamMetadata{
-		Version:    1,
-		StreamID:   streamID,
-		ProducerID: log.ProducerID,
-		RepoID:     log.RepoID,
-		WorktreeID: log.WorktreeID,
-		SessionID:  sessionID,
-		CreatedAt:  time.Now().UTC().Format(time.RFC3339Nano),
+		Version:       1,
+		StreamID:      streamID,
+		ProducerID:    log.ProducerID,
+		RepoID:        log.RepoID,
+		WorktreeID:    log.WorktreeID,
+		SessionID:     sessionID,
+		WorkspaceRoot: log.WorkspaceRoot,
+		CreatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	return writeStreamMetadataFile(metadataDir, path, metadata)
+}
+
+func writeStreamMetadataFile(dir, path string, metadata StreamMetadata) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create event stream metadata dir: %w", err)
 	}
 	data, err := json.MarshalIndent(metadata, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal event stream metadata: %w", err)
 	}
 	data = append(data, '\n')
-	tmp, err := os.CreateTemp(metadataDir, ".stream-*")
+	tmp, err := os.CreateTemp(dir, ".stream-*")
 	if err != nil {
 		return fmt.Errorf("create event stream metadata temp file: %w", err)
 	}
@@ -1013,7 +1025,7 @@ func (log Log) ensureStreamMetadata(sessionID primitives.SessionID, streamID pri
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := replaceEventFile(tmpPath, path); err != nil {
 		return fmt.Errorf("commit event stream metadata: %w", err)
 	}
 	return nil
@@ -1053,25 +1065,27 @@ func writeStreamMetadata(dir string, metadata StreamMetadata) error {
 	if metadata.CreatedAt == "" {
 		metadata.CreatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create event stream metadata dir: %w", err)
-	}
 	path := filepath.Join(dir, streamID.String()+".json")
-	data, err := json.MarshalIndent(metadata, "", "  ")
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
 	if existing, readErr := os.ReadFile(path); readErr == nil {
 		var parsed StreamMetadata
-		if json.Unmarshal(existing, &parsed) != nil || parsed.StreamID != metadata.StreamID || parsed.RepoID != metadata.RepoID || parsed.WorktreeID != metadata.WorktreeID || parsed.SessionID != metadata.SessionID {
+		if json.Unmarshal(existing, &parsed) != nil {
 			return fmt.Errorf("event stream metadata collision at %s", path)
+		}
+		// An empty root is legacy metadata. Two known roots must agree because
+		// their exact spelling defines the stream's path privacy boundary.
+		workspaceRootConflict := parsed.WorkspaceRoot != "" && metadata.WorkspaceRoot != "" && parsed.WorkspaceRoot != metadata.WorkspaceRoot
+		if parsed.StreamID != metadata.StreamID || parsed.RepoID != metadata.RepoID || parsed.WorktreeID != metadata.WorktreeID || parsed.SessionID != metadata.SessionID || workspaceRootConflict {
+			return fmt.Errorf("event stream metadata collision at %s", path)
+		}
+		if parsed.WorkspaceRoot == "" && metadata.WorkspaceRoot != "" {
+			parsed.WorkspaceRoot = metadata.WorkspaceRoot
+			return writeStreamMetadataFile(dir, path, parsed)
 		}
 		return nil
 	} else if !os.IsNotExist(readErr) {
 		return readErr
 	}
-	return os.WriteFile(path, data, 0o600)
+	return writeStreamMetadataFile(dir, path, metadata)
 }
 
 func (log Log) readStreamMetadata(streamID primitives.EventStreamID) (StreamMetadata, bool) {

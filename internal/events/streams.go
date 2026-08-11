@@ -14,17 +14,18 @@ import (
 )
 
 type DurableStream struct {
-	SessionID  primitives.SessionID
-	StreamID   primitives.EventStreamID
-	RepoID     primitives.RepoID
-	WorktreeID primitives.WorktreeID
-	ProducerID primitives.EventProducerID
-	Path       string
-	Legacy     bool
-	ByteSHA256 string
-	ByteCount  int64
-	Events     []Event
-	Workspace  bool
+	SessionID     primitives.SessionID
+	StreamID      primitives.EventStreamID
+	RepoID        primitives.RepoID
+	WorktreeID    primitives.WorktreeID
+	ProducerID    primitives.EventProducerID
+	WorkspaceRoot string
+	Path          string
+	Legacy        bool
+	ByteSHA256    string
+	ByteCount     int64
+	Events        []Event
+	Workspace     bool
 }
 
 func ListDurableStreams(metadataDir string) ([]DurableStream, error) {
@@ -184,6 +185,7 @@ func inspectDurableStream(log Log, sessionID primitives.SessionID, streamID prim
 	var worktreeID primitives.WorktreeID
 	repoID := log.RepoID
 	producerID := log.ProducerID
+	workspaceRoot := ""
 	for _, event := range events {
 		if event.WorktreeID == "" {
 			continue
@@ -204,17 +206,19 @@ func inspectDurableStream(log Log, sessionID primitives.SessionID, streamID prim
 			repoID = metadata.RepoID
 		}
 		producerID = metadata.ProducerID
+		workspaceRoot = metadata.WorkspaceRoot
 	}
 	return DurableStream{
-		SessionID:  sessionID,
-		StreamID:   streamID,
-		RepoID:     repoID,
-		WorktreeID: worktreeID,
-		ProducerID: producerID,
-		Path:       path,
-		Legacy:     legacy,
-		ByteSHA256: "sha256:" + hex.EncodeToString(digest[:]),
-		ByteCount:  info.Size(),
-		Events:     events,
+		SessionID:     sessionID,
+		StreamID:      streamID,
+		RepoID:        repoID,
+		WorktreeID:    worktreeID,
+		ProducerID:    producerID,
+		WorkspaceRoot: workspaceRoot,
+		Path:          path,
+		Legacy:        legacy,
+		ByteSHA256:    "sha256:" + hex.EncodeToString(digest[:]),
+		ByteCount:     info.Size(),
+		Events:        events,
 	}, nil
 }

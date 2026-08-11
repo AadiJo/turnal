@@ -142,6 +142,41 @@ func TestTaskAndCaseIDValidationAndSerialization(t *testing.T) {
 	}
 }
 
+func TestDeriveBundleIDIsStableAndTurnScoped(t *testing.T) {
+	repoID, err := ParseRepoID("repo_0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	streamID, err := ParseEventStreamID("stream_0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	turnOne, _ := NewTurnID(1)
+	turnTwo, _ := NewTurnID(2)
+
+	first, err := DeriveBundleID(repoID, streamID, turnOne)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := DeriveBundleID(repoID, streamID, turnOne)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := DeriveBundleID(repoID, streamID, turnTwo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != again {
+		t.Fatalf("bundle id changed: %s != %s", first, again)
+	}
+	if first == second {
+		t.Fatalf("different turns derived the same bundle id: %s", first)
+	}
+	if _, err := ParseBundleID(first.String()); err != nil {
+		t.Fatalf("ParseBundleID: %v", err)
+	}
+}
+
 func TestTurnIDAndEventSeq(t *testing.T) {
 	turn, err := ParseTurnID("000007")
 	if err != nil {
