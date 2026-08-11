@@ -17,7 +17,7 @@ turnal sync push --dry-run
 turnal sync push
 ```
 
-`redacted_text` publishes prompt text after workspace-path normalization, secret scanning, and deterministic size limits. `omit` publishes a typed prompt omission instead of prompt text but retains redacted assistant and compact intent text. `metadata_only` omits prompt, assistant, intent, and source-branch text while retaining lifecycle, tool classification, and checkpoint metadata. Changing the remote, prompt mode, schema, scanner, allowlist, or limits changes the policy hash and requires approval again.
+`redacted_text` publishes prompt text after workspace-path normalization, secret scanning, and deterministic size limits. `omit` publishes a typed prompt omission instead of prompt text but retains redacted assistant and compact intent text, so it withholds one field rather than materially reducing scanner exposure. `metadata_only` omits prompt, assistant, intent, and source-branch text while retaining lifecycle, tool classification, and checkpoint metadata. Changing the remote, prompt mode, schema, scanner, allowlist, or limits changes the policy hash and requires approval again.
 
 Workspace paths normalize to `$WORKSPACE` only when their boundary is unambiguous: the root ends the field, continues through a path separator without a `..` component, or is enclosed by matching quotes. Because Unix permits whitespace and punctuation inside filenames, an unquoted workspace-root mention followed by either is ambiguous and causes the entire field to become `[PATH_REDACTED]`. Any other absolute path also redacts the entire field. This fail-closed rule trades some shared prose for a stable privacy boundary; quote a standalone path when precise normalization matters.
 
