@@ -23,7 +23,7 @@ func TestClaudeTranscriptConversionPreservesPromptToolsAndAssistant(t *testing.T
 	if err != nil {
 		t.Fatalf("parse Claude transcript: %v", err)
 	}
-	if candidate.ProviderSessionID != "claude-session" || candidate.WorkspaceRoot != "/workspace" || candidate.Model != "claude-opus" {
+	if candidate.ProviderSessionID != "claude-session" || candidate.WorkspaceRoot != filepath.Clean("/workspace") || candidate.Model != "claude-opus" {
 		t.Fatalf("candidate metadata = %#v", candidate)
 	}
 	if len(candidate.Turns) != 1 {
