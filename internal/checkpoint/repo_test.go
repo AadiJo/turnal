@@ -503,6 +503,34 @@ func TestSnapshotIndexReaderStreamsEntries(t *testing.T) {
 	}
 }
 
+func TestCreateCheckpointPreservesLeadingDashPath(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	const name = "-leading.txt"
+	const want = "leading dash\n"
+	writeFile(t, root, name, want)
+
+	sessionID, _ := primitives.ParseSessionID("demo")
+	turnID, _ := primitives.NewTurnID(1)
+	checkpoint, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("CreateCheckpoint: %v", err)
+	}
+	content, err := runHiddenGit(repo, "", "show", checkpoint.Commit.String()+":"+name)
+	if err != nil {
+		t.Fatalf("show %q: %v", name, err)
+	}
+	if content != want {
+		t.Fatalf("content for %q = %q, want %q", name, content, want)
+	}
+}
+
 func TestCreateCheckpointPreservesUnusualPaths(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("control characters are not portable Windows path names")
@@ -517,7 +545,6 @@ func TestCreateCheckpointPreservesUnusualPaths(t *testing.T) {
 
 	writeFile(t, root, ".gitignore", "*.tmp\n")
 	files := map[string]string{
-		"-leading.txt":        "leading dash\n",
 		"\"quoted.txt\"":      "quoted\n",
 		"ends-carriage.txt\r": "carriage return\n",
 		"line\nbreak.txt":     "newline\n",
