@@ -370,7 +370,7 @@ func writeSearchResults(w io.Writer, results []discovery.Result) error {
 			}
 		}
 		if result.Match.SemanticLimited {
-			if _, err := fmt.Fprintln(w, "  warning: meaning match used truncated indexed text"); err != nil {
+			if _, err := fmt.Fprintln(w, "  warning: similarity was computed from truncated indexed text"); err != nil {
 				return err
 			}
 		}

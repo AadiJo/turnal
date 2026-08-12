@@ -56,7 +56,9 @@ type Candidate struct {
 }
 
 // Match explains why a result was selected, so a reader can tell an exact hit
-// from an inferred one without re-running the query.
+// from an inferred one without re-running the query. SemanticLimited qualifies
+// the reported similarity, so it is set only when similarity contributed to the
+// match: a keyword hit is exact evidence that truncated text cannot weaken.
 type Match struct {
 	Kind            string  `json:"kind"`
 	Reason          string  `json:"reason"`
@@ -80,8 +82,11 @@ type Result struct {
 // strings, and paths are the strongest evidence a search has, so similarity
 // never reorders them: it annotates them, and supplies the additional turns
 // that share no query terms at all. Meaning-only matches follow, most similar
-// first. Ties break on project root then session and turn, so output is stable
-// across runs and across machines.
+// first. Ties break on project root, then session and turn, so repeated runs on
+// one machine agree. Ordering is not comparable across machines: the root is an
+// absolute checkout path, so two machines that keep the same projects in
+// different directories can order tied results differently, and with a limit
+// small enough to cut the tie they can return different results.
 func Rank(query string, candidates []Candidate, encoder Encoder, limit int) ([]Result, error) {
 	if limit < 0 {
 		return nil, fmt.Errorf("limit must be zero or greater")
@@ -151,7 +156,7 @@ func Rank(query string, candidates []Candidate, encoder Encoder, limit int) ([]R
 }
 
 func describe(keyword, meaning bool, similarity float32, truncated bool) Match {
-	match := Match{SemanticLimited: truncated}
+	match := Match{SemanticLimited: truncated && meaning}
 	switch {
 	case keyword && meaning:
 		match.Kind = "keyword+meaning"

@@ -3,6 +3,7 @@ package discovery
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	queryindex "github.com/AadiJo/turnal/internal/index"
 	"github.com/AadiJo/turnal/internal/primitives"
@@ -202,20 +203,85 @@ func TestRankRejectsShortEncoderOutput(t *testing.T) {
 	}
 }
 
+// Equal keyword rank across projects is common, so the documented tie-break
+// chain decides what a limit keeps. Ties resolve on project root, then session,
+// then turn.
+func TestRankBreaksTiesOnProjectThenSessionThenTurn(t *testing.T) {
+	beta := &Project{Name: "beta", Root: "/src/beta", StoreID: "store-beta"}
+	alpha := &Project{Name: "alpha", Root: "/src/alpha", StoreID: "store-alpha"}
+	candidates := []Candidate{
+		{Project: beta, Document: turn(t, "b", 1, "hit"), Keyword: true},
+		{Project: alpha, Document: turn(t, "b", 2, "hit"), Keyword: true},
+		{Project: alpha, Document: turn(t, "b", 1, "hit"), Keyword: true},
+		{Project: alpha, Document: turn(t, "a", 9, "hit"), Keyword: true},
+	}
+
+	results, err := Rank("hit", candidates, nil, 0)
+	if err != nil {
+		t.Fatalf("Rank: %v", err)
+	}
+	var order []string
+	for _, result := range results {
+		order = append(order, result.Project.Name+"/"+string(result.SessionID)+"/"+result.TurnID.String())
+	}
+	want := []string{"alpha/a/9", "alpha/b/1", "alpha/b/2", "beta/b/1"}
+	if strings.Join(order, " ") != strings.Join(want, " ") {
+		t.Fatalf("tie-break order = %v, want %v", order, want)
+	}
+}
+
+// Truncation qualifies a similarity score. A keyword hit is exact evidence, so
+// a turn matched only by keyword must not carry the truncation caveat even when
+// its indexed text was too long to embed whole.
+func TestRankOmitsTruncationCaveatForKeywordOnlyMatches(t *testing.T) {
+	encoder := unitEncoder(map[string][2]float32{"query": {1, 0}})
+	long := strings.Repeat("unrelated filler ", maxSemanticTextLen)
+	candidates := []Candidate{
+		{Document: turn(t, "keyword", 1, long), Keyword: true, KeywordRank: 0},
+		{Document: turn(t, "meaning", 2, "query "+long)},
+	}
+
+	results, err := Rank("query", candidates, encoder, 0)
+	if err != nil {
+		t.Fatalf("Rank: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("results = %#v, want both the keyword and meaning hits", results)
+	}
+	if results[0].Match.Kind != "keyword" {
+		t.Fatalf("first result kind = %q, want keyword", results[0].Match.Kind)
+	}
+	if results[0].Match.SemanticLimited {
+		t.Fatal("keyword-only result reported a truncated-text caveat it cannot have used")
+	}
+	if !results[1].Match.SemanticLimited {
+		t.Fatal("meaning result lost the truncated-text caveat that qualifies its score")
+	}
+}
+
 func TestBoundSemanticTextReportsTruncation(t *testing.T) {
 	short, limited := boundSemanticText("  concise prompt  ")
 	if short != "concise prompt" || limited {
 		t.Fatalf("boundSemanticText(short) = %q, %v", short, limited)
 	}
 
-	long, limited := boundSemanticText(strings.Repeat("é", maxSemanticTextLen))
+	// A three-byte rune does not divide the byte budget, so the cut lands
+	// mid-rune and the partial trailing bytes must be dropped rather than
+	// handed to the tokenizer.
+	if maxSemanticTextLen%3 == 0 {
+		t.Fatal("pick a rune width that does not divide maxSemanticTextLen, or the cut is always aligned")
+	}
+	long, limited := boundSemanticText(strings.Repeat("☃", maxSemanticTextLen))
 	if !limited {
 		t.Fatal("boundSemanticText(long) did not report truncation")
 	}
 	if len(long) > maxSemanticTextLen {
 		t.Fatalf("truncated length = %d, want at most %d", len(long), maxSemanticTextLen)
 	}
-	if !strings.HasPrefix(long, "é") {
-		t.Fatal("truncation split a multi-byte rune")
+	if !utf8.ValidString(long) {
+		t.Fatalf("truncation left invalid UTF-8: %q", long[len(long)-8:])
+	}
+	if strings.Count(long, "☃") != maxSemanticTextLen/3 {
+		t.Fatalf("truncated text kept %d runes, want %d whole runes", strings.Count(long, "☃"), maxSemanticTextLen/3)
 	}
 }
