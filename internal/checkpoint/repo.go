@@ -2339,7 +2339,7 @@ func (repo *Repo) snapshotWorktree(indexPath string) (map[string]fs.FileMode, er
 
 	indexInput := &snapshotIndexReader{entries: entries}
 	if _, err := runHiddenGitWithInput(repo, indexPath, indexInput, "update-index", "-z", "--index-info"); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("update snapshot index with %d entries: %w", len(entries), err)
 	}
 	return modes, nil
 }
@@ -2347,7 +2347,11 @@ func (repo *Repo) snapshotWorktree(indexPath string) (map[string]fs.FileMode, er
 func (repo *Repo) collectSnapshotEntries(absDir, relDir, indexPath string, denyGlobs []string, modes map[string]fs.FileMode, snapshotEntries *[]snapshotIndexEntry) error {
 	dirEntries, err := os.ReadDir(absDir)
 	if err != nil {
-		return fmt.Errorf("read snapshot directory %s: %w", filepath.ToSlash(relDir), err)
+		displayDir := filepath.ToSlash(relDir)
+		if displayDir == "" {
+			displayDir = "."
+		}
+		return fmt.Errorf("read snapshot directory %s: %w", displayDir, err)
 	}
 
 	type candidate struct {
@@ -2375,7 +2379,11 @@ func (repo *Repo) collectSnapshotEntries(absDir, relDir, indexPath string, denyG
 
 	ignored, err := repo.gitignoredPaths(indexPath, paths)
 	if err != nil {
-		return err
+		displayDir := filepath.ToSlash(relDir)
+		if displayDir == "" {
+			displayDir = "."
+		}
+		return fmt.Errorf("check ignored snapshot paths in %s: %w", displayDir, err)
 	}
 	for _, candidate := range candidates {
 		if ignored[candidate.repoPath] {
@@ -2406,7 +2414,7 @@ func (repo *Repo) collectSnapshotEntries(absDir, relDir, indexPath string, denyG
 			}
 			output, err := runHiddenGitWithInput(repo, indexPath, strings.NewReader(target), "hash-object", "-w", "--stdin")
 			if err != nil {
-				return err
+				return fmt.Errorf("hash snapshot symlink %s: %w", candidate.repoPath, err)
 			}
 			objectID, err := primitives.ParseGitObjectID(output)
 			if err != nil {
@@ -2432,13 +2440,15 @@ func (repo *Repo) hashSnapshotRegularFiles(indexPath string, entries []snapshotI
 		for _, index := range indices {
 			args = append(args, entries[index].path.String())
 		}
+		firstPath := entries[indices[0]].path
+		lastPath := entries[indices[len(indices)-1]].path
 		output, err := runHiddenGit(repo, indexPath, args...)
 		if err != nil {
-			return err
+			return fmt.Errorf("hash snapshot file batch %q through %q: %w", firstPath, lastPath, err)
 		}
 		hashes := strings.Fields(output)
 		if len(hashes) != len(indices) {
-			return fmt.Errorf("git hash-object returned %d hashes for %d paths", len(hashes), len(indices))
+			return fmt.Errorf("git hash-object returned %d hashes for %d snapshot paths %q through %q", len(hashes), len(indices), firstPath, lastPath)
 		}
 		for offset, hash := range hashes {
 			objectID, err := primitives.ParseGitObjectID(hash)
