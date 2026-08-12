@@ -23,8 +23,6 @@ const githubUrl = `https://${product.repo}`;
         </div>
 
         <nav class="header-links" aria-label="Site">
-          <a href="/">Home</a>
-          <a class="install-link" href="#installation">Install</a>
           <StarOnGitHub />
         </nav>
       </div>
@@ -153,20 +151,6 @@ const githubUrl = `https://${product.repo}`;
   }
   .header-links a { transition: color 120ms ease; }
   .header-links a:hover { color: var(--fg); }
-  /* Matches the Star on GitHub button's box so the two sit level. */
-  .header-links .install-link {
-    display: inline-flex;
-    align-items: center;
-    padding: 8px 13px;
-    border: 1px solid var(--hair-strong);
-    border-radius: 10px;
-    color: var(--fg);
-    font-size: 12.5px;
-    font-weight: 600;
-    /* 15px matches the button's icon height, so both boxes resolve to 33px. */
-    line-height: 15px;
-  }
-  .header-links .install-link:hover { background: rgba(236, 227, 212, 0.06); }
 
   .docs-layout {
     display: grid;
@@ -393,7 +377,6 @@ const githubUrl = `https://${product.repo}`;
   }
 
   @media (max-width: 720px) {
-    .header-links > a:not(.install-link, .star-cta) { display: none; }
     .docs-layout { padding: 0 18px 80px; }
     .typeset-docs { --typeset-size: 15px; --typeset-flow: 1.35em; }
     .typeset-docs :where(table) { font-size: 0.9em; }
