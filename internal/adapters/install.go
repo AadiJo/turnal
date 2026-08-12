@@ -12,6 +12,7 @@ import (
 
 	"github.com/AadiJo/turnal/internal/filelock"
 	"github.com/AadiJo/turnal/internal/hookcmd"
+	"github.com/AadiJo/turnal/internal/safepath"
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -140,8 +141,11 @@ func InstallClaudeHookWithOptions(projectRoot string, opts InstallOptions) (Inst
 	settingsPath := filepath.Join(claudeDir, "settings.json")
 	result.ConfigPath = settingsPath
 
-	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+	if err := safepath.MkdirAllNoSymlinks(projectRoot, ".claude", 0o755); err != nil {
 		return result, fmt.Errorf("create .claude directory: %w", err)
+	}
+	if err := safepath.ValidateNoSymlinks(projectRoot, filepath.Join(".claude", "settings.json")); err != nil {
+		return result, fmt.Errorf("inspect Claude settings: %w", err)
 	}
 	lock, err := acquireConfigLock(projectRoot, TargetClaude)
 	if err != nil {
@@ -278,8 +282,11 @@ func InstallCodexHookWithOptions(projectRoot string, opts InstallOptions) (Insta
 	configPath := filepath.Join(codexDir, "config.toml")
 	result.ConfigPath = configPath
 
-	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+	if err := safepath.MkdirAllNoSymlinks(projectRoot, ".codex", 0o755); err != nil {
 		return result, fmt.Errorf("create .codex directory: %w", err)
+	}
+	if err := safepath.ValidateNoSymlinks(projectRoot, filepath.Join(".codex", "config.toml")); err != nil {
+		return result, fmt.Errorf("inspect Codex config: %w", err)
 	}
 	lock, err := acquireConfigLock(projectRoot, TargetCodex)
 	if err != nil {
@@ -597,6 +604,9 @@ func codexHookCommand(commandPrefix string) string {
 }
 
 func acquireConfigLock(projectRoot string, target Target) (*filelock.Lock, error) {
+	if err := safepath.MkdirAllNoSymlinks(projectRoot, filepath.Join(".turnal", "tmp"), 0o700); err != nil {
+		return nil, fmt.Errorf("prepare %s agent config lock: %w", target, err)
+	}
 	path := filepath.Join(projectRoot, ".turnal", "tmp", "config-"+string(target)+".lock")
 	lock, err := filelock.Acquire(path, 30*time.Second)
 	if err != nil {

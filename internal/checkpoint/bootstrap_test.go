@@ -427,6 +427,28 @@ func TestEnsureGitignoreEntryAppendsAndPreservesMode(t *testing.T) {
 	}
 }
 
+func TestEnsureGitignoreEntryRejectsSymlink(t *testing.T) {
+	root := workspaceRoot(t)
+	target := filepath.Join(t.TempDir(), "outside-gitignore")
+	if err := os.WriteFile(target, []byte("keep\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(root.String(), ".gitignore")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	if _, _, err := EnsureGitignoreEntry(root); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("EnsureGitignoreEntry error = %v, want symlink refusal", err)
+	}
+	content, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "keep\n" {
+		t.Fatalf("outside gitignore changed to %q", content)
+	}
+}
+
 func TestEnsureGitignoreEntryRecognizesExistingEntry(t *testing.T) {
 	for _, existing := range []string{".turnal", ".turnal/", "/.turnal", "/.turnal/"} {
 		t.Run(existing, func(t *testing.T) {
