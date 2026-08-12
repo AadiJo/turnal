@@ -97,6 +97,8 @@ try {
         'turnal-adapter-opencode.exe'
         'turnal-adapter-gemini-cli.exe'
         'turnal-adapter-copilot-cli.exe'
+        'turnal-adapter-cursor.exe'
+        'turnal-adapter-pi.exe'
     )
     $releaseDirectory = Join-Path $tempRoot "releases\v$fixtureVersion"
     New-Item -ItemType Directory -Path $releaseDirectory -Force | Out-Null

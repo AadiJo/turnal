@@ -28,6 +28,8 @@ const commands = [
   'turnal-adapter-opencode',
   'turnal-adapter-gemini-cli',
   'turnal-adapter-copilot-cli',
+  'turnal-adapter-cursor',
+  'turnal-adapter-pi',
 ];
 
 const documentationFiles = ['LICENSE', 'NOTICE'];

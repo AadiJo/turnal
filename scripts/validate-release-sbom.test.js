@@ -15,6 +15,8 @@ const requiredPackagePairs = [
   ['turnal-adapter-opencode', 'UNKNOWN'],
   ['turnal-adapter-gemini-cli', 'UNKNOWN'],
   ['turnal-adapter-copilot-cli', 'UNKNOWN'],
+  ['turnal-adapter-cursor', 'UNKNOWN'],
+  ['turnal-adapter-pi', 'UNKNOWN'],
 ];
 
 function policy() {

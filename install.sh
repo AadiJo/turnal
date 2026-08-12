@@ -2,7 +2,7 @@
 
 set -eu
 
-executables="turnal turnal-adapter-opencode turnal-adapter-gemini-cli turnal-adapter-copilot-cli"
+executables="turnal turnal-adapter-opencode turnal-adapter-gemini-cli turnal-adapter-copilot-cli turnal-adapter-cursor turnal-adapter-pi"
 documentation="LICENSE NOTICE"
 archive_members="$executables $documentation"
 

@@ -15,6 +15,8 @@ func Manifest(name string) (adaptersdk.Manifest, bool) {
 		"opencode":    "OpenCode",
 		"gemini-cli":  "Gemini CLI",
 		"copilot-cli": "Copilot CLI",
+		"cursor":      "Cursor",
+		"pi":          "Pi",
 	}
 	display, ok := displayNames[name]
 	if !ok {
@@ -45,8 +47,94 @@ func Normalizer(name string) (adaptersdk.NormalizeFunc, bool) {
 		return normalizeGemini, true
 	case "copilot-cli":
 		return normalizeCopilot, true
+	case "cursor":
+		return normalizeCursor, true
+	case "pi":
+		return normalizePi, true
 	default:
 		return nil, false
+	}
+}
+
+func normalizeCursor(hook string, raw json.RawMessage) ([]adaptersdk.Event, error) {
+	payload, err := decodePayload(raw)
+	if err != nil {
+		return nil, err
+	}
+	base := commonEvent(payload)
+	hook = normalizedHook(firstNonEmpty(firstString(payload, "hook_event_name", "hookEventName", "event"), hook))
+	switch hook {
+	case "sessionstart":
+		base.Type = adaptersdk.EventSessionStart
+		return []adaptersdk.Event{base}, nil
+	case "beforesubmitprompt", "userpromptsubmit":
+		base.Type = adaptersdk.EventPromptUser
+		base.Text = firstString(payload, "prompt")
+		return []adaptersdk.Event{base}, nil
+	case "pretooluse":
+		base.Type = adaptersdk.EventToolCall
+		base.ToolName = firstString(payload, "tool_name", "toolName")
+		base.ToolUseID = firstString(payload, "tool_use_id", "toolUseId", "tool_call_id", "toolCallId")
+		base.Input = firstJSON(payload, "tool_input", "toolInput")
+		return []adaptersdk.Event{base}, nil
+	case "posttooluse":
+		return []adaptersdk.Event{toolResultEvent(base, payload, []string{"tool_input", "toolInput"}, []string{"tool_output", "toolOutput"})}, nil
+	case "posttoolusefailure":
+		return []adaptersdk.Event{toolResultEvent(base, payload, []string{"tool_input", "toolInput"}, []string{"error_message", "errorMessage", "failure_type"})}, nil
+	case "afteragentresponse":
+		base.Type = adaptersdk.EventAssistantMessage
+		base.Text = firstString(payload, "text", "response")
+		return []adaptersdk.Event{base}, nil
+	case "stop":
+		base.Type = adaptersdk.EventTurnFinish
+		return []adaptersdk.Event{base}, nil
+	case "subagentstart":
+		parentSessionID := firstNonEmpty(firstString(payload, "parent_conversation_id", "parentConversationId"), base.SessionID)
+		base.Type = adaptersdk.EventSessionStart
+		base.SessionID = firstString(payload, "subagent_id", "subagentId")
+		base.ParentSessionID = parentSessionID
+		base.ParentToolUseID = firstString(payload, "tool_call_id", "toolCallId")
+		base.Model = firstNonEmpty(firstString(payload, "subagent_model", "subagentModel"), base.Model)
+		base.TranscriptPath = firstNonEmpty(firstString(payload, "agent_transcript_path", "agentTranscriptPath"), base.TranscriptPath)
+		return []adaptersdk.Event{base}, nil
+	default:
+		return nil, nil
+	}
+}
+
+func normalizePi(hook string, raw json.RawMessage) ([]adaptersdk.Event, error) {
+	payload, err := decodePayload(raw)
+	if err != nil {
+		return nil, err
+	}
+	base := commonEvent(payload)
+	hook = normalizedHook(firstNonEmpty(firstString(payload, "hook", "event"), hook))
+	switch hook {
+	case "sessionstart":
+		base.Type = adaptersdk.EventSessionStart
+		return []adaptersdk.Event{base}, nil
+	case "beforeagentstart":
+		base.Type = adaptersdk.EventPromptUser
+		base.Text = firstString(payload, "prompt")
+		return []adaptersdk.Event{base}, nil
+	case "toolexecutionstart":
+		base.Type = adaptersdk.EventToolCall
+		base.ToolName = firstString(payload, "tool_name", "toolName")
+		base.ToolUseID = firstString(payload, "tool_call_id", "toolCallId")
+		base.Input = firstJSON(payload, "args", "input")
+		return []adaptersdk.Event{base}, nil
+	case "toolexecutionend":
+		return []adaptersdk.Event{toolResultEvent(base, payload, nil, []string{"result", "output"})}, nil
+	case "agentsettled":
+		base.Text = firstString(payload, "text", "response")
+		if base.Text == "" {
+			base.Type = adaptersdk.EventTurnFinish
+		} else {
+			base.Type = adaptersdk.EventAssistantMessage
+		}
+		return []adaptersdk.Event{base}, nil
+	default:
+		return nil, nil
 	}
 }
 
@@ -164,13 +252,29 @@ func commonEvent(payload map[string]any) adaptersdk.Event {
 }
 
 func applyCommon(event *adaptersdk.Event, payload map[string]any) {
-	event.SessionID = firstString(payload, "session_id", "sessionId", "sessionID", "id")
+	event.SessionID = firstString(payload, "session_id", "sessionId", "sessionID", "conversation_id", "conversationId", "id")
+	event.ParentSessionID = firstString(payload, "parent_session_id", "parentSessionId", "parentSessionID")
+	event.ParentToolUseID = firstString(payload, "parent_tool_use_id", "parentToolUseId", "parentToolUseID")
 	event.CWD = firstString(payload, "cwd", "directory", "worktree")
+	if event.CWD == "" {
+		event.CWD = firstStringArray(payload, "workspace_roots", "workspaceRoots")
+	}
 	event.SourceID = firstString(payload, "source_id", "sourceId", "event_id", "eventId")
-	event.ProviderTurnID = firstString(payload, "turn_id", "turnId", "message_id", "messageId")
-	event.Model = firstString(payload, "model")
+	event.ProviderTurnID = firstString(payload, "turn_id", "turnId", "generation_id", "generationId", "message_id", "messageId")
+	event.Model = firstString(payload, "model_id", "modelId", "model")
 	event.PermissionMode = firstString(payload, "permission_mode", "permissionMode")
 	event.TranscriptPath = firstString(payload, "transcript_path", "transcriptPath")
+}
+
+func toolResultEvent(base adaptersdk.Event, payload map[string]any, inputKeys, outputKeys []string) adaptersdk.Event {
+	base.Type = adaptersdk.EventToolResult
+	base.ToolName = firstString(payload, "tool_name", "toolName", "tool")
+	base.ToolUseID = firstString(payload, "tool_use_id", "toolUseId", "tool_call_id", "toolCallId", "call_id", "callID")
+	if len(inputKeys) > 0 {
+		base.Input = firstJSON(payload, inputKeys...)
+	}
+	base.Output = firstJSON(payload, outputKeys...)
+	return base
 }
 
 func toolEvents(base adaptersdk.Event, payload map[string]any, inputKeys, outputKeys []string) []adaptersdk.Event {
@@ -200,6 +304,21 @@ func firstString(payload map[string]any, keys ...string) string {
 	for _, key := range keys {
 		if value, ok := payload[key].(string); ok && value != "" {
 			return value
+		}
+	}
+	return ""
+}
+
+func firstStringArray(payload map[string]any, keys ...string) string {
+	for _, key := range keys {
+		values, ok := payload[key].([]any)
+		if !ok {
+			continue
+		}
+		for _, value := range values {
+			if text, ok := value.(string); ok && text != "" {
+				return text
+			}
 		}
 	}
 	return ""

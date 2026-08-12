@@ -67,3 +67,35 @@ func TestValidateTranscriptPathRejectsMetadataAndSymlinkEscape(t *testing.T) {
 		t.Fatalf("symlink escape error = %v, want outside-root rejection", err)
 	}
 }
+
+func TestValidateTranscriptPathAcceptsConfiguredPiRoot(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "sessions", "transcript.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("create transcript dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+	t.Setenv("PI_CODING_AGENT_DIR", root)
+
+	if _, err := validateTranscriptPath(path, primitives.AdapterPi); err != nil {
+		t.Fatalf("validate Pi transcript root: %v", err)
+	}
+}
+
+func TestValidateTranscriptPathAcceptsCursorRoot(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".cursor", "projects", "transcript.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("create transcript dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+	t.Setenv("HOME", home)
+
+	if _, err := validateTranscriptPath(path, primitives.AdapterCursor); err != nil {
+		t.Fatalf("validate Cursor transcript root: %v", err)
+	}
+}

@@ -71,19 +71,21 @@ const (
 // Event is the provider-neutral boundary. Lifecycle fields live alongside the
 // event-specific fields so adapters can be small streaming programs.
 type Event struct {
-	Type           EventType       `json:"type"`
-	SessionID      string          `json:"session_id"`
-	CWD            string          `json:"cwd"`
-	SourceID       string          `json:"source_id,omitempty"`
-	ProviderTurnID string          `json:"provider_turn_id,omitempty"`
-	Model          string          `json:"model,omitempty"`
-	PermissionMode string          `json:"permission_mode,omitempty"`
-	TranscriptPath string          `json:"transcript_path,omitempty"`
-	Text           string          `json:"text,omitempty"`
-	ToolName       string          `json:"tool_name,omitempty"`
-	ToolUseID      string          `json:"tool_use_id,omitempty"`
-	Input          json.RawMessage `json:"input,omitempty"`
-	Output         json.RawMessage `json:"output,omitempty"`
+	Type            EventType       `json:"type"`
+	SessionID       string          `json:"session_id"`
+	ParentSessionID string          `json:"parent_session_id,omitempty"`
+	ParentToolUseID string          `json:"parent_tool_use_id,omitempty"`
+	CWD             string          `json:"cwd"`
+	SourceID        string          `json:"source_id,omitempty"`
+	ProviderTurnID  string          `json:"provider_turn_id,omitempty"`
+	Model           string          `json:"model,omitempty"`
+	PermissionMode  string          `json:"permission_mode,omitempty"`
+	TranscriptPath  string          `json:"transcript_path,omitempty"`
+	Text            string          `json:"text,omitempty"`
+	ToolName        string          `json:"tool_name,omitempty"`
+	ToolUseID       string          `json:"tool_use_id,omitempty"`
+	Input           json.RawMessage `json:"input,omitempty"`
+	Output          json.RawMessage `json:"output,omitempty"`
 }
 
 type Error struct {

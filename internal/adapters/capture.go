@@ -24,6 +24,8 @@ import (
 
 type hookPayload struct {
 	SessionID            string          `json:"session_id"`
+	ParentSessionID      string          `json:"parent_session_id"`
+	ParentToolUseID      string          `json:"parent_tool_use_id"`
 	TurnID               string          `json:"turn_id"`
 	TranscriptPath       string          `json:"transcript_path"`
 	CWD                  string          `json:"cwd"`
@@ -88,6 +90,8 @@ func (payload codexHookPayload) normalize() hookPayload {
 
 type sessionPayload struct {
 	ProviderSessionID string `json:"provider_session_id"`
+	ParentSessionID   string `json:"parent_session_id,omitempty"`
+	ParentToolUseID   string `json:"parent_tool_use_id,omitempty"`
 	Model             string `json:"model,omitempty"`
 	PermissionMode    string `json:"permission_mode,omitempty"`
 	TranscriptPath    string `json:"transcript_path,omitempty"`
@@ -331,6 +335,13 @@ func HandleNormalizedEvents(adapter primitives.AdapterName, hookName string, raw
 		return err
 	}
 	for index, event := range normalized {
+		if event.ParentSessionID != "" {
+			parentSessionID, err := primitives.ParseSessionID(event.ParentSessionID)
+			if err != nil {
+				return err
+			}
+			event.ParentSessionID = parentSessionID.String()
+		}
 		if err := processNormalizedEvent(log, manager, parsedAdapter, rawRef, raw, index, sessionID, event, effective); err != nil {
 			_ = appendErrorEvent(log, parsedAdapter, sessionID, rawRef, string(event.Type), err)
 			return err
@@ -342,6 +353,8 @@ func HandleNormalizedEvents(adapter primitives.AdapterName, hookName string, raw
 func processNormalizedEvent(log eventlog.Log, manager turns.Manager, adapter primitives.AdapterName, rawRef string, raw []byte, index int, sessionID primitives.SessionID, event adaptersdk.Event, effective agentconfig.Effective) error {
 	payload := hookPayload{
 		SessionID:            event.SessionID,
+		ParentSessionID:      event.ParentSessionID,
+		ParentToolUseID:      event.ParentToolUseID,
 		TurnID:               event.ProviderTurnID,
 		TranscriptPath:       event.TranscriptPath,
 		CWD:                  event.CWD,
@@ -649,6 +662,8 @@ func appendSessionStart(log eventlog.Log, adapter primitives.AdapterName, sessio
 		RawRef:    rawRef,
 		Payload: mustJSON(sessionPayload{
 			ProviderSessionID: payload.SessionID,
+			ParentSessionID:   payload.ParentSessionID,
+			ParentToolUseID:   payload.ParentToolUseID,
 			Model:             payload.Model,
 			PermissionMode:    payload.PermissionMode,
 			TranscriptPath:    payload.TranscriptPath,

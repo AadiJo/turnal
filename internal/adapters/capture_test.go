@@ -1225,6 +1225,39 @@ func TestHandleNormalizedEventsKeepsDurabilityInCore(t *testing.T) {
 	}
 }
 
+func TestHandleNormalizedEventsStoresParentSessionTopology(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+
+	raw := rawPayload(t, map[string]any{
+		"subagent_id": "child-session", "parent_conversation_id": "PARENT-SESSION",
+		"tool_call_id": "task-1", "cwd": root.String(),
+	})
+	if err := HandleNormalizedEvents(primitives.AdapterCursor, "subagentStart", raw, []adaptersdk.Event{{
+		Type: adaptersdk.EventSessionStart, SessionID: "child-session", ParentSessionID: "PARENT-SESSION",
+		ParentToolUseID: "task-1", CWD: root.String(),
+	}}); err != nil {
+		t.Fatalf("session start: %v", err)
+	}
+
+	events := readEvents(t, repo, sessionID(t, "child-session"))
+	if len(events) != 1 || events[0].Type != primitives.EventTypeSessionStart {
+		t.Fatalf("events = %#v", events)
+	}
+	var payload sessionPayload
+	if err := json.Unmarshal(events[0].Payload, &payload); err != nil {
+		t.Fatalf("decode session payload: %v", err)
+	}
+	if payload.ParentSessionID != "parent-session" || payload.ParentToolUseID != "task-1" {
+		t.Fatalf("session topology = %+v", payload)
+	}
+}
+
 func TestExternalIntentPrivacyUsesRawPayloadWhenNormalizedInputIsPartial(t *testing.T) {
 	requireGit(t)
 	root := workspaceRoot(t)

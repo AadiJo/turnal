@@ -51,10 +51,12 @@ func NewService(repo *checkpoint.Repo) (*Service, error) {
 }
 
 type sessionRecord struct {
-	stream eventlog.DurableStream
-	turns  []turnRecord
-	model  string
-	branch string
+	stream          eventlog.DurableStream
+	turns           []turnRecord
+	parentSessionID string
+	parentToolUseID string
+	model           string
+	branch          string
 }
 
 type turnRecord struct {
@@ -409,9 +411,15 @@ func (service *Service) loadRecords(ctx context.Context) ([]sessionRecord, strin
 		for _, event := range stream.Events {
 			if event.Type == primitives.EventTypeSessionStart {
 				var payload struct {
-					Model string `json:"model"`
+					ParentSessionID string `json:"parent_session_id"`
+					ParentToolUseID string `json:"parent_tool_use_id"`
+					Model           string `json:"model"`
 				}
 				_ = json.Unmarshal(event.Payload, &payload)
+				if record.parentSessionID == "" {
+					record.parentSessionID = payload.ParentSessionID
+					record.parentToolUseID = payload.ParentToolUseID
+				}
 				if record.model == "" {
 					record.model = payload.Model
 				}
@@ -591,6 +599,7 @@ func (service *Service) sessionView(record sessionRecord) (SessionSummaryView, e
 	}
 	view := SessionSummaryView{
 		Key: key, ID: record.stream.SessionID.String(), StreamID: record.stream.StreamID.String(),
+		ParentSessionID: record.parentSessionID, ParentToolUseID: record.parentToolUseID,
 		WorktreeID: record.stream.WorktreeID.String(), Model: record.model, Branch: record.branch,
 		EventCount: len(record.stream.Events), TurnCount: len(record.turns), Status: "complete",
 	}

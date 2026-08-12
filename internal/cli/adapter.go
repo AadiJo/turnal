@@ -17,8 +17,75 @@ import (
 const adapterTimeout = 5 * time.Second
 
 func adapterCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "adapter", Short: "Discover and inspect external agent adapters"}
-	cmd.AddCommand(adapterListCmd(), adapterDoctorCmd(), adapterCaptureCmd())
+	cmd := &cobra.Command{Use: "adapter", Short: "Discover, inspect, and build external agent adapters"}
+	cmd.AddCommand(adapterContractCmd(), adapterListCmd(), adapterDoctorCmd(), adapterCaptureCmd())
+	return cmd
+}
+
+const adapterContractSchemaVersion = 1
+
+type adapterContract struct {
+	SchemaVersion     int                            `json:"schema_version"`
+	Protocol          string                         `json:"protocol"`
+	ProtocolVersion   int                            `json:"protocol_version"`
+	Transport         string                         `json:"transport"`
+	ExecutablePattern string                         `json:"executable_pattern"`
+	GoPackage         string                         `json:"go_package"`
+	EventTypes        []string                       `json:"event_types"`
+	SessionTopology   adapterSessionTopologyContract `json:"session_topology"`
+	Documentation     string                         `json:"documentation"`
+}
+
+type adapterSessionTopologyContract struct {
+	EventType          string `json:"event_type"`
+	ParentSessionField string `json:"parent_session_field"`
+	ParentToolField    string `json:"parent_tool_field"`
+}
+
+func currentAdapterContract() adapterContract {
+	return adapterContract{
+		SchemaVersion:     adapterContractSchemaVersion,
+		Protocol:          adaptersdk.ProtocolName,
+		ProtocolVersion:   adaptersdk.ProtocolVersion,
+		Transport:         "NDJSON over stdin/stdout",
+		ExecutablePattern: "turnal-adapter-<name>",
+		GoPackage:         "github.com/AadiJo/turnal/sdk/adapter",
+		EventTypes: []string{
+			string(adaptersdk.EventSessionStart),
+			string(adaptersdk.EventPromptUser),
+			string(adaptersdk.EventToolCall),
+			string(adaptersdk.EventToolResult),
+			string(adaptersdk.EventAssistantMessage),
+			string(adaptersdk.EventTurnFinish),
+		},
+		SessionTopology: adapterSessionTopologyContract{
+			EventType:          string(adaptersdk.EventSessionStart),
+			ParentSessionField: "parent_session_id",
+			ParentToolField:    "parent_tool_use_id",
+		},
+		Documentation: "https://github.com/AadiJo/turnal/blob/main/docs/adapters.md",
+	}
+}
+
+func adapterContractCmd() *cobra.Command {
+	var jsonOutput bool
+	cmd := &cobra.Command{
+		Use: "contract", Short: "Describe the external adapter plugin contract", SilenceUsage: true, Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			contract := currentAdapterContract()
+			if jsonOutput {
+				encoder := json.NewEncoder(cmd.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(contract)
+			}
+			_, err := fmt.Fprintf(cmd.OutOrStdout(), "protocol: %s v%d\nexecutable: %s\ntransport: %s\nGo SDK: %s\nsession topology: %s fields %s and %s\ndocs: %s\n",
+				contract.Protocol, contract.ProtocolVersion, contract.ExecutablePattern, contract.Transport,
+				contract.GoPackage, contract.SessionTopology.EventType, contract.SessionTopology.ParentSessionField,
+				contract.SessionTopology.ParentToolField, contract.Documentation)
+			return err
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit structured JSON")
 	return cmd
 }
 

@@ -1,4 +1,4 @@
-# External adapter SDK
+# External adapter plugin contract
 
 Turnal discovers adapter executables named `turnal-adapter-*` on `PATH`. Adapters are deliberately narrow translators: they read provider hook input and emit normalized events. They cannot append Turnal events or create checkpoints. The `turnal adapter capture` bridge validates their output and sends it through the same locks, secrets policy, durable event log, and checkpoint manager used by built-in hooks.
 
@@ -14,13 +14,15 @@ An adapter emits zero or more `event` responses. A single after-tool hook normal
 {"protocol":"turnal-adapter","version":1,"id":"capture","type":"event","event":{"type":"tool.call","session_id":"demo","cwd":"/workspace","tool_name":"write_file","input":{"path":"README.md"}}}
 ```
 
-The supported event types are `session.start`, `prompt.user`, `tool.call`, `tool.result`, `assistant.message`, and `turn.finish`. `session_id` and an absolute `cwd` are required on every event. Tool events also require `tool_name`; `source_id`, `provider_turn_id`, `tool_use_id`, model metadata, transcript paths, and JSON input/output are optional.
+The supported event types are `session.start`, `prompt.user`, `tool.call`, `tool.result`, `assistant.message`, and `turn.finish`. `session_id` and an absolute `cwd` are required on every event. Tool events also require `tool_name`; `source_id`, `provider_turn_id`, `tool_use_id`, model metadata, transcript paths, and JSON input/output are optional. A child `session.start` can set `parent_session_id` and the spawning `parent_tool_use_id`; Turnal stores that relation on the session instead of flattening the child into the parent's tool activity.
 
-The Go SDK lives at `github.com/AadiJo/turnal/sdk/adapter`. Its `Serve` function implements framing, version negotiation, request validation, response encoding, and event validation. Protocol conformance transcripts are in [`sdk/adapter/testdata/conformance/v1`](../sdk/adapter/testdata/conformance/v1). Adapters must write protocol data only to stdout; diagnostics belong on stderr.
+The Go SDK lives at `github.com/AadiJo/turnal/sdk/adapter`. Its `Serve` function implements framing, version negotiation, request validation, response encoding, and event validation. Protocol conformance transcripts are in [`sdk/adapter/testdata/conformance/v1`](../sdk/adapter/testdata/conformance/v1). Adapters must write protocol data only to stdout; diagnostics belong on stderr. Run `turnal adapter contract` for the installed contract summary or `turnal adapter contract --json` for a machine-readable description.
+
+An adapter is a plugin when its executable is named `turnal-adapter-<name>`, is available on `PATH` or beside `turnal`, and returns a matching manifest from `describe`. This makes third-party adapters independently installable without registering them in Turnal core. Use `turnal adapter doctor <name>` as the compatibility gate.
 
 ## Included adapters
 
-Release packages include `turnal-adapter-opencode`, `turnal-adapter-gemini-cli`, and `turnal-adapter-copilot-cli`. Source installs can build all commands together:
+Release packages include `turnal-adapter-cursor`, `turnal-adapter-pi`, `turnal-adapter-opencode`, `turnal-adapter-gemini-cli`, and `turnal-adapter-copilot-cli`. Source installs can build all commands together:
 
 ```sh
 go install github.com/AadiJo/turnal/cmd/...@latest
@@ -31,6 +33,34 @@ turnal adapter doctor
 `list` shows discovered executables and their advertised versions. `doctor` performs a protocol-v1 handshake and checks that the executable name matches its manifest. A specific installation can be checked with `turnal adapter doctor gemini-cli`.
 
 Provider hooks pipe their JSON payload to the hidden capture bridge. The bridge always returns successful, valid hook output after reporting capture failures to stderr so recording cannot block the agent.
+
+### Cursor
+
+Add these commands to `.cursor/hooks.json`, merging them with existing hooks. Cursor's generic tool hooks capture tool boundaries, `afterAgentResponse` captures assistant text where the surface emits it, and `stop` always closes the turn. `subagentStart` records a child session linked to its parent conversation and spawning Task call.
+
+```json
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [{"command":"turnal adapter capture cursor sessionStart"}],
+    "beforeSubmitPrompt": [{"command":"turnal adapter capture cursor beforeSubmitPrompt"}],
+    "preToolUse": [{"command":"turnal adapter capture cursor preToolUse"}],
+    "postToolUse": [{"command":"turnal adapter capture cursor postToolUse"}],
+    "postToolUseFailure": [{"command":"turnal adapter capture cursor postToolUseFailure"}],
+    "afterAgentResponse": [{"command":"turnal adapter capture cursor afterAgentResponse"}],
+    "stop": [{"command":"turnal adapter capture cursor stop"}],
+    "subagentStart": [{"command":"turnal adapter capture cursor subagentStart"}]
+  }
+}
+```
+
+Cursor loads project hooks from the trusted workspace and user hooks from `~/.cursor/hooks.json`. Hook availability varies by Cursor surface; the CLI reliably uses `stop` as the final checkpoint boundary even when it does not emit `afterAgentResponse`.
+
+### Pi
+
+Pi uses an extension to forward typed lifecycle events. Copy [`integrations/pi/turnal.ts`](../integrations/pi/turnal.ts) to `.pi/extensions/turnal.ts` for one project or `~/.pi/agent/extensions/turnal.ts` for all projects, then start Pi with the project-local extension approved. The extension is fail-soft: capture errors are diagnostic and never block Pi.
+
+The extension records session start, prompts, tool start/result pairs, and the settled assistant response. When Pi forks or clones a session, it reads the parent session header and emits `parent_session_id`, so `turnal sessions` and `turnal sessions --json` expose the fork topology.
 
 ### Gemini CLI
 

@@ -23,7 +23,7 @@ archive="turnal_${version}_${platform}_${architecture}.tar.gz"
 release_dir="$tmp_dir/releases/v$version"
 payload_dir="$tmp_dir/payload"
 install_dir="$tmp_dir/bin"
-executables="turnal turnal-adapter-opencode turnal-adapter-gemini-cli turnal-adapter-copilot-cli"
+executables="turnal turnal-adapter-opencode turnal-adapter-gemini-cli turnal-adapter-copilot-cli turnal-adapter-cursor turnal-adapter-pi"
 documentation="LICENSE NOTICE"
 archive_members="$executables $documentation"
 mkdir -p "$release_dir" "$payload_dir"
@@ -192,7 +192,7 @@ if (
   exit 1
 fi
 grep -q "could not install turnal-adapter-gemini-cli" "$tmp_dir/rollback.stderr"
-for executable in turnal turnal-adapter-gemini-cli turnal-adapter-copilot-cli; do
+for executable in turnal turnal-adapter-gemini-cli turnal-adapter-copilot-cli turnal-adapter-cursor turnal-adapter-pi; do
   grep -q "^old-$executable\$" "$rollback_dir/$executable"
 done
 test -L "$rollback_dir/turnal-adapter-opencode"
