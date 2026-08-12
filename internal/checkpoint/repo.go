@@ -2265,10 +2265,23 @@ func (repo *Repo) validatePrivateRef(ref string) (string, error) {
 	return ref, nil
 }
 
+// snapshotPath is a slash-separated path exactly as Git sees it. It remains a
+// separate type from primitives.RepoPath because repository filenames may
+// legitimately contain backslashes and other unusual bytes on Unix.
+type snapshotPath string
+
+func newSnapshotPath(relPath string) snapshotPath {
+	return snapshotPath(filepath.ToSlash(relPath))
+}
+
+func (repoPath snapshotPath) String() string {
+	return string(repoPath)
+}
+
 type snapshotIndexEntry struct {
-	mode string
-	blob string
-	path string
+	mode primitives.GitFileMode
+	blob primitives.GitObjectID
+	path snapshotPath
 }
 
 func (repo *Repo) snapshotWorktree(indexPath string) (map[string]fs.FileMode, error) {
@@ -2291,11 +2304,11 @@ func (repo *Repo) snapshotWorktree(indexPath string) (map[string]fs.FileMode, er
 
 	var indexInput bytes.Buffer
 	for _, entry := range entries {
-		indexInput.WriteString(entry.mode)
+		indexInput.WriteString(entry.mode.String())
 		indexInput.WriteByte(' ')
-		indexInput.WriteString(entry.blob)
+		indexInput.WriteString(entry.blob.String())
 		indexInput.WriteByte('\t')
-		indexInput.WriteString(entry.path)
+		indexInput.WriteString(entry.path.String())
 		indexInput.WriteByte(0)
 	}
 	if _, err := runHiddenGitWithInput(repo, indexPath, &indexInput, "update-index", "-z", "--index-info"); err != nil {
@@ -2314,14 +2327,14 @@ func (repo *Repo) collectSnapshotEntries(absDir, relDir, indexPath string, denyG
 		entry    fs.DirEntry
 		absPath  string
 		relPath  string
-		repoPath string
+		repoPath snapshotPath
 	}
 	candidates := make([]candidate, 0, len(dirEntries))
-	paths := make([]string, 0, len(dirEntries))
+	paths := make([]snapshotPath, 0, len(dirEntries))
 	for _, entry := range dirEntries {
 		relPath := filepath.Join(relDir, entry.Name())
-		repoPath := filepath.ToSlash(relPath)
-		if excludedPath(repoPath) || secretDeniedPath(repoPath, denyGlobs) {
+		repoPath := newSnapshotPath(relPath)
+		if excludedPath(repoPath.String()) || secretDeniedPath(repoPath.String(), denyGlobs) {
 			continue
 		}
 		candidates = append(candidates, candidate{
@@ -2354,7 +2367,7 @@ func (repo *Repo) collectSnapshotEntries(absDir, relDir, indexPath string, denyG
 		}
 		switch {
 		case info.Mode().IsRegular():
-			modes[candidate.repoPath] = info.Mode()
+			modes[candidate.repoPath.String()] = info.Mode()
 			*snapshotEntries = append(*snapshotEntries, snapshotIndexEntry{
 				mode: gitRegularFileMode(info.Mode()),
 				path: candidate.repoPath,
@@ -2368,9 +2381,13 @@ func (repo *Repo) collectSnapshotEntries(absDir, relDir, indexPath string, denyG
 			if err != nil {
 				return err
 			}
+			objectID, err := primitives.ParseGitObjectID(output)
+			if err != nil {
+				return fmt.Errorf("parse snapshot symlink blob id for %s: %w", candidate.repoPath, err)
+			}
 			*snapshotEntries = append(*snapshotEntries, snapshotIndexEntry{
-				mode: "120000",
-				blob: strings.TrimSpace(output),
+				mode: primitives.GitFileModeSymlink,
+				blob: objectID,
 				path: candidate.repoPath,
 			})
 		}
@@ -2386,7 +2403,7 @@ func (repo *Repo) hashSnapshotRegularFiles(indexPath string, entries []snapshotI
 	hashBatch := func() error {
 		args := []string{"hash-object", "-w", "--no-filters", "--"}
 		for _, index := range indices {
-			args = append(args, entries[index].path)
+			args = append(args, entries[index].path.String())
 		}
 		output, err := runHiddenGit(repo, indexPath, args...)
 		if err != nil {
@@ -2401,7 +2418,7 @@ func (repo *Repo) hashSnapshotRegularFiles(indexPath string, entries []snapshotI
 			if err != nil {
 				return fmt.Errorf("parse snapshot blob id for %s: %w", entries[indices[offset]].path, err)
 			}
-			entries[indices[offset]].blob = objectID.String()
+			entries[indices[offset]].blob = objectID
 		}
 		return nil
 	}
@@ -2410,7 +2427,7 @@ func (repo *Repo) hashSnapshotRegularFiles(indexPath string, entries []snapshotI
 		if entries[index].blob != "" {
 			continue
 		}
-		pathBytes := len(entries[index].path) + 1
+		pathBytes := len(entries[index].path.String()) + 1
 		if len(indices) > 0 && argumentBytes+pathBytes > maxPathArgumentBytes {
 			if err := hashBatch(); err != nil {
 				return err
@@ -2556,17 +2573,17 @@ func (repo *Repo) gitignoredPath(indexPath string, repoPath string) (bool, error
 	return false, fmt.Errorf("git check-ignore --quiet --no-index -- %s: %w\n%s", repoPath, err, strings.TrimSpace(string(output)))
 }
 
-func (repo *Repo) gitignoredPaths(indexPath string, repoPaths []string) (map[string]bool, error) {
-	ignored := make(map[string]bool)
+func (repo *Repo) gitignoredPaths(indexPath string, repoPaths []snapshotPath) (map[snapshotPath]bool, error) {
+	ignored := make(map[snapshotPath]bool)
 	if len(repoPaths) == 0 {
 		return ignored, nil
 	}
 
-	wanted := make(map[string]bool, len(repoPaths))
+	wanted := make(map[snapshotPath]bool, len(repoPaths))
 	var input bytes.Buffer
 	for _, repoPath := range repoPaths {
 		wanted[repoPath] = true
-		input.WriteString(repoPath)
+		input.WriteString(repoPath.String())
 		input.WriteByte(0)
 	}
 
@@ -2596,7 +2613,7 @@ func (repo *Repo) gitignoredPaths(indexPath string, repoPaths []string) (map[str
 		if end < 0 {
 			return nil, fmt.Errorf("git check-ignore returned an unterminated path")
 		}
-		path := string(output[:end])
+		path := snapshotPath(output[:end])
 		if !wanted[path] {
 			return nil, fmt.Errorf("git check-ignore returned unexpected path %q", path)
 		}
@@ -2619,11 +2636,11 @@ func secretDeniedPath(repoPath string, patterns []string) bool {
 	return snapshotpolicy.Denied(repoPath, patterns)
 }
 
-func gitRegularFileMode(mode fs.FileMode) string {
+func gitRegularFileMode(mode fs.FileMode) primitives.GitFileMode {
 	if mode&0o111 != 0 {
-		return "100755"
+		return primitives.GitFileModeExecutable
 	}
-	return "100644"
+	return primitives.GitFileModeRegular
 }
 
 func phaseRank(phase primitives.CheckpointPhase) int {
