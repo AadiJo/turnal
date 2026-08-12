@@ -3,6 +3,7 @@ package checkpoint
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,7 +16,7 @@ import (
 	"github.com/AadiJo/turnal/internal/primitives"
 )
 
-func requireGit(t *testing.T) {
+func requireGit(t testing.TB) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git executable not found")
@@ -465,6 +466,88 @@ func TestCreateCheckpointStoresSymlinkWithoutFollowing(t *testing.T) {
 	}
 	if content != "target.txt" {
 		t.Fatalf("symlink blob = %q, want link target", content)
+	}
+}
+
+func TestCreateCheckpointPreservesUnusualPaths(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("control characters are not portable Windows path names")
+	}
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	writeFile(t, root, ".gitignore", "*.tmp\n")
+	files := map[string]string{
+		"-leading.txt":       "leading dash\n",
+		"line\nbreak.txt":    "newline\n",
+		"tab\tseparated.txt": "tab\n",
+	}
+	for name, content := range files {
+		writeFile(t, root, name, content)
+	}
+	ignored := "ignored\noutput.tmp"
+	writeFile(t, root, ignored, "ignored\n")
+
+	sessionID, _ := primitives.ParseSessionID("demo")
+	turnID, _ := primitives.NewTurnID(1)
+	checkpoint, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("CreateCheckpoint: %v", err)
+	}
+
+	for name, want := range files {
+		content, err := runHiddenGit(repo, "", "show", checkpoint.Commit.String()+":"+name)
+		if err != nil {
+			t.Fatalf("show %q: %v", name, err)
+		}
+		if content != want {
+			t.Fatalf("content for %q = %q, want %q", name, content, want)
+		}
+	}
+	if _, err := runHiddenGit(repo, "", "show", checkpoint.Commit.String()+":"+ignored); err == nil {
+		t.Fatalf("%q was captured, want gitignored", ignored)
+	}
+}
+
+func BenchmarkSnapshotWorktree(b *testing.B) {
+	requireGit(b)
+
+	for _, fileCount := range []int{100, 500, 1000} {
+		b.Run(fmt.Sprintf("files=%d", fileCount), func(b *testing.B) {
+			b.Setenv("TURNAL_STATE_DIR", b.TempDir())
+			root, err := primitives.ParseWorkspaceRoot(b.TempDir())
+			if err != nil {
+				b.Fatalf("ParseWorkspaceRoot: %v", err)
+			}
+			repo, err := Init(root)
+			if err != nil {
+				b.Fatalf("Init: %v", err)
+			}
+			filesDir := filepath.Join(root.String(), "files")
+			if err := os.Mkdir(filesDir, 0o755); err != nil {
+				b.Fatalf("create files dir: %v", err)
+			}
+			for index := range fileCount {
+				path := filepath.Join(filesDir, fmt.Sprintf("file-%06d", index))
+				if err := os.WriteFile(path, nil, 0o644); err != nil {
+					b.Fatalf("write fixture: %v", err)
+				}
+			}
+
+			b.ResetTimer()
+			for range b.N {
+				_, cleanup, err := repo.snapshotWorktreeTree()
+				if err != nil {
+					b.Fatalf("snapshotWorktreeTree: %v", err)
+				}
+				cleanup()
+			}
+		})
 	}
 }
 
