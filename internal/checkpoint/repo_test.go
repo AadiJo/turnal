@@ -483,9 +483,11 @@ func TestCreateCheckpointPreservesUnusualPaths(t *testing.T) {
 
 	writeFile(t, root, ".gitignore", "*.tmp\n")
 	files := map[string]string{
-		"-leading.txt":       "leading dash\n",
-		"line\nbreak.txt":    "newline\n",
-		"tab\tseparated.txt": "tab\n",
+		"-leading.txt":        "leading dash\n",
+		"\"quoted.txt\"":      "quoted\n",
+		"ends-carriage.txt\r": "carriage return\n",
+		"line\nbreak.txt":     "newline\n",
+		"tab\tseparated.txt":  "tab\n",
 	}
 	for name, content := range files {
 		writeFile(t, root, name, content)
