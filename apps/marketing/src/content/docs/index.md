@@ -5,7 +5,7 @@ description: Production documentation for Turnal, including local agent history,
 
 <h1 id="overview">Record the work.<br>Keep the stated intent.</h1>
 
-<p class="docs-lead">Turnal is a local flight recorder for Claude Code and Codex. It captures each agent turn as an append-only event trail and hidden Git checkpoints, so you can reconstruct what happened, see the agent's stated intent and the human request behind a line, test an earlier state, or safely return to it.</p>
+<p class="docs-lead">Turnal is a local flight recorder for AI coding agents. It captures each agent turn as an append-only event trail and hidden Git checkpoints, so you can reconstruct what happened, see the agent's stated intent and the human request behind a line, test an earlier state, or safely return to it.</p>
 
 [Start in five minutes](#quickstart) · [Understand the model](#mental-model)
 
@@ -61,7 +61,7 @@ Turnal preserves the installed release channel during upgrades. Use `turnal upgr
 
 ## Quickstart
 
-Initialize Turnal at the directory you consider the workspace root. The `--agent all` selection prepares every supported agent integration.
+Initialize Turnal at the directory you consider the workspace root. The `--agent all` selection prepares both built-in hook integrations. External adapters are configured after initialization.
 
 ```sh
 npm install -g @aadijo/turnal
@@ -70,7 +70,7 @@ turnal init --agent all
 turnal status
 turnal status --probe-agent-capture
 
-# Use Claude Code or Codex normally, then inspect the recording.
+# Use a configured agent normally, then inspect the recording.
 turnal sessions
 turnal log --transcript
 ```
@@ -145,7 +145,7 @@ A normal turn has a before-and-after boundary. The prompt hook records context a
 
 ## Agent integrations
 
-Turnal currently supports Claude Code and Codex. Hook installation is additive: it removes or refreshes Turnal-owned commands while leaving unrelated hook commands in place.
+Turnal captures Claude Code and Codex through built-in hooks. Cursor, Pi, OpenCode, Gemini CLI, and Copilot CLI use the versioned external adapter plugin contract. Built-in hook installation is additive: it removes or refreshes Turnal-owned commands while leaving unrelated hook commands in place.
 
 <h3 class="agent-heading"><img src="/brands/claude.svg" alt="" aria-hidden="true"><span>Claude Code</span></h3>
 
@@ -172,7 +172,23 @@ Codex is configured in `.codex/config.toml` with hooks enabled.
 | `PostToolUse` | Tool activity and post-action snapshot |
 | `Stop` | Reply and post boundary |
 
-Select integrations explicitly when needed:
+<h3 class="agent-heading"><img src="/brands/cursor.svg" alt="" aria-hidden="true"><span>Cursor</span></h3>
+
+Cursor uses command hooks from `.cursor/hooks.json` or `~/.cursor/hooks.json`. Configure its session, prompt, tool, response, stop, and subagent hooks to call `turnal adapter capture cursor <hook>`. Cursor subagents become separate sessions with their parent conversation and spawning tool call retained. See the [complete Cursor hook configuration](https://github.com/AadiJo/turnal/blob/main/docs/adapters.md#cursor).
+
+<h3 class="agent-heading"><img src="/brands/pi.svg" alt="" aria-hidden="true"><span>Pi</span></h3>
+
+Pi forwards its typed lifecycle events through the packaged [`turnal.ts` extension](https://github.com/AadiJo/turnal/blob/main/integrations/pi/turnal.ts). Install it under `.pi/extensions/turnal.ts` for one project or `~/.pi/agent/extensions/turnal.ts` globally. Pi forks and clones retain their parent session in Turnal. See the [complete Pi extension setup](https://github.com/AadiJo/turnal/blob/main/docs/adapters.md#pi).
+
+Inspect the installed adapter contract and verify executable discovery:
+
+```sh
+turnal adapter contract
+turnal adapter list
+turnal adapter doctor cursor pi
+```
+
+Select built-in hook integrations explicitly when needed:
 
 ```sh
 # Configure only one adapter.
@@ -595,6 +611,7 @@ snapshot_deny_globs = [
 | `PAGER` | Pager for long `turnal log` output. Set it to `cat` or pass `--no-pager` to disable paging. |
 | `CLAUDE_CONFIG_DIR` | Allowed Claude transcript root used by `turnal show --transcript`. |
 | `CODEX_HOME` | Allowed Codex transcript root used by `turnal show --transcript`. |
+| `PI_CODING_AGENT_DIR` | Allowed Pi transcript root used by `turnal show --transcript`. |
 
 ---
 
@@ -609,7 +626,7 @@ Two other features contact the network without sending recorded history. The fir
 | **Event streams** | Normalized semantic events and raw adapter references | Durable and hash-chained |
 | **Hidden Git** | Checkpoint commits and safety refs | Durable and local |
 | **SQLite** | FTS search and derived metadata | Disposable and rebuildable |
-| **Provider transcript** | Claude Code or Codex-owned conversation file | Read on demand and not copied |
+| **Provider transcript** | Agent-owned conversation file | Read on demand and not copied |
 
 ### Recording policy
 
@@ -633,7 +650,7 @@ snapshot_deny_globs = [
 ]
 ```
 
-Transcript reads are limited to recognized Claude Code or Codex roots, such as `CLAUDE_CONFIG_DIR` and `CODEX_HOME`. They reject `.git` paths and enforce a 64 MiB file-size limit.
+Transcript reads are limited to recognized Claude Code, Codex, Cursor, or Pi roots, including `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and `PI_CODING_AGENT_DIR`. They reject `.git` paths and enforce a 64 MiB file-size limit.
 
 ---
 
@@ -1162,7 +1179,7 @@ Run `turnal status` first. It is the fastest offline way to separate hook, store
   </details>
   <details>
     <summary>Provider transcript text cannot be loaded</summary>
-    <p>The captured file must still exist under an allowed Claude Code or Codex config root, must not traverse a <code>.git</code> directory, and must be no larger than 64 MiB. Normalized Turnal events remain available without it.</p>
+    <p>The captured file must still exist under an allowed Claude Code, Codex, Cursor, or Pi transcript root, must not traverse a <code>.git</code> directory, and must be no larger than 64 MiB. Normalized Turnal events remain available without it.</p>
   </details>
   <details>
     <summary>An interrupted merge is reported</summary>
