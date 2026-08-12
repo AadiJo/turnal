@@ -91,7 +91,8 @@ const capabilities = [
         </div>
       </section>
 
-      <section class="adapter-strip th-wrap" aria-label="Supported coding agents">
+      <section class="adapter-strip th-wrap" aria-labelledby="agents-title">
+        <h2 id="agents-title" class="sr-only">Local history for Claude Code and Codex</h2>
         <img src="/brands/claude.svg" alt="Claude Code" width="34" height="34" />
         <img src="/brands/codex.svg" alt="Codex" width="34" height="34" />
       </section>
@@ -479,18 +480,6 @@ const capabilities = [
 
   .terminal-home-theme .workflow-section { padding-top: 104px; padding-bottom: 104px; scroll-margin-top: 82px; }
   .terminal-home-theme .workflow-heading { max-width: 660px; margin-bottom: 24px; }
-
-  .terminal-home-theme .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    margin: -1px;
-    padding: 0;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
-  }
 
   .terminal-home-theme .compare-section { padding-top: 24px; padding-bottom: 112px; }
   .terminal-home-theme .commands-section { padding-top: 104px; padding-bottom: 112px; border-top: 1px solid var(--hair); }

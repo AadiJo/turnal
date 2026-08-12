@@ -1,5 +1,6 @@
 ---
 import Analytics from '@vercel/analytics/astro';
+import '../styles/fonts.css';
 import '../styles/base.css';
 import faviconUrl from '../../../../assets/logo.svg?url';
 
@@ -7,12 +8,41 @@ interface Props {
   title?: string;
   description?: string;
   theme?: string; // maps to a body class for page-level palettes
+  /** Omit the SoftwareApplication JSON-LD on pages that are not about the product itself. */
+  structuredData?: boolean;
 }
+
 const {
   title = 'Turnal | Local history for AI coding agents',
   description = 'Turnal pairs AI agent activity with hidden Git checkpoints. Search what happened, inspect file changes, verify earlier states, and roll back safely.',
   theme,
+  structuredData = true,
 } = Astro.props;
+
+// Astro.site comes from the `site` value in astro.config.mjs. Resolving against
+// the current pathname gives each page a self-referencing canonical, which
+// collapses the /index.html duplicate of every URL.
+const canonicalUrl = new URL(Astro.url.pathname, Astro.site);
+const ogImageUrl = new URL('/og-image.png', Astro.site);
+
+const softwareApplication = {
+  '@context': 'https://schema.org',
+  '@type': 'SoftwareApplication',
+  name: 'Turnal',
+  description:
+    'A local-first flight recorder for AI coding agents. Turnal records what an agent did, the problem it said it was solving, and what the workspace looked like before and after each turn.',
+  url: 'https://turnal.johari-dev.com',
+  applicationCategory: 'DeveloperApplication',
+  operatingSystem: 'macOS, Linux, Windows',
+  license: 'https://www.apache.org/licenses/LICENSE-2.0',
+  codeRepository: 'https://github.com/AadiJo/turnal',
+  downloadUrl: 'https://www.npmjs.com/package/@aadijo/turnal',
+  softwareHelp: 'https://turnal.johari-dev.com/docs',
+  author: { '@type': 'Person', name: 'Advait Johari' },
+  // Turnal is free and open source. schema.org expects an explicit zero-price
+  // Offer rather than an omitted one.
+  offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+};
 ---
 
 <!doctype html>
@@ -23,14 +53,36 @@ const {
     <meta name="description" content={description} />
     <title>{title}</title>
 
+    <link rel="canonical" href={canonicalUrl} />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Turnal" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonicalUrl} />
+    <meta property="og:image" content={ogImageUrl} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="Turnal: every agent turn, on the record. Local history for AI coding agents."
+    />
+    <meta property="og:locale" content="en_US" />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={ogImageUrl} />
+
     <link rel="icon" href={faviconUrl} type="image/svg+xml" />
 
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap"
-      rel="stylesheet"
-    />
+    <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/jetbrains-mono-latin.woff2" as="font" type="font/woff2" crossorigin />
+
+    {structuredData && (
+      <script type="application/ld+json" set:html={JSON.stringify(softwareApplication)} />
+    )}
+
     <Analytics />
     <slot name="head" />
   </head>
