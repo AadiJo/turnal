@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -180,6 +181,37 @@ type RestorePlan struct {
 	TargetCommit  primitives.CommitSHA `json:"target_commit"`
 	WorkspaceTree string               `json:"workspace_tree,omitempty"`
 	Changes       []RestoreChange      `json:"changes"`
+	Protection    RestoreProtection    `json:"-"`
+}
+
+// RestoreProtectedPath records a current workspace path that restore must not
+// overwrite or delete. Directory protection includes every descendant.
+type RestoreProtectedPath struct {
+	Path      string `json:"path"`
+	Directory bool   `json:"directory,omitempty"`
+}
+
+// RestoreProtection freezes the current ignore and secret-deny policy for the
+// lifetime of one restore, including crash recovery.
+type RestoreProtection struct {
+	Paths []RestoreProtectedPath `json:"paths"`
+}
+
+// Validate checks that persisted restore protection contains unique repo paths.
+func (protection RestoreProtection) Validate() error {
+	seen := make(map[string]struct{}, len(protection.Paths))
+	for _, protected := range protection.Paths {
+		repoPath, err := primitives.ParseRepoPath(protected.Path)
+		if err != nil {
+			return fmt.Errorf("restore protection path %q: %w", protected.Path, err)
+		}
+		key := restorePathKey(repoPath.String())
+		if _, ok := seen[key]; ok {
+			return fmt.Errorf("restore protection path %q is duplicated", protected.Path)
+		}
+		seen[key] = struct{}{}
+	}
+	return nil
 }
 
 type MaterializeOptions struct {
@@ -1506,6 +1538,21 @@ func (repo *Repo) PlanRestoreCommit(commit primitives.CommitSHA) (RestorePlan, e
 	if err != nil {
 		return RestorePlan{}, err
 	}
+	protection, err := repo.captureRestoreProtection()
+	if err != nil {
+		return RestorePlan{}, err
+	}
+	denyGlobs, err := repo.secretDenyGlobs()
+	if err != nil {
+		return RestorePlan{}, err
+	}
+	entries, err := repo.ListCommitTree(parsedCommit)
+	if err != nil {
+		return RestorePlan{}, err
+	}
+	if _, err := filterProtectedRestoreEntries(entries, denyGlobs, protection); err != nil {
+		return RestorePlan{}, err
+	}
 
 	currentTree, cleanup, err := repo.snapshotWorktreeTree()
 	if err != nil {
@@ -1530,31 +1577,58 @@ func (repo *Repo) PlanRestoreCommit(commit primitives.CommitSHA) (RestorePlan, e
 	if err != nil {
 		return RestorePlan{}, err
 	}
-	denyGlobs, err := repo.secretDenyGlobs()
+	changes = filterSecretDeniedChanges(changes, denyGlobs)
+	changes, err = filterProtectedRestoreChanges(changes, protection)
 	if err != nil {
 		return RestorePlan{}, err
 	}
-	changes = filterSecretDeniedChanges(changes, denyGlobs)
-	return RestorePlan{TargetCommit: parsedCommit, WorkspaceTree: currentTree, Changes: changes}, nil
+	return RestorePlan{TargetCommit: parsedCommit, WorkspaceTree: currentTree, Changes: changes, Protection: protection}, nil
 }
 
 func (repo *Repo) RestoreCommit(commit primitives.CommitSHA) error {
 	return repo.WithWorkspaceLock("restore checkpoint", func() error {
-		return repo.restoreCommit(commit)
+		protection, err := repo.captureRestoreProtection()
+		if err != nil {
+			return err
+		}
+		return repo.restoreCommit(commit, protection)
 	})
 }
 
 // RestoreCommitLocked restores a checkpoint while the caller holds the
 // workspace lock.
 func (repo *Repo) RestoreCommitLocked(commit primitives.CommitSHA) error {
-	return repo.restoreCommit(commit)
+	protection, err := repo.captureRestoreProtection()
+	if err != nil {
+		return err
+	}
+	return repo.restoreCommit(commit, protection)
+}
+
+// RestoreCommitWithProtectionLocked restores with protection captured by an
+// earlier plan while the caller holds the workspace lock.
+func (repo *Repo) RestoreCommitWithProtectionLocked(commit primitives.CommitSHA, protection RestoreProtection) error {
+	return repo.restoreCommit(commit, protection)
 }
 
 // PreflightRestoreCommit verifies every target object and the optional mode
 // manifest before a caller records a destructive restore transition.
 func (repo *Repo) PreflightRestoreCommit(commit primitives.CommitSHA) error {
+	protection, err := repo.captureRestoreProtection()
+	if err != nil {
+		return err
+	}
+	return repo.PreflightRestoreCommitWithProtection(commit, protection)
+}
+
+// PreflightRestoreCommitWithProtection validates a target against protection
+// captured by an earlier plan.
+func (repo *Repo) PreflightRestoreCommitWithProtection(commit primitives.CommitSHA, protection RestoreProtection) error {
 	parsedCommit, err := primitives.ParseCommitSHA(commit.String())
 	if err != nil {
+		return err
+	}
+	if err := protection.Validate(); err != nil {
 		return err
 	}
 	if _, err := runHiddenGit(repo, "", "rev-parse", parsedCommit.String()+"^{commit}"); err != nil {
@@ -1571,10 +1645,11 @@ func (repo *Repo) PreflightRestoreCommit(commit primitives.CommitSHA) error {
 	if err != nil {
 		return fmt.Errorf("preflight restore policy: %w", err)
 	}
+	entries, err = filterProtectedRestoreEntries(entries, denyGlobs, protection)
+	if err != nil {
+		return fmt.Errorf("preflight restore protection: %w", err)
+	}
 	for _, entry := range entries {
-		if secretDeniedPath(entry.Path, denyGlobs) {
-			continue
-		}
 		if _, err := runHiddenGit(repo, "", "cat-file", "-e", entry.ObjectID+"^{blob}"); err != nil {
 			return fmt.Errorf("preflight restore blob %s: %w", entry.Path, err)
 		}
@@ -1662,20 +1737,17 @@ func filterSecretDeniedTreeEntries(entries []TreeEntry, denyGlobs []string) []Tr
 	return filtered
 }
 
-func (repo *Repo) restoreCommit(commit primitives.CommitSHA) error {
+func (repo *Repo) restoreCommit(commit primitives.CommitSHA, protection RestoreProtection) error {
 	parsedCommit, err := primitives.ParseCommitSHA(commit.String())
 	if err != nil {
+		return err
+	}
+	if err := protection.Validate(); err != nil {
 		return err
 	}
 	if _, err := runHiddenGit(repo, "", "rev-parse", parsedCommit.String()+"^{commit}"); err != nil {
 		return err
 	}
-	indexPath, cleanup, err := repo.tempIndex()
-	if err != nil {
-		return err
-	}
-	defer cleanup()
-
 	entries, err := repo.ListCommitTree(parsedCommit)
 	if err != nil {
 		return err
@@ -1688,10 +1760,11 @@ func (repo *Repo) restoreCommit(commit primitives.CommitSHA) error {
 	if err != nil {
 		return err
 	}
+	entries, err = filterProtectedRestoreEntries(entries, denyGlobs, protection)
+	if err != nil {
+		return err
+	}
 	for _, entry := range entries {
-		if secretDeniedPath(entry.Path, denyGlobs) {
-			continue
-		}
 		mode, hasMode := modes[entry.Path]
 		var err error
 		if hasMode {
@@ -1703,10 +1776,10 @@ func (repo *Repo) restoreCommit(commit primitives.CommitSHA) error {
 			return err
 		}
 	}
-	if err := repo.deleteFilesAbsentFrom(entries, indexPath, denyGlobs); err != nil {
+	if err := repo.deleteFilesAbsentFrom(entries, denyGlobs, protection); err != nil {
 		return err
 	}
-	return repo.removeEmptyDirs(indexPath)
+	return repo.removeEmptyDirs(protection)
 }
 
 func (repo *Repo) ListCommitTree(commit primitives.CommitSHA) ([]TreeEntry, error) {
@@ -1845,7 +1918,137 @@ func filterSecretDeniedChanges(changes []RestoreChange, denyGlobs []string) []Re
 	return filtered
 }
 
-func (repo *Repo) deleteFilesAbsentFrom(entries []TreeEntry, indexPath string, denyGlobs []string) error {
+func (repo *Repo) captureRestoreProtection() (RestoreProtection, error) {
+	indexPath, cleanup, err := repo.tempIndex()
+	if err != nil {
+		return RestoreProtection{}, err
+	}
+	defer cleanup()
+	if _, err := runHiddenGit(repo, indexPath, "read-tree", "--empty"); err != nil {
+		return RestoreProtection{}, err
+	}
+	denyGlobs, err := repo.secretDenyGlobs()
+	if err != nil {
+		return RestoreProtection{}, err
+	}
+
+	root := repo.WorkspaceRoot.String()
+	protection := RestoreProtection{Paths: make([]RestoreProtectedPath, 0)}
+	err = filepath.WalkDir(root, func(absPath string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relPath, err := filepath.Rel(root, absPath)
+		if err != nil {
+			return fmt.Errorf("relative path for %s: %w", absPath, err)
+		}
+		if relPath == "." {
+			return nil
+		}
+		repoPath := filepath.ToSlash(relPath)
+		if excludedPath(repoPath) {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		protected := secretDeniedPath(repoPath, denyGlobs)
+		if !protected {
+			protected, err = repo.gitignoredPath(indexPath, repoPath)
+			if err != nil {
+				return err
+			}
+		}
+		if !protected {
+			return nil
+		}
+		protection.Paths = append(protection.Paths, RestoreProtectedPath{Path: repoPath, Directory: entry.IsDir()})
+		if entry.IsDir() {
+			return fs.SkipDir
+		}
+		return nil
+	})
+	if err != nil {
+		return RestoreProtection{}, err
+	}
+	sort.Slice(protection.Paths, func(i, j int) bool {
+		return restorePathKey(protection.Paths[i].Path) < restorePathKey(protection.Paths[j].Path)
+	})
+	return protection, nil
+}
+
+func filterProtectedRestoreEntries(entries []TreeEntry, denyGlobs []string, protection RestoreProtection) ([]TreeEntry, error) {
+	filtered := make([]TreeEntry, 0, len(entries))
+	for _, entry := range entries {
+		if secretDeniedPath(entry.Path, denyGlobs) {
+			continue
+		}
+		skip, err := protection.targetDisposition(entry.Path)
+		if err != nil {
+			return nil, err
+		}
+		if !skip {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered, nil
+}
+
+func filterProtectedRestoreChanges(changes []RestoreChange, protection RestoreProtection) ([]RestoreChange, error) {
+	filtered := make([]RestoreChange, 0, len(changes))
+	for _, change := range changes {
+		skip, err := protection.targetDisposition(change.Path)
+		if err != nil {
+			return nil, err
+		}
+		if !skip {
+			filtered = append(filtered, change)
+		}
+	}
+	return filtered, nil
+}
+
+func (protection RestoreProtection) targetDisposition(repoPath string) (bool, error) {
+	pathKey := restorePathKey(repoPath)
+	for _, protected := range protection.Paths {
+		protectedKey := restorePathKey(protected.Path)
+		switch {
+		case pathKey == protectedKey:
+			if protected.Directory {
+				return false, fmt.Errorf("cannot restore %s because a target file would replace protected directory %s", repoPath, protected.Path)
+			}
+			return true, nil
+		case strings.HasPrefix(pathKey, protectedKey+"/"):
+			if protected.Directory {
+				return true, nil
+			}
+			return false, fmt.Errorf("cannot restore %s below protected path %s", repoPath, protected.Path)
+		case strings.HasPrefix(protectedKey, pathKey+"/"):
+			return false, fmt.Errorf("cannot restore %s because it would replace protected descendant %s", repoPath, protected.Path)
+		}
+	}
+	return false, nil
+}
+
+func (protection RestoreProtection) contains(repoPath string) bool {
+	pathKey := restorePathKey(repoPath)
+	for _, protected := range protection.Paths {
+		protectedKey := restorePathKey(protected.Path)
+		if pathKey == protectedKey || protected.Directory && strings.HasPrefix(pathKey, protectedKey+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func restorePathKey(repoPath string) string {
+	if runtime.GOOS == "windows" {
+		return strings.ToLower(repoPath)
+	}
+	return repoPath
+}
+
+func (repo *Repo) deleteFilesAbsentFrom(entries []TreeEntry, denyGlobs []string, protection RestoreProtection) error {
 	targetPaths := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
 		targetPaths[entry.Path] = struct{}{}
@@ -1877,11 +2080,7 @@ func (repo *Repo) deleteFilesAbsentFrom(entries []TreeEntry, indexPath string, d
 			}
 			return nil
 		}
-		ignored, err := repo.gitignoredPath(indexPath, repoPath)
-		if err != nil {
-			return err
-		}
-		if ignored {
+		if protection.contains(repoPath) {
 			if entry.IsDir() {
 				return fs.SkipDir
 			}
@@ -2197,7 +2396,7 @@ func (repo *Repo) writeBlobTo(objectID string, destination io.Writer) error {
 	return nil
 }
 
-func (repo *Repo) removeEmptyDirs(indexPath string) error {
+func (repo *Repo) removeEmptyDirs(protection RestoreProtection) error {
 	root := repo.WorkspaceRoot.String()
 	var dirs []string
 	if err := filepath.WalkDir(root, func(absPath string, entry fs.DirEntry, walkErr error) error {
@@ -2218,11 +2417,7 @@ func (repo *Repo) removeEmptyDirs(indexPath string) error {
 			}
 			return nil
 		}
-		ignored, err := repo.gitignoredPath(indexPath, repoPath)
-		if err != nil {
-			return err
-		}
-		if ignored {
+		if protection.contains(repoPath) {
 			if entry.IsDir() {
 				return fs.SkipDir
 			}

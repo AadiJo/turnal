@@ -1040,6 +1040,108 @@ func TestRestoreCommitPreservesGitignoredFiles(t *testing.T) {
 	}
 }
 
+func TestRestoreCommitFreezesCurrentGitignoreRules(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	writeFile(t, root, ".gitignore", "")
+	writeFile(t, root, "app.txt", "target\n")
+	writeFile(t, root, "target-owned.tmp", "target bytes\n")
+	sessionID, _ := primitives.ParseSessionID("demo")
+	turnID, _ := primitives.NewTurnID(1)
+	target, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("target checkpoint: %v", err)
+	}
+
+	writeFile(t, root, ".gitignore", "*.tmp\n")
+	writeFile(t, root, "app.txt", "current\n")
+	writeFile(t, root, "scratch.tmp", "preserve me\n")
+	writeFile(t, root, "target-owned.tmp", "preserve current bytes\n")
+	plan, err := repo.PlanRestoreCommit(target.Commit)
+	if err != nil {
+		t.Fatalf("PlanRestoreCommit: %v", err)
+	}
+	for _, change := range plan.Changes {
+		if change.Path == "target-owned.tmp" {
+			t.Fatalf("protected target path appears in restore plan: %#v", plan.Changes)
+		}
+	}
+
+	if err := repo.RestoreCommit(target.Commit); err != nil {
+		t.Fatalf("RestoreCommit: %v", err)
+	}
+	for path, want := range map[string]string{
+		"scratch.tmp":      "preserve me\n",
+		"target-owned.tmp": "preserve current bytes\n",
+	} {
+		content, err := os.ReadFile(filepath.Join(root.String(), path))
+		if err != nil {
+			t.Fatalf("read protected file %s after restore: %v", path, err)
+		}
+		if string(content) != want {
+			t.Fatalf("%s = %q, want %q", path, content, want)
+		}
+	}
+}
+
+func TestRestoreCommitRejectsDirectoryReplacementWithProtectedDescendants(t *testing.T) {
+	for _, targetKind := range []string{"file", "symlink"} {
+		for _, protectedPath := range []string{"config/.env", "config/cache.tmp"} {
+			t.Run(targetKind+"/"+filepath.Base(protectedPath), func(t *testing.T) {
+				requireGit(t)
+				root := workspaceRoot(t)
+				repo, err := Init(root)
+				if err != nil {
+					t.Fatalf("Init: %v", err)
+				}
+
+				writeFile(t, root, ".gitignore", "*.tmp\n")
+				writeFile(t, root, "app.txt", "target\n")
+				writeFile(t, root, "target.txt", "symlink target\n")
+				configPath := filepath.Join(root.String(), "config")
+				if targetKind == "symlink" {
+					if err := os.Symlink("target.txt", configPath); err != nil {
+						t.Skipf("symlink unavailable: %v", err)
+					}
+				} else {
+					writeFile(t, root, "config", "target file\n")
+				}
+				sessionID, _ := primitives.ParseSessionID("demo")
+				turnID, _ := primitives.NewTurnID(1)
+				target, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
+				if err != nil {
+					t.Fatalf("target checkpoint: %v", err)
+				}
+
+				if err := os.Remove(configPath); err != nil {
+					t.Fatalf("remove target path: %v", err)
+				}
+				writeFile(t, root, "app.txt", "current\n")
+				writeFile(t, root, protectedPath, "preserve me\n")
+
+				if _, err := repo.PlanRestoreCommit(target.Commit); err == nil || !strings.Contains(err.Error(), protectedPath) {
+					t.Errorf("PlanRestoreCommit error = %v, want protected descendant", err)
+				}
+				if err := repo.RestoreCommit(target.Commit); err == nil || !strings.Contains(err.Error(), protectedPath) {
+					t.Errorf("RestoreCommit error = %v, want protected descendant", err)
+				}
+				if content, err := os.ReadFile(filepath.Join(root.String(), filepath.FromSlash(protectedPath))); err != nil || string(content) != "preserve me\n" {
+					t.Fatalf("protected descendant = %q, err=%v", content, err)
+				}
+				if app, err := os.ReadFile(filepath.Join(root.String(), "app.txt")); err != nil || string(app) != "current\n" {
+					t.Fatalf("app.txt = %q, err=%v; restore mutated workspace before rejection", app, err)
+				}
+			})
+		}
+	}
+}
+
 func workspaceRoot(t *testing.T) primitives.WorkspaceRoot {
 	t.Helper()
 	// Redirect machine-wide state: initializing a store registers it, and a
