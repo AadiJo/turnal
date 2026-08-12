@@ -85,7 +85,7 @@ func BootstrapWithOptions(root primitives.WorkspaceRoot, opts BootstrapOptions) 
 
 func bootstrapRepo(root primitives.WorkspaceRoot, explicitStorePath string) (*Repo, bool, error) {
 	if strings.TrimSpace(explicitStorePath) != "" {
-		storePath, err := filepath.Abs(explicitStorePath)
+		storePath, err := resolveExplicitStorePath(explicitStorePath)
 		if err != nil {
 			return nil, false, fmt.Errorf("resolve explicit store path: %w", err)
 		}
@@ -131,6 +131,21 @@ func bootstrapRepo(root primitives.WorkspaceRoot, explicitStorePath string) (*Re
 	}
 	repo, err := InitAt(root, storePath)
 	return repo, !sameIdentityPath(storePath, localMetadata), err
+}
+
+func resolveExplicitStorePath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err == nil {
+		return resolved, nil
+	}
+	if !os.IsNotExist(err) {
+		return "", err
+	}
+	return abs, nil
 }
 
 func findAncestorGitPath(root primitives.WorkspaceRoot) (string, bool, error) {

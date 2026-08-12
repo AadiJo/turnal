@@ -144,6 +144,54 @@ func TestBootstrapWithOptionsCanSkipGitignore(t *testing.T) {
 	}
 }
 
+func TestBootstrapSupportsExplicitExternalStore(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	storePath := filepath.Join(t.TempDir(), "store", metadataDirName)
+	result, err := BootstrapWithOptions(root, BootstrapOptions{
+		UpdateGitignore: false,
+		StorePath:       storePath,
+	})
+	if err != nil {
+		t.Fatalf("BootstrapWithOptions: %v", err)
+	}
+	if !result.Attached || !sameIdentityPath(result.Repo.MetadataDir, storePath) {
+		t.Fatalf("explicit store result = attached:%t path:%q", result.Attached, result.Repo.MetadataDir)
+	}
+}
+
+func TestExplicitStoreSupportsSymlinkAlias(t *testing.T) {
+	requireGit(t)
+
+	storePath := filepath.Join(t.TempDir(), metadataDirName)
+	if _, err := InitAt(workspaceRoot(t), storePath); err != nil {
+		t.Fatalf("InitAt: %v", err)
+	}
+	alias := filepath.Join(t.TempDir(), "current")
+	if err := os.Symlink(storePath, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	result, err := BootstrapWithOptions(workspaceRoot(t), BootstrapOptions{
+		UpdateGitignore: false,
+		StorePath:       alias,
+	})
+	if err != nil {
+		t.Fatalf("BootstrapWithOptions alias: %v", err)
+	}
+	if !result.Attached || !sameIdentityPath(result.Repo.MetadataDir, storePath) {
+		t.Fatalf("explicit alias result = attached:%t path:%q", result.Attached, result.Repo.MetadataDir)
+	}
+	opened, err := OpenExplicitAt(workspaceRoot(t), alias)
+	if err != nil {
+		t.Fatalf("OpenExplicitAt alias: %v", err)
+	}
+	if !sameIdentityPath(opened.MetadataDir, storePath) {
+		t.Fatalf("opened explicit alias path = %q, want %q", opened.MetadataDir, storePath)
+	}
+}
+
 func TestBootstrapDoesNotMutateExistingWorkspaceGit(t *testing.T) {
 	requireGit(t)
 
@@ -253,6 +301,93 @@ func TestBootstrapDoesNotCreateWorkspaceGitWithInheritedGitEnv(t *testing.T) {
 	}
 	if _, err := os.Stat(badGitDir); !os.IsNotExist(err) {
 		t.Fatalf("inherited GIT_DIR was used or stat failed: %v", err)
+	}
+}
+
+func TestBootstrapRejectsSymlinkedMetadataDirectory(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	target := t.TempDir()
+	before, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(root.String(), metadataDirName)); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	_, err = BootstrapWithOptions(root, BootstrapOptions{UpdateGitignore: false})
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("Bootstrap error = %v, want symlink refusal", err)
+	}
+	after, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Mode().Perm() != before.Mode().Perm() {
+		t.Fatalf("outside directory mode changed from %o to %o", before.Mode().Perm(), after.Mode().Perm())
+	}
+	entries, err := os.ReadDir(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("outside directory was modified: %v", entries)
+	}
+}
+
+func TestBootstrapRejectsSymlinksInsideMetadata(t *testing.T) {
+	requireGit(t)
+
+	for _, test := range []struct {
+		name   string
+		path   string
+		target func(*testing.T) string
+	}{
+		{name: "directory", path: tmpDirName, target: func(t *testing.T) string { return t.TempDir() }},
+		{name: "hidden git", path: gitDirName, target: func(t *testing.T) string { return t.TempDir() }},
+		{name: "config", path: configFileName, target: func(t *testing.T) string {
+			path := filepath.Join(t.TempDir(), "outside.toml")
+			if err := os.WriteFile(path, []byte("outside\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return path
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := workspaceRoot(t)
+			metadata := filepath.Join(root.String(), metadataDirName)
+			if err := os.Mkdir(metadata, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			target := test.target(t)
+			if err := os.Symlink(target, filepath.Join(metadata, test.path)); err != nil {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+			var before []byte
+			if test.name == "config" {
+				var err error
+				before, err = os.ReadFile(target)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			_, err := BootstrapWithOptions(root, BootstrapOptions{UpdateGitignore: false})
+			if err == nil || !strings.Contains(err.Error(), "symlink") {
+				t.Fatalf("Bootstrap error = %v, want symlink refusal", err)
+			}
+			if test.name == "config" {
+				after, readErr := os.ReadFile(target)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if string(after) != string(before) {
+					t.Fatalf("outside config changed from %q to %q", before, after)
+				}
+			}
+		})
 	}
 }
 
