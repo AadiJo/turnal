@@ -195,12 +195,13 @@ Shared history is opt-in. It publishes a signed, context-only projection to a Gi
 turnal share enable --remote <git-url-or-path> --prompt-mode redacted_text
 turnal share preview <session>:<turn> --json
 turnal share preview <session>:<turn> --approve
+turnal share redaction diagnose
 turnal sync push --dry-run
 turnal sync push
 turnal sync pull
 ```
 
-Use `turnal share status` to inspect consent, pending bundles, blocked projections, and quarantined publishers without contacting the network; add `--check-remote` for a bounded remote check. When sharing is configured, `turnal status` also reports a one-line publication summary. Discover local and pulled bundles with `turnal share list`, which names each source commit and branch and accepts `--commit <sha>`, and open a locator such as `v1:<device-id>:<bundle-id>` with `turnal share show <locator>`. Stop future synchronization with `turnal share disable --yes`; this preserves existing history and cannot recall published copies. See [shared history](docs/shared-history.md) for the protocol, privacy boundary, and failure semantics.
+Use `turnal share status` to inspect consent, pending bundles, blocked projections, and quarantined publishers without contacting the network; add `--check-remote` for a bounded remote check. `turnal share redaction diagnose` runs the built-in leak and safe-text corpora and reports the active detector policy. `turnal share redaction review <corpus.jsonl>...` classifies project examples as false positives or false negatives without echoing their text. When sharing is configured, `turnal status` also reports a one-line publication summary. Discover local and pulled bundles with `turnal share list`, which names each source commit and branch and accepts `--commit <sha>`, and open a locator such as `v1:<device-id>:<bundle-id>` with `turnal share show <locator>`. Stop future synchronization with `turnal share disable --yes`; this preserves existing history and cannot recall published copies. See [shared history](docs/shared-history.md) for the protocol, privacy boundary, and failure semantics.
 
 Teammates joining from independently initialized clones use the publisher's shared repository id: `turnal share enable --remote <same-remote> --repo-id <publisher-repo-id> --prompt-mode omit`, then `turnal sync pull`.
 

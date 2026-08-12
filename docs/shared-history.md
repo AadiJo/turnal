@@ -23,6 +23,33 @@ Workspace paths normalize to `$WORKSPACE` only when their boundary is unambiguou
 
 Zero-width and other invisible characters are removed before scanning, so text is matched as a reader sees it. Otherwise a zero-width space in front of a separator would hide a path from the boundary rules and a later display pass would reassemble it.
 
+### Redaction policy diagnostics
+
+The version 3 scanner is an ordered detector pipeline rather than one regex list. It combines high-entropy scoring, Betterleaks rules, deterministic provider-token formats, credentialed URLs, database connection strings, and bounded credential assignments. Overlapping findings become one replacement, while the manifest records aggregate `secret` counts and bounded `secret:<detector>` diagnostics. Private-key headers fail closed by redacting the complete field. Placeholder credentials such as `${DB_PASSWORD}`, `changeme`, and mask runs are left visible so examples remain reviewable.
+
+Run the local policy diagnostic before approving a scanner migration:
+
+```sh
+turnal share redaction diagnose
+turnal share redaction diagnose --json
+```
+
+The command names every detector, runs embedded leak and safe-text golden corpora, reports false positives and false negatives separately, and compares the compiled scanner with the configured policy. It does not contact the shared-history remote. A scanner change requires `turnal share enable` and a fresh preview approval after any older outbox has drained.
+
+Teams can review project-specific examples with one or more strict JSONL corpora:
+
+```json
+{"id":"internal-token","text":"ACME_API_KEY=synthetic-review-value","expect":"redact"}
+{"id":"product-copy","text":"Rotate the token bucket hourly","expect":"allow"}
+```
+
+```sh
+turnal share redaction review redaction-leaks.jsonl redaction-safe.jsonl
+turnal share redaction review redaction-leaks.jsonl --json
+```
+
+Each case needs a terminal-safe unique `id`, a `text` value no larger than 64 KiB, and an `expect` value of `redact` or `allow`. The command exits nonzero for either a false positive or a false negative. Its human and JSON reports include only case ids, outcomes, and detector ids, never the reviewed source text. This flow diagnoses scanner behavior; it does not create an exception that can weaken publication policy.
+
 `turnal share status` prints the shared repository id. A teammate with an independently initialized clone joins that history by supplying the publisher's id explicitly:
 
 ```sh
@@ -35,7 +62,7 @@ turnal sync pull
 
 The explicit id prevents a remote that contains history for another project from being silently adopted. It identifies the shared project without replacing the clone's private Turnal store identity.
 
-`preview --json` is the complete bundle projection: signed manifest, projected events, omissions, truncations, evidence class, source links, and stable locator. Preview remains important because secret scanning is best-effort and allowed text can contain source fragments.
+`preview --json` is the complete bundle projection: signed manifest, projected events, omissions, truncations, evidence class, source links, and stable locator. Preview remains important because secret scanning is best-effort and allowed text can contain source fragments. Novel low-entropy secrets can still evade automated detection.
 
 Approval applies to the policy hash, not only to the previewed turn. `sync push --dry-run` lists every pending turn, its locator and projected size, the next bounded batch, and any blocked projection before anything contacts the remote. Preview and dry-run also distinguish path and secret redactions from typed omissions.
 
