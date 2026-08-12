@@ -12,9 +12,9 @@ import (
 func sessionCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "session",
-		Short: "Manage retained session data",
+		Short: "Manage recorded and imported sessions",
 	}
-	cmd.AddCommand(sessionDropCmd())
+	cmd.AddCommand(sessionDropCmd(), sessionAttachCmd())
 	return cmd
 }
 

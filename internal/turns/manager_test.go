@@ -1,6 +1,7 @@
 package turns
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
+	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/primitives"
 )
 
@@ -270,6 +272,34 @@ func TestStartCollisionDoesNotOverwriteActiveState(t *testing.T) {
 	}
 	if string(after) != string(before) {
 		t.Fatalf("active state changed after collision:\nbefore=%s\nafter=%s", before, after)
+	}
+}
+
+func TestNextTurnIDAdvancesPastImportedEventOnlyTurns(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	sessionID := sessionID(t, "imported")
+	importedTurn, _ := primitives.NewTurnID(4)
+	if _, err := repo.EventLog().Append(eventlog.AppendInput{
+		SessionID: sessionID,
+		TurnID:    &importedTurn,
+		Type:      primitives.EventTypePromptUser,
+		Adapter:   primitives.AdapterCodex,
+		Payload:   json.RawMessage(`{"text":"imported prompt"}`),
+	}); err != nil {
+		t.Fatalf("append imported event: %v", err)
+	}
+
+	next, err := NewManager(repo).NextTurnID(sessionID)
+	if err != nil {
+		t.Fatalf("NextTurnID: %v", err)
+	}
+	if next.Uint64() != 5 {
+		t.Fatalf("next turn = %s, want 5", next)
 	}
 }
 

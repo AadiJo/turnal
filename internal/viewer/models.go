@@ -103,26 +103,35 @@ type WorkspaceView struct {
 }
 
 type SessionSummaryView struct {
-	Key           string    `json:"key"`
-	ID            string    `json:"id"`
-	StreamID      string    `json:"stream_id"`
-	WorktreeID    string    `json:"worktree_id,omitempty"`
-	Adapter       string    `json:"adapter,omitempty"`
-	Model         string    `json:"model,omitempty"`
-	Branch        string    `json:"branch,omitempty"`
-	StartedAt     time.Time `json:"started_at,omitempty"`
-	FinishedAt    time.Time `json:"finished_at,omitempty"`
-	EventCount    int       `json:"event_count"`
-	TurnCount     int       `json:"turn_count"`
-	CompleteTurns int       `json:"complete_turns"`
-	ErrorCount    int       `json:"error_count"`
-	FileCount     int       `json:"file_count"`
-	Additions     int       `json:"additions"`
-	Deletions     int       `json:"deletions"`
-	Status        string    `json:"status"`
-	PromptPreview string    `json:"prompt_preview,omitempty"`
+	Key           string                  `json:"key"`
+	ID            string                  `json:"id"`
+	StreamID      string                  `json:"stream_id"`
+	WorktreeID    string                  `json:"worktree_id,omitempty"`
+	Adapter       string                  `json:"adapter,omitempty"`
+	Model         string                  `json:"model,omitempty"`
+	Origin        string                  `json:"origin,omitempty"`
+	ReadOnly      bool                    `json:"read_only,omitempty"`
+	Attachments   []SessionAttachmentView `json:"attachments,omitempty"`
+	Branch        string                  `json:"branch,omitempty"`
+	StartedAt     time.Time               `json:"started_at,omitempty"`
+	FinishedAt    time.Time               `json:"finished_at,omitempty"`
+	EventCount    int                     `json:"event_count"`
+	TurnCount     int                     `json:"turn_count"`
+	CompleteTurns int                     `json:"complete_turns"`
+	ErrorCount    int                     `json:"error_count"`
+	FileCount     int                     `json:"file_count"`
+	Additions     int                     `json:"additions"`
+	Deletions     int                     `json:"deletions"`
+	Status        string                  `json:"status"`
+	PromptPreview string                  `json:"prompt_preview,omitempty"`
 	runID         string
 	captureKind   string
+}
+
+type SessionAttachmentView struct {
+	CommitSHA string    `json:"commit_sha"`
+	Revision  string    `json:"revision,omitempty"`
+	Time      time.Time `json:"time"`
 }
 
 // ManualSaveView is a standalone folder snapshot, intentionally separate from

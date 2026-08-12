@@ -13,6 +13,7 @@ import (
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	queryindex "github.com/AadiJo/turnal/internal/index"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/sessionhistory"
 	"github.com/spf13/cobra"
 )
 
@@ -58,17 +59,21 @@ func sessionsCmd() *cobra.Command {
 }
 
 type sessionView struct {
-	ID             primitives.SessionID
-	Adapter        string
-	Model          string
-	PermissionMode string
-	EventCount     int
-	FirstActivity  time.Time
-	LastActivity   time.Time
-	Turns          map[uint64]*sessionViewTurn
-	Rollbacks      []sessionViewRollback
-	Head           *sessionViewHead
-	Warnings       []string
+	ID                primitives.SessionID
+	Adapter           string
+	Model             string
+	PermissionMode    string
+	ProviderSessionID string
+	Origin            string
+	ReadOnly          bool
+	Attachments       []sessionhistory.Attachment
+	EventCount        int
+	FirstActivity     time.Time
+	LastActivity      time.Time
+	Turns             map[uint64]*sessionViewTurn
+	Rollbacks         []sessionViewRollback
+	Head              *sessionViewHead
+	Warnings          []string
 }
 
 type sessionViewTurn struct {
@@ -97,7 +102,7 @@ type sessionViewRollback struct {
 	ChangeSummary sessionJSONChangeSummary
 }
 
-const sessionsJSONSchemaVersion = 1
+const sessionsJSONSchemaVersion = 2
 
 type sessionsJSONOutput struct {
 	SchemaVersion int                  `json:"schema_version"`
@@ -106,23 +111,33 @@ type sessionsJSONOutput struct {
 }
 
 type sessionJSONSummary struct {
-	SessionID         string                `json:"session_id"`
-	Status            string                `json:"status"`
-	Adapter           string                `json:"adapter,omitempty"`
-	Model             string                `json:"model,omitempty"`
-	PermissionMode    string                `json:"permission_mode,omitempty"`
-	TurnCount         int                   `json:"turn_count"`
-	CompleteTurnCount int                   `json:"complete_turn_count"`
-	ActiveTurnCount   int                   `json:"active_turn_count"`
-	EventCount        int                   `json:"event_count"`
-	RollbackCount     int                   `json:"rollback_count"`
-	FirstActivity     string                `json:"first_activity,omitempty"`
-	LastActivity      string                `json:"last_activity,omitempty"`
-	Head              *sessionJSONHead      `json:"head,omitempty"`
-	LatestTurn        *sessionJSONTurn      `json:"latest_turn,omitempty"`
-	Turns             []sessionJSONTurn     `json:"turns,omitempty"`
-	Rollbacks         []sessionJSONRollback `json:"rollbacks"`
-	Warnings          []string              `json:"warnings,omitempty"`
+	SessionID         string                  `json:"session_id"`
+	Status            string                  `json:"status"`
+	Adapter           string                  `json:"adapter,omitempty"`
+	Model             string                  `json:"model,omitempty"`
+	PermissionMode    string                  `json:"permission_mode,omitempty"`
+	ProviderSessionID string                  `json:"provider_session_id,omitempty"`
+	Origin            string                  `json:"origin,omitempty"`
+	ReadOnly          bool                    `json:"read_only,omitempty"`
+	Attachments       []sessionJSONAttachment `json:"attachments,omitempty"`
+	TurnCount         int                     `json:"turn_count"`
+	CompleteTurnCount int                     `json:"complete_turn_count"`
+	ActiveTurnCount   int                     `json:"active_turn_count"`
+	EventCount        int                     `json:"event_count"`
+	RollbackCount     int                     `json:"rollback_count"`
+	FirstActivity     string                  `json:"first_activity,omitempty"`
+	LastActivity      string                  `json:"last_activity,omitempty"`
+	Head              *sessionJSONHead        `json:"head,omitempty"`
+	LatestTurn        *sessionJSONTurn        `json:"latest_turn,omitempty"`
+	Turns             []sessionJSONTurn       `json:"turns,omitempty"`
+	Rollbacks         []sessionJSONRollback   `json:"rollbacks"`
+	Warnings          []string                `json:"warnings,omitempty"`
+}
+
+type sessionJSONAttachment struct {
+	CommitSHA string `json:"commit_sha"`
+	Revision  string `json:"revision,omitempty"`
+	Time      string `json:"time"`
 }
 
 type sessionJSONHead struct {
@@ -269,6 +284,11 @@ func loadSessionViews(repo *checkpoint.Repo) ([]sessionView, error) {
 				ensureTurn(session, *event.TurnID)
 			}
 		}
+		historyInfo := sessionhistory.InspectSession(events)
+		session.ProviderSessionID = historyInfo.ProviderSessionID
+		session.Origin = historyInfo.Origin
+		session.ReadOnly = historyInfo.ReadOnly
+		session.Attachments = historyInfo.Attachments
 
 		for turnKey, summary := range queryindex.SummarizeTurnEvents(nonRollbackEvents(events)) {
 			turnID, err := primitives.NewTurnID(turnKey)
@@ -280,6 +300,9 @@ func loadSessionViews(repo *checkpoint.Repo) ([]sessionView, error) {
 			turn.Events = summary
 			if session.Adapter == "" && summary.Adapter != "" {
 				session.Adapter = summary.Adapter
+			}
+			if session.Model == "" && summary.Model != "" {
+				session.Model = summary.Model
 			}
 		}
 	}
@@ -406,6 +429,16 @@ func writeSessionView(w io.Writer, session sessionView) error {
 	if err := writeSessionField(w, "events", styleSessionNumber(session.EventCount)); err != nil {
 		return err
 	}
+	if session.Origin == sessionhistory.OriginImported {
+		if err := writeSessionField(w, "origin", ansiBlue+"imported / read-only"+ansiReset); err != nil {
+			return err
+		}
+	}
+	for _, attachment := range session.Attachments {
+		if err := writeSessionField(w, "attached", styleSessionHash(formatObjectID(attachment.CommitSHA, false))); err != nil {
+			return err
+		}
+	}
 	if len(session.Rollbacks) > 0 {
 		if err := writeSessionField(w, "rollbacks", styleSessionNumber(len(session.Rollbacks))); err != nil {
 			return err
@@ -501,6 +534,8 @@ func sessionStatus(session sessionView, counts sessionTurnCountSummary) string {
 		return "active"
 	case counts.Orphan > 0 || counts.Empty > 0:
 		return "partial"
+	case session.Origin == sessionhistory.OriginImported && counts.Total > 0:
+		return "imported"
 	case counts.Total == 0 && session.EventCount > 0:
 		return "events-only"
 	case counts.Total > 0 && counts.Complete == counts.Total:
@@ -678,6 +713,8 @@ func styleSessionStatusColor(status string) string {
 		return ansiRed
 	case "events-only":
 		return ansiBlue
+	case "imported":
+		return ansiBlue
 	default:
 		return ansiDim
 	}
@@ -732,6 +769,9 @@ func sessionsJSONFromViews(sessions []sessionView) sessionsJSONOutput {
 			Adapter:           session.Adapter,
 			Model:             session.Model,
 			PermissionMode:    session.PermissionMode,
+			ProviderSessionID: session.ProviderSessionID,
+			Origin:            session.Origin,
+			ReadOnly:          session.ReadOnly,
 			TurnCount:         counts.Total,
 			CompleteTurnCount: counts.Complete,
 			ActiveTurnCount:   counts.Active,
@@ -740,6 +780,12 @@ func sessionsJSONFromViews(sessions []sessionView) sessionsJSONOutput {
 			Warnings:          session.Warnings,
 			Turns:             make([]sessionJSONTurn, 0, len(turns)),
 			Rollbacks:         make([]sessionJSONRollback, 0, len(rollbacks)),
+		}
+		for _, attachment := range session.Attachments {
+			summary.Attachments = append(summary.Attachments, sessionJSONAttachment{
+				CommitSHA: attachment.CommitSHA.String(), Revision: attachment.Revision,
+				Time: attachment.Time.UTC().Format(time.RFC3339Nano),
+			})
 		}
 		if !session.FirstActivity.IsZero() {
 			summary.FirstActivity = session.FirstActivity.UTC().Format(time.RFC3339Nano)

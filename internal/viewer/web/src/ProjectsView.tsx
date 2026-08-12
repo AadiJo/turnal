@@ -221,6 +221,11 @@ export function ProjectsView({
                         <span>
                           {item.project_name} <i>·</i>{" "}
                           {cleanAdapter(item.adapter)} <i>·</i>{" "}
+                          {item.status === "imported" && (
+                            <>
+                              imported read-only <i>·</i>{" "}
+                            </>
+                          )}
                           {item.turn_count} turn
                           {item.turn_count === 1 ? "" : "s"}
                           {owner && !owner.present && (

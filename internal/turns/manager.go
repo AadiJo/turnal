@@ -286,6 +286,15 @@ func (manager Manager) NextTurnID(sessionID primitives.SessionID) (primitives.Tu
 			maxTurn = parts.TurnID.Uint64()
 		}
 	}
+	events, err := manager.Repo.EventLog().Read(sessionID)
+	if err != nil {
+		return 0, err
+	}
+	for _, event := range events {
+		if event.TurnID != nil && event.TurnID.Uint64() > maxTurn {
+			maxTurn = event.TurnID.Uint64()
+		}
+	}
 	if maxTurn == math.MaxUint64 {
 		return 0, fmt.Errorf("next turn id overflow for session %s", sessionID)
 	}

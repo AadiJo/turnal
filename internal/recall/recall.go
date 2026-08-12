@@ -179,7 +179,7 @@ func (reader Reader) RecallTurn(sessionID primitives.SessionID, turnID primitive
 		if selectedStream != "" && event.StreamID != selectedStream {
 			continue
 		}
-		isSessionEvent := event.Type == primitives.EventTypeSessionStart && event.TurnID == nil
+		isSessionEvent := (event.Type == primitives.EventTypeSessionStart || event.Type == primitives.EventTypeSessionImport || event.Type == primitives.EventTypeSessionAttach) && event.TurnID == nil
 		isTurnEvent := event.TurnID != nil && *event.TurnID == parsedTurnID
 		if !isSessionEvent && !isTurnEvent {
 			continue

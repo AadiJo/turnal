@@ -130,6 +130,8 @@ const SecretsRedactionText = "[redacted by turnal secrets policy]"
 
 const (
 	EventTypeSessionStart      EventType = "session.start"
+	EventTypeSessionImport     EventType = "session.import"
+	EventTypeSessionAttach     EventType = "session.attach"
 	EventTypeTurnStart         EventType = "turn.start"
 	EventTypePromptUser        EventType = "prompt.user"
 	EventTypeAgentIntent       EventType = "agent.intent"
@@ -157,6 +159,8 @@ const (
 
 var validEventTypes = map[EventType]struct{}{
 	EventTypeSessionStart:      {},
+	EventTypeSessionImport:     {},
+	EventTypeSessionAttach:     {},
 	EventTypeTurnStart:         {},
 	EventTypePromptUser:        {},
 	EventTypeAgentIntent:       {},
