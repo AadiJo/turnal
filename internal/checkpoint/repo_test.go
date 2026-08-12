@@ -1090,6 +1090,50 @@ func TestRestoreCommitFreezesCurrentGitignoreRules(t *testing.T) {
 	}
 }
 
+func TestRestoreCommitProtectsCaseVariantPath(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	caseInsensitive, err := filesystemCaseInsensitive(root.String())
+	if err != nil {
+		t.Fatalf("filesystemCaseInsensitive: %v", err)
+	}
+	if !caseInsensitive {
+		t.Skip("workspace filesystem is case-sensitive")
+	}
+	repo, err := Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	writeFile(t, root, ".gitignore", "")
+	writeFile(t, root, "secret.tmp", "target bytes\n")
+	sessionID, _ := primitives.ParseSessionID("demo")
+	turnID, _ := primitives.NewTurnID(1)
+	target, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("target checkpoint: %v", err)
+	}
+	if err := os.Remove(filepath.Join(root.String(), "secret.tmp")); err != nil {
+		t.Fatalf("remove target path: %v", err)
+	}
+	writeFile(t, root, ".gitignore", "*.tmp\n")
+	writeFile(t, root, "Secret.tmp", "preserve current bytes\n")
+
+	if err := repo.RestoreCommit(target.Commit); err != nil {
+		t.Fatalf("RestoreCommit: %v", err)
+	}
+	if content, err := os.ReadFile(filepath.Join(root.String(), "Secret.tmp")); err != nil || string(content) != "preserve current bytes\n" {
+		t.Fatalf("protected case-variant = %q, err=%v", content, err)
+	}
+}
+
+func TestRestoreProtectionRejectsNoncanonicalPaths(t *testing.T) {
+	protection := RestoreProtection{Paths: []RestoreProtectedPath{{Path: "foo/../bar"}}}
+	if err := protection.Validate(); err == nil || !strings.Contains(err.Error(), "not canonical") {
+		t.Fatalf("Validate error = %v, want noncanonical path", err)
+	}
+}
+
 func TestRestoreCommitRejectsDirectoryReplacementWithProtectedDescendants(t *testing.T) {
 	for _, targetKind := range []string{"file", "symlink"} {
 		for _, protectedPath := range []string{"config/.env", "config/cache.tmp"} {

@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -194,7 +193,8 @@ type RestoreProtectedPath struct {
 // RestoreProtection freezes the current ignore and secret-deny policy for the
 // lifetime of one restore, including crash recovery.
 type RestoreProtection struct {
-	Paths []RestoreProtectedPath `json:"paths"`
+	CaseInsensitive bool                   `json:"case_insensitive"`
+	Paths           []RestoreProtectedPath `json:"paths"`
 }
 
 // Validate checks that persisted restore protection contains unique repo paths.
@@ -205,7 +205,10 @@ func (protection RestoreProtection) Validate() error {
 		if err != nil {
 			return fmt.Errorf("restore protection path %q: %w", protected.Path, err)
 		}
-		key := restorePathKey(repoPath.String())
+		if repoPath.String() != protected.Path {
+			return fmt.Errorf("restore protection path %q is not canonical", protected.Path)
+		}
+		key := protection.pathKey(repoPath.String())
 		if _, ok := seen[key]; ok {
 			return fmt.Errorf("restore protection path %q is duplicated", protected.Path)
 		}
@@ -1933,7 +1936,11 @@ func (repo *Repo) captureRestoreProtection() (RestoreProtection, error) {
 	}
 
 	root := repo.WorkspaceRoot.String()
-	protection := RestoreProtection{Paths: make([]RestoreProtectedPath, 0)}
+	caseInsensitive, err := filesystemCaseInsensitive(root)
+	if err != nil {
+		return RestoreProtection{}, err
+	}
+	protection := RestoreProtection{CaseInsensitive: caseInsensitive, Paths: make([]RestoreProtectedPath, 0)}
 	err = filepath.WalkDir(root, func(absPath string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -1972,9 +1979,46 @@ func (repo *Repo) captureRestoreProtection() (RestoreProtection, error) {
 		return RestoreProtection{}, err
 	}
 	sort.Slice(protection.Paths, func(i, j int) bool {
-		return restorePathKey(protection.Paths[i].Path) < restorePathKey(protection.Paths[j].Path)
+		return protection.pathKey(protection.Paths[i].Path) < protection.pathKey(protection.Paths[j].Path)
 	})
 	return protection, nil
+}
+
+func filesystemCaseInsensitive(root string) (bool, error) {
+	probe, err := os.CreateTemp(root, ".turnal-case-probe-Aa-")
+	if err != nil {
+		return false, fmt.Errorf("create filesystem case probe: %w", err)
+	}
+	probePath := probe.Name()
+	if err := probe.Close(); err != nil {
+		_ = os.Remove(probePath)
+		return false, fmt.Errorf("close filesystem case probe: %w", err)
+	}
+	defer func() { _ = os.Remove(probePath) }()
+
+	name := filepath.Base(probePath)
+	alternateName := strings.Map(func(value rune) rune {
+		switch {
+		case value >= 'a' && value <= 'z':
+			return value - ('a' - 'A')
+		case value >= 'A' && value <= 'Z':
+			return value + ('a' - 'A')
+		default:
+			return value
+		}
+	}, name)
+	alternateInfo, err := os.Stat(filepath.Join(root, alternateName))
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect filesystem case probe: %w", err)
+	}
+	probeInfo, err := os.Stat(probePath)
+	if err != nil {
+		return false, fmt.Errorf("inspect filesystem case probe source: %w", err)
+	}
+	return os.SameFile(probeInfo, alternateInfo), nil
 }
 
 func filterProtectedRestoreEntries(entries []TreeEntry, denyGlobs []string, protection RestoreProtection) ([]TreeEntry, error) {
@@ -2009,9 +2053,9 @@ func filterProtectedRestoreChanges(changes []RestoreChange, protection RestorePr
 }
 
 func (protection RestoreProtection) targetDisposition(repoPath string) (bool, error) {
-	pathKey := restorePathKey(repoPath)
+	pathKey := protection.pathKey(repoPath)
 	for _, protected := range protection.Paths {
-		protectedKey := restorePathKey(protected.Path)
+		protectedKey := protection.pathKey(protected.Path)
 		switch {
 		case pathKey == protectedKey:
 			if protected.Directory {
@@ -2031,9 +2075,9 @@ func (protection RestoreProtection) targetDisposition(repoPath string) (bool, er
 }
 
 func (protection RestoreProtection) contains(repoPath string) bool {
-	pathKey := restorePathKey(repoPath)
+	pathKey := protection.pathKey(repoPath)
 	for _, protected := range protection.Paths {
-		protectedKey := restorePathKey(protected.Path)
+		protectedKey := protection.pathKey(protected.Path)
 		if pathKey == protectedKey || protected.Directory && strings.HasPrefix(pathKey, protectedKey+"/") {
 			return true
 		}
@@ -2041,8 +2085,8 @@ func (protection RestoreProtection) contains(repoPath string) bool {
 	return false
 }
 
-func restorePathKey(repoPath string) string {
-	if runtime.GOOS == "windows" {
+func (protection RestoreProtection) pathKey(repoPath string) string {
+	if protection.CaseInsensitive {
 		return strings.ToLower(repoPath)
 	}
 	return repoPath
