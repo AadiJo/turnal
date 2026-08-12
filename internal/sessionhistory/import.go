@@ -62,6 +62,13 @@ func PlanImport(repo *checkpoint.Repo, adapter primitives.AdapterName, candidate
 	if repo == nil {
 		return ImportPlan{}, fmt.Errorf("plan transcript import: repo is required")
 	}
+	var duplicateWarnings []string
+	var err error
+	candidates, duplicateWarnings, err = consolidateCandidates(candidates)
+	warnings = append(warnings, duplicateWarnings...)
+	if err != nil {
+		return ImportPlan{}, fmt.Errorf("plan transcript import: %w", err)
+	}
 	effective, _, err := agentconfig.ResolvePath(filepath.Join(repo.MetadataDir, "config.toml"), agentconfig.Overrides{})
 	if err != nil {
 		return ImportPlan{}, err

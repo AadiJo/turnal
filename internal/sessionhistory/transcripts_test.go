@@ -1,9 +1,14 @@
 package sessionhistory
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/AadiJo/turnal/internal/primitives"
 )
 
 func TestClaudeTranscriptConversionPreservesPromptToolsAndAssistant(t *testing.T) {
@@ -53,5 +58,88 @@ func TestCodexTranscriptConversionIgnoresDeveloperMessages(t *testing.T) {
 	}
 	if strings.Contains(candidate.Turns[0].Prompt, "internal instructions") {
 		t.Fatalf("developer message leaked into imported prompt: %#v", candidate.Turns[0])
+	}
+}
+
+func TestDiscoverIncludesSessionsStartedBelowWorkspaceRoot(t *testing.T) {
+	workspace := t.TempDir()
+	nested := filepath.Join(workspace, "src", "worker")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("create nested working directory: %v", err)
+	}
+	transcriptDir := t.TempDir()
+	writeTranscriptFixture(t, filepath.Join(transcriptDir, "nested.jsonl"), codexTranscript("nested-session", nested, "repair the worker"))
+	root, err := primitives.ParseWorkspaceRoot(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	candidates, warnings, err := Discover(DiscoverOptions{
+		Adapter: primitives.AdapterCodex, WorkspaceRoot: root, Path: transcriptDir,
+		Now: time.Now().UTC().Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("discover nested session: %v", err)
+	}
+	if len(warnings) != 0 || len(candidates) != 1 || candidates[0].ProviderSessionID != "nested-session" {
+		t.Fatalf("nested discovery candidates=%#v warnings=%#v", candidates, warnings)
+	}
+}
+
+func TestDiscoverConsolidatesIdenticalSessionTranscripts(t *testing.T) {
+	workspace := t.TempDir()
+	transcriptDir := t.TempDir()
+	data := codexTranscript("duplicate-session", workspace, "repair the worker")
+	writeTranscriptFixture(t, filepath.Join(transcriptDir, "a.jsonl"), data)
+	writeTranscriptFixture(t, filepath.Join(transcriptDir, "b.jsonl"), data)
+	root, _ := primitives.ParseWorkspaceRoot(workspace)
+
+	candidates, warnings, err := Discover(DiscoverOptions{
+		Adapter: primitives.AdapterCodex, WorkspaceRoot: root, Path: transcriptDir,
+		Now: time.Now().UTC().Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("discover duplicate session: %v", err)
+	}
+	if len(candidates) != 1 || len(warnings) != 1 || !strings.Contains(warnings[0], "ignored duplicate") {
+		t.Fatalf("duplicate discovery candidates=%#v warnings=%#v", candidates, warnings)
+	}
+}
+
+func TestDiscoverRejectsDivergentSessionTranscriptsBeforePlanning(t *testing.T) {
+	workspace := t.TempDir()
+	transcriptDir := t.TempDir()
+	writeTranscriptFixture(t, filepath.Join(transcriptDir, "a.jsonl"), codexTranscript("duplicate-session", workspace, "first copy"))
+	writeTranscriptFixture(t, filepath.Join(transcriptDir, "b.jsonl"), codexTranscript("duplicate-session", workspace, "different copy"))
+	root, _ := primitives.ParseWorkspaceRoot(workspace)
+
+	candidates, _, err := Discover(DiscoverOptions{
+		Adapter: primitives.AdapterCodex, WorkspaceRoot: root, Path: transcriptDir,
+		Now: time.Now().UTC().Add(time.Minute),
+	})
+	if err == nil || !strings.Contains(err.Error(), "different contents") {
+		t.Fatalf("divergent duplicate error = %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("divergent duplicate candidates = %#v", candidates)
+	}
+}
+
+func codexTranscript(sessionID, cwd, prompt string) string {
+	return strings.Join([]string{
+		`{"type":"session_meta","timestamp":"2026-08-01T10:00:00Z","payload":{"id":` + quoted(sessionID) + `,"cwd":` + quoted(cwd) + `}}`,
+		`{"type":"event_msg","timestamp":"2026-08-01T10:00:01Z","payload":{"type":"user_message","message":` + quoted(prompt) + `}}`,
+	}, "\n") + "\n"
+}
+
+func quoted(value string) string {
+	encoded, _ := json.Marshal(value)
+	return string(encoded)
+}
+
+func writeTranscriptFixture(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write transcript fixture: %v", err)
 	}
 }

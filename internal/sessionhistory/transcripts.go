@@ -172,7 +172,7 @@ func Discover(options DiscoverOptions) ([]Candidate, []string, error) {
 		if _, ok := selected[strings.ToLower(candidate.ProviderSessionID)]; len(selected) > 0 && !ok {
 			continue
 		}
-		if !fsidentity.Same(candidate.WorkspaceRoot, options.WorkspaceRoot.String()) {
+		if !fsidentity.Within(candidate.WorkspaceRoot, options.WorkspaceRoot.String()) {
 			continue
 		}
 		if len(selected) > 0 {
@@ -181,6 +181,11 @@ func Discover(options DiscoverOptions) ([]Candidate, []string, error) {
 		candidate.SessionID = importedSessionID(candidate.Adapter, candidate.ProviderSessionID)
 		candidate.SHA256 = sha256Hex(data)
 		candidates = append(candidates, candidate)
+	}
+	candidates, duplicateWarnings, err := consolidateCandidates(candidates)
+	warnings = append(warnings, duplicateWarnings...)
+	if err != nil {
+		return nil, warnings, err
 	}
 	for requested := range selected {
 		if _, ok := foundSelected[requested]; !ok {
@@ -194,6 +199,37 @@ func Discover(options DiscoverOptions) ([]Candidate, []string, error) {
 		return candidates[i].ProviderSessionID < candidates[j].ProviderSessionID
 	})
 	return candidates, warnings, nil
+}
+
+// consolidateCandidates prevents one command from planning the same provider
+// session twice against an unchanged event log. Identical copies are harmless
+// duplicates; divergent files are ambiguous and must fail before any import is
+// applied rather than choosing one source or partially writing the batch.
+func consolidateCandidates(candidates []Candidate) ([]Candidate, []string, error) {
+	unique := make([]Candidate, 0, len(candidates))
+	bySession := make(map[primitives.SessionID]int, len(candidates))
+	var warnings []string
+	for _, candidate := range candidates {
+		index, found := bySession[candidate.SessionID]
+		if !found {
+			bySession[candidate.SessionID] = len(unique)
+			unique = append(unique, candidate)
+			continue
+		}
+		existing := unique[index]
+		if existing.SHA256 != "" && existing.SHA256 == candidate.SHA256 {
+			warnings = append(warnings, fmt.Sprintf(
+				"ignored duplicate %s transcript for session %s: %s (same content as %s)",
+				candidate.Adapter, candidate.ProviderSessionID, candidate.Path, existing.Path,
+			))
+			continue
+		}
+		return nil, warnings, fmt.Errorf(
+			"multiple %s transcripts claim session %s with different contents: %s and %s",
+			candidate.Adapter, candidate.ProviderSessionID, existing.Path, candidate.Path,
+		)
+	}
+	return unique, warnings, nil
 }
 
 func importedSessionID(adapter primitives.AdapterName, providerSessionID string) primitives.SessionID {

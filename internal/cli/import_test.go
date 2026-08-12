@@ -199,6 +199,36 @@ func TestImportAppliesWorkspaceSecretsPolicy(t *testing.T) {
 	}
 }
 
+func TestImportRejectsDivergentDuplicateTranscriptsBeforeWritingHistory(t *testing.T) {
+	root, repo, _ := initializedImportWorkspace(t)
+	t.Chdir(root.String())
+	transcriptDir := t.TempDir()
+	providerSessionID := "019ff7dc-84ed-7009-8f44-4511e81175ba"
+	writeCodexImportTranscript(t, transcriptDir, root.String(), providerSessionID)
+	originalPath := filepath.Join(transcriptDir, fmt.Sprintf("rollout-%s.jsonl", providerSessionID))
+	data, err := os.ReadFile(originalPath)
+	if err != nil {
+		t.Fatalf("read transcript fixture: %v", err)
+	}
+	divergent := strings.ReplaceAll(string(data), "make the queue idempotent", "replace the queue implementation")
+	if err := os.WriteFile(filepath.Join(transcriptDir, "duplicate.jsonl"), []byte(divergent), 0o600); err != nil {
+		t.Fatalf("write divergent transcript fixture: %v", err)
+	}
+
+	cmd := NewRootCmd()
+	var output strings.Builder
+	cmd.SetOut(&output)
+	cmd.SetErr(&output)
+	cmd.SetArgs([]string{"import", "codex", "--path", transcriptDir})
+	err = cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "different contents") {
+		t.Fatalf("divergent duplicate import error = %v", err)
+	}
+	if sessions, listErr := repo.EventLog().ListSessions(); listErr != nil || len(sessions) != 0 {
+		t.Fatalf("divergent duplicate import wrote sessions=%v err=%v", sessions, listErr)
+	}
+}
+
 func initializedImportWorkspace(t *testing.T) (primitives.WorkspaceRoot, *checkpoint.Repo, string) {
 	t.Helper()
 	requireGit(t)
