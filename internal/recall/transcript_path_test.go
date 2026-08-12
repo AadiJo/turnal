@@ -94,6 +94,7 @@ func TestValidateTranscriptPathAcceptsCursorRoot(t *testing.T) {
 		t.Fatalf("write transcript: %v", err)
 	}
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	if _, err := validateTranscriptPath(path, primitives.AdapterCursor); err != nil {
 		t.Fatalf("validate Cursor transcript root: %v", err)
