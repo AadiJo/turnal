@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
+	agentconfig "github.com/AadiJo/turnal/internal/config"
 	"github.com/AadiJo/turnal/internal/primitives"
 )
 
@@ -103,6 +104,14 @@ func TestRecordExternalHookPayloadTreatsIntentToolIOAsPromptData(t *testing.T) {
 	stored := string(record.Payload)
 	if strings.Contains(stored, "customer-secret") || strings.Contains(stored, "result-secret") || !strings.Contains(stored, "agent.intent") {
 		t.Fatalf("external intent payload was not redacted as prompt data: %s", stored)
+	}
+}
+
+func TestForcedExternalPromptRedactionFailsClosed(t *testing.T) {
+	secrets := agentconfig.Secrets{StorePrompts: false, StoreToolIO: true}
+	stored := redactExternalHookPayload([]byte("{broken prompt-secret"), secrets, "turnal", "prompt")
+	if !json.Valid(stored) || strings.Contains(string(stored), "prompt-secret") || !strings.Contains(string(stored), `"content":"prompt"`) {
+		t.Fatalf("forced prompt redaction = %q", stored)
 	}
 }
 

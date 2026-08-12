@@ -1225,6 +1225,82 @@ func TestHandleNormalizedEventsKeepsDurabilityInCore(t *testing.T) {
 	}
 }
 
+func TestHandleNormalizedEventsRedactsPromptBearingRawPayloads(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Chdir(root.String())
+	writeFile(t, root, ".turnal/config.toml", `
+version = 1
+
+[secrets]
+store_prompts = false
+	store_tool_io = true
+`)
+	const session = "external-prompt-privacy"
+	sessionRaw := rawPayload(t, map[string]any{
+		"sessionId": session, "cwd": root.String(), "question": "session-prompt-secret",
+	})
+	if err := HandleNormalizedEvents("custom-adapter", "session", sessionRaw, []adaptersdk.Event{{
+		Type: adaptersdk.EventSessionStart, SessionID: session, CWD: root.String(), Text: "session-prompt-secret",
+	}}); err != nil {
+		t.Fatalf("session: %v", err)
+	}
+	promptRaw := rawPayload(t, map[string]any{
+		"directory": root.String(), "event": map[string]any{
+			"properties": map[string]any{"info": map[string]any{"text": "opencode-prompt-secret"}},
+		},
+	})
+	if err := HandleNormalizedEvents("opencode", "event", promptRaw, []adaptersdk.Event{{
+		Type: adaptersdk.EventPromptUser, SessionID: session, CWD: root.String(), Text: "opencode-prompt-secret",
+	}}); err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+	toolRaw := rawPayload(t, map[string]any{
+		"sessionId": session, "cwd": root.String(), "toolPayload": map[string]any{"value": "tool-raw-kept"},
+	})
+	if err := HandleNormalizedEvents("custom-adapter", "tool", toolRaw, []adaptersdk.Event{{
+		Type: adaptersdk.EventToolCall, SessionID: session, CWD: root.String(), ToolName: "read", ToolUseID: "tool-1", Input: json.RawMessage(`{"value":"tool-normalized-kept"}`),
+	}}); err != nil {
+		t.Fatalf("tool: %v", err)
+	}
+	assistantRaw := rawPayload(t, map[string]any{
+		"sessionId": session, "cwd": root.String(), "unknown": map[string]any{"message": "assistant-raw-secret"},
+	})
+	if err := HandleNormalizedEvents("custom-adapter", "assistant", assistantRaw, []adaptersdk.Event{{
+		Type: adaptersdk.EventAssistantMessage, SessionID: session, CWD: root.String(), Text: "assistant-raw-secret",
+	}}); err != nil {
+		t.Fatalf("assistant: %v", err)
+	}
+
+	events := readEvents(t, repo, sessionID(t, session))
+	for _, event := range events {
+		if event.Type != primitives.EventTypeSessionStart && event.Type != primitives.EventTypePromptUser && event.Type != primitives.EventTypeAssistantMessage && event.Type != primitives.EventTypeToolCall {
+			continue
+		}
+		record, err := ReadRawHookRecord(repo.MetadataDir, event.RawRef)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stored := string(record.Payload)
+		if event.Type == primitives.EventTypeToolCall {
+			if !strings.Contains(stored, "tool-raw-kept") {
+				t.Fatalf("tool-only raw payload was redacted: %s", stored)
+			}
+			continue
+		}
+		if strings.Contains(stored, "session-prompt-secret") || strings.Contains(stored, "opencode-prompt-secret") || strings.Contains(stored, "assistant-raw-secret") || !strings.Contains(stored, `"content":"prompt"`) {
+			t.Fatalf("prompt-bearing raw payload was not redacted: %s", stored)
+		}
+		if event.Type != primitives.EventTypeSessionStart && (strings.Contains(string(event.Payload), "opencode-prompt-secret") || strings.Contains(string(event.Payload), "assistant-raw-secret") || !strings.Contains(string(event.Payload), "redacted")) {
+			t.Fatalf("normalized prompt payload was not redacted: %s", event.Payload)
+		}
+	}
+}
+
 func TestExternalIntentPrivacyUsesRawPayloadWhenNormalizedInputIsPartial(t *testing.T) {
 	requireGit(t)
 	root := workspaceRoot(t)
