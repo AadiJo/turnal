@@ -2284,6 +2284,41 @@ type snapshotIndexEntry struct {
 	path snapshotPath
 }
 
+// snapshotIndexReader encodes index entries one at a time instead of retaining
+// a second, worktree-sized copy of the complete update-index payload.
+type snapshotIndexReader struct {
+	entries []snapshotIndexEntry
+	pending string
+	offset  int
+}
+
+func (reader *snapshotIndexReader) Read(destination []byte) (int, error) {
+	if len(destination) == 0 {
+		return 0, nil
+	}
+
+	written := 0
+	for written < len(destination) {
+		if reader.offset == len(reader.pending) {
+			if len(reader.entries) == 0 {
+				if written == 0 {
+					return 0, io.EOF
+				}
+				return written, nil
+			}
+			entry := reader.entries[0]
+			reader.entries = reader.entries[1:]
+			reader.pending = entry.mode.String() + " " + entry.blob.String() + "\t" + entry.path.String() + "\x00"
+			reader.offset = 0
+		}
+
+		copied := copy(destination[written:], reader.pending[reader.offset:])
+		written += copied
+		reader.offset += copied
+	}
+	return written, nil
+}
+
 func (repo *Repo) snapshotWorktree(indexPath string) (map[string]fs.FileMode, error) {
 	root := repo.WorkspaceRoot.String()
 	denyGlobs, err := repo.secretDenyGlobs()
@@ -2302,16 +2337,8 @@ func (repo *Repo) snapshotWorktree(indexPath string) (map[string]fs.FileMode, er
 		return modes, nil
 	}
 
-	var indexInput bytes.Buffer
-	for _, entry := range entries {
-		indexInput.WriteString(entry.mode.String())
-		indexInput.WriteByte(' ')
-		indexInput.WriteString(entry.blob.String())
-		indexInput.WriteByte('\t')
-		indexInput.WriteString(entry.path.String())
-		indexInput.WriteByte(0)
-	}
-	if _, err := runHiddenGitWithInput(repo, indexPath, &indexInput, "update-index", "-z", "--index-info"); err != nil {
+	indexInput := &snapshotIndexReader{entries: entries}
+	if _, err := runHiddenGitWithInput(repo, indexPath, indexInput, "update-index", "-z", "--index-info"); err != nil {
 		return nil, err
 	}
 	return modes, nil

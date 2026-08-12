@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -466,6 +467,39 @@ func TestCreateCheckpointStoresSymlinkWithoutFollowing(t *testing.T) {
 	}
 	if content != "target.txt" {
 		t.Fatalf("symlink blob = %q, want link target", content)
+	}
+}
+
+func TestSnapshotIndexReaderStreamsEntries(t *testing.T) {
+	firstBlob, err := primitives.ParseGitObjectID(strings.Repeat("a", 40))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondBlob, err := primitives.ParseGitObjectID(strings.Repeat("b", 40))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := &snapshotIndexReader{entries: []snapshotIndexEntry{
+		{mode: primitives.GitFileModeRegular, blob: firstBlob, path: snapshotPath("first.txt")},
+		{mode: primitives.GitFileModeSymlink, blob: secondBlob, path: snapshotPath("line\nbreak")},
+	}}
+
+	var output bytes.Buffer
+	buffer := make([]byte, 7)
+	for {
+		count, readErr := reader.Read(buffer)
+		output.Write(buffer[:count])
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			t.Fatalf("read index input: %v", readErr)
+		}
+	}
+	want := "100644 " + firstBlob.String() + "\tfirst.txt\x00" +
+		"120000 " + secondBlob.String() + "\tline\nbreak\x00"
+	if output.String() != want {
+		t.Fatalf("index input = %q, want %q", output.String(), want)
 	}
 }
 
