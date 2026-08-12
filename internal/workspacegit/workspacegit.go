@@ -382,7 +382,7 @@ func (git Git) restoreDeniedWorkspaceState(entries preservedDeniedPaths) error {
 		if entry.Exists {
 			continue
 		}
-		if err := os.RemoveAll(git.Root.Join(entry.Path)); err != nil {
+		if err := git.removeDeniedPathNoFollow(entry.Path); err != nil {
 			return fmt.Errorf("remove deny-listed path %s that was originally absent: %w", entry.Path, err)
 		}
 	}
@@ -391,11 +391,11 @@ func (git Git) restoreDeniedWorkspaceState(entries preservedDeniedPaths) error {
 			continue
 		}
 		absPath := git.Root.Join(entry.Path)
+		if err := git.ensureDeniedRestoreParents(entry.Path); err != nil {
+			return fmt.Errorf("prepare parent for deny-listed path %s: %w", entry.Path, err)
+		}
 		if err := os.RemoveAll(absPath); err != nil {
 			return fmt.Errorf("replace deny-listed path %s: %w", entry.Path, err)
-		}
-		if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
-			return fmt.Errorf("create parent for deny-listed path %s: %w", entry.Path, err)
 		}
 		if entry.Mode&os.ModeSymlink != 0 {
 			if err := os.Symlink(entry.SymlinkTarget, absPath); err != nil {
@@ -425,6 +425,46 @@ func (git Git) restoreDeniedWorkspaceState(entries preservedDeniedPaths) error {
 		}
 	}
 	return nil
+}
+
+func (git Git) removeDeniedPathNoFollow(repoPath primitives.RepoPath) error {
+	parentsSafe, err := git.deniedRestoreParents(repoPath, false)
+	if err != nil || !parentsSafe {
+		return err
+	}
+	return os.RemoveAll(git.Root.Join(repoPath))
+}
+
+func (git Git) ensureDeniedRestoreParents(repoPath primitives.RepoPath) error {
+	_, err := git.deniedRestoreParents(repoPath, true)
+	return err
+}
+
+func (git Git) deniedRestoreParents(repoPath primitives.RepoPath, replaceConflicts bool) (bool, error) {
+	parts := strings.Split(repoPath.String(), "/")
+	current := git.Root.String()
+	for _, part := range parts[:len(parts)-1] {
+		current = filepath.Join(current, filepath.FromSlash(part))
+		info, err := os.Lstat(current)
+		if err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+			continue
+		}
+		if err != nil && !os.IsNotExist(err) {
+			return false, fmt.Errorf("inspect restore parent %s: %w", current, err)
+		}
+		if !replaceConflicts {
+			return false, nil
+		}
+		if err == nil {
+			if err := os.RemoveAll(current); err != nil {
+				return false, fmt.Errorf("remove conflicting restore parent %s: %w", current, err)
+			}
+		}
+		if err := os.Mkdir(current, 0o755); err != nil {
+			return false, fmt.Errorf("create restore parent %s: %w", current, err)
+		}
+	}
+	return true, nil
 }
 
 func (git Git) currentHead() (gitsync.Head, error) {

@@ -189,6 +189,50 @@ func TestRestorePreservesCurrentDeniedUntrackedFile(t *testing.T) {
 	}
 }
 
+func TestRestoreDoesNotFollowTargetSymlinkForDeniedFile(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t, t.TempDir())
+	runGit(t, root.String(), "init", "-q")
+	runGit(t, root.String(), "config", "user.email", "turnal@example.test")
+	runGit(t, root.String(), "config", "user.name", "turnal")
+	writeFile(t, root.String(), "README.md", "target\n")
+	if err := os.Symlink("..", filepath.Join(root.String(), "secrets")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	runGit(t, root.String(), "add", "README.md", "secrets")
+	runGit(t, root.String(), "commit", "-q", "-m", "target with symlink")
+	target, err := Open(root).Capture()
+	if err != nil {
+		t.Fatalf("Capture target: %v", err)
+	}
+
+	runGit(t, root.String(), "rm", "-q", "secrets")
+	writeFile(t, root.String(), "README.md", "current\n")
+	runGit(t, root.String(), "add", "README.md")
+	runGit(t, root.String(), "commit", "-q", "-m", "current without symlink")
+	writeFile(t, root.String(), "secrets/.env", "SECRET=preserve-me\n")
+	outside := filepath.Join(filepath.Dir(root.String()), ".env")
+	if err := os.WriteFile(outside, []byte("OUTSIDE=unchanged\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Open(root).Restore(target); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	secret, err := os.ReadFile(filepath.Join(root.String(), "secrets", ".env"))
+	if err != nil || string(secret) != "SECRET=preserve-me\n" {
+		t.Fatalf("preserved secret = %q, err=%v", secret, err)
+	}
+	info, err := os.Lstat(filepath.Join(root.String(), "secrets"))
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("secrets parent info=%v err=%v, want real directory", info, err)
+	}
+	outsideContent, err := os.ReadFile(outside)
+	if err != nil || string(outsideContent) != "OUTSIDE=unchanged\n" {
+		t.Fatalf("outside file = %q, err=%v", outsideContent, err)
+	}
+}
+
 func TestRestorePreservesTrackedDeniedStagedAndWorkingContent(t *testing.T) {
 	requireGit(t)
 	root := workspaceRoot(t, t.TempDir())
