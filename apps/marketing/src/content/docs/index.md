@@ -257,9 +257,13 @@ turnal reindex
 turnal search "invoice duplicate"
 turnal search "stripe" --session codex-b91e
 turnal search "timeout" --all-worktrees --json
+turnal search "push must fail open" --all-projects
+turnal search "why did sync block push" --all-projects --semantic
 ```
 
-Search defaults to the current worktree and 20 results. Use `--all-worktrees` for attached or imported worktrees and `--limit 0` for every result. Re-run `turnal reindex` whenever newer activity is absent from results.
+Search defaults to the current worktree and 20 results. Use `--all-worktrees` for attached or imported worktrees in the same store, `--all-projects` for every project registered on this machine, and `--limit 0` for every result. Cross-project results identify their project and root; a project with an unusable index produces a warning without suppressing healthy results.
+
+Keyword search is offline. Add `--semantic` to also match on meaning, which reaches turns that share no words with the query. Keyword hits keep their full-text order and always rank above meaning-only hits, so an exact identifier is never displaced by a similar-sounding turn. The first semantic search downloads the 8 MB `minishlab/potion-base-2M` model from Hugging Face into the user cache. Recorded history never leaves the machine. Re-run `turnal reindex` inside a project whenever its newer activity is absent from results.
 
 ---
 
@@ -596,7 +600,9 @@ snapshot_deny_globs = [
 
 ## Privacy and storage
 
-Turnal does not upload recording data during normal recording. Event logs, snapshots, and the search index stay in the local Turnal store. The explicit [shared history](#shared-history) workflow is the only exception: it publishes an approved, privacy-filtered projection to a Git remote you configure, and it never publishes snapshots, patches, raw hook payloads, tool inputs, or tool outputs. The npm launcher may contact npm for an interactive update notice unless `TURNAL_NO_UPDATE_CHECK` is set.
+Turnal does not upload recording data during normal recording. Event logs, snapshots, and the search index stay in the local Turnal store. The explicit [shared history](#shared-history) workflow is the only exception: it publishes an approved, privacy-filtered projection to a Git remote you configure, and it never publishes snapshots, patches, raw hook payloads, tool inputs, or tool outputs.
+
+Two other features contact the network without sending recorded history. The first `turnal search --semantic` run downloads the `minishlab/potion-base-2M` model from Hugging Face into the user cache; the query and the turns it matches are embedded on this machine and are never sent. The npm launcher may contact npm for an interactive update notice unless `TURNAL_NO_UPDATE_CHECK` is set.
 
 | Layer | Contains | Policy |
 | --- | --- | --- |
@@ -793,18 +799,20 @@ turnal reindex [--quiet]
 Search indexed prompts, replies, tools, paths, and normalized event text.
 
 ```text
-turnal search QUERY [--session ID] [--all-worktrees]
-              [-n N] [--json]
+turnal search QUERY [--session ID] [--all-worktrees|--all-projects]
+              [--semantic] [-n N] [--json]
 ```
 
 | Flag | Description |
 | --- | --- |
 | `--session ID` | Restrict results to one session. |
 | `--all-worktrees` | Search attached and imported worktrees instead of only the current one. |
+| `--all-projects` | Search every healthy local project index registered on this machine. |
+| `--semantic` | Also match on meaning; downloads an 8 MB local model on first use. |
 | `-n, --limit N` | Maximum results; 0 shows all. Default: 20. |
 | `--json` | Emit structured ranked results. |
 
-Run `turnal reindex` after new activity. Every whitespace-separated query term must match.
+Run `turnal reindex` inside a project after new activity. Without `--semantic`, every whitespace-separated query term must match. Results report whether they matched by keyword, meaning, or both.
 
 ### `turnal rollback`
 

@@ -2,6 +2,7 @@ package index
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -124,5 +125,34 @@ func TestSearchFindsPromptToolPathAndEventOnlyTurns(t *testing.T) {
 	}
 	if len(filtered) != 0 {
 		t.Fatalf("filtered results = %#v, want none", filtered)
+	}
+
+	documents, err := store.SearchDocuments(SearchQuery{})
+	if err != nil {
+		t.Fatalf("SearchDocuments: %v", err)
+	}
+	if len(documents) != 2 {
+		t.Fatalf("search documents = %d, want every indexed turn", len(documents))
+	}
+	if documents[0].Result.TurnID != firstTurn {
+		t.Fatalf("first document turn = %s, want %s", documents[0].Result.TurnID, firstTurn)
+	}
+	if !strings.Contains(documents[0].Text, "update the app file") {
+		t.Fatalf("document text lost the prompt:\n%s", documents[0].Text)
+	}
+	// Meaning matching depends on a narrow document: keyword surfaces such as
+	// the model name, tool names, and paths must stay out of the embedded text.
+	for _, unwanted := range []string{"gpt-5.6-sol", "apply_patch", "app.txt", "codex"} {
+		if strings.Contains(documents[0].Text, unwanted) {
+			t.Fatalf("document text should not carry %q:\n%s", unwanted, documents[0].Text)
+		}
+	}
+
+	filteredDocuments, err := store.SearchDocuments(SearchQuery{Session: otherSession})
+	if err != nil {
+		t.Fatalf("SearchDocuments filtered: %v", err)
+	}
+	if len(filteredDocuments) != 0 {
+		t.Fatalf("filtered documents = %#v, want none", filteredDocuments)
 	}
 }

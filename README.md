@@ -244,6 +244,8 @@ Ignored and secrets-denied files are left untouched during checkpoint rollback. 
 
 Turnal stores history locally under `.turnal/` and does not upload it during normal recording. The explicit `turnal sync push` shared-history workflow is the exception. It publishes only the approved projection described above. Prompts and tool payloads can contain credentials or proprietary data, so review both the recording and publication policies before sensitive work.
 
+`turnal search --semantic` also contacts the network, but only to download its embedding model on first use. Queries and the turns they match are embedded on this machine and are never sent.
+
 Workspace configuration lives at `.turnal/config.toml`. Global defaults live at the platform-specific user configuration path, normally `~/.config/turnal/config.toml` on Linux.
 
 ```toml
@@ -313,6 +315,8 @@ turnal show <session>:<turn>             # Normalized events for one turn
 turnal show <session>:<turn> --full      # Include raw records/transcript text
 turnal diff <session>:<turn>             # Pre-to-post patch
 turnal search "authentication failure"  # Search the SQLite projection
+turnal search "push must fail open" --all-projects
+turnal search "why did sync block push" --all-projects --semantic
 turnal blame src/auth.go:42              # Agent intent behind a line
 turnal blame src/auth.go:42 --verbose    # Intent, evidence, human request, and action facts
 ```
@@ -328,6 +332,19 @@ turnal reindex
 ```
 
 Reindexing rebuilds SQLite from the event logs and private checkpoint refs.
+
+Search defaults to the current worktree. `--all-worktrees` broadens the query
+within its Turnal store; `--all-projects` searches the healthy indexes of every
+project registered on this machine and labels each result with its project and
+root. A project whose index is missing or stale is reported as a warning
+without suppressing results from the healthy ones.
+
+Keyword search remains the offline default. Add `--semantic` to also match on
+meaning, which finds turns that share no words with the query. Keyword hits
+always rank above meaning-only hits, and every result states which path found
+it. The first semantic search downloads the 8 MB `minishlab/potion-base-2M`
+model from Hugging Face into the user cache; Turnal sends no prompts,
+transcripts, tool data, or other recorded history.
 
 ### Local viewer
 

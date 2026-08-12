@@ -8,13 +8,14 @@ Use this reference after choosing an inspection operation. Run `turnal <command>
 turnal sessions [--json]
 turnal log [--session <session>] [--limit <n>] [--session-limit <n>]
 turnal log [--transcript] [--verbose] [--durable|--index]
-turnal search <query> [--session <session>] [--limit <n>] [--json] [--all-worktrees]
+turnal search <query> [--session <session>] [--limit <n>] [--json]
+              [--all-worktrees|--all-projects] [--semantic]
 ```
 
 - Prefer `sessions --json` when copying identifiers into later commands.
 - `log` is the readable checkpoint graph and has no JSON mode. `--all-worktrees` broadens it beyond the current worktree; `--worktree <wt-id>` selects one worktree. `--limit 0` and `--session-limit 0` mean unlimited. `--max-lanes` defaults to 8; `0` allows unlimited columns.
 - `log --durable` reads durable logs/checkpoints. `log --index` explicitly selects the disposable index. Do not pass both.
-- `search` requires a query, uses the disposable SQLite index, defaults to 20 results, and accepts `--limit 0` for all. `--all-worktrees` broadens the search beyond the current worktree. Run `turnal reindex` if Turnal reports a missing or stale index.
+- `search` requires a query, uses disposable SQLite indexes, defaults to 20 results, and accepts `--limit 0` for all. `--all-worktrees` covers one store; `--all-projects` covers registered local projects and works outside a Turnal workspace. Add `--semantic` when meaning matters more than shared terms; it downloads an 8 MB local model on first use and uploads no history. Keyword hits always rank above meaning-only hits, and each result reports which path matched it. Run `turnal reindex` inside a project when its index is missing or stale.
 
 ## Inspect one turn
 
