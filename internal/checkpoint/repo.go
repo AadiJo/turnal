@@ -2284,6 +2284,8 @@ type snapshotIndexEntry struct {
 	path snapshotPath
 }
 
+const maxSnapshotPathArgumentBytes = 8 << 10
+
 // snapshotIndexReader encodes index entries one at a time instead of retaining
 // a second, worktree-sized copy of the complete update-index payload.
 type snapshotIndexReader struct {
@@ -2431,8 +2433,6 @@ func (repo *Repo) collectSnapshotEntries(absDir, relDir, indexPath string, denyG
 }
 
 func (repo *Repo) hashSnapshotRegularFiles(indexPath string, entries []snapshotIndexEntry) error {
-	const maxPathArgumentBytes = 8 << 10
-
 	indices := make([]int, 0)
 	argumentBytes := 0
 	hashBatch := func() error {
@@ -2465,7 +2465,7 @@ func (repo *Repo) hashSnapshotRegularFiles(indexPath string, entries []snapshotI
 			continue
 		}
 		pathBytes := len(entries[index].path.String()) + 1
-		if len(indices) > 0 && argumentBytes+pathBytes > maxPathArgumentBytes {
+		if len(indices) > 0 && argumentBytes+pathBytes > maxSnapshotPathArgumentBytes {
 			if err := hashBatch(); err != nil {
 				return err
 			}

@@ -3,6 +3,9 @@ package checkpoint
 import (
 	"bytes"
 	"context"
+	"crypto/sha1"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -528,6 +531,54 @@ func TestCreateCheckpointPreservesLeadingDashPath(t *testing.T) {
 	}
 	if content != want {
 		t.Fatalf("content for %q = %q, want %q", name, content, want)
+	}
+}
+
+func TestCreateCheckpointPreservesContentsAcrossHashBatches(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	const fileCount = 240
+	wantContents := make(map[string]string, fileCount)
+	argumentBytes := 0
+	for index := range fileCount {
+		name := fmt.Sprintf("files/file-%03d-%s.txt", index, strings.Repeat("x", 80))
+		content := fmt.Sprintf("unique content %03d\n", index)
+		writeFile(t, root, name, content)
+		wantContents[name] = content
+		argumentBytes += len(name) + 1
+	}
+	if argumentBytes <= 2*maxSnapshotPathArgumentBytes {
+		t.Fatalf("fixture uses %d path argument bytes, want more than two %d-byte batches", argumentBytes, maxSnapshotPathArgumentBytes)
+	}
+
+	sessionID, _ := primitives.ParseSessionID("demo")
+	turnID, _ := primitives.NewTurnID(1)
+	checkpoint, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("CreateCheckpoint: %v", err)
+	}
+	entries, err := repo.ListCommitTree(checkpoint.Commit)
+	if err != nil {
+		t.Fatalf("ListCommitTree: %v", err)
+	}
+	if len(entries) != len(wantContents) {
+		t.Fatalf("tree entries = %d, want %d", len(entries), len(wantContents))
+	}
+	for _, entry := range entries {
+		content, ok := wantContents[entry.Path]
+		if !ok {
+			t.Fatalf("unexpected tree path %q", entry.Path)
+		}
+		wantObjectID := gitBlobObjectID(t, []byte(content), len(entry.ObjectID))
+		if entry.ObjectID != wantObjectID {
+			t.Fatalf("object id for %q = %s, want %s", entry.Path, entry.ObjectID, wantObjectID)
+		}
 	}
 }
 
@@ -1220,6 +1271,22 @@ func writeBytes(t *testing.T, root primitives.WorkspaceRoot, relPath string, con
 	}
 	if err := os.Chmod(path, mode); err != nil {
 		t.Fatalf("chmod %s: %v", relPath, err)
+	}
+}
+
+func gitBlobObjectID(t *testing.T, content []byte, encodedLength int) string {
+	t.Helper()
+	object := append([]byte(fmt.Sprintf("blob %d\x00", len(content))), content...)
+	switch encodedLength {
+	case sha1.Size * 2:
+		digest := sha1.Sum(object) // Git object identity, not a security primitive.
+		return hex.EncodeToString(digest[:])
+	case sha256.Size * 2:
+		digest := sha256.Sum256(object)
+		return hex.EncodeToString(digest[:])
+	default:
+		t.Fatalf("unsupported Git object id length %d", encodedLength)
+		return ""
 	}
 }
 
