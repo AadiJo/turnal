@@ -3,6 +3,11 @@ package checkpoint
 import (
 	"bytes"
 	"context"
+	"crypto/sha1"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,7 +20,7 @@ import (
 	"github.com/AadiJo/turnal/internal/primitives"
 )
 
-func requireGit(t *testing.T) {
+func requireGit(t testing.TB) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git executable not found")
@@ -465,6 +470,198 @@ func TestCreateCheckpointStoresSymlinkWithoutFollowing(t *testing.T) {
 	}
 	if content != "target.txt" {
 		t.Fatalf("symlink blob = %q, want link target", content)
+	}
+}
+
+func TestSnapshotIndexReaderStreamsEntries(t *testing.T) {
+	firstBlob, err := primitives.ParseGitObjectID(strings.Repeat("a", 40))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondBlob, err := primitives.ParseGitObjectID(strings.Repeat("b", 40))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := &snapshotIndexReader{entries: []snapshotIndexEntry{
+		{mode: primitives.GitFileModeRegular, blob: firstBlob, path: snapshotPath("first.txt")},
+		{mode: primitives.GitFileModeSymlink, blob: secondBlob, path: snapshotPath("line\nbreak")},
+	}}
+
+	var output bytes.Buffer
+	buffer := make([]byte, 7)
+	for {
+		count, readErr := reader.Read(buffer)
+		output.Write(buffer[:count])
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			t.Fatalf("read index input: %v", readErr)
+		}
+	}
+	want := "100644 " + firstBlob.String() + "\tfirst.txt\x00" +
+		"120000 " + secondBlob.String() + "\tline\nbreak\x00"
+	if output.String() != want {
+		t.Fatalf("index input = %q, want %q", output.String(), want)
+	}
+}
+
+func TestCreateCheckpointPreservesLeadingDashPath(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	const name = "-leading.txt"
+	const want = "leading dash\n"
+	writeFile(t, root, name, want)
+
+	sessionID, _ := primitives.ParseSessionID("demo")
+	turnID, _ := primitives.NewTurnID(1)
+	checkpoint, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("CreateCheckpoint: %v", err)
+	}
+	content, err := runHiddenGit(repo, "", "show", checkpoint.Commit.String()+":"+name)
+	if err != nil {
+		t.Fatalf("show %q: %v", name, err)
+	}
+	if content != want {
+		t.Fatalf("content for %q = %q, want %q", name, content, want)
+	}
+}
+
+func TestCreateCheckpointPreservesContentsAcrossHashBatches(t *testing.T) {
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	const fileCount = 240
+	wantContents := make(map[string]string, fileCount)
+	argumentBytes := 0
+	for index := range fileCount {
+		name := fmt.Sprintf("files/file-%03d-%s.txt", index, strings.Repeat("x", 80))
+		content := fmt.Sprintf("unique content %03d\n", index)
+		writeFile(t, root, name, content)
+		wantContents[name] = content
+		argumentBytes += len(name) + 1
+	}
+	if argumentBytes <= 2*maxSnapshotPathArgumentBytes {
+		t.Fatalf("fixture uses %d path argument bytes, want more than two %d-byte batches", argumentBytes, maxSnapshotPathArgumentBytes)
+	}
+
+	sessionID, _ := primitives.ParseSessionID("demo")
+	turnID, _ := primitives.NewTurnID(1)
+	checkpoint, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("CreateCheckpoint: %v", err)
+	}
+	entries, err := repo.ListCommitTree(checkpoint.Commit)
+	if err != nil {
+		t.Fatalf("ListCommitTree: %v", err)
+	}
+	if len(entries) != len(wantContents) {
+		t.Fatalf("tree entries = %d, want %d", len(entries), len(wantContents))
+	}
+	for _, entry := range entries {
+		content, ok := wantContents[entry.Path]
+		if !ok {
+			t.Fatalf("unexpected tree path %q", entry.Path)
+		}
+		wantObjectID := gitBlobObjectID(t, []byte(content), len(entry.ObjectID))
+		if entry.ObjectID != wantObjectID {
+			t.Fatalf("object id for %q = %s, want %s", entry.Path, entry.ObjectID, wantObjectID)
+		}
+	}
+}
+
+func TestCreateCheckpointPreservesUnusualPaths(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("control characters are not portable Windows path names")
+	}
+	requireGit(t)
+
+	root := workspaceRoot(t)
+	repo, err := Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	writeFile(t, root, ".gitignore", "*.tmp\n")
+	files := map[string]string{
+		"\"quoted.txt\"":      "quoted\n",
+		"ends-carriage.txt\r": "carriage return\n",
+		"line\nbreak.txt":     "newline\n",
+		"tab\tseparated.txt":  "tab\n",
+	}
+	for name, content := range files {
+		writeFile(t, root, name, content)
+	}
+	ignored := "ignored\noutput.tmp"
+	writeFile(t, root, ignored, "ignored\n")
+
+	sessionID, _ := primitives.ParseSessionID("demo")
+	turnID, _ := primitives.NewTurnID(1)
+	checkpoint, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
+	if err != nil {
+		t.Fatalf("CreateCheckpoint: %v", err)
+	}
+
+	for name, want := range files {
+		content, err := runHiddenGit(repo, "", "show", checkpoint.Commit.String()+":"+name)
+		if err != nil {
+			t.Fatalf("show %q: %v", name, err)
+		}
+		if content != want {
+			t.Fatalf("content for %q = %q, want %q", name, content, want)
+		}
+	}
+	if _, err := runHiddenGit(repo, "", "show", checkpoint.Commit.String()+":"+ignored); err == nil {
+		t.Fatalf("%q was captured, want gitignored", ignored)
+	}
+}
+
+func BenchmarkSnapshotWorktree(b *testing.B) {
+	requireGit(b)
+
+	for _, fileCount := range []int{100, 500, 1000} {
+		b.Run(fmt.Sprintf("files=%d", fileCount), func(b *testing.B) {
+			b.Setenv("TURNAL_STATE_DIR", b.TempDir())
+			root, err := primitives.ParseWorkspaceRoot(b.TempDir())
+			if err != nil {
+				b.Fatalf("ParseWorkspaceRoot: %v", err)
+			}
+			repo, err := Init(root)
+			if err != nil {
+				b.Fatalf("Init: %v", err)
+			}
+			filesDir := filepath.Join(root.String(), "files")
+			if err := os.Mkdir(filesDir, 0o755); err != nil {
+				b.Fatalf("create files dir: %v", err)
+			}
+			for index := range fileCount {
+				path := filepath.Join(filesDir, fmt.Sprintf("file-%06d", index))
+				if err := os.WriteFile(path, nil, 0o644); err != nil {
+					b.Fatalf("write fixture: %v", err)
+				}
+			}
+
+			b.ResetTimer()
+			for range b.N {
+				_, cleanup, err := repo.snapshotWorktreeTree()
+				if err != nil {
+					b.Fatalf("snapshotWorktreeTree: %v", err)
+				}
+				cleanup()
+			}
+		})
 	}
 }
 
@@ -1074,6 +1271,22 @@ func writeBytes(t *testing.T, root primitives.WorkspaceRoot, relPath string, con
 	}
 	if err := os.Chmod(path, mode); err != nil {
 		t.Fatalf("chmod %s: %v", relPath, err)
+	}
+}
+
+func gitBlobObjectID(t *testing.T, content []byte, encodedLength int) string {
+	t.Helper()
+	object := append([]byte(fmt.Sprintf("blob %d\x00", len(content))), content...)
+	switch encodedLength {
+	case sha1.Size * 2:
+		digest := sha1.Sum(object) // Git object identity, not a security primitive.
+		return hex.EncodeToString(digest[:])
+	case sha256.Size * 2:
+		digest := sha256.Sum256(object)
+		return hex.EncodeToString(digest[:])
+	default:
+		t.Fatalf("unsupported Git object id length %d", encodedLength)
+		return ""
 	}
 }
 

@@ -2265,6 +2265,62 @@ func (repo *Repo) validatePrivateRef(ref string) (string, error) {
 	return ref, nil
 }
 
+// snapshotPath is a slash-separated path exactly as Git sees it. It remains a
+// separate type from primitives.RepoPath because repository filenames may
+// legitimately contain backslashes and other unusual bytes on Unix.
+type snapshotPath string
+
+func newSnapshotPath(relPath string) snapshotPath {
+	return snapshotPath(filepath.ToSlash(relPath))
+}
+
+func (repoPath snapshotPath) String() string {
+	return string(repoPath)
+}
+
+type snapshotIndexEntry struct {
+	mode primitives.GitFileMode
+	blob primitives.GitObjectID
+	path snapshotPath
+}
+
+const maxSnapshotPathArgumentBytes = 8 << 10
+
+// snapshotIndexReader encodes index entries one at a time instead of retaining
+// a second, worktree-sized copy of the complete update-index payload.
+type snapshotIndexReader struct {
+	entries []snapshotIndexEntry
+	pending string
+	offset  int
+}
+
+func (reader *snapshotIndexReader) Read(destination []byte) (int, error) {
+	if len(destination) == 0 {
+		return 0, nil
+	}
+
+	written := 0
+	for written < len(destination) {
+		if reader.offset == len(reader.pending) {
+			if len(reader.entries) == 0 {
+				if written == 0 {
+					return 0, io.EOF
+				}
+				return written, nil
+			}
+			entry := reader.entries[0]
+			reader.entries = reader.entries[1:]
+			reader.pending = entry.mode.String() + " " + entry.blob.String() + "\t" + entry.path.String() + "\x00"
+			reader.offset = 0
+		}
+
+		copied := copy(destination[written:], reader.pending[reader.offset:])
+		written += copied
+		reader.offset += copied
+	}
+	return written, nil
+}
+
 func (repo *Repo) snapshotWorktree(indexPath string) (map[string]fs.FileMode, error) {
 	root := repo.WorkspaceRoot.String()
 	denyGlobs, err := repo.secretDenyGlobs()
@@ -2272,83 +2328,157 @@ func (repo *Repo) snapshotWorktree(indexPath string) (map[string]fs.FileMode, er
 		return nil, err
 	}
 	modes := make(map[string]fs.FileMode)
-	err = filepath.WalkDir(root, func(absPath string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
+	entries := make([]snapshotIndexEntry, 0)
+	if err := repo.collectSnapshotEntries(root, "", indexPath, denyGlobs, modes, &entries); err != nil {
+		return nil, err
+	}
+	if err := repo.hashSnapshotRegularFiles(indexPath, entries); err != nil {
+		return nil, err
+	}
+	if len(entries) == 0 {
+		return modes, nil
+	}
 
-		relPath, err := filepath.Rel(root, absPath)
-		if err != nil {
-			return fmt.Errorf("relative path for %s: %w", absPath, err)
-		}
-		if relPath == "." {
-			return nil
-		}
+	indexInput := &snapshotIndexReader{entries: entries}
+	if _, err := runHiddenGitWithInput(repo, indexPath, indexInput, "update-index", "-z", "--index-info"); err != nil {
+		return nil, fmt.Errorf("update snapshot index with %d entries: %w", len(entries), err)
+	}
+	return modes, nil
+}
 
-		repoPath := filepath.ToSlash(relPath)
-		if excludedPath(repoPath) {
-			if entry.IsDir() {
-				return fs.SkipDir
+func (repo *Repo) collectSnapshotEntries(absDir, relDir, indexPath string, denyGlobs []string, modes map[string]fs.FileMode, snapshotEntries *[]snapshotIndexEntry) error {
+	dirEntries, err := os.ReadDir(absDir)
+	if err != nil {
+		displayDir := filepath.ToSlash(relDir)
+		if displayDir == "" {
+			displayDir = "."
+		}
+		return fmt.Errorf("read snapshot directory %s: %w", displayDir, err)
+	}
+
+	type candidate struct {
+		entry    fs.DirEntry
+		absPath  string
+		relPath  string
+		repoPath snapshotPath
+	}
+	candidates := make([]candidate, 0, len(dirEntries))
+	paths := make([]snapshotPath, 0, len(dirEntries))
+	for _, entry := range dirEntries {
+		relPath := filepath.Join(relDir, entry.Name())
+		repoPath := newSnapshotPath(relPath)
+		if excludedPath(repoPath.String()) || secretDeniedPath(repoPath.String(), denyGlobs) {
+			continue
+		}
+		candidates = append(candidates, candidate{
+			entry:    entry,
+			absPath:  filepath.Join(absDir, entry.Name()),
+			relPath:  relPath,
+			repoPath: repoPath,
+		})
+		paths = append(paths, repoPath)
+	}
+
+	ignored, err := repo.gitignoredPaths(indexPath, paths)
+	if err != nil {
+		displayDir := filepath.ToSlash(relDir)
+		if displayDir == "" {
+			displayDir = "."
+		}
+		return fmt.Errorf("check ignored snapshot paths in %s: %w", displayDir, err)
+	}
+	for _, candidate := range candidates {
+		if ignored[candidate.repoPath] {
+			continue
+		}
+		if candidate.entry.IsDir() {
+			if err := repo.collectSnapshotEntries(candidate.absPath, candidate.relPath, indexPath, denyGlobs, modes, snapshotEntries); err != nil {
+				return err
 			}
-			return nil
-		}
-		if secretDeniedPath(repoPath, denyGlobs) {
-			if entry.IsDir() {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		ignored, err := repo.gitignoredPath(indexPath, repoPath)
-		if err != nil {
-			return err
-		}
-		if ignored {
-			if entry.IsDir() {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if entry.IsDir() {
-			return nil
+			continue
 		}
 
-		info, err := entry.Info()
+		info, err := candidate.entry.Info()
 		if err != nil {
-			return fmt.Errorf("stat %s: %w", repoPath, err)
+			return fmt.Errorf("stat %s: %w", candidate.repoPath, err)
 		}
-
-		var mode string
-		var blob string
 		switch {
 		case info.Mode().IsRegular():
-			modes[repoPath] = info.Mode()
-			mode = gitRegularFileMode(info.Mode())
-			output, err := runHiddenGit(repo, indexPath, "hash-object", "-w", "--no-filters", "--", repoPath)
-			if err != nil {
-				return err
-			}
-			blob = strings.TrimSpace(output)
+			modes[candidate.repoPath.String()] = info.Mode()
+			*snapshotEntries = append(*snapshotEntries, snapshotIndexEntry{
+				mode: gitRegularFileMode(info.Mode()),
+				path: candidate.repoPath,
+			})
 		case info.Mode()&os.ModeSymlink != 0:
-			target, err := os.Readlink(absPath)
+			target, err := os.Readlink(candidate.absPath)
 			if err != nil {
-				return fmt.Errorf("read symlink %s: %w", repoPath, err)
+				return fmt.Errorf("read symlink %s: %w", candidate.repoPath, err)
 			}
-			mode = "120000"
 			output, err := runHiddenGitWithInput(repo, indexPath, strings.NewReader(target), "hash-object", "-w", "--stdin")
 			if err != nil {
-				return err
+				return fmt.Errorf("hash snapshot symlink %s: %w", candidate.repoPath, err)
 			}
-			blob = strings.TrimSpace(output)
-		default:
-			return nil
+			objectID, err := primitives.ParseGitObjectID(output)
+			if err != nil {
+				return fmt.Errorf("parse snapshot symlink blob id for %s: %w", candidate.repoPath, err)
+			}
+			*snapshotEntries = append(*snapshotEntries, snapshotIndexEntry{
+				mode: primitives.GitFileModeSymlink,
+				blob: objectID,
+				path: candidate.repoPath,
+			})
 		}
+	}
+	return nil
+}
 
-		if _, err := runHiddenGit(repo, indexPath, "update-index", "--add", "--cacheinfo", mode, blob, repoPath); err != nil {
-			return err
+func (repo *Repo) hashSnapshotRegularFiles(indexPath string, entries []snapshotIndexEntry) error {
+	indices := make([]int, 0)
+	argumentBytes := 0
+	hashBatch := func() error {
+		args := []string{"hash-object", "-w", "--no-filters", "--"}
+		for _, index := range indices {
+			args = append(args, entries[index].path.String())
+		}
+		firstPath := entries[indices[0]].path
+		lastPath := entries[indices[len(indices)-1]].path
+		output, err := runHiddenGit(repo, indexPath, args...)
+		if err != nil {
+			return fmt.Errorf("hash snapshot file batch %q through %q: %w", firstPath, lastPath, err)
+		}
+		hashes := strings.Fields(output)
+		if len(hashes) != len(indices) {
+			return fmt.Errorf("git hash-object returned %d hashes for %d snapshot paths %q through %q", len(hashes), len(indices), firstPath, lastPath)
+		}
+		for offset, hash := range hashes {
+			objectID, err := primitives.ParseGitObjectID(hash)
+			if err != nil {
+				return fmt.Errorf("parse snapshot blob id for %s: %w", entries[indices[offset]].path, err)
+			}
+			entries[indices[offset]].blob = objectID
 		}
 		return nil
-	})
-	return modes, err
+	}
+
+	for index := range entries {
+		if entries[index].blob != "" {
+			continue
+		}
+		pathBytes := len(entries[index].path.String()) + 1
+		if len(indices) > 0 && argumentBytes+pathBytes > maxSnapshotPathArgumentBytes {
+			if err := hashBatch(); err != nil {
+				return err
+			}
+			indices = indices[:0]
+			argumentBytes = 0
+		}
+		indices = append(indices, index)
+		argumentBytes += pathBytes
+	}
+	if len(indices) == 0 {
+		return nil
+	}
+	return hashBatch()
 }
 
 type modeManifest struct {
@@ -2480,6 +2610,56 @@ func (repo *Repo) gitignoredPath(indexPath string, repoPath string) (bool, error
 	return false, fmt.Errorf("git check-ignore --quiet --no-index -- %s: %w\n%s", repoPath, err, strings.TrimSpace(string(output)))
 }
 
+func (repo *Repo) gitignoredPaths(indexPath string, repoPaths []snapshotPath) (map[snapshotPath]bool, error) {
+	ignored := make(map[snapshotPath]bool)
+	if len(repoPaths) == 0 {
+		return ignored, nil
+	}
+
+	wanted := make(map[snapshotPath]bool, len(repoPaths))
+	var input bytes.Buffer
+	for _, repoPath := range repoPaths {
+		wanted[repoPath] = true
+		input.WriteString(repoPath.String())
+		input.WriteByte(0)
+	}
+
+	cmd := exec.Command("git", "check-ignore", "--no-index", "--stdin", "-z")
+	cmd.Dir = repo.WorkspaceRoot.String()
+	cmd.Stdin = &input
+	cmd.Env = append(cleanGitEnv(os.Environ()),
+		"GIT_DIR="+repo.GitDir,
+		"GIT_WORK_TREE="+repo.WorkspaceRoot.String(),
+		"GIT_INDEX_FILE="+indexPath,
+	)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+			return nil, fmt.Errorf("git check-ignore --no-index --stdin -z: %w\n%s", err, strings.TrimSpace(stderr.String()))
+		}
+	}
+
+	output := stdout.Bytes()
+	for len(output) > 0 {
+		end := bytes.IndexByte(output, 0)
+		if end < 0 {
+			return nil, fmt.Errorf("git check-ignore returned an unterminated path")
+		}
+		path := snapshotPath(output[:end])
+		if !wanted[path] {
+			return nil, fmt.Errorf("git check-ignore returned unexpected path %q", path)
+		}
+		ignored[path] = true
+		output = output[end+1:]
+	}
+	return ignored, nil
+}
+
 func excludedPath(repoPath string) bool {
 	for _, segment := range strings.Split(repoPath, "/") {
 		if strings.EqualFold(segment, ".git") || strings.EqualFold(segment, metadataDirName) {
@@ -2493,11 +2673,11 @@ func secretDeniedPath(repoPath string, patterns []string) bool {
 	return snapshotpolicy.Denied(repoPath, patterns)
 }
 
-func gitRegularFileMode(mode fs.FileMode) string {
+func gitRegularFileMode(mode fs.FileMode) primitives.GitFileMode {
 	if mode&0o111 != 0 {
-		return "100755"
+		return primitives.GitFileModeExecutable
 	}
-	return "100644"
+	return primitives.GitFileModeRegular
 }
 
 func phaseRank(phase primitives.CheckpointPhase) int {
