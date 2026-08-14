@@ -1,44 +1,61 @@
 /* Turnal Prism.
    Structure follows GitHub and Codeberg: a project index, page-level tabs,
-   bordered file boxes, and a blame view. Surface language follows Cursor:
-   warm-neutral charcoal, near-monochrome, hairline borders, generous radii,
-   filled row selection with no accent bar, and one inverted primary action.
-   The only saturated color is the in-progress indicator. */
+   bordered file boxes, and a blame view. Surface language follows the palette
+   in Snakestongue/FRC-Programming-Practice: a cool near-neutral ramp on a black
+   canvas, hairline translucent borders, generous radii, filled row selection
+   with no accent bar, and a periwinkle accent that carries primary actions and
+   selected controls. Lightness and chroma are held in oklch so the ramp stays
+   perceptually even, which is how the source theme defines it.
+
+   Fonts are named but never fetched. Prism sends a restrictive CSP and makes no
+   remote requests, so Manrope and JetBrains Mono apply when the reader already
+   has them and fall back to system faces otherwise. */
 
 :root {
   color-scheme: dark;
 
+  /* Page canvas stays true black. It sits a hair under the source theme's
+     --canvas-deep, and every surface above it comes from the same hue. */
   --bg: #000000;
-  --rail: #1e1c1f;
-  --sidebar: #211f23;
-  --surface: #232126;
-  --surface-raised: #29262b;
-  --surface-hover: #2e2b31;
-  --surface-selected: #332f36;
+  --rail: oklch(0.145 0.003 260);
+  --sidebar: oklch(0.16 0.004 260);
+  --surface: oklch(0.17 0.004 260);
+  --surface-raised: oklch(0.205 0.004 260);
+  --surface-hover: oklch(0.24 0.004 260);
+  --surface-selected: oklch(0.28 0.004 260);
 
-  --line: #2b282d;
-  --line-strong: #3a363d;
+  --line: oklch(0.31 0.004 260 / 0.66);
+  --line-strong: oklch(0.5 0.004 260);
 
-  --text: #ffffff;
-  --text-soft: #b9b5bd;
-  --muted: #8a858f;
-  --quiet: #615d68;
+  --text: oklch(0.96 0.003 260);
+  --text-soft: oklch(0.78 0.004 260);
+  --muted: oklch(0.62 0.005 260);
+  --quiet: oklch(0.5 0.004 260);
 
-  /* The only saturated color in the interface: still recording. */
-  --rec: #ff4f00;
+  /* Primary actions, selected marks, and the one link-colored affordance. */
+  --accent: oklch(0.71 0.129 265);
+  --focus: oklch(0.98 0.002 260);
 
-  /* Diff colors are desaturated to sit inside a monochrome shell. */
-  --plus: #7fae7a;
-  --plus-bg: rgba(110, 158, 104, 0.11);
-  --minus: #cf7f84;
-  --minus-bg: rgba(190, 112, 118, 0.11);
-  --warning: #c9a25f;
-  --purple: #a99bc4;
-  --blue: #8098b5;
+  /* Still recording. Shares the danger hue rather than introducing a color the
+     source palette does not have. */
+  --rec: oklch(0.7 0.17 25);
 
-  --radius: 12px;
-  --radius-control: 9px;
-  --radius-row: 8px;
+  --plus: oklch(0.76 0.13 155);
+  --plus-bg: oklch(0.76 0.13 155 / 0.12);
+  --minus: oklch(0.7 0.17 25);
+  --minus-bg: oklch(0.7 0.17 25 / 0.12);
+  --warning: oklch(0.79 0.13 85);
+  --purple: oklch(0.73 0.11 300);
+  --blue: oklch(0.71 0.129 265);
+
+  --radius: 0.75rem;
+  --radius-control: 0.5rem;
+  --radius-row: 0.45rem;
+
+  --shadow-raised:
+    0 0 0 1px oklch(0.03 0.002 260 / 0.5),
+    0 18px 50px -26px oklch(0.02 0.002 260 / 0.86);
+  --ease-out: cubic-bezier(0.32, 0.72, 0, 1);
 
   --row: 28px;
   --gutter: 108px;
@@ -49,11 +66,14 @@
   --tabs-h: 44px;
   --stick: 96px;
 
-  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --mono: ui-monospace, "SFMono-Regular", "Cascadia Code", Consolas, monospace;
+  --sans: "Manrope", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", "Cascadia Code",
+    Consolas, monospace;
 
   font-family: var(--sans);
   text-rendering: optimizeLegibility;
+  font-synthesis: none;
 }
 
 * {
@@ -71,6 +91,12 @@ body {
   min-height: 100dvh;
   font-size: 13.5px;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background: oklch(0.92 0.003 260 / 0.28);
+  color: var(--text);
 }
 
 a {
@@ -90,8 +116,8 @@ button {
 button:focus-visible,
 a:focus-visible,
 [tabindex]:focus-visible {
-  outline: 1px solid var(--line-strong);
-  outline-offset: 1px;
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 
 code,
@@ -285,15 +311,23 @@ kbd {
   color: var(--text);
 }
 
-/* Inverted primary, the one high-contrast control. */
+/* The source theme's .primary-action: accent fill on the deepest canvas. The
+   label stays on one line; at weight 600 it is wide enough to wrap in the
+   dialog footer otherwise. */
 .primary {
   height: 28px;
   padding: 0 13px;
   border-radius: var(--radius-control);
-  background: var(--text);
-  color: var(--bg);
+  background: var(--accent);
+  color: oklch(0.085 0.002 260);
   font-size: 12.5px;
-  font-weight: 500;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: opacity 140ms var(--ease-out);
+}
+
+.primary:hover:not(:disabled) {
+  opacity: 0.85;
 }
 
 /* ---------- repo / session rows ---------- */
@@ -614,7 +648,7 @@ kbd {
   line-height: 1.55;
   text-align: left;
   white-space: normal;
-  box-shadow: 0 12px 28px #00000080;
+  box-shadow: var(--shadow-raised);
   transform: translateX(-50%);
   opacity: 0;
   visibility: hidden;
@@ -1243,25 +1277,26 @@ kbd {
   border-bottom: 0;
 }
 
-/* Age is a neutral ramp: recency, not identity. */
+/* Age is a neutral ramp: recency, not identity. Steps are even in oklch
+   lightness so the four bands read as equal intervals. */
 .age {
   background: var(--line);
 }
 
 .age.a1 {
-  background: #8a858f;
+  background: oklch(0.62 0.005 260);
 }
 
 .age.a2 {
-  background: #605c66;
+  background: oklch(0.5 0.004 260);
 }
 
 .age.a3 {
-  background: #423e47;
+  background: oklch(0.38 0.004 260);
 }
 
 .age.a4 {
-  background: #2b282d;
+  background: oklch(0.26 0.004 260);
 }
 
 .attrib {
@@ -1557,7 +1592,7 @@ kbd {
 .scrim {
   position: relative;
   border-radius: var(--radius);
-  background: rgba(10, 9, 11, 0.55);
+  background: oklch(0.085 0.002 260 / 0.55);
   padding: 40px 20px;
   display: grid;
   place-items: start center;
@@ -1571,7 +1606,7 @@ kbd {
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
   background: var(--surface);
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--shadow-raised);
   overflow: hidden;
 }
 
@@ -1689,12 +1724,16 @@ kbd {
   place-items: center;
 }
 
+.radio.on .mk {
+  border-color: var(--accent);
+}
+
 .radio.on .mk::after {
   content: "";
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--text);
+  background: var(--accent);
 }
 
 .radio .body strong {
@@ -1737,9 +1776,9 @@ kbd {
 }
 
 .check.on .mk {
-  background: var(--text);
-  border-color: var(--text);
-  color: var(--bg);
+  background: var(--accent);
+  border-color: var(--accent);
+  color: oklch(0.085 0.002 260);
 }
 
 .check .body strong {
@@ -1906,7 +1945,7 @@ kbd {
   z-index: 40;
   border: 0;
   border-radius: 0;
-  background: rgba(9, 8, 10, 0.72);
+  background: oklch(0.085 0.002 260 / 0.72);
   padding: 8vh 20px 20px;
   overflow: auto;
 }
