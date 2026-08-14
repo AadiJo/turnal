@@ -369,6 +369,15 @@ func projectEvent(workspaceRoot string, policy policyFile, event eventlog.Event,
 	case primitives.EventTypeError:
 		projection.CaptureError = &CaptureErrorProjection{Kind: "capture_error"}
 		omissions["error_message"]++
+	case primitives.EventTypeNoteCreate, primitives.EventTypeNoteDelete:
+		// Notes are published on their own ref under their own approved policy.
+		// A note must never ride a turn bundle: a turn published before its note
+		// was written could not carry it, so including it here would make the
+		// wire representation depend on publication timing. Notes also live in a
+		// separate log that stream enumeration never reaches, so this case is a
+		// guard against a future writer, not a reachable path today.
+		omissions["note_channel"]++
+		return ContextEvent{}, false, nil
 	default:
 		omissions["event_type:"+event.Type.String()]++
 		return ContextEvent{}, false, nil

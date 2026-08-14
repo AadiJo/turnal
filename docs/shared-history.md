@@ -95,6 +95,33 @@ It cannot contain snapshots, patches, file bodies, raw provider payloads, tool c
 
 Every manifest labels its evidence as `publisher_attested_projection`. Source event hashes are correlation references so the publishing device can re-derive the projection from private history. They are not third-party proof of source bytes that were never published.
 
+## Reviewer notes
+
+Notes publish on a separate channel with a separate policy and its own ref namespace:
+
+```sh
+turnal share notes enable --prompt-mode redacted_text
+turnal share notes preview <note-id> --json
+turnal share notes preview <note-id> --approve
+turnal sync notes push
+turnal sync notes pull
+turnal share notes list [--session <session>] [--references <locator>]
+```
+
+The separation is deliberate. Turn bundles are turn-shaped and immutable: a manifest names one session, turn, and source sequence range. A note fits none of that. It may discuss a turn the publishing device never recorded, it has no lifecycle or checkpoint range of its own, and hiding one has to be a second publication rather than a rewrite of the first.
+
+Putting notes on the turn-context ref would therefore have widened the `turnal-context-v2` allowlist and forced every existing publisher to re-approve a channel they never enabled, while any teammate running a build that predates notes would have quarantined the publisher for sending an event it could not decode. Instead notes use `refs/turnal/v1/notes/<device-id>` and a `turnal-notes-v1` allowlist approved on its own. Existing publishers keep their turn-context approval untouched, and a receiver that predates notes enumerates only `refs/turnal/v1/history/`, so it pulls turn context normally and never sees this channel.
+
+Enabling notes requires shared history to be configured first, and inherits its remote and repository. Publishing notes to a different project than the turns they discuss would produce references that can never resolve.
+
+Note sharing is opt-in on its own: `turnal note` records locally whether or not this channel is enabled, and nothing is published until you enable it and approve its policy hash.
+
+A note bundle can contain the note id, the target turn coordinate, the reviewed turn locator, note text according to policy, and the anchored path and line range. It cannot contain the anchor digest or the author label. The digest binds file content, so publishing it would let a receiver confirm guessed line contents by comparison; the author label is self-asserted and frequently a personal email address, and the manifest's device signature is the only attestation this channel can honestly make. Both are recorded as typed `note_anchor_digest` and `note_author` omissions. A note whose body the local secrets policy withheld is never publishable at all.
+
+Creating and hiding a note are separate immutable publications keyed on the note and the operation, so a removal never rewrites the create it hides. A receiver folds them and stops listing the note, and only the publishing device's own removal hides its own note. `turnal note remove` followed by `turnal sync notes push` therefore asks teammates to hide a note; it cannot erase the copy they already pulled, and the create remains in the publisher's signed Git history permanently.
+
+`references` names the turn-context bundle a note replies to and is inside the signed manifest payload. Leaving it unsigned would let anyone with write access to the remote retarget a signed note at a different turn. `turnal share show <locator>` lists notes replying to that turn, and `turnal share notes list --references <locator>` does the same directly. A note that references a bundle not present locally is still listed rather than hidden, because arrival order across devices is not guaranteed.
+
 ## Failure and recovery
 
 The isolated repository beneath `.turnal/shared-history/repository/` is a crash-safe local outbox. A network failure leaves its commit queued for a later `turnal sync push`. If Turnal stops after committing a batch but before updating local state, the next push reconstructs the outbox from the signed local tip.
