@@ -79,6 +79,59 @@ func TestNoteDoesNotTouchTheAgentStream(t *testing.T) {
 	}
 }
 
+// A caller that retries after a reported failure must not record a second copy
+// of a note that is already durable. Reusing the note id is what makes the
+// retry idempotent; without it each attempt mints a fresh identity.
+func TestRecordWithReusedNoteIDIsIdempotent(t *testing.T) {
+	root, repo := newNoteRepo(t)
+	sessionID := noteSessionID(t, "demo")
+	captureTurn(t, repo, root, sessionID, 1, "app.txt", "alpha\n")
+	resolved := resolveTurn(t, repo, sessionID, 1)
+
+	noteID, err := primitives.NewNoteID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := RecordInput{Target: resolved.Target, Text: "recorded once", NoteID: noteID}
+	first, err := Record(repo, input)
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	// The caller saw a failure from a later step and retried the same command.
+	second, err := Record(repo, input)
+	if err != nil {
+		t.Fatalf("Record retry: %v", err)
+	}
+	if second.NoteID != first.NoteID || second.Seq != first.Seq {
+		t.Fatalf("retry recorded a different note: %#v, want %#v", second, first)
+	}
+	listed, err := ForTurn(repo, sessionID, resolved.Target.TurnID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("retry produced %d notes, want 1", len(listed))
+	}
+}
+
+// The anchor path is rendered beside note text, and ParseRepoPath permits
+// control characters other than NUL, so a terminal escape must be refused when
+// the note is recorded rather than only escaped at each render site.
+func TestRecordRejectsControlCharactersInAnchorPath(t *testing.T) {
+	root, repo := newNoteRepo(t)
+	sessionID := noteSessionID(t, "demo")
+	captureTurn(t, repo, root, sessionID, 1, "app.txt", "alpha\n")
+	resolved := resolveTurn(t, repo, sessionID, 1)
+
+	evil, err := primitives.ParseRepoPath("src/\x1b[31mevil.go")
+	if err != nil {
+		t.Fatalf("ParseRepoPath accepted the path under test: %v", err)
+	}
+	if _, err := Record(repo, RecordInput{Target: resolved.Target, Text: "x", Path: evil}); err == nil {
+		t.Fatal("anchor path containing a terminal escape was accepted")
+	}
+}
+
 func TestRecordRejectsUnknownTurn(t *testing.T) {
 	_, repo := newNoteRepo(t)
 	if _, err := ResolveLocalTurn(repo, noteSessionID(t, "demo"), noteTurnID(t, 9), ""); err == nil {

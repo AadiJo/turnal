@@ -342,12 +342,18 @@ func (log Log) append(input AppendInput, requireUniqueSourceID bool) (Event, boo
 	if err := file.Sync(); err != nil {
 		return Event{}, false, fmt.Errorf("sync event log: %w", err)
 	}
+	// The event is durable from here on. Tail state and source markers are
+	// derived caches that both readPath and FindSourceID rebuild on a miss, so
+	// failing the append for them would report failure for work that actually
+	// succeeded. A caller acting on that error retries, and an idempotency key it
+	// generated per attempt would then create a duplicate of a note, case, or
+	// checkpoint event that is already recorded.
 	if err := log.writeTailState(path, event); err != nil {
-		return Event{}, false, err
+		return event, true, nil
 	}
 	if event.SourceID != "" {
 		if err := log.writeSourceMarker(event); err != nil {
-			return Event{}, false, err
+			return event, true, nil
 		}
 	}
 

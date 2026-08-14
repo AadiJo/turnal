@@ -35,7 +35,7 @@ Turnal should be piloted before company-wide adoption. Pin a version and validat
 
 - Git available on `PATH`. Turnal uses Git plumbing for its private checkpoint store.
 - Node.js 18 or newer when installing through npm.
-- Go 1.26.5 or newer when installing from source or developing Turnal.
+- Go 1.26.6 or newer when installing from source or developing Turnal.
 - Claude Code, Codex, OpenCode, Gemini CLI, or Copilot CLI for automatic agent capture. `turnal save` also works without an agent session.
 
 Turnal does not initialize a Git repository for your project. It works in both Git and non-Git directories.

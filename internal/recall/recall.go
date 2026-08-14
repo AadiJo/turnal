@@ -628,7 +628,9 @@ func writeNotes(w io.Writer, turn Turn) error {
 	for _, note := range turn.Notes {
 		header := note.NoteID.String()
 		if note.Anchor != nil {
-			header += " " + note.Anchor.Path.String()
+			// Escaped like the note body: recording rejects control characters
+			// now, but a note written by an earlier build is durable.
+			header += " " + escapeNoteText(note.Anchor.Path.String())
 			if note.Anchor.LineStart > 0 {
 				if note.Anchor.LineEnd > note.Anchor.LineStart {
 					header += fmt.Sprintf(":%d-%d", note.Anchor.LineStart, note.Anchor.LineEnd)

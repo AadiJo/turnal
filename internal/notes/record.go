@@ -15,6 +15,11 @@ import (
 type RecordInput struct {
 	Target Target
 	Text   string
+	// NoteID makes a retry idempotent. Record generates one when it is empty,
+	// which means a caller that retries after a reported failure would otherwise
+	// record a second copy of a note that is already durable. A caller that can
+	// retry should generate the id once with primitives.NewNoteID and reuse it.
+	NoteID primitives.NoteID
 	// Path, LineStart, and LineEnd optionally anchor the note to a line range as
 	// it existed at the target turn's post checkpoint.
 	Path      primitives.RepoPath
@@ -50,8 +55,12 @@ func Record(repo *checkpoint.Repo, input RecordInput) (Note, error) {
 		return Note{}, err
 	}
 
-	noteID, err := primitives.NewNoteID()
-	if err != nil {
+	noteID := input.NoteID
+	if noteID == "" {
+		if noteID, err = primitives.NewNoteID(); err != nil {
+			return Note{}, err
+		}
+	} else if noteID, err = primitives.ParseNoteID(noteID.String()); err != nil {
 		return Note{}, err
 	}
 
@@ -89,7 +98,7 @@ func Record(repo *checkpoint.Repo, input RecordInput) (Note, error) {
 	if err != nil {
 		return Note{}, err
 	}
-	event, _, err := log.AppendOnce(eventlog.AppendInput{
+	event, appended, err := log.AppendOnce(eventlog.AppendInput{
 		SessionID: sessionID,
 		Type:      primitives.EventTypeNoteCreate,
 		Adapter:   primitives.AdapterManual,
@@ -98,6 +107,16 @@ func Record(repo *checkpoint.Repo, input RecordInput) (Note, error) {
 	})
 	if err != nil {
 		return Note{}, err
+	}
+	if !appended {
+		// A retry of an already durable note. Report what is recorded rather than
+		// what this attempt would have written; the two can differ if the
+		// workspace secrets policy changed between attempts.
+		existing, err := ParseCreatePayload(event.Payload)
+		if err != nil {
+			return Note{}, err
+		}
+		return noteFromCreate(event, existing), nil
 	}
 	return noteFromCreate(event, CreatePayload{
 		SchemaVersion: SchemaVersion, NoteID: noteID, Target: input.Target,
@@ -180,6 +199,13 @@ func buildAnchor(repo *checkpoint.Repo, input RecordInput) (*Anchor, error) {
 	path, err := primitives.ParseRepoPath(input.Path.String())
 	if err != nil {
 		return nil, err
+	}
+	// ParseRepoPath rejects NUL but permits other control characters, and an
+	// anchor path is rendered next to note text in blame, show, and note list. A
+	// path carrying a terminal escape would inject it into those outputs, so it
+	// is refused at the boundary rather than only escaped at each render site.
+	if containsControl(path.String()) {
+		return nil, fmt.Errorf("note anchor path must not contain control characters")
 	}
 	if input.LineStart == 0 && input.LineEnd == 0 {
 		// A path without a line range is a file-scoped note. There is no line

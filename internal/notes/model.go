@@ -17,6 +17,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/AadiJo/turnal/internal/primitives"
@@ -131,6 +132,20 @@ func ValidateText(text string) error {
 		return fmt.Errorf("note text must be at most %d bytes", MaxTextBytes)
 	}
 	return nil
+}
+
+// containsControl reports whether a value carries characters that a terminal
+// would interpret rather than display.
+func containsControl(value string) bool {
+	for _, character := range value {
+		if character == '\n' || character == '\t' {
+			continue
+		}
+		if unicode.IsControl(character) || unicode.Is(unicode.Cf, character) {
+			return true
+		}
+	}
+	return false
 }
 
 func validateAuthor(author string) error {

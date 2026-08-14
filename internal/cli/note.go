@@ -303,14 +303,18 @@ func writeNoteList(w io.Writer, repo *checkpoint.Repo, listed []notes.Note) erro
 	return nil
 }
 
+// formatNoteAnchor renders an anchor for a terminal. The path is escaped even
+// though recording now rejects control characters, because a note recorded by an
+// earlier build is durable and still has to render safely.
 func formatNoteAnchor(anchor notes.Anchor) string {
+	path := escapeNoteText(anchor.Path.String())
 	switch {
 	case anchor.LineStart == 0:
-		return anchor.Path.String()
+		return path
 	case anchor.LineEnd > anchor.LineStart:
-		return fmt.Sprintf("%s:%d-%d", anchor.Path, anchor.LineStart, anchor.LineEnd)
+		return fmt.Sprintf("%s:%d-%d", path, anchor.LineStart, anchor.LineEnd)
 	default:
-		return fmt.Sprintf("%s:%d", anchor.Path, anchor.LineStart)
+		return fmt.Sprintf("%s:%d", path, anchor.LineStart)
 	}
 }
 
