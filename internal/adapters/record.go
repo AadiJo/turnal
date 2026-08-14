@@ -146,10 +146,10 @@ func recordHookPayload(adapter primitives.AdapterName, hookName string, raw []by
 // supplies the routing fields. External adapters never receive repository or
 // event-log handles and therefore cannot write durable Turnal state.
 func RecordExternalHookPayload(adapter primitives.AdapterName, hookName string, raw []byte, cwd string, sessionID primitives.SessionID) (string, error) {
-	return recordExternalHookPayload(adapter, hookName, raw, cwd, sessionID, false)
+	return recordExternalHookPayload(adapter, hookName, raw, cwd, sessionID, "")
 }
 
-func recordExternalHookPayload(adapter primitives.AdapterName, hookName string, raw []byte, cwd string, sessionID primitives.SessionID, forceIntentRedaction bool) (string, error) {
+func recordExternalHookPayload(adapter primitives.AdapterName, hookName string, raw []byte, cwd string, sessionID primitives.SessionID, forcedRawContent string) (string, error) {
 	if len(raw) > MaxHookPayloadBytes {
 		return "", fmt.Errorf("hook payload is %d bytes; maximum is %d bytes", len(raw), MaxHookPayloadBytes)
 	}
@@ -179,7 +179,7 @@ func recordExternalHookPayload(adapter primitives.AdapterName, hookName string, 
 	if err != nil {
 		return "", err
 	}
-	storedRaw := redactExternalHookPayload(raw, effective.Secrets, effective.Hooks.Command, forceIntentRedaction)
+	storedRaw := redactExternalHookPayload(raw, effective.Secrets, effective.Hooks.Command, forcedRawContent)
 	record := RawHookRecord{
 		Version:    2,
 		SessionID:  parsedSession.String(),
@@ -197,9 +197,9 @@ func recordExternalHookPayload(adapter primitives.AdapterName, hookName string, 
 	return appendRawHookRecord(repo.MetadataDir, record)
 }
 
-func redactExternalHookPayload(raw []byte, secrets agentconfig.Secrets, hookCommand string, forceIntentRedaction bool) []byte {
-	if !secrets.StorePrompts && forceIntentRedaction {
-		redacted, err := json.Marshal(map[string]any{"redacted": true, "policy": "turnal.secrets", "content": "agent.intent"})
+func redactExternalHookPayload(raw []byte, secrets agentconfig.Secrets, hookCommand, forcedRawContent string) []byte {
+	if !secrets.StorePrompts && forcedRawContent != "" {
+		redacted, err := json.Marshal(map[string]any{"redacted": true, "policy": "turnal.secrets", "content": forcedRawContent})
 		if err == nil {
 			return redacted
 		}

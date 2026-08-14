@@ -326,7 +326,11 @@ func HandleNormalizedEvents(adapter primitives.AdapterName, hookName string, raw
 	if err != nil {
 		return err
 	}
-	rawRef, err := recordExternalHookPayload(parsedAdapter, hookName, raw, cwd, sessionID, forceRawIntentRedaction)
+	forcedRawContent := normalizedPromptContent(normalized)
+	if forcedRawContent == "" && forceRawIntentRedaction {
+		forcedRawContent = "agent.intent"
+	}
+	rawRef, err := recordExternalHookPayload(parsedAdapter, hookName, raw, cwd, sessionID, forcedRawContent)
 	if err != nil || rawRef == "" {
 		return err
 	}
@@ -337,6 +341,15 @@ func HandleNormalizedEvents(adapter primitives.AdapterName, hookName string, raw
 		}
 	}
 	return nil
+}
+
+func normalizedPromptContent(events []adaptersdk.Event) string {
+	for _, event := range events {
+		if event.Text != "" || event.Type == adaptersdk.EventPromptUser || event.Type == adaptersdk.EventAssistantMessage {
+			return "prompt"
+		}
+	}
+	return ""
 }
 
 func processNormalizedEvent(log eventlog.Log, manager turns.Manager, adapter primitives.AdapterName, rawRef string, raw []byte, index int, sessionID primitives.SessionID, event adaptersdk.Event, effective agentconfig.Effective) error {
