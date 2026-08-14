@@ -176,6 +176,29 @@ Wrapper checkpoints remain available even when Codex hook payloads are unavailab
 
 An application embedding Codex app-server does not automatically pass through this wrapper. App-server may discover Turnal's project hooks but skip untrusted definitions until you review and trust them in the host's hooks UI; Turnal diagnoses trust but never grants it.
 
+### Import missed sessions
+
+Turnal can recover Claude Code and Codex transcripts that were created before hooks were installed or while capture was unavailable. Preview conversion first, then import all matching transcripts from the last 30 days or select provider session ids explicitly:
+
+```sh
+turnal import codex --dry-run
+turnal import codex
+turnal import claude-code --session <provider-session-id>
+turnal import codex --path /custom/transcript/directory
+```
+
+Imported turns are searchable, inspectable, and visibly labeled `imported / read-only`. They preserve prompts, assistant responses, and transcript tool activity under the current `secrets` policy, but do not invent pre/post workspace checkpoints. Consequently they cannot be diffed, rolled back, replayed exactly, or published as checkpoint-backed shared history.
+
+Attach a recorded or missed session to an existing source commit with a separate Turnal history link:
+
+```sh
+turnal session attach <session-id> --dry-run
+turnal session attach <session-id> --commit HEAD
+turnal session attach <provider-session-id> --adapter codex
+```
+
+The default attachment resolves `HEAD`. It never amends the commit, writes a trailer, moves a ref, or changes the source worktree. See [imported history](docs/imported-history.md) for provenance, idempotence, and failure behavior.
+
 ### Manual turns
 
 For an unsupported agent or a manual workflow:
@@ -304,6 +327,8 @@ Git-sync capture requires the workspace to already be a valid Git worktree. It i
 ```sh
 turnal sessions                         # Session summaries
 turnal sessions --json                  # Scriptable session output
+turnal import codex --dry-run           # Preview missed transcript conversion
+turnal session attach <session>         # Link history to HEAD without amending it
 turnal log                              # Turn graph for this worktree
 turnal log --max-lanes 12               # Override the bounded eight-column graph
 turnal log --max-lanes 0                # Allow unlimited graph columns

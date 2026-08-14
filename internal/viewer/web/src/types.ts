@@ -98,6 +98,13 @@ export type SessionSummary = {
   worktree_id?: string;
   adapter?: string;
   model?: string;
+  origin?: "native" | "imported";
+  read_only?: boolean;
+  attachments?: Array<{
+    commit_sha: string;
+    revision?: string;
+    time: string;
+  }>;
   branch?: string;
   started_at?: string;
   finished_at?: string;
@@ -108,7 +115,7 @@ export type SessionSummary = {
   file_count: number;
   additions: number;
   deletions: number;
-  status: "complete" | "active" | "attention";
+  status: "complete" | "active" | "imported" | "attention";
   prompt_preview?: string;
 };
 
@@ -122,7 +129,7 @@ export type ManualSave = {
 export type TurnSummary = {
   key: string;
   id: number;
-  status: "complete" | "active" | "attention";
+  status: "complete" | "active" | "imported" | "attention";
   started_at?: string;
   finished_at?: string;
   adapter?: string;

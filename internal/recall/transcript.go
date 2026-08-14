@@ -46,6 +46,32 @@ type transcriptLocator struct {
 
 func (reader Reader) transcript(turn Turn, allEvents []eventlog.Event) *Transcript {
 	locator, locatorErrors := transcriptLocatorFromSessionEvents(turn.SessionEvents)
+	if importedSession(turn.SessionEvents) {
+		transcript := &Transcript{Path: locator.Path, Adapter: locator.Adapter, Errors: locatorErrors}
+		for _, event := range turn.Events {
+			role := ""
+			switch event.Type {
+			case primitives.EventTypePromptUser:
+				role = "user"
+			case primitives.EventTypeAssistantMessage:
+				role = "assistant"
+			default:
+				continue
+			}
+			var payload struct {
+				Text           string `json:"text"`
+				ProviderTurnID string `json:"provider_turn_id"`
+			}
+			if json.Unmarshal(event.Payload, &payload) != nil || strings.TrimSpace(payload.Text) == "" {
+				continue
+			}
+			transcript.Messages = append(transcript.Messages, TranscriptMessage{
+				Index: len(transcript.Messages) + 1, Role: role, TurnID: payload.ProviderTurnID,
+				Timestamp: event.Time.String(), Text: payload.Text,
+			})
+		}
+		return transcript
+	}
 	transcript := &Transcript{
 		Path:    locator.Path,
 		Adapter: locator.Adapter,
@@ -72,6 +98,15 @@ func (reader Reader) transcript(turn Turn, allEvents []eventlog.Event) *Transcri
 	transcript.Messages = selected
 	transcript.Errors = append(transcript.Errors, selectionErrors...)
 	return transcript
+}
+
+func importedSession(events []eventlog.Event) bool {
+	for _, event := range events {
+		if event.Type == primitives.EventTypeSessionImport {
+			return true
+		}
+	}
+	return false
 }
 
 func transcriptLocatorFromSessionEvents(events []eventlog.Event) (transcriptLocator, []string) {

@@ -146,9 +146,8 @@ export function ProjectView({
   }, [store, sessionKey, initialTurnKey]);
 
   useEffect(() => {
-    const turnBelongsToSession =
-      turns?.turns.some((turn) => turn.key === turnKey) ?? false;
-    if (!turnKey || !turnBelongsToSession) {
+    const selectedTurn = turns?.turns.find((turn) => turn.key === turnKey);
+    if (!turns || !turnKey || !selectedTurn) {
       setDetail(null);
       setDiff(null);
       return;
@@ -173,19 +172,21 @@ export function ProjectView({
         if (!isAbortError(nextError)) setError(errorMessage(nextError));
       });
 
-    api
-      .diff(store, turnKey, controller.signal)
-      .then((nextDiff) => {
-        setDiff(nextDiff);
-        setSelectedPath(initialPath ?? nextDiff.files[0]?.path ?? null);
-      })
-      .catch((nextError: unknown) => {
-        if (!isAbortError(nextError)) {
-          setError(
-            "File changes are not available for this turn yet. Its recorded activity is shown below.",
-          );
-        }
-      });
+    if (selectedTurn.status !== "imported") {
+      api
+        .diff(store, turnKey, controller.signal)
+        .then((nextDiff) => {
+          setDiff(nextDiff);
+          setSelectedPath(initialPath ?? nextDiff.files[0]?.path ?? null);
+        })
+        .catch((nextError: unknown) => {
+          if (!isAbortError(nextError)) {
+            setError(
+              "File changes are not available for this turn yet. Its recorded activity is shown below.",
+            );
+          }
+        });
+    }
     return () => controller.abort();
   }, [store, turns, turnKey, initialPath]);
 
@@ -256,6 +257,7 @@ export function ProjectView({
 
   const session =
     turns?.session ?? sessions.find((item) => item.key === sessionKey) ?? null;
+  const latestAttachment = session?.attachments?.[session.attachments.length - 1];
 
   return (
     <>
@@ -321,6 +323,8 @@ export function ProjectView({
                   >
                     {item.status === "complete"
                       ? "✓"
+                      : item.status === "imported"
+                        ? "↧"
                       : item.status === "active"
                         ? "●"
                         : "!"}
@@ -337,6 +341,11 @@ export function ProjectView({
                           <i>·</i> {item.model}
                         </>
                       )}{" "}
+                      {item.origin === "imported" && (
+                        <>
+                          <i>·</i> imported read-only{" "}
+                        </>
+                      )}
                       <i>·</i> {item.turn_count} turn
                       {item.turn_count === 1 ? "" : "s"} <i>·</i>{" "}
                       {duration(item.started_at, item.finished_at)}
@@ -435,6 +444,14 @@ export function ProjectView({
                   {detail?.post_commit && (
                     <span className="tag good">Snapshot verified</span>
                   )}
+                  {session.origin === "imported" && (
+                    <span className="tag">Imported transcript</span>
+                  )}
+                  {latestAttachment && (
+                    <span className="tag mono">
+                      commit {shortID(latestAttachment.commit_sha, 7)}
+                    </span>
+                  )}
                 </div>
                 <div className="doc-body">
                   <p>
@@ -461,7 +478,9 @@ export function ProjectView({
             <Section
               title="Changes"
               note={
-                diff
+                detail && !detail.checkpointed && session?.origin === "imported"
+                  ? "not captured for imported history"
+                  : diff
                   ? `${diff.files.length} files · before ${shortID(diff.pre_commit, 7)} → after ${shortID(diff.post_commit, 7)}`
                   : error
                     ? "unavailable"

@@ -21,6 +21,7 @@ import (
 	"github.com/AadiJo/turnal/internal/manualcheckpoints"
 	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/AadiJo/turnal/internal/recall"
+	"github.com/AadiJo/turnal/internal/sessionhistory"
 )
 
 const (
@@ -51,10 +52,13 @@ func NewService(repo *checkpoint.Repo) (*Service, error) {
 }
 
 type sessionRecord struct {
-	stream eventlog.DurableStream
-	turns  []turnRecord
-	model  string
-	branch string
+	stream      eventlog.DurableStream
+	turns       []turnRecord
+	model       string
+	branch      string
+	origin      string
+	readOnly    bool
+	attachments []sessionhistory.Attachment
 }
 
 type turnRecord struct {
@@ -428,6 +432,10 @@ func (service *Service) loadRecords(ctx context.Context) ([]sessionRecord, strin
 				}
 			}
 		}
+		historyInfo := sessionhistory.InspectSession(stream.Events)
+		record.origin = historyInfo.Origin
+		record.readOnly = historyInfo.ReadOnly
+		record.attachments = historyInfo.Attachments
 	}
 	for _, info := range infos {
 		// A manual save is a standalone snapshot, not an agent session. Its
@@ -452,6 +460,9 @@ func (service *Service) loadRecords(ctx context.Context) ([]sessionRecord, strin
 			turnID, turnErr := primitives.NewTurnID(turnNumber)
 			if turnErr == nil {
 				ensureTurn(turnID).summary = summary
+				if record.model == "" && summary.Model != "" {
+					record.model = summary.Model
+				}
 			}
 		}
 		for _, info := range infos {
@@ -593,6 +604,10 @@ func (service *Service) sessionView(record sessionRecord) (SessionSummaryView, e
 		Key: key, ID: record.stream.SessionID.String(), StreamID: record.stream.StreamID.String(),
 		WorktreeID: record.stream.WorktreeID.String(), Model: record.model, Branch: record.branch,
 		EventCount: len(record.stream.Events), TurnCount: len(record.turns), Status: "complete",
+		Origin: record.origin, ReadOnly: record.readOnly,
+	}
+	for _, attachment := range record.attachments {
+		view.Attachments = append(view.Attachments, SessionAttachmentView{CommitSHA: attachment.CommitSHA.String(), Revision: attachment.Revision, Time: attachment.Time})
 	}
 	seenFiles := make(map[string]struct{})
 	for _, event := range record.stream.Events {
@@ -622,6 +637,8 @@ func (service *Service) sessionView(record sessionRecord) (SessionSummaryView, e
 	for _, turn := range record.turns {
 		if turn.pre != nil && turn.post != nil {
 			view.CompleteTurns++
+		} else if record.origin == sessionhistory.OriginImported {
+			view.Status = "imported"
 		} else {
 			view.Status = "active"
 		}
@@ -652,6 +669,9 @@ func (service *Service) turnView(stream eventlog.DurableStream, turn turnRecord)
 		Prompt: turn.summary.Prompt, Assistant: turn.summary.Assistant, ToolNames: turn.summary.ToolNames,
 		EventCount: turn.summary.Count, Files: fileViews(turn.diff.Files),
 		Additions: turn.diff.Additions, Deletions: turn.diff.Deletions,
+	}
+	if !view.Checkpointed && sessionhistory.InspectSession(stream.Events).Origin == sessionhistory.OriginImported {
+		view.Status = "imported"
 	}
 	view.ErrorCount = turn.summary.TypeCounts[primitives.EventTypeError]
 	if turn.pre != nil {
@@ -761,6 +781,10 @@ func eventTitle(eventType primitives.EventType) string {
 	switch eventType {
 	case primitives.EventTypeSessionStart:
 		return "Session started"
+	case primitives.EventTypeSessionImport:
+		return "Transcript imported"
+	case primitives.EventTypeSessionAttach:
+		return "Session attached"
 	case primitives.EventTypeTurnStart:
 		return "Turn started"
 	case primitives.EventTypePromptUser:

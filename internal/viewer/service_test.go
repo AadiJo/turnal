@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/AadiJo/turnal/internal/filelock"
 	"github.com/AadiJo/turnal/internal/manualcheckpoints"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/sessionhistory"
 	"github.com/AadiJo/turnal/internal/turnevents"
 	"github.com/AadiJo/turnal/internal/turns"
 )
@@ -122,6 +124,59 @@ func TestServiceTraversesTurnDiffAndBlameWithoutWritingHistory(t *testing.T) {
 	}
 	if _, err := os.Stat(repo.TmpDir); !os.IsNotExist(err) {
 		t.Fatalf("read-only viewer recreated scratch directory %s: %v", repo.TmpDir, err)
+	}
+}
+
+func TestServiceLabelsImportedHistoryAndAttachments(t *testing.T) {
+	repo := newViewerTestRepo(t)
+	sessionID, err := primitives.ParseSessionID("imported-viewer-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	turnID, err := primitives.NewTurnID(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit, err := primitives.ParseCommitSHA(strings.Repeat("a", 40))
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendViewerHistoryEvent(t, repo.EventLog(), sessionID, nil, primitives.EventTypeSessionStart, sessionhistory.SessionStartPayload{
+		ProviderSessionID: "provider-session", TranscriptPath: "/transcripts/session.jsonl",
+		Origin: sessionhistory.OriginImported, ReadOnly: true,
+	})
+	appendViewerHistoryEvent(t, repo.EventLog(), sessionID, nil, primitives.EventTypeSessionImport, sessionhistory.ImportPayload{
+		Origin: sessionhistory.OriginImported, ReadOnly: true, SourceSHA256: strings.Repeat("b", 64), TurnCount: 1,
+	})
+	appendViewerHistoryEvent(t, repo.EventLog(), sessionID, &turnID, primitives.EventTypePromptUser, map[string]any{"text": "recover this session"})
+	appendViewerHistoryEvent(t, repo.EventLog(), sessionID, &turnID, primitives.EventTypeAssistantMessage, map[string]any{"text": "recovered"})
+	appendViewerHistoryEvent(t, repo.EventLog(), sessionID, nil, primitives.EventTypeSessionAttach, sessionhistory.AttachmentPayload{
+		CommitSHA: commit, Revision: "HEAD", HistoryRewritten: false,
+	})
+
+	service, err := NewService(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := service.Sessions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 || sessions[0].Origin != sessionhistory.OriginImported || !sessions[0].ReadOnly || sessions[0].Status != "imported" {
+		t.Fatalf("imported session view = %#v", sessions)
+	}
+	if len(sessions[0].Attachments) != 1 || sessions[0].Attachments[0].CommitSHA != commit.String() {
+		t.Fatalf("imported session attachments = %#v", sessions[0].Attachments)
+	}
+	turnsView, err := service.SessionTurns(context.Background(), sessions[0].Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(turnsView.Turns) != 1 || turnsView.Turns[0].Status != "imported" || turnsView.Turns[0].Checkpointed {
+		t.Fatalf("imported turn view = %#v", turnsView.Turns)
+	}
+	if _, err := service.Diff(context.Background(), turnsView.Turns[0].Key); err == nil {
+		t.Fatal("imported event-only turn exposed a checkpoint diff")
 	}
 }
 
@@ -379,6 +434,20 @@ func appendViewerEvent(t *testing.T, log eventlog.Log, sessionID primitives.Sess
 	}
 	if _, err := log.Append(eventlog.AppendInput{
 		SessionID: sessionID, TurnID: &turnID, Type: eventType, Adapter: primitives.AdapterManual,
+		Time: primitives.NowTimestamp(), Payload: data,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func appendViewerHistoryEvent(t *testing.T, log eventlog.Log, sessionID primitives.SessionID, turnID *primitives.TurnID, eventType primitives.EventType, payload any) {
+	t.Helper()
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := log.Append(eventlog.AppendInput{
+		SessionID: sessionID, TurnID: turnID, Type: eventType, Adapter: primitives.AdapterCodex,
 		Time: primitives.NowTimestamp(), Payload: data,
 	}); err != nil {
 		t.Fatal(err)

@@ -33,6 +33,23 @@ func Open(root primitives.WorkspaceRoot) Git {
 	return Git{Root: root}
 }
 
+// ResolveCommit resolves a user-facing revision without changing the worktree.
+func (git Git) ResolveCommit(revision string) (primitives.CommitSHA, error) {
+	revision = strings.TrimSpace(revision)
+	if revision == "" {
+		return "", fmt.Errorf("Git revision must not be empty")
+	}
+	output, err := git.runOutput("rev-parse", "--verify", "--end-of-options", revision+"^{commit}")
+	if err != nil {
+		return "", fmt.Errorf("resolve Git revision %q: %w", revision, err)
+	}
+	commit, err := primitives.ParseCommitSHA(strings.TrimSpace(output))
+	if err != nil {
+		return "", fmt.Errorf("resolve Git revision %q: %w", revision, err)
+	}
+	return commit, nil
+}
+
 func (git Git) Capture() (gitsync.Capture, error) {
 	if err := git.ensureSupportedWorktree(); err != nil {
 		return gitsync.Capture{}, err
