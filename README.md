@@ -342,6 +342,17 @@ An anchored note records the file text as it existed at the turn's post checkpoi
 
 `turnal note remove` hides a note. It does not erase one: the original stays in the append-only log, and any copy already published to teammates cannot be recalled. Dropping a session leaves notes about it in place and reports how many were orphaned, because commentary you did not write is not Turnal's to delete.
 
+Notes can also be published to teammates, on a channel you enable separately from turn context:
+
+```sh
+turnal share notes enable --prompt-mode redacted_text
+turnal share notes preview <note-id> --approve
+turnal sync notes push
+turnal sync notes pull
+```
+
+Published notes ride their own ref namespace, so enabling them does not change the turn-context policy and a teammate on an older Turnal build keeps pulling turn context normally instead of failing. `turnal share show <locator>` lists the notes replying to a shared turn. See [shared history](docs/shared-history.md) for the publication boundary.
+
 When the workspace secrets policy sets `store_prompts = false`, a note's text, author, and anchor metadata are all withheld, because the path and line range describe workspace content just as the body does.
 
 `blame` reports the agent's stated problem first and keeps the human request as separate context. Its confidence label is derived from recorded timing and scope: an available statement captured before the action is high confidence, while a late statement or a change outside the stated scope is labeled accordingly. Redacted intent is explicit and remains low confidence because its scope is unavailable. A normal turn with no intent says that none was recorded. When a recorded statement cannot be tied safely to one action, or when turns overlap, Turnal uses explicit `ambiguous` or `concurrent` origins instead of borrowing an agent's statement.

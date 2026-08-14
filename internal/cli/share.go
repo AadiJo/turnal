@@ -29,6 +29,7 @@ func shareCmd() *cobra.Command {
 	cmd.AddCommand(shareStatusCmd())
 	cmd.AddCommand(shareListCmd())
 	cmd.AddCommand(shareShowCmd())
+	cmd.AddCommand(shareNotesCmd())
 	return cmd
 }
 
@@ -333,6 +334,20 @@ func shareShowCmd() *cobra.Command {
 			writeCounts(cmd, "redactions", bundle.Manifest.Redactions)
 			fmt.Fprintln(cmd.OutOrStdout(), "context:")
 			writeBundleContext(cmd, bundle.Events)
+			// Notes replying to this turn live on the note ref, so they are a
+			// reverse lookup rather than part of the bundle. An unreadable note
+			// index never fails reading the turn it comments on.
+			if replies, err := sharedhistory.New(repo).NotesForLocator(cmd.Context(), args[0]); err == nil && len(replies) > 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "notes:")
+				for _, reply := range replies {
+					fmt.Fprintf(cmd.OutOrStdout(), "  [%s publisher=%s]\n", reply.Locator, reply.DeviceID)
+					if reply.Text != "" {
+						fmt.Fprintf(cmd.OutOrStdout(), "    %s\n", indentSharedText(reply.Text))
+					} else {
+						fmt.Fprintln(cmd.OutOrStdout(), "    text omitted by the publisher's policy")
+					}
+				}
+			}
 			return nil
 		},
 	}
@@ -345,6 +360,7 @@ func syncCmd() *cobra.Command {
 	cmd.AddCommand(syncDirectionCmd(sharedhistory.DirectionPush))
 	cmd.AddCommand(syncDirectionCmd(sharedhistory.DirectionPull))
 	cmd.AddCommand(shareStatusCmd())
+	cmd.AddCommand(syncNotesCmd())
 	return cmd
 }
 

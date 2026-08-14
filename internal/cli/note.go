@@ -42,6 +42,7 @@ func noteAddCmd() *cobra.Command {
 	var author string
 	var stream string
 	var fromFile string
+	var reviewed string
 	var jsonOutput bool
 
 	cmd := &cobra.Command{
@@ -98,6 +99,9 @@ never guesses where a line moved to.`,
 			if lineStart != 0 && resolved.PostCommit == "" {
 				return fmt.Errorf("turn %s:%s has no post checkpoint, so a line anchor cannot be verified; record the note without --line", sessionID, turnID)
 			}
+			// The locator records the shared bundle the reviewer actually read. It
+			// is what lets the original author find this note from their own turn.
+			resolved.Target.Locator = strings.TrimSpace(reviewed)
 
 			note, err := notes.Record(repo, notes.RecordInput{
 				Target:       resolved.Target,
@@ -134,6 +138,7 @@ never guesses where a line moved to.`,
 	cmd.Flags().StringVar(&author, "author", "", "Self-asserted author label; it authenticates nothing on its own")
 	cmd.Flags().StringVar(&stream, "stream", "", "Select an event stream when session and turn are ambiguous")
 	cmd.Flags().StringVar(&fromFile, "file", "", "Read note text from a path, or - for stdin")
+	cmd.Flags().StringVar(&reviewed, "reviewed", "", "Shared-history locator this note replies to, from turnal share list")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit structured JSON")
 	return cmd
 }
