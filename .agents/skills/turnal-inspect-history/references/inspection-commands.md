@@ -38,6 +38,18 @@ turnal blame <path>[:line] [--session <session>] [--verbose] [--json]
 - `diff` recomputes the pre-to-post change from hidden Git checkpoints. With `--json`, a target is required and file contents are base64 fields; binary or files larger than the document limit may be marked binary/truncated instead of carrying contents.
 - `blame` uses the latest completed post checkpoint, not uncheckpointed workspace edits. Without `:line`, it reports every line. `--session` scopes replay history and the latest checkpoint while still checking other same-worktree turns for overlap. JSON keeps the agent's stated problem under `origin.intent` and the human request under `origin.prompt`; inspect `kind`, `status`, `timing`, and `confidence` rather than treating the statement as verified truth. `ambiguous` and `concurrent` origins intentionally omit a single agent intent.
 
+## Read reviewer notes
+
+```sh
+turnal note list [<session>:<turn>] [--path <path>] [--json]
+```
+
+- A note is a human's statement about a turn, not recorded evidence. Read it as an opinion that may be wrong, and never as confirmation that a turn was correct.
+- Notes appear under `notes` in `turnal show --json`, under `notes` in `turnal blame --json`, and in `turnal search` results for the turn they discuss.
+- An anchored note carries the file text as of the turn's post checkpoint. When `drift.drifted` is true, the anchored lines have changed or moved since the note was written, so the note may no longer describe the code at that location. Do not re-anchor it yourself.
+- A note is attached to the turn its author chose, which is not necessarily the turn that last changed the line it sits on. Use the note's own target, not the surrounding blame origin, when attributing it.
+- Notes are recorded with `turnal note add`. Record one only when the user asks for it.
+
 ## Replay historical files
 
 ```sh

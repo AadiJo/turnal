@@ -132,20 +132,41 @@ func (log Log) ListSessions() ([]primitives.SessionID, error) {
 }
 
 func (log Log) Append(input AppendInput) (Event, error) {
+	event, _, err := log.append(input, false)
+	return event, err
+}
+
+// AppendOnce appends the event unless input.SourceID already names an event in
+// the target stream, in which case that existing event is returned with false.
+//
+// Checking FindSourceID before Append is not equivalent: Append writes the
+// event before its source marker, so a retry after a failed marker write, or a
+// concurrent writer, can otherwise produce a duplicate. AppendOnce resolves the
+// source id from the stream itself while holding the same per-stream lock it
+// appends under, so the lookup and the append cannot interleave. It requires a
+// SourceID.
+func (log Log) AppendOnce(input AppendInput) (Event, bool, error) {
+	if strings.TrimSpace(input.SourceID) == "" {
+		return Event{}, false, fmt.Errorf("append once requires a source id")
+	}
+	return log.append(input, true)
+}
+
+func (log Log) append(input AppendInput, requireUniqueSourceID bool) (Event, bool, error) {
 	sessionID, err := primitives.ParseSessionID(input.SessionID.String())
 	if err != nil {
-		return Event{}, err
+		return Event{}, false, err
 	}
 	eventType, err := primitives.ParseEventType(input.Type.String())
 	if err != nil {
-		return Event{}, err
+		return Event{}, false, err
 	}
 
 	var adapter primitives.AdapterName
 	if input.Adapter != "" {
 		adapter, err = primitives.ParseAdapterName(input.Adapter.String())
 		if err != nil {
-			return Event{}, err
+			return Event{}, false, err
 		}
 	}
 
@@ -153,7 +174,7 @@ func (log Log) Append(input AppendInput) (Event, error) {
 	if input.TurnID != nil {
 		parsed, err := primitives.NewTurnID(input.TurnID.Uint64())
 		if err != nil {
-			return Event{}, err
+			return Event{}, false, err
 		}
 		turnID = &parsed
 	}
@@ -162,22 +183,22 @@ func (log Log) Append(input AppendInput) (Event, error) {
 	if timestamp.Time.IsZero() {
 		timestamp = primitives.NowTimestamp()
 	} else if timestamp, err = primitives.NewTimestamp(timestamp.Time); err != nil {
-		return Event{}, err
+		return Event{}, false, err
 	}
 
 	payload := input.Payload
 	if input.BuildPayload == nil {
 		payload, err = compactPayload(payload)
 		if err != nil {
-			return Event{}, err
+			return Event{}, false, err
 		}
 	}
 
 	if err := os.MkdirAll(log.Dir, 0o700); err != nil {
-		return Event{}, fmt.Errorf("create event log dir: %w", err)
+		return Event{}, false, fmt.Errorf("create event log dir: %w", err)
 	}
 	if err := os.Chmod(log.Dir, 0o700); err != nil {
-		return Event{}, fmt.Errorf("secure event log dir: %w", err)
+		return Event{}, false, fmt.Errorf("secure event log dir: %w", err)
 	}
 
 	version := 1
@@ -185,46 +206,50 @@ func (log Log) Append(input AppendInput) (Event, error) {
 	path := log.sessionPath(sessionID)
 	if log.ProducerID != "" {
 		if log.RepoID, err = primitives.ParseRepoID(log.RepoID.String()); err != nil {
-			return Event{}, err
+			return Event{}, false, err
 		}
 		if log.WorktreeID, err = primitives.ParseWorktreeID(log.WorktreeID.String()); err != nil {
-			return Event{}, err
+			return Event{}, false, err
 		}
 		if log.ProducerID, err = primitives.ParseEventProducerID(log.ProducerID.String()); err != nil {
-			return Event{}, err
+			return Event{}, false, err
 		}
 		streamID, err = primitives.DeriveEventStreamID(log.ProducerID, sessionID)
 		if err != nil {
-			return Event{}, err
+			return Event{}, false, err
 		}
 		version = 2
 		path = log.streamPath(sessionID, streamID)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return Event{}, fmt.Errorf("create event stream dir: %w", err)
+		return Event{}, false, fmt.Errorf("create event stream dir: %w", err)
 	}
 	lock, err := filelock.Acquire(path+".lock", 30*time.Second)
 	if err != nil {
-		return Event{}, err
+		return Event{}, false, err
 	}
 	defer func() { _ = lock.Release() }()
 	if streamID != "" {
 		if err := log.ensureStreamMetadata(sessionID, streamID); err != nil {
-			return Event{}, err
+			return Event{}, false, err
 		}
 	}
 
 	if _, err := recoverTrailingPartialPath(path); err != nil {
-		return Event{}, err
+		return Event{}, false, err
 	}
 
 	var events []Event
 	var last Event
 	var hasLast bool
-	if input.BuildPayload != nil {
+	// An idempotent append needs the whole stream so the source id is resolved
+	// from durable events rather than from the derived marker, which may be
+	// missing if a previous append failed between writing the event and writing
+	// its marker.
+	if input.BuildPayload != nil || requireUniqueSourceID {
 		events, err = log.readPath(sessionID, path, streamID)
 		if err != nil {
-			return Event{}, err
+			return Event{}, false, err
 		}
 		if len(events) > 0 {
 			last, hasLast = events[len(events)-1], true
@@ -232,7 +257,20 @@ func (log Log) Append(input AppendInput) (Event, error) {
 	} else {
 		last, hasLast, err = log.readLastForAppend(sessionID, path, streamID)
 		if err != nil {
-			return Event{}, err
+			return Event{}, false, err
+		}
+	}
+	if requireUniqueSourceID {
+		for index := len(events) - 1; index >= 0; index-- {
+			if events[index].SourceID != input.SourceID {
+				continue
+			}
+			// Repair the derived marker so a later FindSourceID hit does not
+			// have to re-read the stream.
+			if err := log.writeSourceMarker(events[index]); err != nil {
+				return Event{}, false, err
+			}
+			return events[index], false, nil
 		}
 	}
 	nextNumber := uint64(1)
@@ -241,7 +279,7 @@ func (log Log) Append(input AppendInput) (Event, error) {
 	}
 	nextSeq, err := primitives.NewEventSeq(nextNumber)
 	if err != nil {
-		return Event{}, err
+		return Event{}, false, err
 	}
 	prevHash := GenesisHash
 	if hasLast {
@@ -254,11 +292,11 @@ func (log Log) Append(input AppendInput) (Event, error) {
 			PreviousEvents: events,
 		})
 		if err != nil {
-			return Event{}, err
+			return Event{}, false, err
 		}
 		payload, err = compactPayload(payload)
 		if err != nil {
-			return Event{}, err
+			return Event{}, false, err
 		}
 	}
 
@@ -280,40 +318,40 @@ func (log Log) Append(input AppendInput) (Event, error) {
 	}
 	event.Hash, err = eventHash(event)
 	if err != nil {
-		return Event{}, err
+		return Event{}, false, err
 	}
 
 	line, err := json.Marshal(event)
 	if err != nil {
-		return Event{}, fmt.Errorf("marshal event: %w", err)
+		return Event{}, false, fmt.Errorf("marshal event: %w", err)
 	}
 	line = append(line, '\n')
 
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
-		return Event{}, fmt.Errorf("open event log: %w", err)
+		return Event{}, false, fmt.Errorf("open event log: %w", err)
 	}
 	defer func() { _ = file.Close() }()
 	if err := file.Chmod(0o600); err != nil {
-		return Event{}, fmt.Errorf("secure event log: %w", err)
+		return Event{}, false, fmt.Errorf("secure event log: %w", err)
 	}
 
 	if _, err := file.Write(line); err != nil {
-		return Event{}, fmt.Errorf("append event log: %w", err)
+		return Event{}, false, fmt.Errorf("append event log: %w", err)
 	}
 	if err := file.Sync(); err != nil {
-		return Event{}, fmt.Errorf("sync event log: %w", err)
+		return Event{}, false, fmt.Errorf("sync event log: %w", err)
 	}
 	if err := log.writeTailState(path, event); err != nil {
-		return Event{}, err
+		return Event{}, false, err
 	}
 	if event.SourceID != "" {
 		if err := log.writeSourceMarker(event); err != nil {
-			return Event{}, err
+			return Event{}, false, err
 		}
 	}
 
-	return event, nil
+	return event, true, nil
 }
 
 func (log Log) Read(sessionID primitives.SessionID) ([]Event, error) {

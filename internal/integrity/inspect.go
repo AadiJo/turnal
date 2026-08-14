@@ -14,6 +14,7 @@ import (
 	"github.com/AadiJo/turnal/internal/filelock"
 	queryindex "github.com/AadiJo/turnal/internal/index"
 	"github.com/AadiJo/turnal/internal/manualcheckpoints"
+	"github.com/AadiJo/turnal/internal/notes"
 	"github.com/AadiJo/turnal/internal/primitives"
 	rollbackengine "github.com/AadiJo/turnal/internal/rollback"
 )
@@ -39,6 +40,9 @@ func Inspect(repo *checkpoint.Repo) Report {
 		report.Problems = append(report.Problems, fmt.Sprintf("manual checkpoint event inspection failed: %v", err))
 	}
 	report.Problems = append(report.Problems, inspectWorkspaceRollbackEvents(repo)...)
+	if _, err := notes.ReadEvents(repo); err != nil {
+		report.Problems = append(report.Problems, fmt.Sprintf("note event inspection failed: %v", err))
+	}
 	if _, err := caseengine.Rebuild(repo); err != nil {
 		report.Problems = append(report.Problems, fmt.Sprintf("task/case projection failed: %v", err))
 	}
@@ -75,6 +79,7 @@ func inspectCaptureFiles(repo *checkpoint.Repo) []string {
 		filepath.Join(repo.MetadataDir, "log", "raw"),
 		filepath.Join(repo.MetadataDir, "log", "events"),
 		filepath.Join(repo.MetadataDir, "log", "manual-checkpoints"),
+		notes.Root(repo.MetadataDir),
 		filepath.Join(repo.TmpDir, "hooks"),
 	}
 	for _, root := range roots {

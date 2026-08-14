@@ -153,6 +153,8 @@ const (
 	EventTypeCaseAttemptResult EventType = "case.attempt.result"
 	EventTypeCaseAttemptSelect EventType = "case.attempt.select"
 	EventTypeCaseAttemptApply  EventType = "case.attempt.apply"
+	EventTypeNoteCreate        EventType = "note.create"
+	EventTypeNoteDelete        EventType = "note.delete"
 )
 
 var validEventTypes = map[EventType]struct{}{
@@ -180,6 +182,8 @@ var validEventTypes = map[EventType]struct{}{
 	EventTypeCaseAttemptResult: {},
 	EventTypeCaseAttemptSelect: {},
 	EventTypeCaseAttemptApply:  {},
+	EventTypeNoteCreate:        {},
+	EventTypeNoteDelete:        {},
 }
 
 func ParseEventType(value string) (EventType, error) {

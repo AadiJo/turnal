@@ -13,6 +13,7 @@ import (
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/notes"
 	"github.com/AadiJo/turnal/internal/primitives"
 )
 
@@ -71,6 +72,10 @@ type searchDocumentRecord struct {
 	Events     TurnEventSummary
 	Paths      []string
 	EventText  string
+	// NoteText is reviewer commentary about this turn. Notes live outside the
+	// turn's event stream, so they are joined in explicitly rather than arriving
+	// with the turn's own events.
+	NoteText string
 }
 
 func Rebuild(repo *checkpoint.Repo) (RebuildStats, error) {
@@ -288,7 +293,11 @@ func collectRebuildData(repo *checkpoint.Repo) (rebuildData, error) {
 		}
 		return left.File.Path < right.File.Path
 	})
-	searchDocuments := buildSearchDocuments(sessionIDs, summariesBySession, pathsBySessionTurn, eventTextBySessionTurn, worktreeBySessionTurn)
+	noteTextBySessionTurn, err := collectNoteText(repo)
+	if err != nil {
+		return rebuildData{}, err
+	}
+	searchDocuments := buildSearchDocuments(sessionIDs, summariesBySession, pathsBySessionTurn, eventTextBySessionTurn, worktreeBySessionTurn, noteTextBySessionTurn)
 
 	return rebuildData{
 		Sessions:        sessionRows,
@@ -300,12 +309,48 @@ func collectRebuildData(repo *checkpoint.Repo) (rebuildData, error) {
 	}, nil
 }
 
+// collectNoteText indexes reviewer commentary by the turn it discusses.
+//
+// Notes are keyed by session and turn rather than by stream: a note names its
+// target turn explicitly, and a reviewer searching for their own words should
+// find the turn whether or not the note came from this machine's stream.
+// Redacted notes contribute nothing, so a withheld body is never indexed.
+func collectNoteText(repo *checkpoint.Repo) (map[string]map[uint64][]string, error) {
+	recorded, err := notes.List(repo, notes.Query{})
+	if err != nil {
+		// Commentary is not evidence. An unreadable note log must not prevent the
+		// disposable index from being rebuilt from durable records.
+		return nil, nil
+	}
+	result := make(map[string]map[uint64][]string)
+	for _, note := range recorded {
+		if note.Redacted {
+			continue
+		}
+		sessionKey := note.Target.SessionID.String()
+		if result[sessionKey] == nil {
+			result[sessionKey] = make(map[uint64][]string)
+		}
+		turn := note.Target.TurnID.Uint64()
+		parts := []string{note.Text}
+		if note.Anchor != nil {
+			parts = append(parts, note.Anchor.Path.String())
+		}
+		if note.Author != "" {
+			parts = append(parts, note.Author)
+		}
+		result[sessionKey][turn] = append(result[sessionKey][turn], strings.Join(parts, " "))
+	}
+	return result, nil
+}
+
 func buildSearchDocuments(
 	sessionIDs []primitives.SessionID,
 	summariesBySession map[string]map[StreamTurnKey]TurnEventSummary,
 	pathsBySessionTurn map[string]map[StreamTurnKey][]string,
 	eventTextBySessionTurn map[string]map[StreamTurnKey][]string,
 	worktreeBySessionTurn map[string]map[StreamTurnKey]primitives.WorktreeID,
+	noteTextBySessionTurn map[string]map[uint64][]string,
 ) []searchDocumentRecord {
 	var documents []searchDocumentRecord
 	for _, sessionID := range sessionIDs {
@@ -346,6 +391,7 @@ func buildSearchDocuments(
 				Events:     summariesBySession[sessionKey][turnKey],
 				Paths:      paths,
 				EventText:  strings.Join(nonEmptyStrings(eventTextBySessionTurn[sessionKey][turnKey]), "\n"),
+				NoteText:   strings.Join(nonEmptyStrings(noteTextBySessionTurn[sessionKey][turnKey.TurnID]), "\n"),
 			})
 		}
 	}
@@ -746,8 +792,8 @@ func insertFileTouches(ctx context.Context, tx *sql.Tx, files []fileTouchRecord)
 
 func insertSearchDocuments(ctx context.Context, tx *sql.Tx, documents []searchDocumentRecord) error {
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO turn_search (stream_id, worktree_id, session_id, turn_id, first_at, last_at, adapter, model, prompt, assistant, tools, paths, event_text)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		INSERT INTO turn_search (stream_id, worktree_id, session_id, turn_id, first_at, last_at, adapter, model, prompt, assistant, tools, paths, event_text, notes)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare search document insert: %w", err)
 	}
@@ -772,6 +818,7 @@ func insertSearchDocuments(ctx context.Context, tx *sql.Tx, documents []searchDo
 			nullableText(strings.Join(document.Events.ToolNames, "\n")),
 			nullableText(strings.Join(document.Paths, "\n")),
 			nullableText(document.EventText),
+			nullableText(document.NoteText),
 		); err != nil {
 			return fmt.Errorf("insert search document %s:%s: %w", document.SessionID, document.TurnID, err)
 		}
