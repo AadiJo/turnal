@@ -136,11 +136,31 @@ func ValidateText(text string) error {
 
 // containsControl reports whether a value carries characters that a terminal
 // would interpret rather than display.
+//
+// Newline and tab are allowed here because this guards free-form prose, where
+// they are ordinary formatting. Single-line fields must use containsLineControl
+// instead.
 func containsControl(value string) bool {
 	for _, character := range value {
 		if character == '\n' || character == '\t' {
 			continue
 		}
+		if unicode.IsControl(character) || unicode.Is(unicode.Cf, character) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsLineControl reports whether a value carries any character that would
+// break a single-line field, including newline and tab.
+//
+// An anchor path is rendered on one line next to a note's own labels, so a path
+// containing a newline could forge a second line that looks like Turnal wrote
+// it, and a tab could shift a value out of its column. Neither is legitimate in
+// a repository path.
+func containsLineControl(value string) bool {
+	for _, character := range value {
 		if unicode.IsControl(character) || unicode.Is(unicode.Cf, character) {
 			return true
 		}

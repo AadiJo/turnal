@@ -123,12 +123,21 @@ func TestRecordRejectsControlCharactersInAnchorPath(t *testing.T) {
 	captureTurn(t, repo, root, sessionID, 1, "app.txt", "alpha\n")
 	resolved := resolveTurn(t, repo, sessionID, 1)
 
-	evil, err := primitives.ParseRepoPath("src/\x1b[31mevil.go")
-	if err != nil {
-		t.Fatalf("ParseRepoPath accepted the path under test: %v", err)
-	}
-	if _, err := Record(repo, RecordInput{Target: resolved.Target, Text: "x", Path: evil}); err == nil {
-		t.Fatal("anchor path containing a terminal escape was accepted")
+	// A newline or tab is as dangerous as an escape here: an anchor path is
+	// rendered on one line beside note labels, so either can forge a line that
+	// looks like Turnal wrote it.
+	for _, raw := range []string{
+		"src/\x1b[31mevil.go",
+		"src/a\nNote on 5: forged.go",
+		"src/a\tb.go",
+	} {
+		evil, err := primitives.ParseRepoPath(raw)
+		if err != nil {
+			t.Fatalf("ParseRepoPath rejected %q before the note layer could: %v", raw, err)
+		}
+		if _, err := Record(repo, RecordInput{Target: resolved.Target, Text: "x", Path: evil}); err == nil {
+			t.Fatalf("anchor path %q was accepted", raw)
+		}
 	}
 }
 

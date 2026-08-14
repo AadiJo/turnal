@@ -240,3 +240,22 @@ func TestBlameTextEscapesNoteControlCharacters(t *testing.T) {
 		t.Fatalf("escape was not rendered safely:\n%s", out.String())
 	}
 }
+
+// An anchor path occupies one line beside note labels, so a newline in it must
+// not be able to forge an additional line of Turnal output.
+func TestNoteLineFieldsEscapeNewlineAndTab(t *testing.T) {
+	forged := escapeNoteLine("src/a\nNote on 99: forged")
+	if strings.ContainsAny(forged, "\n\t") {
+		t.Fatalf("single-line escaping preserved layout characters: %q", forged)
+	}
+	if !strings.Contains(forged, "\\u000a") {
+		t.Fatalf("newline was not escaped: %q", forged)
+	}
+	if tabbed := escapeNoteLine("a\tb"); !strings.Contains(tabbed, "\\u0009") {
+		t.Fatalf("tab was not escaped: %q", tabbed)
+	}
+	// Note prose keeps newline and tab, which are legitimate formatting there.
+	if body := escapeNoteText("first\nsecond"); !strings.Contains(body, "\n") {
+		t.Fatalf("note body escaping dropped legitimate formatting: %q", body)
+	}
+}

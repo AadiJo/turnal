@@ -213,7 +213,7 @@ func writeBlameNote(w io.Writer, note blame.FileNote) error {
 		return err
 	}
 	if note.Note.Author != "" {
-		if _, err := fmt.Fprintf(w, "    by %s (self-asserted)\n", escapeNoteText(note.Note.Author)); err != nil {
+		if _, err := fmt.Fprintf(w, "    by %s (self-asserted)\n", escapeNoteLine(note.Note.Author)); err != nil {
 			return err
 		}
 	}

@@ -287,12 +287,12 @@ func writeNoteList(w io.Writer, repo *checkpoint.Repo, listed []notes.Note) erro
 			}
 		}
 		if note.Author != "" {
-			if _, err := fmt.Fprintf(w, "  author: %s (self-asserted)\n", escapeNoteText(note.Author)); err != nil {
+			if _, err := fmt.Fprintf(w, "  author: %s (self-asserted)\n", escapeNoteLine(note.Author)); err != nil {
 				return err
 			}
 		}
 		if note.Target.Locator != "" {
-			if _, err := fmt.Fprintf(w, "  reviewed: %s\n", escapeNoteText(note.Target.Locator)); err != nil {
+			if _, err := fmt.Fprintf(w, "  reviewed: %s\n", escapeNoteLine(note.Target.Locator)); err != nil {
 				return err
 			}
 		}
@@ -305,9 +305,11 @@ func writeNoteList(w io.Writer, repo *checkpoint.Repo, listed []notes.Note) erro
 
 // formatNoteAnchor renders an anchor for a terminal. The path is escaped even
 // though recording now rejects control characters, because a note recorded by an
-// earlier build is durable and still has to render safely.
+// earlier build is durable and still has to render safely. Newline and tab are
+// escaped too: unlike note prose, a path occupies one line, so either would let
+// it forge output structure.
 func formatNoteAnchor(anchor notes.Anchor) string {
-	path := escapeNoteText(anchor.Path.String())
+	path := escapeNoteLine(anchor.Path.String())
 	switch {
 	case anchor.LineStart == 0:
 		return path
@@ -360,9 +362,24 @@ func latestPostCommit(repo *checkpoint.Repo, sessionID primitives.SessionID) (pr
 	return commit, commit != ""
 }
 
+// escapeNoteLine escapes a single-line field such as an anchor path or author
+// label, where newline and tab are structure rather than formatting.
+func escapeNoteLine(value string) string {
+	var safe strings.Builder
+	for _, character := range value {
+		if unicode.IsControl(character) || unicode.Is(unicode.Cf, character) {
+			fmt.Fprintf(&safe, "\\u%04x", character)
+			continue
+		}
+		safe.WriteRune(character)
+	}
+	return safe.String()
+}
+
 // escapeNoteText neutralizes terminal control sequences in note text. Note text
 // is human-authored and, once shared history carries it, may come from another
-// machine, so it is never written to a terminal verbatim.
+// machine, so it is never written to a terminal verbatim. Newline and tab are
+// preserved because a note body is prose that may legitimately contain them.
 func escapeNoteText(value string) string {
 	var safe strings.Builder
 	for _, character := range value {

@@ -628,9 +628,10 @@ func writeNotes(w io.Writer, turn Turn) error {
 	for _, note := range turn.Notes {
 		header := note.NoteID.String()
 		if note.Anchor != nil {
-			// Escaped like the note body: recording rejects control characters
-			// now, but a note written by an earlier build is durable.
-			header += " " + escapeNoteText(note.Anchor.Path.String())
+			// The header is one line, so newline and tab are escaped along with
+			// other control characters. Recording rejects them now, but a note
+			// written by an earlier build is durable and still has to render safely.
+			header += " " + escapeNoteLine(note.Anchor.Path.String())
 			if note.Anchor.LineStart > 0 {
 				if note.Anchor.LineEnd > note.Anchor.LineStart {
 					header += fmt.Sprintf(":%d-%d", note.Anchor.LineStart, note.Anchor.LineEnd)
@@ -640,13 +641,27 @@ func writeNotes(w io.Writer, turn Turn) error {
 			}
 		}
 		if note.Author != "" {
-			header += " by " + escapeNoteText(note.Author) + " (self-asserted)"
+			header += " by " + escapeNoteLine(note.Author) + " (self-asserted)"
 		}
 		if _, err := fmt.Fprintf(w, "[%s]\n%s\n", header, escapeNoteText(note.Text)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// escapeNoteLine escapes a single-line field such as an anchor path or author
+// label, where a newline or tab is forged structure rather than formatting.
+func escapeNoteLine(value string) string {
+	var safe strings.Builder
+	for _, character := range value {
+		if unicode.IsControl(character) || unicode.Is(unicode.Cf, character) {
+			fmt.Fprintf(&safe, "\\u%04x", character)
+			continue
+		}
+		safe.WriteRune(character)
+	}
+	return safe.String()
 }
 
 func escapeNoteText(value string) string {

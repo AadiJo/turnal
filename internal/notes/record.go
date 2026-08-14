@@ -201,10 +201,11 @@ func buildAnchor(repo *checkpoint.Repo, input RecordInput) (*Anchor, error) {
 		return nil, err
 	}
 	// ParseRepoPath rejects NUL but permits other control characters, and an
-	// anchor path is rendered next to note text in blame, show, and note list. A
-	// path carrying a terminal escape would inject it into those outputs, so it
-	// is refused at the boundary rather than only escaped at each render site.
-	if containsControl(path.String()) {
+	// anchor path is rendered on one line next to note labels in blame, show, and
+	// note list. An escape sequence would inject terminal control, and a newline
+	// or tab would forge output structure, so the path is refused at the boundary
+	// rather than only escaped at each render site.
+	if containsLineControl(path.String()) {
 		return nil, fmt.Errorf("note anchor path must not contain control characters")
 	}
 	if input.LineStart == 0 && input.LineEnd == 0 {
