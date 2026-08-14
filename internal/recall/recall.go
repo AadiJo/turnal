@@ -7,9 +7,11 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/AadiJo/turnal/internal/adapters"
 	eventlog "github.com/AadiJo/turnal/internal/events"
+	"github.com/AadiJo/turnal/internal/notes"
 	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/AadiJo/turnal/internal/workspacegit"
 )
@@ -42,6 +44,12 @@ type Turn struct {
 	RawRecords      []RawRecord              `json:"raw_records,omitempty"`
 	RawRecordErrors []RawRecordError         `json:"raw_record_errors,omitempty"`
 	Transcript      *Transcript              `json:"transcript,omitempty"`
+	// Notes are reviewer commentary about this turn. They are statements, not
+	// recorded evidence, and they live outside the turn's own event stream.
+	Notes []notes.Note `json:"notes,omitempty"`
+	// NoteError explains why commentary could not be read. Unreadable notes never
+	// fail a recall: the recorded turn is the durable answer, the notes are not.
+	NoteError string `json:"note_error,omitempty"`
 }
 
 type Checkpoint struct {
@@ -213,6 +221,15 @@ func (reader Reader) RecallTurn(sessionID primitives.SessionID, turnID primitive
 	})
 
 	turn.Complete = turn.StartedAt != nil && turn.FinishedAt != nil && turn.PreCheckpoint != nil && turn.PostCheckpoint != nil
+
+	if recorded, err := notes.ListFromMetadata(reader.MetadataDir, notes.Query{
+		SessionID: parsedSessionID,
+		TurnID:    parsedTurnID,
+	}); err != nil {
+		turn.NoteError = err.Error()
+	} else {
+		turn.Notes = recorded
+	}
 
 	if options.IncludeRaw {
 		turn.RawRecords, turn.RawRecordErrors = reader.rawRecords(turn)
@@ -497,6 +514,10 @@ func WriteText(w io.Writer, turn Turn) error {
 		}
 	}
 
+	if err := writeNotes(w, turn); err != nil {
+		return err
+	}
+
 	if len(turn.SessionEvents) > 0 {
 		if _, err := fmt.Fprintln(w, "\nsession events:"); err != nil {
 			return err
@@ -587,6 +608,75 @@ func WriteText(w io.Writer, turn Turn) error {
 		}
 	}
 	return nil
+}
+
+// writeNotes renders reviewer commentary. Note text is human-authored and, once
+// shared history carries it, may originate on another machine, so control
+// characters are escaped rather than written to a terminal verbatim.
+func writeNotes(w io.Writer, turn Turn) error {
+	if turn.NoteError != "" {
+		if _, err := fmt.Fprintf(w, "\nnotes unavailable: %s\n", escapeNoteText(turn.NoteError)); err != nil {
+			return err
+		}
+	}
+	if len(turn.Notes) == 0 {
+		return nil
+	}
+	if _, err := fmt.Fprintln(w, "\nnotes:"); err != nil {
+		return err
+	}
+	for _, note := range turn.Notes {
+		header := note.NoteID.String()
+		if note.Anchor != nil {
+			// The header is one line, so newline and tab are escaped along with
+			// other control characters. Recording rejects them now, but a note
+			// written by an earlier build is durable and still has to render safely.
+			header += " " + escapeNoteLine(note.Anchor.Path.String())
+			if note.Anchor.LineStart > 0 {
+				if note.Anchor.LineEnd > note.Anchor.LineStart {
+					header += fmt.Sprintf(":%d-%d", note.Anchor.LineStart, note.Anchor.LineEnd)
+				} else {
+					header += fmt.Sprintf(":%d", note.Anchor.LineStart)
+				}
+			}
+		}
+		if note.Author != "" {
+			header += " by " + escapeNoteLine(note.Author) + " (self-asserted)"
+		}
+		if _, err := fmt.Fprintf(w, "[%s]\n%s\n", header, escapeNoteText(note.Text)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// escapeNoteLine escapes a single-line field such as an anchor path or author
+// label, where a newline or tab is forged structure rather than formatting.
+func escapeNoteLine(value string) string {
+	var safe strings.Builder
+	for _, character := range value {
+		if unicode.IsControl(character) || unicode.Is(unicode.Cf, character) {
+			fmt.Fprintf(&safe, "\\u%04x", character)
+			continue
+		}
+		safe.WriteRune(character)
+	}
+	return safe.String()
+}
+
+func escapeNoteText(value string) string {
+	var safe strings.Builder
+	for _, character := range value {
+		switch {
+		case character == '\n' || character == '\t':
+			safe.WriteRune(character)
+		case unicode.IsControl(character) || unicode.Is(unicode.Cf, character):
+			fmt.Fprintf(&safe, "\\u%04x", character)
+		default:
+			safe.WriteRune(character)
+		}
+	}
+	return safe.String()
 }
 
 func writeEvents(w io.Writer, events []eventlog.Event) error {

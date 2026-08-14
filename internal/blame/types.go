@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
+	"github.com/AadiJo/turnal/internal/notes"
 	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/AadiJo/turnal/internal/provenance"
 )
@@ -35,6 +36,23 @@ type Result struct {
 	Entries       []Entry                  `json:"entries"`
 	Warnings      []string                 `json:"warnings,omitempty"`
 	CompleteTurns int                      `json:"complete_turns"`
+	// Notes are reviewer comments about this file. They are joined to the result
+	// by their own anchor rather than attached to a line's origin: the turn that
+	// last changed a line is not necessarily the turn a reviewer commented on.
+	Notes []FileNote `json:"notes,omitempty"`
+}
+
+// FileNote is one reviewer comment that names this file, carrying the anchor
+// state observed against the blamed checkpoint.
+type FileNote struct {
+	Note notes.Note `json:"note"`
+	// Line is the anchored start line, or zero for a file-scoped note.
+	Line int `json:"line,omitempty"`
+	// LineEnd is the inclusive end of an anchored range, or zero.
+	LineEnd int `json:"line_end,omitempty"`
+	// Drift reports whether the anchored text still matches. An unchecked drift
+	// is reported as unknown rather than as agreement.
+	Drift notes.AnchorDrift `json:"drift"`
 }
 
 type SessionSummary struct {

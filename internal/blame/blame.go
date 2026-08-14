@@ -13,6 +13,7 @@ import (
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	queryindex "github.com/AadiJo/turnal/internal/index"
+	"github.com/AadiJo/turnal/internal/notes"
 	"github.com/AadiJo/turnal/internal/primitives"
 )
 
@@ -73,7 +74,12 @@ func (engine Engine) Compute(query Query) (Result, error) {
 			if err := engine.validateCachedEvidence(turns, concurrent); err != nil {
 				return Result{}, err
 			}
-			return engine.resultFromCache(query, cached, turns)
+			result, err := engine.resultFromCache(query, cached, turns)
+			if err != nil {
+				return Result{}, err
+			}
+			result.Notes = engine.fileNotes(query, latest.Commit)
+			return result, nil
 		}
 	}
 
@@ -129,7 +135,52 @@ func (engine Engine) Compute(query Query) (Result, error) {
 		Entries:       filterEntries(allEntries, query.Line),
 		Warnings:      warnings,
 		CompleteTurns: len(turns),
+		Notes:         engine.fileNotes(query, latest.Commit),
 	}, nil
+}
+
+// fileNotes collects reviewer comments naming the blamed file.
+//
+// Notes are joined by their own anchor rather than attached to a line's origin.
+// A reviewer may comment on a line that predates the turn being blamed, or on a
+// line a later turn has since rewritten, so borrowing the origin's identity
+// would assert a link the recorded history does not support. When a line is
+// requested, only notes covering that line and file-scoped notes are returned.
+//
+// Notes are deliberately excluded from the blame cache: the cache key already
+// hashes every event of every replayed turn, and caching commentary per line
+// would duplicate note bodies across every cached line of a file.
+func (engine Engine) fileNotes(query Query, latestCommit primitives.CommitSHA) []FileNote {
+	if engine.Repo == nil {
+		return nil
+	}
+	recorded, err := notes.List(engine.Repo, notes.Query{SessionID: query.SessionID, Path: query.Path})
+	if err != nil {
+		return nil
+	}
+	result := make([]FileNote, 0, len(recorded))
+	for _, note := range recorded {
+		if note.Anchor == nil {
+			continue
+		}
+		start, end := note.Anchor.LineStart, note.Anchor.LineEnd
+		if end < start {
+			end = start
+		}
+		if query.Line > 0 && start > 0 && (query.Line < start || query.Line > end) {
+			continue
+		}
+		result = append(result, FileNote{
+			Note:    note,
+			Line:    start,
+			LineEnd: note.Anchor.LineEnd,
+			Drift:   notes.CheckAnchor(engine.Repo, note, latestCommit),
+		})
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 // A provider can publish the same logical session turn through more than one

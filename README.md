@@ -21,6 +21,7 @@ Turnal should be piloted before company-wide adoption. Pin a version and validat
 - Inspect agent sessions, prompts, assistant responses, and tool activity.
 - Diff the workspace before and after a specific agent turn.
 - Attribute current lines to the turns that last changed them.
+- Reply to a recorded turn with a note that rides the same durable history.
 - Roll the workspace back with a safety checkpoint created first.
 - Save an explicit rollback point without committing to the project's Git history.
 - Search recorded turns without making SQLite the source of truth.
@@ -34,7 +35,7 @@ Turnal should be piloted before company-wide adoption. Pin a version and validat
 
 - Git available on `PATH`. Turnal uses Git plumbing for its private checkpoint store.
 - Node.js 18 or newer when installing through npm.
-- Go 1.26.5 or newer when installing from source or developing Turnal.
+- Go 1.26.6 or newer when installing from source or developing Turnal.
 - Claude Code, Codex, OpenCode, Gemini CLI, or Copilot CLI for automatic agent capture. `turnal save` also works without an agent session.
 
 Turnal does not initialize a Git repository for your project. It works in both Git and non-Git directories.
@@ -319,7 +320,29 @@ turnal search "push must fail open" --all-projects
 turnal search "why did sync block push" --all-projects --semantic
 turnal blame src/auth.go:42              # Agent intent behind a line
 turnal blame src/auth.go:42 --verbose    # Intent, evidence, human request, and action facts
+turnal note add <session>:<turn> "..."   # Reply to a recorded turn
+turnal note list                         # Notes recorded in this store
 ```
+
+## Notes
+
+A reviewer reading recorded history usually learns something the recording does not contain. Notes keep that where the turn is, instead of in a chat thread.
+
+```sh
+turnal note add <session>:<turn> "this broke auth, the intent statement was wrong"
+turnal note add <session>:<turn> --path src/auth.go --line 42 "this is the regression"
+turnal note add <session>:<turn> --path src/auth.go --line 40-48 --file -
+turnal note list <session>:<turn>
+turnal note remove <note-id>
+```
+
+A note is your statement about a turn, not recorded evidence, and Turnal never treats it as proof that a turn was right or wrong. Notes are written to this worktree's own note log, so noting a turn does not modify the agent history it discusses and does not change that turn's recorded duration. They appear in `turnal show`, in `turnal blame`, and in `turnal search`.
+
+An anchored note records the file text as it existed at the turn's post checkpoint. When that text later changes or moves, Turnal reports the anchor as drifted rather than guessing where the line went. A note anchored to a line whose latest change came from a different turn still displays against its own line, because the turn that last touched a line is not necessarily the turn a reviewer meant.
+
+`turnal note remove` hides a note. It does not erase one: the original stays in the append-only log, and any copy already published to teammates cannot be recalled. Dropping a session leaves notes about it in place and reports how many were orphaned, because commentary you did not write is not Turnal's to delete.
+
+When the workspace secrets policy sets `store_prompts = false`, a note's text, author, and anchor metadata are all withheld, because the path and line range describe workspace content just as the body does.
 
 `blame` reports the agent's stated problem first and keeps the human request as separate context. Its confidence label is derived from recorded timing and scope: an available statement captured before the action is high confidence, while a late statement or a change outside the stated scope is labeled accordingly. Redacted intent is explicit and remains low confidence because its scope is unavailable. A normal turn with no intent says that none was recorded. When a recorded statement cannot be tied safely to one action, or when turns overlap, Turnal uses explicit `ambiguous` or `concurrent` origins instead of borrowing an agent's statement.
 

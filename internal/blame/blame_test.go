@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	queryindex "github.com/AadiJo/turnal/internal/index"
+	"github.com/AadiJo/turnal/internal/notes"
 	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/AadiJo/turnal/internal/provenance"
 	"github.com/AadiJo/turnal/internal/turnevents"
@@ -1046,5 +1048,89 @@ func writeBlameBytes(t *testing.T, root primitives.WorkspaceRoot, relPath string
 	}
 	if err := os.WriteFile(path, content, 0o644); err != nil {
 		t.Fatalf("write %s: %v", relPath, err)
+	}
+}
+
+// A note belongs to the turn its author chose, which is not necessarily the
+// turn that last changed the line it sits on. Blame must surface the note
+// against its own anchor rather than attaching it to whichever origin happens
+// to own that line now.
+func TestBlameNotesStayOnTheirAnchorNotTheLineOrigin(t *testing.T) {
+	root, repo := newBlameRepo(t)
+	sessionID := blameSessionID(t, "demo")
+
+	captureRecordedBlameTurn(t, repo, root, sessionID, 1, "app.txt", "alpha\nbeta\ngamma\n", "add beta")
+	turnOne, err := notes.ResolveLocalTurn(repo, sessionID, blameTurnID(t, 1), "")
+	if err != nil {
+		t.Fatalf("ResolveLocalTurn: %v", err)
+	}
+	path, err := primitives.ParseRepoPath("app.txt")
+	if err != nil {
+		t.Fatalf("ParseRepoPath: %v", err)
+	}
+	if _, err := notes.Record(repo, notes.RecordInput{
+		Target: turnOne.Target, Text: "beta is the regression",
+		Path: path, LineStart: 2, AnchorCommit: turnOne.PostCommit,
+	}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	// A later turn rewrites the noted line, so line 2's origin becomes turn 2.
+	captureRecordedBlameTurn(t, repo, root, sessionID, 2, "app.txt", "alpha\nbeta rewritten\ngamma\n", "rewrite beta")
+
+	result, err := New(repo).Compute(Query{Path: path})
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	if len(result.Notes) != 1 {
+		t.Fatalf("notes = %#v, want one note joined by anchor", result.Notes)
+	}
+	note := result.Notes[0]
+	if note.Line != 2 {
+		t.Fatalf("note line = %d, want 2", note.Line)
+	}
+	if note.Note.Target.TurnID.Uint64() != 1 {
+		t.Fatalf("note target turn = %s, want the noted turn 1", note.Note.Target.TurnID)
+	}
+	if !note.Drift.Checked || !note.Drift.Drifted {
+		t.Fatalf("drift = %#v, want drift reported after the anchored line changed", note.Drift)
+	}
+	for _, entry := range result.Entries {
+		if entry.Line == 2 && entry.Origin.TurnID.Uint64() != 2 {
+			t.Fatalf("line 2 origin = %s, want turn 2; the note must not change attribution", entry.Origin.TurnID)
+		}
+	}
+}
+
+// Requesting one line must not hide notes anchored elsewhere in the file from
+// the caller, but it must not claim they cover the requested line either.
+func TestBlameLineQueryFiltersNotesToThatLine(t *testing.T) {
+	root, repo := newBlameRepo(t)
+	sessionID := blameSessionID(t, "demo")
+	captureRecordedBlameTurn(t, repo, root, sessionID, 1, "app.txt", "alpha\nbeta\ngamma\n", "write file")
+
+	resolved, err := notes.ResolveLocalTurn(repo, sessionID, blameTurnID(t, 1), "")
+	if err != nil {
+		t.Fatalf("ResolveLocalTurn: %v", err)
+	}
+	path, err := primitives.ParseRepoPath("app.txt")
+	if err != nil {
+		t.Fatalf("ParseRepoPath: %v", err)
+	}
+	for _, line := range []int{1, 3} {
+		if _, err := notes.Record(repo, notes.RecordInput{
+			Target: resolved.Target, Text: "note on line " + strconv.Itoa(line),
+			Path: path, LineStart: line, AnchorCommit: resolved.PostCommit,
+		}); err != nil {
+			t.Fatalf("Record line %d: %v", line, err)
+		}
+	}
+
+	result, err := New(repo).Compute(Query{Path: path, Line: 3})
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	if len(result.Notes) != 1 || result.Notes[0].Line != 3 {
+		t.Fatalf("notes = %#v, want only the note anchored to line 3", result.Notes)
 	}
 }

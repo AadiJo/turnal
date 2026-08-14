@@ -22,6 +22,7 @@ type RunID string
 type AttemptID string
 type TaskID string
 type CaseID string
+type NoteID string
 
 func NewRepoID() (RepoID, error) {
 	value, err := newDurableID("repo")
@@ -290,6 +291,38 @@ func (id CaseID) MarshalText() ([]byte, error) {
 
 func (id *CaseID) UnmarshalText(text []byte) error {
 	parsed, err := ParseCaseID(string(text))
+	if err != nil {
+		return err
+	}
+	*id = parsed
+	return nil
+}
+
+// NoteID identifies one human note about a recorded turn. A note is
+// commentary, not recorded evidence, so its id never participates in
+// checkpoint or attempt identity.
+func NewNoteID() (NoteID, error) {
+	value, err := newDurableID("note")
+	return NoteID(value), err
+}
+
+func ParseNoteID(value string) (NoteID, error) {
+	parsed, err := parseDurableID("note id", "note", value)
+	return NoteID(parsed), err
+}
+
+func (id NoteID) String() string { return string(id) }
+
+func (id NoteID) MarshalText() ([]byte, error) {
+	parsed, err := ParseNoteID(id.String())
+	if err != nil {
+		return nil, err
+	}
+	return []byte(parsed), nil
+}
+
+func (id *NoteID) UnmarshalText(text []byte) error {
+	parsed, err := ParseNoteID(string(text))
 	if err != nil {
 		return err
 	}

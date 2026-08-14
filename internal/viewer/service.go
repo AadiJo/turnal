@@ -743,6 +743,8 @@ func eventView(event eventlog.Event) EventView {
 		view.Sensitive = true
 	case primitives.EventTypeError:
 		view.Kind, view.Body = "error", firstPayloadString(payload, "error", "message", "text")
+	case primitives.EventTypeNoteCreate:
+		view.Kind, view.Body = "note", firstPayloadString(payload, "text")
 	case primitives.EventTypeCheckpoint:
 		view.Kind = "checkpoint"
 		phase := firstPayloadString(payload, "phase")
@@ -777,6 +779,10 @@ func eventTitle(eventType primitives.EventType) string {
 		return "Checkpoint"
 	case primitives.EventTypeError:
 		return "Captured error"
+	case primitives.EventTypeNoteCreate:
+		return "Reviewer note"
+	case primitives.EventTypeNoteDelete:
+		return "Reviewer note hidden"
 	default:
 		return strings.ReplaceAll(eventType.String(), ".", " ")
 	}

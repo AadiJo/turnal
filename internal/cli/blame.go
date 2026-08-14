@@ -94,10 +94,22 @@ func writeBlameText(w io.Writer, result blame.Result, verbose bool) error {
 		}
 	}
 
+	notesByLine, unanchored := blameNotesByLine(result)
+	printed := make(map[primitives.NoteID]struct{}, len(result.Notes))
+
 	for _, entry := range result.Entries {
 		label := originLabel(entry.Origin, sessionLabels)
 		if _, err := fmt.Fprintf(w, "%-*s %6d | %s\n", labelWidth, label, entry.Line, entry.Text); err != nil {
 			return err
+		}
+		for _, note := range notesByLine[entry.Line] {
+			if _, seen := printed[note.Note.NoteID]; seen {
+				continue
+			}
+			printed[note.Note.NoteID] = struct{}{}
+			if err := writeBlameNote(w, note); err != nil {
+				return err
+			}
 		}
 		if verbose {
 			if err := writeBlameOriginDetails(w, entry.Origin); err != nil {
@@ -135,8 +147,82 @@ func writeBlameText(w io.Writer, result blame.Result, verbose bool) error {
 			}
 		}
 	}
+	// A note whose anchored line is not in the displayed range still belongs to
+	// this file. Dropping it would hide the reviewer's point entirely.
+	var remaining []blame.FileNote
+	remaining = append(remaining, unanchored...)
+	for _, note := range result.Notes {
+		if note.Line == 0 {
+			continue
+		}
+		if _, seen := printed[note.Note.NoteID]; !seen {
+			remaining = append(remaining, note)
+		}
+	}
+	if len(remaining) > 0 {
+		if _, err := fmt.Fprintln(w, "\nother notes on this file:"); err != nil {
+			return err
+		}
+		for _, note := range remaining {
+			if err := writeBlameNote(w, note); err != nil {
+				return err
+			}
+		}
+	}
+
 	for _, warning := range result.Warnings {
 		if _, err := fmt.Fprintf(w, "warning: %s\n", warning); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// blameNotesByLine groups anchored notes by every line they cover, so a range
+// note appears against the first covered line that is actually displayed.
+// File-scoped notes have no line and are returned separately.
+func blameNotesByLine(result blame.Result) (map[int][]blame.FileNote, []blame.FileNote) {
+	byLine := make(map[int][]blame.FileNote)
+	var unanchored []blame.FileNote
+	for _, note := range result.Notes {
+		if note.Line == 0 {
+			unanchored = append(unanchored, note)
+			continue
+		}
+		end := note.LineEnd
+		if end < note.Line {
+			end = note.Line
+		}
+		for line := note.Line; line <= end; line++ {
+			byLine[line] = append(byLine[line], note)
+		}
+	}
+	return byLine, unanchored
+}
+
+func writeBlameNote(w io.Writer, note blame.FileNote) error {
+	label := "Note"
+	if note.Line > 0 {
+		if note.LineEnd > note.Line {
+			label = fmt.Sprintf("Note on %d-%d", note.Line, note.LineEnd)
+		} else {
+			label = fmt.Sprintf("Note on %d", note.Line)
+		}
+	}
+	if _, err := fmt.Fprintf(w, "  %s: %s\n", label, escapeNoteText(truncateText(note.Note.Text, 300))); err != nil {
+		return err
+	}
+	if note.Note.Author != "" {
+		if _, err := fmt.Fprintf(w, "    by %s (self-asserted)\n", escapeNoteLine(note.Note.Author)); err != nil {
+			return err
+		}
+	}
+	if note.Drift.Checked && note.Drift.Drifted {
+		reason := note.Drift.Reason
+		if reason == "" {
+			reason = "anchored text changed"
+		}
+		if _, err := fmt.Fprintf(w, "    anchor drifted: %s\n", reason); err != nil {
 			return err
 		}
 	}

@@ -103,6 +103,7 @@ CREATE VIRTUAL TABLE turn_search USING fts5(
 	tools,
 	paths,
 	event_text,
+	notes,
 	tokenize = 'unicode61'
 );
 

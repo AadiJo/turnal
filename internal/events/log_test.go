@@ -441,6 +441,66 @@ func TestAppendRecoversTrailingPartialBeforeWriting(t *testing.T) {
 	}
 }
 
+// A retry must not duplicate an event whose source marker never landed. The
+// marker is derived state, so AppendOnce has to resolve the source id from the
+// durable stream rather than trusting the marker's absence.
+func TestAppendOnceIsIdempotentWithoutSourceMarker(t *testing.T) {
+	log := Open(t.TempDir())
+	sessionID := sessionID(t, "notes")
+	input := AppendInput{
+		SessionID: sessionID,
+		Type:      primitives.EventTypeNoteCreate,
+		Adapter:   primitives.AdapterManual,
+		SourceID:  "note:note_0123456789abcdef0123456789abcdef:create",
+		Payload:   json.RawMessage(`{"text":"first"}`),
+	}
+
+	first, appended, err := log.AppendOnce(input)
+	if err != nil {
+		t.Fatalf("AppendOnce first: %v", err)
+	}
+	if !appended {
+		t.Fatal("AppendOnce first did not append")
+	}
+
+	if err := os.RemoveAll(filepath.Join(filepath.Dir(log.Dir), "source")); err != nil {
+		t.Fatalf("remove source markers: %v", err)
+	}
+
+	second, appended, err := log.AppendOnce(input)
+	if err != nil {
+		t.Fatalf("AppendOnce retry: %v", err)
+	}
+	if appended {
+		t.Fatal("AppendOnce retry appended a duplicate after its source marker was lost")
+	}
+	if second.Hash != first.Hash || second.Seq != first.Seq {
+		t.Fatalf("retry returned a different event: %#v, want %#v", second, first)
+	}
+
+	events, err := log.Read(sessionID)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events len = %d, want 1", len(events))
+	}
+	if err := log.Verify(sessionID); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+}
+
+func TestAppendOnceRequiresSourceID(t *testing.T) {
+	log := Open(t.TempDir())
+	if _, _, err := log.AppendOnce(AppendInput{
+		SessionID: sessionID(t, "notes"),
+		Type:      primitives.EventTypeNoteCreate,
+		Payload:   json.RawMessage(`{}`),
+	}); err == nil {
+		t.Fatal("AppendOnce without a source id succeeded, want error")
+	}
+}
+
 func sessionID(t *testing.T, value string) primitives.SessionID {
 	t.Helper()
 	sessionID, err := primitives.ParseSessionID(value)

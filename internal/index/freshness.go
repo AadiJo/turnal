@@ -11,12 +11,17 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/AadiJo/turnal/internal/notes"
 )
 
 func sourceFingerprint(metadataDir string) (string, error) {
 	roots := []string{
 		filepath.Join(metadataDir, "log", "events"),
 		filepath.Join(metadataDir, "log", "manual-checkpoints"),
+		// Reviewer notes are indexed alongside the turns they discuss, so a new
+		// note has to make an otherwise current index look stale.
+		notes.Root(metadataDir),
 	}
 	var records []string
 	for _, root := range roots {

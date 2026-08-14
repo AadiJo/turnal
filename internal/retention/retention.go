@@ -15,6 +15,7 @@ import (
 	"github.com/AadiJo/turnal/internal/fsidentity"
 	"github.com/AadiJo/turnal/internal/index"
 	"github.com/AadiJo/turnal/internal/manualcheckpoints"
+	"github.com/AadiJo/turnal/internal/notes"
 	"github.com/AadiJo/turnal/internal/primitives"
 	rollbackengine "github.com/AadiJo/turnal/internal/rollback"
 	"github.com/AadiJo/turnal/internal/turns"
@@ -212,6 +213,16 @@ func planDropSession(repo *checkpoint.Repo, sessionID primitives.SessionID, dryR
 
 	paths, residuals := sessionFiles(repo, sessionID)
 	result.Residuals = residuals
+	// Notes are commentary, not preserved evidence, so a note never blocks a
+	// drop. They are authored separately from the turns they discuss, so dropping
+	// a session leaves them intact and pointing at history that no longer exists.
+	// Say so rather than deleting another author's words or failing silently.
+	if orphaned, err := orphanedNoteCount(repo, sessionID); err != nil {
+		return Result{}, err
+	} else if orphaned > 0 {
+		result.Residuals = append(result.Residuals, fmt.Sprintf(
+			"%d note(s) reference this session and will remain after it is dropped; remove them with turnal note remove", orphaned))
+	}
 	if _, err := os.Lstat(filepath.Join(repo.MetadataDir, "shared-history", "policy.json")); err == nil {
 		result.Residuals = append(result.Residuals, "shared-history bundles are outside session deletion; local materializations and published remote copies may retain this session")
 	} else if !os.IsNotExist(err) {
@@ -231,6 +242,17 @@ func planDropSession(repo *checkpoint.Repo, sessionID primitives.SessionID, dryR
 	}
 	sort.Strings(result.RedactedFiles)
 	return result, nil
+}
+
+// orphanedNoteCount counts surviving notes that name a session about to be
+// dropped. An unreadable note log is reported as zero rather than blocking
+// retention: commentary must never make recorded history undeletable.
+func orphanedNoteCount(repo *checkpoint.Repo, sessionID primitives.SessionID) (int, error) {
+	recorded, err := notes.List(repo, notes.Query{SessionID: sessionID})
+	if err != nil {
+		return 0, nil
+	}
+	return len(recorded), nil
 }
 
 func ensureSessionNotCaseReferenced(repo *checkpoint.Repo, sessionID primitives.SessionID) error {
