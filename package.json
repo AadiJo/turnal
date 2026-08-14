@@ -45,13 +45,24 @@
   "bugs": {
     "url": "https://github.com/AadiJo/turnal/issues"
   },
-  "homepage": "https://github.com/AadiJo/turnal#readme",
+  "homepage": "https://turnal.johari-dev.com",
   "keywords": [
     "agent",
+    "ai-agent",
+    "ai",
+    "claude-code",
+    "codex",
+    "copilot",
+    "checkpoint",
     "cli",
     "git",
     "history",
-    "rollback"
+    "local-first",
+    "audit-trail",
+    "undo",
+    "rollback",
+    "snapshot",
+    "version-control"
   ],
   "license": "Apache-2.0",
   "engines": {

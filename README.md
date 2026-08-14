@@ -10,6 +10,14 @@
   A local-first flight recorder for AI coding agents.
 </p>
 
+<p align="center">
+  <a href="https://turnal.johari-dev.com">Website</a>
+  ·
+  <a href="https://turnal.johari-dev.com/docs">Documentation</a>
+  ·
+  <a href="https://www.npmjs.com/package/@aadijo/turnal">npm</a>
+</p>
+
 Turnal records what an agent did, the problem it said it was trying to solve, what the workspace looked like before and after each turn, and how to get back safely.
 
 It combines an append-only activity log with private Git checkpoints. Your project history stays local, normal recording never commits to or modifies your existing `.git/`, and SQLite is only a disposable search index. The optional workspace-Git rollback mode is the explicit exception: it can restore a previously captured HEAD and index.

@@ -1,0 +1,45 @@
+# Turnal
+
+> A local-first flight recorder for AI coding agents. Turnal records what an agent did, the problem it said it was trying to solve, what the workspace looked like before and after each turn, and how to get back safely.
+
+Turnal combines an append-only activity log with private Git checkpoints stored in `.turnal/`. Your project's own Git history is never modified during normal recording, and SQLite is only a disposable search index. It supports Claude Code, Codex, OpenCode, Gemini CLI, and Copilot CLI.
+
+Install: `npm install -g @aadijo/turnal`, then `turnal init`.
+
+License: Apache-2.0. Source: https://github.com/AadiJo/turnal
+
+## Core concepts
+
+- **Turn**: one completed agent exchange. Turnal captures a pre- and post-checkpoint for each one.
+- **Event trail**: append-only record of prompts, responses, tool calls, and file changes.
+- **Checkpoint**: a hidden Git object preserving the captured workspace state, kept outside your project's `.git/`.
+- **Case**: a turn promoted to an immutable starting point, used to retry a task with a different agent or instruction.
+
+## Docs
+
+- [Documentation](https://turnal.johari-dev.com/docs): full reference covering installation, capture boundaries, agent integrations, history, search, blame, rollback, replay, verification, cases, configuration, privacy, retention, and every CLI command.
+- [Installation](https://turnal.johari-dev.com/docs#installation): npm, install script, Homebrew, and build from source.
+- [Quickstart](https://turnal.johari-dev.com/docs#quickstart): initialize a workspace and inspect a first recording.
+- [Mental model](https://turnal.johari-dev.com/docs#mental-model): how the event trail and checkpoint store relate.
+- [Capture boundaries](https://turnal.johari-dev.com/docs#capture-boundaries): what snapshots include and exclude.
+- [Rollback](https://turnal.johari-dev.com/docs#rollback): previewing and performing a restore, including the safety checkpoint.
+- [Intent-aware blame](https://turnal.johari-dev.com/docs#intent-aware-blame): attributing a line to the turn, the agent's stated problem, and the human request.
+- [Command reference](https://turnal.johari-dev.com/docs#command-reference): every `turnal` subcommand.
+- [Privacy and storage](https://turnal.johari-dev.com/docs#privacy-and-storage): recording policy and snapshot deny globs.
+
+## Common tasks
+
+- Inspect recorded sessions and turns: `turnal log`, `turnal sessions`, `turnal show`
+- See what a turn changed: `turnal diff`
+- Attribute a line to the turn that wrote it: `turnal blame`
+- Search across recorded turns: `turnal search`
+- Return to an earlier state: `turnal rollback` (saves a safety checkpoint first)
+- Test an earlier state in isolation: `turnal replay`, `turnal verify`
+- Retry a task from a preserved starting point: `turnal case`, `turnal fork`, `turnal compare`
+- Browse everything in a local web UI: `turnal ui`
+
+## Notes
+
+- Turnal does not upload recordings. All data stays in `.turnal/` on the local machine unless shared history is explicitly approved and published.
+- Turnal does not initialize a Git repository for your project and works in both Git and non-Git directories.
+- Normal recording never commits to or modifies your existing `.git/`. Workspace-Git rollback is the one explicit, opt-in exception.
