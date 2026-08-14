@@ -196,12 +196,24 @@ func (manager *Manager) syncNotesPush(ctx context.Context) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	// An interruption between committing a batch and saving state leaves a
+	// durable tip with no committed bundle ids. Recover them before scanning for
+	// new work, or the same operations are rebuilt into a second commit that
+	// rewrites immutable paths and quarantines this device on every receiver.
+	if err := store.recoverCommittedNoteState(ctx, identity, &state); err != nil {
+		return Result{}, err
+	}
 
 	// Durable local commits are the outbox. Push them before building more so a
 	// network failure never causes a bundle to be regenerated.
 	localHead, err := store.localHead(ctx)
 	if err != nil {
 		return Result{}, err
+	}
+	for bundleID, committedHead := range state.Committed {
+		if localHead == "" || committedHead != localHead {
+			return Result{}, fmt.Errorf("note outbox state for %s does not match local head %s", bundleID, localHead)
+		}
 	}
 	published := 0
 	if localHead != "" {

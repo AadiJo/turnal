@@ -453,3 +453,109 @@ func testNoteID(t *testing.T) primitives.NoteID {
 	}
 	return noteID
 }
+
+// Simulates a crash after commitNoteBatch but before saveNotesState: the Git tip
+// is durable but state.Committed is empty. The next push must not rebuild those
+// bundles into a new commit that rewrites immutable paths.
+func TestNoteOutboxRecoveryAfterInterrupt(t *testing.T) {
+	testRoot := t.TempDir()
+	remote := filepath.Join(testRoot, "history.git")
+	runTestGit(t, testRoot, "init", "--bare", remote)
+	repo := newSharedHistoryTestRepoAt(t, filepath.Join(testRoot, "publisher"))
+	sessionID, turnID := recordSharedHistoryTurn(t, repo)
+	note := recordTestNote(t, repo, sessionID, turnID, "interrupted push", "")
+	if _, err := Configure(repo, ConfigureOptions{Remote: remote, PromptMode: PromptModeRedactedText}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ConfigureNotes(repo, NotesConfigureOptions{PromptMode: PromptModeRedactedText}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(repo).PreviewNote(context.Background(), NotePreviewOptions{NoteID: note.NoteID, Approve: true}); err != nil {
+		t.Fatal(err)
+	}
+	// Commit the batch WITHOUT pushing, exactly as commitNoteBatch does, then
+	// drop the state that a crash would have lost before saveNotesState ran.
+	ctx := context.Background()
+	policy, err := loadNotesPolicy(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := notesPolicyHash(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := loadOrCreateDevice(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ops, err := listPublishableNotes(repo, policy.RepoID)
+	if err != nil || len(ops) == 0 {
+		t.Fatalf("ops=%d err=%v", len(ops), err)
+	}
+	bundle, err := buildNoteBundle(repo, identity, policy, digest, ops[0], repo.WorkspaceRoot.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := openNotesGitStore(ctx, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch := NoteBatch{SchemaVersion: NotesSchemaVersion, DeviceID: identity.DeviceID, PublicKey: identity.PublicKey, CreatedAt: bundle.Stored.Manifest.CreatedAt}
+	batch.Bundles = append(batch.Bundles, NoteBatchBundle{BundleID: bundle.Stored.Manifest.BundleID, Path: bundle.Path, RepoID: bundle.Stored.Manifest.RepoID, NoteID: bundle.Stored.Manifest.NoteID, Operation: bundle.Stored.Manifest.Operation})
+	batch, err = signNoteBatch(identity, batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, err := store.commitNoteBatch(ctx, batch, []builtNoteBundle{bundle})
+	if err != nil {
+		t.Fatalf("commitNoteBatch: %v", err)
+	}
+
+	// Wipe the bookkeeping to simulate the interruption: the Git tip survives.
+	state, err := loadNotesState(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Published = map[string]string{}
+	state.Committed = map[string]string{}
+	state.LastSeen = map[string]string{}
+	if err := saveNotesState(repo, state); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := New(repo).SyncNotes(context.Background(), DirectionPush)
+	if err != nil {
+		t.Fatalf("push after interruption failed: %v", err)
+	}
+	if result.Head != head {
+		t.Fatalf("push rebuilt the committed batch: tip moved %s -> %s, which rewrites immutable paths", head, result.Head)
+	}
+
+	// The real question: can a receiver ingest what we just published?
+	receiver := newSharedHistoryTestRepoAt(t, filepath.Join(testRoot, "receiver"))
+	if _, err := Configure(receiver, ConfigureOptions{Remote: remote, RepoID: repo.RepoID, PromptMode: PromptModeRedactedText}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ConfigureNotes(receiver, NotesConfigureOptions{PromptMode: PromptModeRedactedText}); err != nil {
+		t.Fatal(err)
+	}
+	pull, pullErr := New(receiver).SyncNotes(context.Background(), DirectionPull)
+	_ = pull
+	if pullErr != nil {
+		t.Fatalf("receiver rejected the recovered publication: %v", pullErr)
+	}
+	listed, err := New(receiver).ListNotes(context.Background(), NoteListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("receiver listed %d notes, want 1", len(listed))
+	}
+
+	// Pull advances one commit per run, so the rebuilt commit is only reached on
+	// a second pull. That is where a rewritten immutable path would surface.
+	_, pullErr2 := New(receiver).SyncNotes(context.Background(), DirectionPull)
+	if pullErr2 != nil {
+		t.Fatalf("receiver rejected the rebuilt commit: %v", pullErr2)
+	}
+}

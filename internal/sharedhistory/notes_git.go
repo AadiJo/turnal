@@ -160,6 +160,61 @@ func (store *gitStore) commitNoteBatch(ctx context.Context, batch NoteBatch, bun
 	return store.localHead(ctx)
 }
 
+// recoverCommittedNoteState rebuilds outbox bookkeeping from the durable local
+// tip after an interruption between committing a note batch and saving state.
+//
+// Without it the next push sees no committed bundles, rebuilds the same note
+// operations, and commits them again at paths the previous commit already
+// occupies. Receivers reject that as a rewrite of an immutable path and
+// quarantine the publisher, so the local crash becomes a permanent remote
+// failure. The batch at the tip is verified before it is trusted, because it is
+// read back from disk.
+func (store *gitStore) recoverCommittedNoteState(ctx context.Context, identity deviceIdentity, state *notesStateFile) error {
+	if len(state.Committed) > 0 {
+		return nil
+	}
+	head, err := store.localHead(ctx)
+	if err != nil || head == "" || state.LastSeen[identity.DeviceID] == head {
+		return err
+	}
+	data, err := store.showFile(ctx, head, "batch.json", 8<<20)
+	if err != nil {
+		return fmt.Errorf("recover note outbox: %w", err)
+	}
+	var batch NoteBatch
+	if err := decodeStrictJSON(data, &batch); err != nil {
+		return fmt.Errorf("recover note outbox batch: %w", err)
+	}
+	if _, err := verifyNoteBatch(batch); err != nil {
+		return fmt.Errorf("recover note outbox: %w", err)
+	}
+	if batch.SchemaVersion != NotesSchemaVersion || batch.DeviceID != identity.DeviceID ||
+		batch.PublicKey != identity.PublicKey || len(batch.Bundles) == 0 || len(batch.Bundles) > MaxBundlesPerBatch {
+		return fmt.Errorf("recover note outbox: local tip has an invalid batch")
+	}
+	parents, err := store.run(ctx, "show", "-s", "--format=%P", head)
+	if err != nil {
+		return err
+	}
+	parentFields := strings.Fields(parents)
+	if len(parentFields) > 1 {
+		return fmt.Errorf("recover note outbox: local tip is a merge")
+	}
+	actualPrevious := ""
+	if len(parentFields) == 1 {
+		actualPrevious = parentFields[0]
+	}
+	if batch.PreviousHead != actualPrevious {
+		return fmt.Errorf("recover note outbox: batch does not extend its Git parent")
+	}
+	for _, item := range batch.Bundles {
+		if _, published := state.Published[item.BundleID.String()]; !published {
+			state.Committed[item.BundleID.String()] = head
+		}
+	}
+	return nil
+}
+
 func (store *gitStore) pushNotes(ctx context.Context, remote, deviceID, lastSeen string) (string, error) {
 	local, err := store.localHead(ctx)
 	if err != nil || local == "" {
