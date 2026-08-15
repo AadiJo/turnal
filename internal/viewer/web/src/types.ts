@@ -216,6 +216,44 @@ export type Blame = {
   truth_source: string;
 };
 
+/** The file list of one checkpoint. This is a snapshot, not the working tree:
+ * files the snapshot policy excludes never appear. */
+export type Tree = {
+  checkpoint_id: string;
+  checkpoint_time: string;
+  commit: string;
+  files: TreeEntry[];
+  truncated: boolean;
+  limit_entries: number;
+  truth_source: string;
+};
+
+export type TreeEntry = {
+  path: string;
+  mode: string;
+  /** The last recorded turn that changed this file, absent when no turn has. */
+  turn_key?: string;
+  turn_id?: number;
+  prompt?: string;
+  adapter?: string;
+  changed_at?: string;
+};
+
+export type FileContent = {
+  path: string;
+  checkpoint_id: string;
+  checkpoint_time: string;
+  commit: string;
+  content: string;
+  binary: boolean;
+  byte_count: number;
+  line_count: number;
+  truncated: boolean;
+  limit_bytes: number;
+  limit_lines: number;
+  truth_source: string;
+};
+
 export type ViewerError = {
   error: { code: string; message: string };
 };

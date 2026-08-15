@@ -4,11 +4,13 @@ import type {
   AddProjectResult,
   Blame,
   DiffSummary,
+  FileContent,
   FilePatch,
   ManualSave,
   Project,
   SessionSummary,
   SessionTurns,
+  Tree,
   TurnDetail,
   ViewerError,
   ViewerIndex,
@@ -147,6 +149,13 @@ export const api = {
         storeID,
         `blame/${encodeURIComponent(key)}?path=${encodeURIComponent(path)}`,
       ),
+      { signal },
+    ),
+  tree: (storeID: string, signal?: AbortSignal) =>
+    request<Tree>(scoped(storeID, "tree"), { signal }),
+  file: (storeID: string, path: string, signal?: AbortSignal) =>
+    request<FileContent>(
+      scoped(storeID, `file?path=${encodeURIComponent(path)}`),
       { signal },
     ),
 };

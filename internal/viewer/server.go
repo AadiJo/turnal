@@ -354,6 +354,10 @@ func (server *Server) serveAPI(response http.ResponseWriter, request *http.Reque
 		result, err = service.Diff(ctx, scoped[1])
 	case len(scoped) == 3 && scoped[0] == "diffs" && scoped[2] == "file":
 		result, err = service.Patch(ctx, scoped[1], query.Get("path"))
+	case len(scoped) == 1 && scoped[0] == "tree":
+		result, err = service.Tree(ctx)
+	case len(scoped) == 1 && scoped[0] == "file":
+		result, err = service.File(ctx, query.Get("path"))
 	case len(scoped) == 2 && scoped[0] == "blame":
 		line := 0
 		if value := query.Get("line"); value != "" {
