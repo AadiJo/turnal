@@ -39,6 +39,7 @@ type hookPayload struct {
 	ToolUseID            string          `json:"tool_use_id"`
 	ToolResponse         json.RawMessage `json:"tool_response"`
 	ToolError            string          `json:"error"`
+	ToolFailed           bool            `json:"is_error"`
 	ToolInterrupted      bool            `json:"is_interrupt"`
 	ToolDurationMS       int64           `json:"duration_ms"`
 	AgentID              string          `json:"agent_id"`
@@ -128,6 +129,7 @@ type toolResultPayload struct {
 	ToolUseID      string                     `json:"tool_use_id,omitempty"`
 	ProviderTurnID string                     `json:"provider_turn_id,omitempty"`
 	Output         json.RawMessage            `json:"output"`
+	IsError        bool                       `json:"is_error,omitempty"`
 	PostSnapshot   *provenance.ActionSnapshot `json:"post_snapshot,omitempty"`
 }
 
@@ -156,25 +158,10 @@ func IntentHookOutput(raw []byte) ([]byte, bool) {
 	if err != nil {
 		return nil, false
 	}
-	root, err := checkpoint.FindRoot(cwd)
-	if err != nil {
+	context, ok := IntentInstructionForSession(cwd, sessionID.String())
+	if !ok {
 		return nil, false
 	}
-	repo, err := checkpoint.Open(root)
-	if err != nil {
-		return nil, false
-	}
-	effective, _, err := agentconfig.ResolvePath(filepath.Join(repo.MetadataDir, "config.toml"), agentconfig.Overrides{})
-	if err != nil {
-		return nil, false
-	}
-	active, ok, err := turns.NewManager(repo).Active(sessionID)
-	if err != nil || !ok {
-		return nil, false
-	}
-	context := fmt.Sprintf(`Turnal records your stated purpose for each file change. Before the first file-changing tool call, and whenever the problem changes, run:
-%s intent --session %s --turn %s --problem "<code problem or goal>" [--scope <repo-relative file or directory, e.g. src/retry.go>] [--evidence <event:seq|path:path:line|test:name>]
-Describe the defect or goal, not edit steps or hidden reasoning. Repeat --scope and --evidence when needed. This instruction applies to Turnal turn %s.`, effective.Hooks.Command, sessionID, active.TurnID, active.TurnID)
 	output, err := json.Marshal(intentHookOutput{HookSpecificOutput: intentHookSpecificOutput{
 		HookEventName:     "UserPromptSubmit",
 		AdditionalContext: context,
@@ -183,6 +170,35 @@ Describe the defect or goal, not edit steps or hidden reasoning. Repeat --scope 
 		return nil, false
 	}
 	return append(output, '\n'), true
+}
+
+// IntentInstructionForSession returns the same active-turn instruction used by
+// built-in hooks. External adapters use it after prompt capture has opened the
+// turn, so every provider records intent with the same command and semantics.
+func IntentInstructionForSession(cwd, session string) (string, bool) {
+	sessionID, err := primitives.ParseSessionID(session)
+	if err != nil {
+		return "", false
+	}
+	root, err := checkpoint.FindRoot(cwd)
+	if err != nil {
+		return "", false
+	}
+	repo, err := checkpoint.Open(root)
+	if err != nil {
+		return "", false
+	}
+	effective, _, err := agentconfig.ResolvePath(filepath.Join(repo.MetadataDir, "config.toml"), agentconfig.Overrides{})
+	if err != nil {
+		return "", false
+	}
+	active, ok, err := turns.NewManager(repo).Active(sessionID)
+	if err != nil || !ok {
+		return "", false
+	}
+	return fmt.Sprintf(`Turnal records your stated purpose for each file change. Before the first file-changing tool call, and whenever the problem changes, run:
+%s intent --session %s --turn %s --problem "<code problem or goal>" [--scope <repo-relative file or directory, e.g. src/retry.go>] [--evidence <event:seq|path:path:line|test:name>]
+Describe the defect or goal, not edit steps or hidden reasoning. Repeat --scope and --evidence when needed. This instruction applies to Turnal turn %s.`, effective.Hooks.Command, sessionID, active.TurnID, active.TurnID), true
 }
 
 func HandleHookPayload(adapter primitives.AdapterName, hookName string, raw []byte) error {
@@ -281,6 +297,13 @@ func ProcessHookPayload(adapter primitives.AdapterName, hookName, rawRef string,
 // adapter. Core Turnal still owns raw retention, redaction, serialization,
 // durable events, and checkpoints.
 func HandleNormalizedEvents(adapter primitives.AdapterName, hookName string, raw []byte, normalized []adaptersdk.Event) error {
+	return HandleNormalizedEventsWithRunID(adapter, hookName, raw, normalized, "")
+}
+
+// HandleNormalizedEventsWithRunID applies normalized provider events and links
+// their session and prompt attempt to a turnal run when the provider inherited
+// TURNAL_RUN_ID from a wrapper process.
+func HandleNormalizedEventsWithRunID(adapter primitives.AdapterName, hookName string, raw []byte, normalized []adaptersdk.Event, runIDText string) error {
 	parsedAdapter, err := primitives.ParseAdapterName(adapter.String())
 	if err != nil {
 		return err
@@ -347,7 +370,39 @@ func HandleNormalizedEvents(adapter primitives.AdapterName, hookName string, raw
 			return err
 		}
 	}
+	reconcileNormalizedRun(repo, parsedAdapter, rawRef, sessionID, normalized, runIDText)
 	return nil
+}
+
+func reconcileNormalizedRun(repo *checkpoint.Repo, adapter primitives.AdapterName, rawRef string, sessionID primitives.SessionID, normalized []adaptersdk.Event, runIDText string) {
+	if strings.TrimSpace(runIDText) == "" {
+		return
+	}
+	runID, err := primitives.ParseRunID(runIDText)
+	if err == nil {
+		err = runs.LinkCapture(repo, runID, runs.CaptureProvider, sessionID, adapter)
+	}
+	hasPrompt := false
+	for _, event := range normalized {
+		if event.Type == adaptersdk.EventPromptUser {
+			hasPrompt = true
+			break
+		}
+	}
+	if err == nil && hasPrompt {
+		active, ok, activeErr := turns.NewManager(repo).Active(sessionID)
+		switch {
+		case activeErr != nil:
+			err = activeErr
+		case !ok:
+			err = fmt.Errorf("provider prompt has no active Turnal turn")
+		default:
+			_, err = runs.EnsureAttempt(repo, runID, sessionID, active.TurnID, adapter)
+		}
+	}
+	if err != nil {
+		_ = appendErrorEvent(repo.EventLog(), adapter, sessionID, rawRef, "run-correlation", err)
+	}
 }
 
 func processNormalizedEvent(log eventlog.Log, manager turns.Manager, adapter primitives.AdapterName, rawRef string, raw []byte, index int, sessionID primitives.SessionID, event adaptersdk.Event, effective agentconfig.Effective) error {
@@ -366,6 +421,7 @@ func processNormalizedEvent(log eventlog.Log, manager turns.Manager, adapter pri
 		ToolInput:            event.Input,
 		ToolUseID:            event.ToolUseID,
 		ToolResponse:         event.Output,
+		ToolFailed:           event.IsError,
 	}
 	if !effective.Secrets.StorePrompts && (event.Type == adaptersdk.EventToolCall || event.Type == adaptersdk.EventToolResult) && rawContainsIntentCommand(raw, effective.Hooks.Command) {
 		// A partial normalized input must not override core's observation that
@@ -410,13 +466,13 @@ func processNormalizedEvent(log eventlog.Log, manager turns.Manager, adapter pri
 			return err
 		}
 		if event.Type == adaptersdk.EventToolCall {
-			return appendToolCall(log, adapter, sessionID, turnID, rawRef, sourceID, payload, effective, nil, nil)
+			return captureAndAppendToolCall(log, manager.Repo, adapter, sessionID, turnID, rawRef, sourceID, payload, effective)
 		}
 		payload.IntentCommand, err = sessionToolCallIsIntentCommand(log, adapter, sessionID, payload.ToolUseID, payload.TurnID)
 		if err != nil {
 			return err
 		}
-		return appendToolResult(log, adapter, sessionID, turnID, rawRef, sourceID, payload, effective, nil)
+		return captureAndAppendToolResult(log, manager.Repo, adapter, sessionID, turnID, rawRef, sourceID, payload, effective)
 	case adaptersdk.EventAssistantMessage, adaptersdk.EventTurnFinish:
 		active, ok, err := manager.Active(sessionID)
 		if err != nil || !ok {
@@ -553,6 +609,9 @@ func processHook(log eventlog.Log, manager turns.Manager, adapter primitives.Ada
 	}
 
 	normalizedHook := normalizeHookName(hookName)
+	if normalizedHook == "posttoolusefailure" {
+		payload.ToolFailed = true
+	}
 	switch normalizedHook {
 	case "sessionstart":
 		return appendSessionStart(log, adapter, sessionID, rawRef, sourceID, payload)
@@ -847,6 +906,7 @@ func appendToolResult(log eventlog.Log, adapter primitives.AdapterName, sessionI
 			ToolUseID:      payload.ToolUseID,
 			ProviderTurnID: payload.TurnID,
 			Output:         redactedToolOutput(payload, effective),
+			IsError:        payload.ToolFailed,
 			PostSnapshot:   postSnapshot,
 		}),
 	})

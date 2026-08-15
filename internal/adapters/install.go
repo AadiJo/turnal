@@ -21,6 +21,8 @@ const (
 	TargetAuto   Target = "auto"
 	TargetClaude Target = "claude"
 	TargetCodex  Target = "codex"
+	TargetCursor Target = "cursor"
+	TargetPi     Target = "pi"
 	TargetAll    Target = "all"
 	TargetNone   Target = "none"
 )
@@ -57,8 +59,12 @@ func ResolveTargets(projectRoot string, target Target) ([]Target, error) {
 		return []Target{TargetClaude}, nil
 	case TargetCodex:
 		return []Target{TargetCodex}, nil
+	case TargetCursor:
+		return []Target{TargetCursor}, nil
+	case TargetPi:
+		return []Target{TargetPi}, nil
 	case TargetAll:
-		return []Target{TargetClaude, TargetCodex}, nil
+		return []Target{TargetClaude, TargetCodex, TargetCursor, TargetPi}, nil
 	case TargetAuto, "":
 		var targets []Target
 		if pathExists(filepath.Join(projectRoot, ".claude")) || commandExists("claude") {
@@ -67,12 +73,18 @@ func ResolveTargets(projectRoot string, target Target) ([]Target, error) {
 		if pathExists(filepath.Join(EffectiveHookRoot(projectRoot, TargetCodex), ".codex")) || commandExists("codex") {
 			targets = append(targets, TargetCodex)
 		}
+		if pathExists(filepath.Join(projectRoot, ".cursor")) || commandExists("cursor") || commandExists("agent") {
+			targets = append(targets, TargetCursor)
+		}
+		if pathExists(filepath.Join(projectRoot, ".pi")) || commandExists("pi") {
+			targets = append(targets, TargetPi)
+		}
 		if len(targets) == 0 {
 			targets = append(targets, TargetClaude, TargetCodex)
 		}
 		return targets, nil
 	default:
-		return nil, fmt.Errorf("invalid --agent %q; expected auto, claude, codex, all, or none", target)
+		return nil, fmt.Errorf("invalid --agent %q; expected auto, claude, codex, cursor, pi, all, or none", target)
 	}
 }
 
@@ -92,6 +104,18 @@ func InstallWithOptions(projectRoot string, targets []Target, opts InstallOption
 			results = append(results, result)
 		case TargetCodex:
 			result, err := InstallCodexHookWithOptions(projectRoot, opts)
+			if err != nil {
+				return nil, err
+			}
+			results = append(results, result)
+		case TargetCursor:
+			result, err := InstallCursorHookWithOptions(projectRoot, opts)
+			if err != nil {
+				return nil, err
+			}
+			results = append(results, result)
+		case TargetPi:
+			result, err := InstallPiExtensionWithOptions(projectRoot, opts)
 			if err != nil {
 				return nil, err
 			}
@@ -119,6 +143,18 @@ func UninstallWithOptions(projectRoot string, targets []Target, opts UninstallOp
 			results = append(results, result)
 		case TargetCodex:
 			result, err := UninstallCodexHookWithOptions(projectRoot, opts)
+			if err != nil {
+				return nil, err
+			}
+			results = append(results, result)
+		case TargetCursor:
+			result, err := UninstallCursorHookWithOptions(projectRoot, opts)
+			if err != nil {
+				return nil, err
+			}
+			results = append(results, result)
+		case TargetPi:
+			result, err := UninstallPiExtensionWithOptions(projectRoot, opts)
 			if err != nil {
 				return nil, err
 			}
@@ -563,6 +599,8 @@ func IsTurnalHookCommand(command string) bool {
 		switch field {
 		case "claude-hook", "codex-hook":
 			return index > 0
+		case "adapter":
+			return index > 0 && index+2 < len(fields) && fields[index+1] == "capture"
 		}
 	}
 	return false

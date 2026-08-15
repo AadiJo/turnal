@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"time"
 
 	"github.com/AadiJo/turnal/internal/adapterplugin"
 	"github.com/AadiJo/turnal/internal/adapters"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/runs"
 	adaptersdk "github.com/AadiJo/turnal/sdk/adapter"
 	"github.com/spf13/cobra"
 )
@@ -172,27 +174,59 @@ func adapterCaptureCmd() *cobra.Command {
 				return nil
 			}
 			name, err := primitives.ParseAdapterName(args[0])
+			var normalized []adaptersdk.Event
 			if err == nil {
 				var external adapterplugin.Adapter
 				external, err = adapterplugin.Find(name.String())
 				if err == nil {
 					ctx, cancel := context.WithTimeout(cmd.Context(), adapterTimeout)
-					var normalized []adaptersdk.Event
 					normalized, err = adapterplugin.Normalize(ctx, external, args[1], raw)
 					cancel()
 					if err == nil {
-						err = adapters.HandleNormalizedEvents(name, args[1], raw, normalized)
+						err = adapters.HandleNormalizedEventsWithRunID(name, args[1], raw, normalized, os.Getenv(runs.EnvRunID))
 					}
 				}
 			}
 			if err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "turnal: %s adapter capture failed (%s): %v\n", args[0], args[1], err)
 			}
-			// Gemini and other command-hook providers expect valid JSON output.
-			fmt.Fprintln(cmd.OutOrStdout(), "{}")
+			writeAdapterCaptureOutput(cmd.OutOrStdout(), name, normalized)
 			return nil
 		},
 	}
+}
+
+type adapterCaptureOutput struct {
+	Continue          *bool  `json:"continue,omitempty"`
+	UserMessage       string `json:"user_message,omitempty"`
+	AdditionalContext string `json:"additional_context,omitempty"`
+}
+
+func writeAdapterCaptureOutput(writer io.Writer, name primitives.AdapterName, normalized []adaptersdk.Event) {
+	for _, event := range normalized {
+		if event.Type != adaptersdk.EventPromptUser {
+			continue
+		}
+		instruction, ok := adapters.IntentInstructionForSession(event.CWD, event.SessionID)
+		if !ok {
+			break
+		}
+		output := adapterCaptureOutput{}
+		switch name {
+		case primitives.AdapterCursor:
+			proceed := true
+			output.Continue = &proceed
+			output.UserMessage = event.Text + "\n\n" + instruction
+		case primitives.AdapterPi:
+			output.AdditionalContext = instruction
+		default:
+			fmt.Fprintln(writer, "{}")
+			return
+		}
+		_ = json.NewEncoder(writer).Encode(output)
+		return
+	}
+	fmt.Fprintln(writer, "{}")
 }
 
 func readAdapterPayload(reader io.Reader) (json.RawMessage, error) {

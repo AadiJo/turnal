@@ -179,7 +179,7 @@ func recordExternalHookPayload(adapter primitives.AdapterName, hookName string, 
 	if err != nil {
 		return "", err
 	}
-	storedRaw := redactExternalHookPayload(raw, effective.Secrets, effective.Hooks.Command, forceIntentRedaction)
+	storedRaw := redactExternalHookPayload(raw, hookName, effective.Secrets, effective.Hooks.Command, forceIntentRedaction)
 	record := RawHookRecord{
 		Version:    2,
 		SessionID:  parsedSession.String(),
@@ -197,7 +197,7 @@ func recordExternalHookPayload(adapter primitives.AdapterName, hookName string, 
 	return appendRawHookRecord(repo.MetadataDir, record)
 }
 
-func redactExternalHookPayload(raw []byte, secrets agentconfig.Secrets, hookCommand string, forceIntentRedaction bool) []byte {
+func redactExternalHookPayload(raw []byte, hookName string, secrets agentconfig.Secrets, hookCommand string, forceIntentRedaction bool) []byte {
 	if !secrets.StorePrompts && forceIntentRedaction {
 		redacted, err := json.Marshal(map[string]any{"redacted": true, "policy": "turnal.secrets", "content": "agent.intent"})
 		if err == nil {
@@ -217,12 +217,30 @@ func redactExternalHookPayload(raw []byte, secrets agentconfig.Secrets, hookComm
 			return redacted
 		}
 	}
+	if !secrets.StorePrompts && externalHookContainsAssistantText(hookName) {
+		if object, ok := value.(map[string]any); ok {
+			for _, key := range []string{"text", "response"} {
+				if _, exists := object[key]; exists {
+					object[key] = redactedText("", false)
+				}
+			}
+		}
+	}
 	redactExternalValue(value, secrets, hookCommand)
 	redacted, err := json.Marshal(value)
 	if err != nil {
 		return raw
 	}
 	return redacted
+}
+
+func externalHookContainsAssistantText(hookName string) bool {
+	switch normalizeHookName(hookName) {
+	case "afteragentresponse", "agentsettled":
+		return true
+	default:
+		return false
+	}
 }
 
 func redactExternalValue(value any, secrets agentconfig.Secrets, hookCommand string) {
@@ -257,7 +275,7 @@ func redactExternalValue(value any, secrets agentconfig.Secrets, hookCommand str
 			}
 			if intentCommand {
 				switch normalized {
-				case "toolinput", "toolargs", "args", "input", "toolresponse", "toolresult", "output", "result", "error":
+				case "toolinput", "toolargs", "args", "input", "toolresponse", "toolresult", "tooloutput", "output", "result", "error", "errormessage":
 					object[key] = map[string]any{"redacted": true, "policy": "turnal.secrets", "content": "agent.intent"}
 					continue
 				}
@@ -265,7 +283,7 @@ func redactExternalValue(value any, secrets agentconfig.Secrets, hookCommand str
 		}
 		if !secrets.StoreToolIO {
 			switch normalized {
-			case "toolinput", "toolargs", "args", "input", "toolresponse", "toolresult", "output", "result", "error":
+			case "toolinput", "toolargs", "args", "input", "toolresponse", "toolresult", "tooloutput", "output", "result", "error", "errormessage":
 				object[key] = map[string]any{"redacted": true, "policy": "turnal.secrets"}
 				continue
 			}

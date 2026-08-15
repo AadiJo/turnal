@@ -1225,6 +1225,49 @@ func TestHandleNormalizedEventsKeepsDurabilityInCore(t *testing.T) {
 	}
 }
 
+func TestHandleNormalizedEventsCorrelatesExternalProviderRun(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID, err := primitives.NewRunID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapperSession, _ := primitives.ParseSessionID("cursor-wrapper")
+	release, err := runs.Begin(repo, runID, wrapperSession, []string{"cursor"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	event := adaptersdk.Event{
+		Type:           adaptersdk.EventPromptUser,
+		SessionID:      "cursor-provider",
+		CWD:            root.String(),
+		ProviderTurnID: "generation-1",
+		Text:           "fix it",
+	}
+	raw := []byte(`{"conversation_id":"cursor-provider","generation_id":"generation-1","prompt":"fix it"}`)
+	for range 2 {
+		if err := HandleNormalizedEventsWithRunID(primitives.AdapterCursor, "beforeSubmitPrompt", raw, []adaptersdk.Event{event}, runID.String()); err != nil {
+			t.Fatalf("capture external run: %v", err)
+		}
+	}
+	projection, err := runs.Read(repo, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projection.Captures) != 1 || projection.Captures[0].Adapter != primitives.AdapterCursor || projection.Captures[0].Kind != runs.CaptureProvider {
+		t.Fatalf("provider captures = %#v", projection.Captures)
+	}
+	if len(projection.Attempts) != 1 || projection.Attempts[0].SessionID != "cursor-provider" || projection.Attempts[0].TurnID != 1 {
+		t.Fatalf("provider attempts = %#v", projection.Attempts)
+	}
+}
+
 func TestHandleNormalizedEventsStoresParentSessionTopology(t *testing.T) {
 	requireGit(t)
 	root := workspaceRoot(t)
@@ -1997,6 +2040,43 @@ func TestHandleHookPayloadSerializesConcurrentDuplicatePrompt(t *testing.T) {
 	}
 	if countEvents(events, primitives.EventTypeCheckpoint) != 1 {
 		t.Fatalf("checkpoint events = %d, want 1; events=%#v", countEvents(events, primitives.EventTypeCheckpoint), events)
+	}
+}
+
+func TestHandleNormalizedEventsSerializesConcurrentDuplicatePrompt(t *testing.T) {
+	requireGit(t)
+	for _, adapter := range []primitives.AdapterName{primitives.AdapterCursor, primitives.AdapterPi} {
+		t.Run(adapter.String(), func(t *testing.T) {
+			root := workspaceRoot(t)
+			repo, err := checkpoint.Init(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			session := adapter.String() + "-concurrent-prompt"
+			event := adaptersdk.Event{Type: adaptersdk.EventPromptUser, SessionID: session, CWD: root.String(), ProviderTurnID: "turn-1", Text: "fix it"}
+			raw := []byte(`{"session_id":"` + session + `","turn_id":"turn-1","prompt":"fix it"}`)
+			const workers = 8
+			var group sync.WaitGroup
+			errorsByWorker := make(chan error, workers)
+			for range workers {
+				group.Add(1)
+				go func() {
+					defer group.Done()
+					errorsByWorker <- HandleNormalizedEvents(adapter, "prompt", raw, []adaptersdk.Event{event})
+				}()
+			}
+			group.Wait()
+			close(errorsByWorker)
+			for err := range errorsByWorker {
+				if err != nil {
+					t.Fatalf("concurrent prompt: %v", err)
+				}
+			}
+			events := readEvents(t, repo, sessionID(t, session))
+			if countEvents(events, primitives.EventTypeSessionStart) != 1 || countEvents(events, primitives.EventTypePromptUser) != 1 || countEvents(events, primitives.EventTypeCheckpoint) != 1 {
+				t.Fatalf("concurrent events = %#v", eventTypes(events))
+			}
+		})
 	}
 }
 

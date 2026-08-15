@@ -6,6 +6,7 @@ import (
 	"github.com/AadiJo/turnal/internal/adapters"
 	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/AadiJo/turnal/internal/provenance"
+	"github.com/AadiJo/turnal/internal/turns"
 	"github.com/spf13/cobra"
 )
 
@@ -31,10 +32,6 @@ references such as event:12, path:src/retry.go:42, or test:TestRetryReset.`,
 			if err != nil {
 				return err
 			}
-			turnID, err := primitives.ParseTurnID(turn)
-			if err != nil {
-				return err
-			}
 			repo, err := openCheckpointRepo()
 			if err != nil {
 				return err
@@ -44,6 +41,22 @@ references such as event:12, path:src/retry.go:42, or test:TestRetryReset.`,
 				return err
 			}
 			defer unlock()
+			var turnID primitives.TurnID
+			if turn == "" {
+				active, ok, err := turns.NewManager(repo).Active(sessionID)
+				if err != nil {
+					return err
+				}
+				if !ok {
+					return fmt.Errorf("no active turn for session %s", sessionID)
+				}
+				turnID = active.TurnID
+			} else {
+				turnID, err = primitives.ParseTurnID(turn)
+				if err != nil {
+					return err
+				}
+			}
 
 			event, err := provenance.Record(repo, provenance.RecordInput{
 				SessionID: sessionID,
@@ -60,12 +73,11 @@ references such as event:12, path:src/retry.go:42, or test:TestRetryReset.`,
 		},
 	}
 	cmd.Flags().StringVar(&session, "session", "", "Active agent session id")
-	cmd.Flags().StringVar(&turn, "turn", "", "Turn number from the hook instruction")
+	cmd.Flags().StringVar(&turn, "turn", "", "Turn number from the hook instruction (defaults to the active turn)")
 	cmd.Flags().StringVar(&problem, "problem", "", "Defect or goal the upcoming change addresses")
 	cmd.Flags().StringArrayVar(&scope, "scope", nil, "Expected repository path (repeatable)")
 	cmd.Flags().StringArrayVar(&evidence, "evidence", nil, "Evidence reference (repeatable)")
 	_ = cmd.MarkFlagRequired("session")
-	_ = cmd.MarkFlagRequired("turn")
 	_ = cmd.MarkFlagRequired("problem")
 	return cmd
 }

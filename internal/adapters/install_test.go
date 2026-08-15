@@ -591,12 +591,22 @@ func TestResolveTargets(t *testing.T) {
 	if len(targets) == 0 || targets[0] != TargetClaude {
 		t.Fatalf("auto targets = %#v, want Claude first", targets)
 	}
+	if err := os.Mkdir(filepath.Join(root, ".cursor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, ".pi"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	targets, err = ResolveTargets(root, TargetAuto)
+	if err != nil || !containsTarget(targets, TargetCursor) || !containsTarget(targets, TargetPi) {
+		t.Fatalf("auto external targets = %#v err=%v", targets, err)
+	}
 
 	targets, err = ResolveTargets(root, TargetAll)
 	if err != nil {
 		t.Fatalf("ResolveTargets all: %v", err)
 	}
-	if len(targets) != 2 || targets[0] != TargetClaude || targets[1] != TargetCodex {
+	if len(targets) != 4 || targets[0] != TargetClaude || targets[1] != TargetCodex || targets[2] != TargetCursor || targets[3] != TargetPi {
 		t.Fatalf("all targets = %#v", targets)
 	}
 
@@ -611,6 +621,15 @@ func TestResolveTargets(t *testing.T) {
 	if len(targets) != 0 {
 		t.Fatalf("none targets = %#v, want empty", targets)
 	}
+}
+
+func containsTarget(targets []Target, expected Target) bool {
+	for _, target := range targets {
+		if target == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func readJSONFile(t *testing.T, path string, out any) {

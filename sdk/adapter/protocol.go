@@ -86,6 +86,7 @@ type Event struct {
 	ToolUseID       string          `json:"tool_use_id,omitempty"`
 	Input           json.RawMessage `json:"input,omitempty"`
 	Output          json.RawMessage `json:"output,omitempty"`
+	IsError         bool            `json:"is_error,omitempty"`
 }
 
 type Error struct {

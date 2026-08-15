@@ -14,7 +14,7 @@ An adapter emits zero or more `event` responses. A single after-tool hook normal
 {"protocol":"turnal-adapter","version":1,"id":"capture","type":"event","event":{"type":"tool.call","session_id":"demo","cwd":"/workspace","tool_name":"write_file","input":{"path":"README.md"}}}
 ```
 
-The supported event types are `session.start`, `prompt.user`, `tool.call`, `tool.result`, `assistant.message`, and `turn.finish`. `session_id` and an absolute `cwd` are required on every event. Tool events also require `tool_name`; `source_id`, `provider_turn_id`, `tool_use_id`, model metadata, transcript paths, and JSON input/output are optional. A child `session.start` can set `parent_session_id` and the spawning `parent_tool_use_id`; Turnal stores that relation on the session instead of flattening the child into the parent's tool activity.
+The supported event types are `session.start`, `prompt.user`, `tool.call`, `tool.result`, `assistant.message`, and `turn.finish`. `session_id` and an absolute `cwd` are required on every event. Tool events also require `tool_name`. The `source_id`, `provider_turn_id`, `tool_use_id`, model metadata, transcript paths, JSON input and output, and `is_error` fields are optional. A child `session.start` can set `parent_session_id` and the spawning `parent_tool_use_id`. Turnal stores that relation on the session instead of flattening the child into the parent's tool activity.
 
 The Go SDK lives at `github.com/AadiJo/turnal/sdk/adapter`. Its `Serve` function implements framing, version negotiation, request validation, response encoding, and event validation. Protocol conformance transcripts are in [`sdk/adapter/testdata/conformance/v1`](../sdk/adapter/testdata/conformance/v1). Adapters must write protocol data only to stdout; diagnostics belong on stderr. Run `turnal adapter contract` for the installed contract summary or `turnal adapter contract --json` for a machine-readable description.
 
@@ -36,7 +36,7 @@ Provider hooks pipe their JSON payload to the hidden capture bridge. The bridge 
 
 ### Cursor
 
-Add these commands to `.cursor/hooks.json`, merging them with existing hooks. Cursor's generic tool hooks capture tool boundaries, `afterAgentResponse` captures assistant text where the surface emits it, and `stop` always closes the turn. `subagentStart` records a child session linked to its parent conversation and spawning Task call.
+Run `turnal init --agent cursor` to merge these commands into `.cursor/hooks.json`. Cursor's generic tool hooks capture tool boundaries. The `afterAgentResponse` hook captures assistant text where the surface emits it, and `stop` always closes the turn. The `subagentStart` hook records a child session linked to its parent conversation and spawning Task call.
 
 ```json
 {
@@ -54,13 +54,13 @@ Add these commands to `.cursor/hooks.json`, merging them with existing hooks. Cu
 }
 ```
 
-Cursor loads project hooks from the trusted workspace and user hooks from `~/.cursor/hooks.json`. Hook availability varies by Cursor surface; the CLI reliably uses `stop` as the final checkpoint boundary even when it does not emit `afterAgentResponse`.
+Cursor loads project hooks from the trusted workspace and user hooks from `~/.cursor/hooks.json`. Hook availability varies by Cursor surface. The CLI uses `stop` as the final checkpoint boundary even when it does not emit `afterAgentResponse`. The `beforeSubmitPrompt` response adds the active Turnal intent command to the submitted prompt.
 
 ### Pi
 
-Pi uses an extension to forward typed lifecycle events. Copy [`integrations/pi/turnal.ts`](../integrations/pi/turnal.ts) to `.pi/extensions/turnal.ts` for one project or `~/.pi/agent/extensions/turnal.ts` for all projects, then start Pi with the project-local extension approved. The extension is fail-soft: capture errors are diagnostic and never block Pi.
+Pi uses an extension to forward typed lifecycle events. Run `turnal init --agent pi` to install the managed project extension at `.pi/extensions/turnal.ts`. To install it for all projects, copy [`integrations/pi/turnal.ts`](../integrations/pi/turnal.ts) to `~/.pi/agent/extensions/turnal.ts`. Approve the project extension when Pi prompts. Capture errors produce diagnostics and never block Pi.
 
-The extension records session start, prompts, tool start/result pairs, and the settled assistant response. When Pi forks or clones a session, it reads the parent session header and emits `parent_session_id`, so `turnal sessions` and `turnal sessions --json` expose the fork topology.
+The extension records session start, prompts, tool start and result pairs, structured tool failures, and the settled assistant response. It adds the active Turnal intent command to the system prompt for each turn. When Pi forks or clones a session, the extension reads the parent session header and emits `parent_session_id`. Both `turnal sessions` and `turnal sessions --json` expose the fork topology.
 
 ### Gemini CLI
 

@@ -80,7 +80,9 @@ func normalizeCursor(hook string, raw json.RawMessage) ([]adaptersdk.Event, erro
 	case "posttooluse":
 		return []adaptersdk.Event{toolResultEvent(base, payload, []string{"tool_input", "toolInput"}, []string{"tool_output", "toolOutput"})}, nil
 	case "posttoolusefailure":
-		return []adaptersdk.Event{toolResultEvent(base, payload, []string{"tool_input", "toolInput"}, []string{"error_message", "errorMessage", "failure_type"})}, nil
+		event := toolResultEvent(base, payload, []string{"tool_input", "toolInput"}, []string{"error_message", "errorMessage", "failure_type"})
+		event.IsError = true
+		return []adaptersdk.Event{event}, nil
 	case "afteragentresponse":
 		base.Type = adaptersdk.EventAssistantMessage
 		base.Text = firstString(payload, "text", "response")
@@ -108,10 +110,14 @@ func normalizePi(hook string, raw json.RawMessage) ([]adaptersdk.Event, error) {
 		return nil, err
 	}
 	base := commonEvent(payload)
+	parentSessionID, parentToolUseID := base.ParentSessionID, base.ParentToolUseID
+	base.ParentSessionID, base.ParentToolUseID = "", ""
 	hook = normalizedHook(firstNonEmpty(firstString(payload, "hook", "event"), hook))
 	switch hook {
 	case "sessionstart":
 		base.Type = adaptersdk.EventSessionStart
+		base.ParentSessionID = parentSessionID
+		base.ParentToolUseID = parentToolUseID
 		return []adaptersdk.Event{base}, nil
 	case "beforeagentstart":
 		base.Type = adaptersdk.EventPromptUser
@@ -124,7 +130,9 @@ func normalizePi(hook string, raw json.RawMessage) ([]adaptersdk.Event, error) {
 		base.Input = firstJSON(payload, "args", "input")
 		return []adaptersdk.Event{base}, nil
 	case "toolexecutionend":
-		return []adaptersdk.Event{toolResultEvent(base, payload, nil, []string{"result", "output"})}, nil
+		event := toolResultEvent(base, payload, nil, []string{"result", "output"})
+		event.IsError = firstBool(payload, "is_error", "isError")
+		return []adaptersdk.Event{event}, nil
 	case "agentsettled":
 		base.Text = firstString(payload, "text", "response")
 		if base.Text == "" {
@@ -322,6 +330,15 @@ func firstStringArray(payload map[string]any, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func firstBool(payload map[string]any, keys ...string) bool {
+	for _, key := range keys {
+		if value, ok := payload[key].(bool); ok {
+			return value
+		}
+	}
+	return false
 }
 
 func firstJSON(payload map[string]any, keys ...string) json.RawMessage {

@@ -38,6 +38,12 @@ func Diagnose(ctx context.Context, options Options) Report {
 			if options.ProbeCodex {
 				report.Surfaces = append(report.Surfaces, probeCodexSurface(ctx, options, health))
 			}
+		case adapters.TargetCursor:
+			health := byTarget[target]
+			report.Surfaces = append(report.Surfaces, classifyCursorCLI(health))
+		case adapters.TargetPi:
+			health := byTarget[target]
+			report.Surfaces = append(report.Surfaces, classifyPiCLI(health))
 		}
 	}
 	return report
@@ -87,6 +93,20 @@ func classifyCodexCLI(health adapters.HookHealth) SurfaceResult {
 	result := baseStaticResult(ProviderCodex, SurfaceCodexCLI, health)
 	result.Limitations = []string{"workspace inspection confirms project configuration, not a live Codex CLI process"}
 	result.Guidance = []string{"turnal run -- codex provides wrapper checkpoints even when rich hook capture is unavailable"}
+	return result
+}
+
+func classifyCursorCLI(health adapters.HookHealth) SurfaceResult {
+	result := baseStaticResult(ProviderCursor, SurfaceCursorCLI, health)
+	result.Limitations = []string{"workspace inspection confirms project hooks, not a live Cursor process"}
+	result.Guidance = []string{"run Cursor from the trusted workspace so it loads .cursor/hooks.json"}
+	return result
+}
+
+func classifyPiCLI(health adapters.HookHealth) SurfaceResult {
+	result := baseStaticResult(ProviderPi, SurfacePiCLI, health)
+	result.Limitations = []string{"workspace inspection confirms the extension source, not a live Pi process"}
+	result.Guidance = []string{"approve the project extension when Pi prompts so it loads .pi/extensions/turnal.ts"}
 	return result
 }
 

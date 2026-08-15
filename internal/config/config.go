@@ -498,10 +498,10 @@ func applyOverrides(effective *Effective, origins map[string]Origin, overrides O
 func normalizeAgent(value string) (string, error) {
 	value = strings.TrimSpace(value)
 	switch value {
-	case "auto", "claude", "codex", "all", "none":
+	case "auto", "claude", "codex", "cursor", "pi", "all", "none":
 		return value, nil
 	default:
-		return "", fmt.Errorf("invalid init.agent %q; expected auto, claude, codex, all, or none", value)
+		return "", fmt.Errorf("invalid init.agent %q; expected auto, claude, codex, cursor, pi, all, or none", value)
 	}
 }
 

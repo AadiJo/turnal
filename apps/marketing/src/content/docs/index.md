@@ -61,7 +61,7 @@ Turnal preserves the installed release channel during upgrades. Use `turnal upgr
 
 ## Quickstart
 
-Initialize Turnal at the directory you consider the workspace root. The `--agent all` selection prepares both built-in hook integrations. External adapters are configured after initialization.
+Initialize Turnal at the workspace root. The `--agent all` selection configures Claude Code, Codex, Cursor, and Pi.
 
 ```sh
 npm install -g @aadijo/turnal
@@ -188,23 +188,25 @@ turnal adapter list
 turnal adapter doctor cursor pi
 ```
 
-Select built-in hook integrations explicitly when needed:
+Select an integration explicitly when needed:
 
 ```sh
 # Configure only one adapter.
 turnal init --agent claude
 turnal init --agent codex
+turnal init --agent cursor
+turnal init --agent pi
 
-# Configure both explicitly.
+# Configure all supported integrations.
 turnal init --agent all
 
 # Create storage without changing hook files.
 turnal init --agent none --skip-hooks
 ```
 
-### Codex wrapper checkpoints
+### Agent wrapper checkpoints
 
-`turnal run -- codex` launches Codex with hooks enabled and adds independent wrapper-level pre/post checkpoints. If hooks emit no prompt, tool, or assistant payloads, the safety checkpoints still exist but the semantic transcript will be sparse. The wrapper currently supports Codex only.
+`turnal run` supports Codex, Cursor, and Pi. It installs the selected integration and adds independent wrapper-level pre and post checkpoints. If the provider emits no prompt, tool, or assistant payloads, the safety checkpoints still exist but the semantic transcript is sparse.
 
 ### Manual turns
 
@@ -585,12 +587,12 @@ snapshot_deny_globs = [
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `version` | integer | `1` | Configuration schema version. Only version 1 is accepted. |
-| `init.agent` | enum | `"auto"` | Hook target: auto, claude, codex, all, or none. |
+| `init.agent` | enum | `"auto"` | Hook target: auto, claude, codex, cursor, pi, all, or none. |
 | `init.install_hooks` | boolean | `true` | Install or refresh agent hooks during `turnal init`. |
-| `run.install_hooks` | boolean | `true` | Refresh Codex hooks before `turnal run` launches Codex. |
+| `run.install_hooks` | boolean | `true` | Refresh the selected provider integration before `turnal run` launches it. |
 | `run.quiet` | boolean | `false` | Suppress Turnal wrapper status messages. |
 | `run.bypass_hook_trust` | boolean | `false` | Pass Codex the dangerous hook-trust bypass flag. |
-| `hooks.command` | string | `"turnal"` | Executable prefix written into Claude Code and Codex hooks. |
+| `hooks.command` | string | `"turnal"` | Turnal executable written into supported provider integrations. |
 | `bootstrap.update_gitignore` | boolean | `true` | Ensure `.turnal/` appears in the workspace `.gitignore`. |
 | `git_sync.enabled` | boolean | `false` | Capture `HEAD`, index, tracked patches, and untracked files alongside future checkpoints. |
 | `rollback.mode` | enum | `"checkpoint"` | Default rollback engine: checkpoint or workspace-git. |
@@ -685,13 +687,13 @@ These are Turnal's primary public commands. Low-level hook and checkpoint plumbi
 Create or attach the Turnal store for the current directory and configure agent hooks.
 
 ```text
-turnal init [--agent auto|claude|codex|all|none] [--skip-hooks]
+turnal init [--agent auto|claude|codex|cursor|pi|all|none] [--skip-hooks]
             [--git-sync] [--store PATH]
 ```
 
 | Flag | Description |
 | --- | --- |
-| `--agent VALUE` | Select auto, claude, codex, all, or none. Default: auto. |
+| `--agent VALUE` | Select auto, claude, codex, cursor, pi, all, or none. Default: auto. |
 | `--skip-hooks` | Initialize storage without changing agent hook configuration. |
 | `--git-sync` | Capture workspace Git state for future workspace-git rollbacks. |
 | `--store PATH` | Use or create an explicit physical `.turnal` store. |
@@ -944,20 +946,20 @@ turnal recovery restore-safety --yes
 
 ### `turnal run`
 
-Wrap a Codex process with independent pre/post safety checkpoints.
+Wrap a Codex, Cursor, or Pi process with independent pre and post safety checkpoints.
 
 ```text
 turnal run [--quiet] [--skip-hook-install]
-           [--bypass-hook-trust] -- codex [CODEX_ARGS...]
+           [--bypass-hook-trust] -- <codex|cursor|agent|pi> [ARGS...]
 ```
 
 | Flag | Description |
 | --- | --- |
 | `--quiet` | Suppress wrapper status messages. |
-| `--skip-hook-install` | Do not update `.codex/config.toml` before launch. |
+| `--skip-hook-install` | Do not install or update the selected provider integration before launch. |
 | `--bypass-hook-trust` | Pass `--dangerously-bypass-hook-trust` to Codex for this invocation. |
 
-The wrapper currently supports Codex only. Wrapper checkpoints still exist if hooks emit no prompt, tool, or assistant payloads.
+The `--bypass-hook-trust` flag applies only to Codex. Wrapper checkpoints still exist if the provider emits no prompt, tool, or assistant payloads.
 
 ### `turnal turn start` and `turnal turn finish`
 
@@ -1097,7 +1099,7 @@ Remove Turnal metadata and optionally uninstall Turnal-owned hook commands.
 
 ```text
 turnal destroy [--dry-run] [--remove-hooks]
-               [--agent auto|claude|codex|all|none]
+               [--agent auto|claude|codex|cursor|pi|all|none]
 ```
 
 | Flag | Description |
