@@ -319,6 +319,7 @@ func TestRecallTurnIncludesCursorAndPiTranscriptOutput(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
 			transcriptPath := test.transcript(t, home)
 			if err := os.MkdirAll(filepath.Dir(transcriptPath), 0o755); err != nil {
 				t.Fatal(err)
