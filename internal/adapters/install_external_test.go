@@ -185,6 +185,34 @@ func TestInstallPiExtensionUsesConfiguredCommand(t *testing.T) {
 	}
 }
 
+func TestInstallPiExtensionRemovesShellQuotesFromExecutable(t *testing.T) {
+	for _, command := range []string{`"C:\Program Files\Turnal\turnal.exe"`, `'/opt/Turnal CLI/turnal'`} {
+		t.Run(command, func(t *testing.T) {
+			root := t.TempDir()
+			installed, err := InstallPiExtensionWithOptions(root, InstallOptions{HookCommand: command})
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(installed.ConfigPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			unquoted := command[1 : len(command)-1]
+			encoded, err := json.Marshal(unquoted)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "const turnalCommand = " + string(encoded) + ";"
+			if !strings.Contains(string(data), want) {
+				t.Fatalf("Pi command still contains shell quotes: want %q in extension", want)
+			}
+			if health := inspectPiExtension(root, command); !health.OK() {
+				t.Fatalf("quoted-command Pi health = %#v", health)
+			}
+		})
+	}
+}
+
 func TestEmbeddedPiExtensionMatchesPublishedIntegration(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "integrations", "pi", "turnal.ts"))
 	if err != nil {

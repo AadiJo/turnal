@@ -179,7 +179,7 @@ func TestBundledProviderNormalization(t *testing.T) {
 		{"pi", "tool_execution_start", `{"session_id":"pi-session","cwd":"/workspace","tool_name":"bash","tool_call_id":"call-1","args":{"command":"true"}}`, []adaptersdk.EventType{adaptersdk.EventToolCall}},
 		{"pi", "tool_execution_end", `{"session_id":"pi-session","cwd":"/workspace","tool_name":"bash","tool_call_id":"call-1","result":{"content":[{"type":"text","text":"exit 1"}]},"is_error":true}`, []adaptersdk.EventType{adaptersdk.EventToolResult}},
 		{"pi", "agent_settled", `{"session_id":"pi-session","cwd":"/workspace","text":"done"}`, []adaptersdk.EventType{adaptersdk.EventAssistantMessage}},
-		{"pi", "agent_settled", `{"session_id":"pi-session","cwd":"/workspace","text":""}`, []adaptersdk.EventType{adaptersdk.EventTurnFinish}},
+		{"pi", "agent_settled", `{"session_id":"pi-session","cwd":"/workspace","text":""}`, []adaptersdk.EventType{adaptersdk.EventAssistantMessage}},
 	}
 	for _, test := range tests {
 		t.Run(test.name+"/"+test.hook, func(t *testing.T) {
@@ -252,6 +252,87 @@ func TestCursorAndPiPreserveStructuredToolFailures(t *testing.T) {
 			if err != nil || len(events) != 1 || events[0].Type != adaptersdk.EventToolResult || !events[0].IsError {
 				t.Fatalf("failure events = %#v err=%v", events, err)
 			}
+			if test.name == "cursor" && string(events[0].Output) != `{"error":"boom"}` {
+				t.Fatalf("Cursor failure output = %s, want Claude-compatible error object", events[0].Output)
+			}
 		})
+	}
+}
+
+func TestCursorTopologyIsLimitedToSessionStarts(t *testing.T) {
+	normalize, _ := Normalizer("cursor")
+	for _, hook := range []string{"sessionStart", "beforeSubmitPrompt", "preToolUse", "postToolUse", "afterAgentResponse", "stop"} {
+		events, err := normalize(hook, json.RawMessage(`{
+			"conversation_id":"child-session",
+			"parent_session_id":"parent-session",
+			"parent_tool_use_id":"task-1",
+			"workspace_roots":["/workspace"],
+			"prompt":"fix it",
+			"tool_name":"write",
+			"tool_use_id":"tool-1",
+			"tool_input":{"path":"app.go"},
+			"tool_output":{"ok":true},
+			"text":"done"
+		}`))
+		if err != nil {
+			t.Fatalf("normalize %s: %v", hook, err)
+		}
+		for _, event := range events {
+			if err := adaptersdk.ValidateEvent(event); err != nil {
+				t.Fatalf("%s produced invalid event %+v: %v", hook, event, err)
+			}
+			if hook == "sessionStart" && (event.ParentSessionID != "parent-session" || event.ParentToolUseID != "task-1") {
+				t.Fatalf("session start lost parent topology: %+v", event)
+			}
+			if hook != "sessionStart" && (event.ParentSessionID != "" || event.ParentToolUseID != "") {
+				t.Fatalf("%s repeated session topology: %+v", hook, event)
+			}
+		}
+	}
+}
+
+func TestSharedProviderMetadataDoesNotLeakTopology(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		hook string
+		raw  string
+	}{
+		{name: "gemini-cli", hook: "AfterTool", raw: `{"session_id":"child-session","parent_session_id":"parent-session","parent_tool_use_id":"task-1","cwd":"/workspace","tool_name":"write","tool_input":{},"tool_response":{}}`},
+		{name: "copilot-cli", hook: "postToolUse", raw: `{"session_id":"child-session","parent_session_id":"parent-session","parent_tool_use_id":"task-1","cwd":"/workspace","toolName":"write","toolArgs":{},"toolResult":{}}`},
+		{name: "opencode", hook: "tool.execute.after", raw: `{"sessionID":"child-session","parent_session_id":"parent-session","parent_tool_use_id":"task-1","directory":"/workspace","tool":"write","callID":"tool-1","args":{},"output":{}}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			normalize, _ := Normalizer(test.name)
+			events, err := normalize(test.hook, json.RawMessage(test.raw))
+			if err != nil || len(events) == 0 {
+				t.Fatalf("events = %#v err=%v", events, err)
+			}
+			for _, event := range events {
+				if event.ParentSessionID != "" || event.ParentToolUseID != "" {
+					t.Fatalf("non-session event retained topology: %+v", event)
+				}
+				if err := adaptersdk.ValidateEvent(event); err != nil {
+					t.Fatalf("event invalid: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestCursorSubagentOmitsOrphanedParentToolUseID(t *testing.T) {
+	normalize, _ := Normalizer("cursor")
+	events, err := normalize("subagentStart", json.RawMessage(`{
+		"subagent_id":"child-session",
+		"tool_call_id":"task-1",
+		"workspace_roots":["/workspace"]
+	}`))
+	if err != nil || len(events) != 1 {
+		t.Fatalf("events = %#v err=%v", events, err)
+	}
+	if events[0].ParentToolUseID != "" {
+		t.Fatalf("orphaned parent tool id retained: %+v", events[0])
+	}
+	if err := adaptersdk.ValidateEvent(events[0]); err != nil {
+		t.Fatalf("event invalid: %v", err)
 	}
 }

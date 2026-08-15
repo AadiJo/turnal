@@ -163,7 +163,7 @@ func inspectPiExtension(projectRoot, command string) HookHealth {
 		return health
 	}
 	event := HookEventHealth{Name: "extension", Commands: []string{extensionPath}}
-	expected, expectedErr := piExtensionForCommand(InstallOptions{HookCommand: command}.hookCommand())
+	expected, expectedErr := piExtensionForCommand(InstallOptions{HookCommand: command}.piCommand())
 	switch {
 	case expectedErr != nil:
 		health.Status = HookConfigurationMalformed

@@ -66,6 +66,7 @@ func normalizeCursor(hook string, raw json.RawMessage) ([]adaptersdk.Event, erro
 	switch hook {
 	case "sessionstart":
 		base.Type = adaptersdk.EventSessionStart
+		applySessionTopology(&base, payload)
 		return []adaptersdk.Event{base}, nil
 	case "beforesubmitprompt", "userpromptsubmit":
 		base.Type = adaptersdk.EventPromptUser
@@ -80,7 +81,8 @@ func normalizeCursor(hook string, raw json.RawMessage) ([]adaptersdk.Event, erro
 	case "posttooluse":
 		return []adaptersdk.Event{toolResultEvent(base, payload, []string{"tool_input", "toolInput"}, []string{"tool_output", "toolOutput"})}, nil
 	case "posttoolusefailure":
-		event := toolResultEvent(base, payload, []string{"tool_input", "toolInput"}, []string{"error_message", "errorMessage", "failure_type"})
+		event := toolResultEvent(base, payload, []string{"tool_input", "toolInput"}, nil)
+		event.Output = jsonObject("error", firstString(payload, "error_message", "errorMessage", "failure_type"))
 		event.IsError = true
 		return []adaptersdk.Event{event}, nil
 	case "afteragentresponse":
@@ -95,7 +97,9 @@ func normalizeCursor(hook string, raw json.RawMessage) ([]adaptersdk.Event, erro
 		base.Type = adaptersdk.EventSessionStart
 		base.SessionID = firstString(payload, "subagent_id", "subagentId")
 		base.ParentSessionID = parentSessionID
-		base.ParentToolUseID = firstString(payload, "tool_call_id", "toolCallId")
+		if parentSessionID != "" {
+			base.ParentToolUseID = firstString(payload, "tool_call_id", "toolCallId")
+		}
 		base.Model = firstNonEmpty(firstString(payload, "subagent_model", "subagentModel"), base.Model)
 		base.TranscriptPath = firstNonEmpty(firstString(payload, "agent_transcript_path", "agentTranscriptPath"), base.TranscriptPath)
 		return []adaptersdk.Event{base}, nil
@@ -110,14 +114,11 @@ func normalizePi(hook string, raw json.RawMessage) ([]adaptersdk.Event, error) {
 		return nil, err
 	}
 	base := commonEvent(payload)
-	parentSessionID, parentToolUseID := base.ParentSessionID, base.ParentToolUseID
-	base.ParentSessionID, base.ParentToolUseID = "", ""
 	hook = normalizedHook(firstNonEmpty(firstString(payload, "hook", "event"), hook))
 	switch hook {
 	case "sessionstart":
 		base.Type = adaptersdk.EventSessionStart
-		base.ParentSessionID = parentSessionID
-		base.ParentToolUseID = parentToolUseID
+		applySessionTopology(&base, payload)
 		return []adaptersdk.Event{base}, nil
 	case "beforeagentstart":
 		base.Type = adaptersdk.EventPromptUser
@@ -135,11 +136,7 @@ func normalizePi(hook string, raw json.RawMessage) ([]adaptersdk.Event, error) {
 		return []adaptersdk.Event{event}, nil
 	case "agentsettled":
 		base.Text = firstString(payload, "text", "response")
-		if base.Text == "" {
-			base.Type = adaptersdk.EventTurnFinish
-		} else {
-			base.Type = adaptersdk.EventAssistantMessage
-		}
+		base.Type = adaptersdk.EventAssistantMessage
 		return []adaptersdk.Event{base}, nil
 	default:
 		return nil, nil
@@ -156,6 +153,7 @@ func normalizeCopilot(hook string, raw json.RawMessage) ([]adaptersdk.Event, err
 	switch hook {
 	case "sessionstart":
 		base.Type = adaptersdk.EventSessionStart
+		applySessionTopology(&base, payload)
 		base.Text = firstString(payload, "initial_prompt", "initialPrompt")
 		return []adaptersdk.Event{base}, nil
 	case "userpromptsubmitted", "userpromptsubmit":
@@ -183,6 +181,7 @@ func normalizeGemini(hook string, raw json.RawMessage) ([]adaptersdk.Event, erro
 	switch hook {
 	case "sessionstart":
 		base.Type = adaptersdk.EventSessionStart
+		applySessionTopology(&base, payload)
 		return []adaptersdk.Event{base}, nil
 	case "beforeagent":
 		base.Type = adaptersdk.EventPromptUser
@@ -223,9 +222,12 @@ func normalizeOpenCode(hook string, raw json.RawMessage) ([]adaptersdk.Event, er
 	switch hook {
 	case "sessioncreated":
 		base.Type = adaptersdk.EventSessionStart
+		topologyPayload := merged
 		if info := childMap(properties, "info"); info != nil {
-			applyCommon(&base, mergeMaps(merged, info))
+			topologyPayload = mergeMaps(merged, info)
+			applyCommon(&base, topologyPayload)
 		}
+		applySessionTopology(&base, topologyPayload)
 		return []adaptersdk.Event{base}, nil
 	case "messageupdated":
 		info := childMap(properties, "info")
@@ -261,8 +263,6 @@ func commonEvent(payload map[string]any) adaptersdk.Event {
 
 func applyCommon(event *adaptersdk.Event, payload map[string]any) {
 	event.SessionID = firstString(payload, "session_id", "sessionId", "sessionID", "conversation_id", "conversationId", "id")
-	event.ParentSessionID = firstString(payload, "parent_session_id", "parentSessionId", "parentSessionID")
-	event.ParentToolUseID = firstString(payload, "parent_tool_use_id", "parentToolUseId", "parentToolUseID")
 	event.CWD = firstString(payload, "cwd", "directory", "worktree")
 	if event.CWD == "" {
 		event.CWD = firstStringArray(payload, "workspace_roots", "workspaceRoots")
@@ -272,6 +272,13 @@ func applyCommon(event *adaptersdk.Event, payload map[string]any) {
 	event.Model = firstString(payload, "model_id", "modelId", "model")
 	event.PermissionMode = firstString(payload, "permission_mode", "permissionMode")
 	event.TranscriptPath = firstString(payload, "transcript_path", "transcriptPath")
+}
+
+func applySessionTopology(event *adaptersdk.Event, payload map[string]any) {
+	event.ParentSessionID = firstString(payload, "parent_session_id", "parentSessionId", "parentSessionID")
+	if event.ParentSessionID != "" {
+		event.ParentToolUseID = firstString(payload, "parent_tool_use_id", "parentToolUseId", "parentToolUseID")
+	}
 }
 
 func toolResultEvent(base adaptersdk.Event, payload map[string]any, inputKeys, outputKeys []string) adaptersdk.Event {
@@ -353,6 +360,14 @@ func firstJSON(payload map[string]any, keys ...string) json.RawMessage {
 		}
 	}
 	return json.RawMessage(`null`)
+}
+
+func jsonObject(key string, value any) json.RawMessage {
+	encoded, err := json.Marshal(map[string]any{key: value})
+	if err != nil {
+		return json.RawMessage(`null`)
+	}
+	return encoded
 }
 
 func childMap(payload map[string]any, key string) map[string]any {

@@ -72,6 +72,86 @@ func TestAdapterLifecycleLogParity(t *testing.T) {
 	}
 }
 
+func TestAdapterFailureLogParity(t *testing.T) {
+	harnesses := []struct {
+		name string
+		run  func(*testing.T, primitives.WorkspaceRoot, func())
+	}{
+		{name: "claude-code", run: runBuiltInFailureParityLifecycle()},
+		{name: "cursor", run: runExternalParityLifecycle("cursor", []parityHook{
+			{"sessionStart", map[string]any{"conversation_id": paritySessionID, "model": parityModel}},
+			{"beforeSubmitPrompt", map[string]any{"conversation_id": paritySessionID, "prompt": parityPrompt, "model": parityModel}},
+			{"preToolUse", map[string]any{"conversation_id": paritySessionID, "tool_name": parityTool, "tool_use_id": parityToolID, "tool_input": parityInput}},
+			{"postToolUseFailure", map[string]any{"conversation_id": paritySessionID, "tool_name": parityTool, "tool_use_id": parityToolID, "tool_input": parityInput, "error_message": "boom"}},
+			{"afterAgentResponse", map[string]any{"conversation_id": paritySessionID, "text": parityAssistant, "model": parityModel}},
+			{"stop", map[string]any{"conversation_id": paritySessionID}},
+		})},
+		{name: "pi", run: runExternalParityLifecycle("pi", []parityHook{
+			{"session_start", map[string]any{"session_id": paritySessionID, "model": parityModel}},
+			{"before_agent_start", map[string]any{"session_id": paritySessionID, "prompt": parityPrompt, "model": parityModel}},
+			{"tool_execution_start", map[string]any{"session_id": paritySessionID, "tool_name": parityTool, "tool_call_id": parityToolID, "args": parityInput}},
+			{"tool_execution_end", map[string]any{"session_id": paritySessionID, "tool_name": parityTool, "tool_call_id": parityToolID, "result": map[string]any{"error": "boom"}, "is_error": true}},
+			{"agent_settled", map[string]any{"session_id": paritySessionID, "text": parityAssistant, "model": parityModel}},
+		})},
+	}
+	assertAdapterLogParity(t, harnesses, true)
+}
+
+func TestAdapterEmptyAssistantLogParity(t *testing.T) {
+	harnesses := []struct {
+		name string
+		run  func(*testing.T, primitives.WorkspaceRoot, func())
+	}{
+		{name: "claude-code", run: runBuiltInEmptyAssistantParityLifecycle()},
+		{name: "cursor", run: runExternalParityLifecycle("cursor", []parityHook{
+			{"sessionStart", map[string]any{"conversation_id": paritySessionID, "model": parityModel}},
+			{"beforeSubmitPrompt", map[string]any{"conversation_id": paritySessionID, "prompt": parityPrompt, "model": parityModel}},
+			{"afterAgentResponse", map[string]any{"conversation_id": paritySessionID, "text": "", "model": parityModel}},
+			{"stop", map[string]any{"conversation_id": paritySessionID}},
+		})},
+		{name: "pi", run: runExternalParityLifecycle("pi", []parityHook{
+			{"session_start", map[string]any{"session_id": paritySessionID, "model": parityModel}},
+			{"before_agent_start", map[string]any{"session_id": paritySessionID, "prompt": parityPrompt, "model": parityModel}},
+			{"agent_settled", map[string]any{"session_id": paritySessionID, "text": "", "model": parityModel}},
+		})},
+	}
+	assertAdapterLogParity(t, harnesses, false)
+}
+
+func assertAdapterLogParity(t *testing.T, harnesses []struct {
+	name string
+	run  func(*testing.T, primitives.WorkspaceRoot, func())
+}, mutate bool) {
+	t.Helper()
+	var baseline []comparableLogEvent
+	for _, harness := range harnesses {
+		t.Run(harness.name, func(t *testing.T) {
+			root := workspaceRoot(t)
+			repo, err := checkpoint.Init(root)
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			t.Chdir(root.String())
+			writeFile(t, root, "app.txt", "before\n")
+			harness.run(t, root, func() {
+				if mutate {
+					writeFile(t, root, "app.txt", "after\n")
+				}
+			})
+			got := comparableAdapterLog(t, readEvents(t, repo, sessionID(t, paritySessionID)))
+			if baseline == nil {
+				baseline = got
+				return
+			}
+			if !reflect.DeepEqual(got, baseline) {
+				wantJSON, _ := json.MarshalIndent(baseline, "", "  ")
+				gotJSON, _ := json.MarshalIndent(got, "", "  ")
+				t.Fatalf("durable log differs from built-in harness\nwant: %s\n got: %s", wantJSON, gotJSON)
+			}
+		})
+	}
+}
+
 const (
 	paritySessionID = "adapter-parity"
 	parityModel     = "test-model"
@@ -114,6 +194,35 @@ func runBuiltInParityLifecycle(adapter primitives.AdapterName) func(*testing.T, 
 			"tool_name": parityTool, "tool_use_id": parityToolID, "tool_input": parityInput, "tool_response": parityOutput,
 		})
 		send("Stop", map[string]any{"last_assistant_message": parityAssistant, "model": parityModel})
+	}
+}
+
+func runBuiltInFailureParityLifecycle() func(*testing.T, primitives.WorkspaceRoot, func()) {
+	return func(t *testing.T, root primitives.WorkspaceRoot, mutate func()) {
+		send := func(hook string, fields map[string]any) {
+			fields["cwd"] = root.String()
+			fields["session_id"] = paritySessionID
+			handlePayload(t, primitives.AdapterClaudeCode, hook, fields)
+		}
+		send("SessionStart", map[string]any{"model": parityModel})
+		send("UserPromptSubmit", map[string]any{"prompt": parityPrompt, "model": parityModel})
+		send("PreToolUse", map[string]any{"tool_name": parityTool, "tool_use_id": parityToolID, "tool_input": parityInput})
+		mutate()
+		send("PostToolUseFailure", map[string]any{"tool_name": parityTool, "tool_use_id": parityToolID, "tool_input": parityInput, "error": "boom"})
+		send("Stop", map[string]any{"last_assistant_message": parityAssistant, "model": parityModel})
+	}
+}
+
+func runBuiltInEmptyAssistantParityLifecycle() func(*testing.T, primitives.WorkspaceRoot, func()) {
+	return func(t *testing.T, root primitives.WorkspaceRoot, _ func()) {
+		send := func(hook string, fields map[string]any) {
+			fields["cwd"] = root.String()
+			fields["session_id"] = paritySessionID
+			handlePayload(t, primitives.AdapterClaudeCode, hook, fields)
+		}
+		send("SessionStart", map[string]any{"model": parityModel})
+		send("UserPromptSubmit", map[string]any{"prompt": parityPrompt, "model": parityModel})
+		send("Stop", map[string]any{"last_assistant_message": "", "model": parityModel})
 	}
 }
 

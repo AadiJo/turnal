@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -442,6 +443,24 @@ func (opts InstallOptions) hookCommand() string {
 		return configured
 	}
 	return hookcmd.Default()
+}
+
+func (opts InstallOptions) piCommand() string {
+	if configured := strings.TrimSpace(opts.HookCommand); configured != "" {
+		if len(configured) >= 2 && configured[0] == '"' && configured[len(configured)-1] == '"' {
+			if unquoted, err := strconv.Unquote(configured); err == nil {
+				return unquoted
+			}
+			// Windows shell quoting does not escape path separators, so it is
+			// not necessarily valid Go string syntax.
+			return configured[1 : len(configured)-1]
+		}
+		if len(configured) >= 2 && configured[0] == '\'' && configured[len(configured)-1] == '\'' {
+			return configured[1 : len(configured)-1]
+		}
+		return configured
+	}
+	return hookcmd.Executable()
 }
 
 func enableCodexHooksFeature(config map[string]any) error {

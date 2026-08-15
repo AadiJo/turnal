@@ -235,7 +235,7 @@ func InstallPiExtensionWithOptions(projectRoot string, opts InstallOptions) (Ins
 	}
 	defer func() { _ = lock.Release() }()
 
-	expected, err := piExtensionForCommand(opts.hookCommand())
+	expected, err := piExtensionForCommand(opts.piCommand())
 	if err != nil {
 		return result, err
 	}
