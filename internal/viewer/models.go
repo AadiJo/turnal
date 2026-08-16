@@ -233,3 +233,50 @@ type BlameLineView struct {
 	ToolNames []string  `json:"tool_names,omitempty"`
 	Time      time.Time `json:"time,omitempty"`
 }
+
+// TreeView lists every file captured in one checkpoint. It describes the
+// snapshot it was read from, not the working tree: files the snapshot policy
+// keeps out of history, and files recorded before the newest checkpoint, are
+// absent by construction.
+type TreeView struct {
+	CheckpointID   string          `json:"checkpoint_id"`
+	CheckpointTime time.Time       `json:"checkpoint_time"`
+	Commit         string          `json:"commit"`
+	Files          []TreeEntryView `json:"files"`
+	Truncated      bool            `json:"truncated"`
+	LimitEntries   int             `json:"limit_entries"`
+	TruthSource    string          `json:"truth_source"`
+}
+
+// TreeEntryView is one captured file, carrying the last recorded turn that
+// changed it when one exists. Attribution comes from turn diffs that were
+// already computed for the session list, so it costs no extra Git work. A file
+// no recorded turn has touched simply has no turn fields, which is the common
+// case for a project whose history starts after the file was written.
+type TreeEntryView struct {
+	Path      string    `json:"path"`
+	Mode      string    `json:"mode"`
+	TurnKey   string    `json:"turn_key,omitempty"`
+	TurnID    uint64    `json:"turn_id,omitempty"`
+	Prompt    string    `json:"prompt,omitempty"`
+	Adapter   string    `json:"adapter,omitempty"`
+	ChangedAt time.Time `json:"changed_at,omitempty"`
+}
+
+// FileContentView is one file read out of a checkpoint. Content is UTF-8 only;
+// a file that does not decode is reported as binary with no content rather than
+// being sent as replacement characters.
+type FileContentView struct {
+	Path           string    `json:"path"`
+	CheckpointID   string    `json:"checkpoint_id"`
+	CheckpointTime time.Time `json:"checkpoint_time"`
+	Commit         string    `json:"commit"`
+	Content        string    `json:"content"`
+	Binary         bool      `json:"binary"`
+	ByteCount      int       `json:"byte_count"`
+	LineCount      int       `json:"line_count"`
+	Truncated      bool      `json:"truncated"`
+	LimitBytes     int       `json:"limit_bytes"`
+	LimitLines     int       `json:"limit_lines"`
+	TruthSource    string    `json:"truth_source"`
+}

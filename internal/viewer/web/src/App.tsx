@@ -12,7 +12,7 @@ type ProjectRoute = {
   storeID: string;
   sessionKey?: string;
   turnKey?: string;
-  view?: "sessions" | "review" | "origins";
+  view?: "sessions" | "review" | "origins" | "files";
   path?: string;
   from?: number;
   to?: number;
@@ -35,7 +35,10 @@ function readRoute(): Route {
       sessionKey: params.get("session") ?? undefined,
       turnKey: params.get("turn") ?? undefined,
       view:
-        view === "sessions" || view === "origins" || view === "review"
+        view === "sessions" ||
+        view === "origins" ||
+        view === "review" ||
+        view === "files"
           ? view
           : undefined,
       path: params.get("path") ?? undefined,

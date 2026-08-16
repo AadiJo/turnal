@@ -28,6 +28,7 @@ const (
 	maxPatchBytes    = 512 << 10
 	maxPatchLines    = 6000
 	maxBlameLines    = 1500
+	maxTreeEntries   = 5000
 )
 
 type Service struct {
@@ -376,6 +377,166 @@ func (service *Service) Blame(ctx context.Context, key, path string, line int) (
 		CompleteTurns: result.CompleteTurns, Lines: lines, Warnings: result.Warnings,
 		Truncated: truncated, TruthSource: "checkpoint replay with recorded turn associations",
 	}, nil
+}
+
+// latestCheckpoint reports the most recently captured checkpoint in this
+// worktree. The file browser reads from a snapshot rather than from disk, so
+// every path it can reach has already passed the capture-time snapshot policy.
+func (service *Service) latestCheckpoint() (checkpoint.CheckpointRefInfo, error) {
+	infos, err := service.Repo.ListAllCheckpointRefInfos()
+	if err != nil {
+		return checkpoint.CheckpointRefInfo{}, err
+	}
+	var latest checkpoint.CheckpointRefInfo
+	var found bool
+	for _, info := range infos {
+		if service.Repo.WorktreeID != "" && info.WorktreeID != "" && info.WorktreeID != service.Repo.WorktreeID {
+			continue
+		}
+		if !found || info.Time.After(latest.Time) {
+			latest = info
+			found = true
+		}
+	}
+	if !found {
+		return checkpoint.CheckpointRefInfo{}, fmt.Errorf("this project has no captured checkpoint to browse yet")
+	}
+	return latest, nil
+}
+
+// fileAttribution is the last recorded turn that changed one path.
+type fileAttribution struct {
+	turnKey   string
+	turnID    uint64
+	prompt    string
+	adapter   string
+	changedAt time.Time
+}
+
+// lastTurnByPath maps each path a recorded turn touched to the most recent turn
+// that touched it. It reuses the per-turn diffs already loaded for the session
+// list, so no additional Git commands run. Turns are visited in order and later
+// turns overwrite earlier ones, leaving the newest change per path.
+func (service *Service) lastTurnByPath(ctx context.Context) (map[string]fileAttribution, error) {
+	records, _, err := service.loadRecords(ctx)
+	if err != nil {
+		return nil, err
+	}
+	attribution := make(map[string]fileAttribution)
+	for _, record := range records {
+		for _, turn := range record.turns {
+			key, err := service.codec.encode(resourceTurn, record.stream.WorktreeID, record.stream.StreamID, record.stream.SessionID, turn.id)
+			if err != nil {
+				return nil, err
+			}
+			changedAt := turn.summary.Last
+			for _, file := range turn.diff.Files {
+				if existing, ok := attribution[file.Path]; ok && existing.changedAt.After(changedAt) {
+					continue
+				}
+				attribution[file.Path] = fileAttribution{
+					turnKey: key, turnID: turn.id.Uint64(), prompt: turn.summary.Prompt,
+					adapter: turn.summary.Adapter, changedAt: changedAt,
+				}
+			}
+		}
+	}
+	return attribution, nil
+}
+
+// Tree lists the files in the newest checkpoint so a project can be navigated by
+// structure instead of by recorded activity. Each entry carries the last turn
+// that changed it when Turnal recorded one.
+func (service *Service) Tree(ctx context.Context) (TreeView, error) {
+	if err := ctx.Err(); err != nil {
+		return TreeView{}, err
+	}
+	latest, err := service.latestCheckpoint()
+	if err != nil {
+		return TreeView{}, err
+	}
+	entries, err := service.Repo.ListCommitTree(latest.Commit)
+	if err != nil {
+		return TreeView{}, err
+	}
+	truncated := len(entries) > maxTreeEntries
+	if truncated {
+		entries = entries[:maxTreeEntries]
+	}
+	// Attribution is best effort. A project whose event log cannot be read still
+	// gets a browsable tree, just without the per-file turn column.
+	attribution, err := service.lastTurnByPath(ctx)
+	if err != nil {
+		attribution = nil
+	}
+	files := make([]TreeEntryView, 0, len(entries))
+	for _, entry := range entries {
+		view := TreeEntryView{Path: entry.Path, Mode: entry.Mode}
+		if last, ok := attribution[entry.Path]; ok {
+			view.TurnKey = last.turnKey
+			view.TurnID = last.turnID
+			view.Prompt = last.prompt
+			view.Adapter = last.adapter
+			view.ChangedAt = last.changedAt
+		}
+		files = append(files, view)
+	}
+	return TreeView{
+		CheckpointID: latest.ID.String(), CheckpointTime: latest.Time, Commit: latest.Commit.String(),
+		Files: files, Truncated: truncated, LimitEntries: maxTreeEntries,
+		TruthSource: "file list from the newest captured checkpoint, attributed to recorded turns",
+	}, nil
+}
+
+// File reads one path out of the newest checkpoint. The path is validated before
+// any Git read, and a file that is not valid UTF-8 is reported as binary rather
+// than returned as mangled text.
+func (service *Service) File(ctx context.Context, path string) (FileContentView, error) {
+	if err := ctx.Err(); err != nil {
+		return FileContentView{}, err
+	}
+	parsedPath, err := primitives.ParseRepoPath(path)
+	if err != nil {
+		return FileContentView{}, err
+	}
+	latest, err := service.latestCheckpoint()
+	if err != nil {
+		return FileContentView{}, err
+	}
+	content, ok, err := service.Repo.CommitFileBytesIfExists(latest.Commit, parsedPath.String())
+	if err != nil {
+		return FileContentView{}, err
+	}
+	if !ok {
+		return FileContentView{}, fmt.Errorf("%s is not in the newest checkpoint", parsedPath)
+	}
+	view := FileContentView{
+		Path: parsedPath.String(), CheckpointID: latest.ID.String(), CheckpointTime: latest.Time,
+		Commit: latest.Commit.String(), ByteCount: len(content),
+		LimitBytes: maxPatchBytes, LimitLines: maxPatchLines,
+		TruthSource: "file content from the newest captured checkpoint",
+	}
+	if !utf8.Valid(content) {
+		view.Binary = true
+		return view, nil
+	}
+	if len(content) > maxPatchBytes {
+		content = content[:maxPatchBytes]
+		view.Truncated = true
+		// Trim any partial rune left by the byte-level cut.
+		for len(content) > 0 && !utf8.Valid(content) {
+			content = content[:len(content)-1]
+		}
+	}
+	lines := strings.Split(string(content), "\n")
+	view.LineCount = len(lines)
+	if len(lines) > maxPatchLines {
+		lines = lines[:maxPatchLines]
+		view.LineCount = maxPatchLines
+		view.Truncated = true
+	}
+	view.Content = strings.Join(lines, "\n")
+	return view, nil
 }
 
 func (service *Service) loadRecords(ctx context.Context) ([]sessionRecord, string, error) {

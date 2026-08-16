@@ -1134,6 +1134,172 @@ kbd {
   color: var(--text-soft);
 }
 
+/* ---------- file browser ----------
+   Follows GitHub and Forgejo: a breadcrumb path over a bordered box whose
+   header names the checkpoint, then a three-column table. Directories sort
+   before files. Navigating replaces the table rather than expanding a tree. */
+
+.pathbar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 2px 13px;
+  font-size: 14px;
+  flex-wrap: wrap;
+}
+
+.pathbar a {
+  color: var(--accent);
+}
+
+.pathbar a:hover {
+  text-decoration: underline;
+}
+
+.pathbar b {
+  font-weight: 600;
+}
+
+.pathbar i {
+  color: var(--quiet);
+  font-style: normal;
+}
+
+.filebox {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.filebox-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--sidebar);
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12.5px;
+  min-width: 0;
+}
+
+.filebox-head .who {
+  color: var(--text);
+  font-weight: 500;
+  flex: none;
+}
+
+.filebox-head .msg {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filebox-head .sp {
+  flex: 1;
+}
+
+.filebox-head .hash {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--quiet);
+  flex: none;
+}
+
+.filetable {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.filetable thead th {
+  text-align: left;
+  font-weight: 400;
+  font-size: 11.5px;
+  color: var(--quiet);
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.filetable thead th.r {
+  text-align: right;
+}
+
+.filetable tbody tr {
+  border-bottom: 1px solid var(--line);
+}
+
+.filetable tbody tr:last-child {
+  border-bottom: 0;
+}
+
+.filetable tbody tr:hover {
+  background: var(--surface-hover);
+}
+
+.filetable td {
+  padding: 8px 14px;
+  font-size: 13px;
+}
+
+.filetable td.name {
+  white-space: nowrap;
+  width: 34%;
+}
+
+.filetable td.name a {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.filetable td.name .ic {
+  width: 14px;
+  flex: none;
+  text-align: center;
+  color: var(--quiet);
+  font-size: 10px;
+}
+
+.filetable td.name .dir {
+  color: var(--text);
+}
+
+.filetable td.name .file {
+  color: var(--text-soft);
+}
+
+/* Zero max-width lets the cell shrink so the ellipsis can engage. */
+.filetable td.msg {
+  color: var(--muted);
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 0;
+}
+
+.filetable td.when-col {
+  text-align: right;
+  color: var(--quiet);
+  font-size: 12.5px;
+  white-space: nowrap;
+  width: 104px;
+}
+
+@media (max-width: 720px) {
+  .filetable td.msg,
+  .filetable thead th:nth-child(2) {
+    display: none;
+  }
+
+  .filetable td.name {
+    width: auto;
+    white-space: normal;
+  }
+}
+
 /* ---------- file page ---------- */
 
 .shell {

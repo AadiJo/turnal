@@ -15,16 +15,19 @@ import type {
   BlameLine,
   DiffSummary,
   FileChange,
+  FileContent,
   FilePatch,
   ManualSave,
   Project,
   SessionSummary,
   SessionTurns,
+  Tree,
+  TreeEntry,
   TurnDetail,
   TurnEvent,
 } from "./types";
 
-type Mode = "sessions" | "review" | "origins";
+type Mode = "sessions" | "review" | "origins" | "files";
 type ProjectLocation = {
   sessionKey?: string;
   turnKey?: string;
@@ -71,6 +74,18 @@ export function ProjectView({
   const [patches, setPatches] = useState<Record<string, FilePatch>>({});
   const [patchErrors, setPatchErrors] = useState<Record<string, string>>({});
   const [blame, setBlame] = useState<Blame | null>(null);
+  const [tree, setTree] = useState<Tree | null>(null);
+  // Only a path that arrived with the files view means a browsed file. The other
+  // views use the same query parameter for the file they have selected, so
+  // adopting it unconditionally would open the Files tab inside a file the user
+  // never picked.
+  const [browsePath, setBrowsePath] = useState<string | null>(
+    initialView === "files" ? (initialPath ?? null) : null,
+  );
+  const [browseFile, setBrowseFile] = useState<FileContent | null>(null);
+  const [browseError, setBrowseError] = useState<string | null>(null);
+  // Which directory the table is showing. Empty string is the repository root.
+  const [browseDir, setBrowseDir] = useState("");
   const [selectedPath, setSelectedPath] = useState<string | null>(
     initialPath ?? null,
   );
@@ -90,6 +105,16 @@ export function ProjectView({
     });
 
   useEffect(() => {
+    // Browsing files is not scoped to a session, so it is restored on its own.
+    // Everything below needs a session to mean anything.
+    if (initialView === "files") {
+      setMode("files");
+      // Whether the restored path is a file or a directory is only knowable
+      // once the tree loads, so the effect below resolves it.
+      setBrowsePath(initialPath ?? null);
+      if (!initialPath) setBrowseDir("");
+      return;
+    }
     if (!initialSessionKey) {
       setMode("sessions");
       return;
@@ -254,6 +279,55 @@ export function ProjectView({
     return () => controller.abort();
   }, [mode, store, turnKey, selectedPath]);
 
+  // The browsed tree is one checkpoint's file list, so it does not depend on the
+  // selected session or turn. It is fetched once per project when the tab opens.
+  useEffect(() => {
+    if (mode !== "files" || tree) return;
+    const controller = new AbortController();
+    api
+      .tree(store, controller.signal)
+      .then((nextTree) => {
+        setTree(nextTree);
+        setBrowseError(null);
+      })
+      .catch((nextError: unknown) => {
+        if (!isAbortError(nextError)) setBrowseError(errorMessage(nextError));
+      });
+    return () => controller.abort();
+  }, [mode, store, tree]);
+
+  // A restored path from the URL may name a directory rather than a file. The
+  // tree is the only thing that can tell them apart, so reclassify once it
+  // arrives and show that directory's table instead of a failed file read.
+  useEffect(() => {
+    if (mode !== "files" || !tree || !browsePath) return;
+    if (tree.files.some((file) => file.path === browsePath)) return;
+    const prefix = `${browsePath}/`;
+    if (tree.files.some((file) => file.path.startsWith(prefix))) {
+      setBrowseDir(browsePath);
+      setBrowsePath(null);
+    }
+  }, [mode, tree, browsePath]);
+
+  useEffect(() => {
+    if (mode !== "files" || !browsePath) {
+      setBrowseFile(null);
+      return;
+    }
+    const controller = new AbortController();
+    setBrowseFile(null);
+    api
+      .file(store, browsePath, controller.signal)
+      .then((nextFile) => {
+        setBrowseFile(nextFile);
+        setBrowseError(null);
+      })
+      .catch((nextError: unknown) => {
+        if (!isAbortError(nextError)) setBrowseError(errorMessage(nextError));
+      });
+    return () => controller.abort();
+  }, [mode, store, browsePath]);
+
   const session =
     turns?.session ?? sessions.find((item) => item.key === sessionKey) ?? null;
 
@@ -271,11 +345,20 @@ export function ProjectView({
           { id: "sessions", label: "Sessions", count: sessions.length },
           { id: "review", label: "Review" },
           { id: "origins", label: "Origins" },
+          { id: "files", label: "Files" },
         ]}
         active={mode}
         onSelect={(id) => {
           setMode(id);
-          navigateFromCurrent({ view: id });
+          // Review and Origins use `path` for the file they have selected. The
+          // browser uses it for where you are in the tree, so entering or
+          // leaving Files starts at that view's own root rather than inheriting
+          // a path that means something different.
+          const crossesBrowser = (id === "files") !== (mode === "files");
+          navigateFromCurrent({
+            view: id,
+            ...(crossesBrowser ? { path: undefined } : {}),
+          });
         }}
         meta={<span>{project.turn_count} turns</span>}
       />
@@ -585,9 +668,318 @@ export function ProjectView({
           />
         </div>
       )}
+
+      {mode === "files" && (
+        <div className="page">
+          <Breadcrumb
+            root={project.name}
+            path={browsePath ?? browseDir}
+            isFile={Boolean(browsePath)}
+            onNavigate={(dir) => {
+              setBrowsePath(null);
+              setBrowseDir(dir);
+              navigateFromCurrent({ view: "files", path: dir || undefined });
+            }}
+          />
+          {browseError && !tree ? (
+            <div className="note" role="alert">
+              <span className="badge">!</span>
+              <span>{browseError}</span>
+            </div>
+          ) : !tree ? (
+            <div className="load-more">loading</div>
+          ) : browsePath ? (
+            <FilePane
+              file={browseFile}
+              error={browseError}
+              wordWrap={wordWrap}
+              onToggleWrap={() => setWordWrap((current) => !current)}
+            />
+          ) : (
+            <>
+              <FileTable
+                tree={tree}
+                dir={browseDir}
+                onOpenDir={(dir) => {
+                  setBrowseDir(dir);
+                  navigateFromCurrent({ view: "files", path: dir });
+                }}
+                onOpenFile={(path) => {
+                  setBrowsePath(path);
+                  navigateFromCurrent({ view: "files", path });
+                }}
+              />
+              <div className="note">
+                <span className="badge">i</span>
+                <span>
+                  <b>This is a checkpoint, not your working tree.</b> Files
+                  appear as they were captured in{" "}
+                  <code>{shortID(tree.checkpoint_id)}</code>. Anything the
+                  snapshot policy excludes, or that changed after this
+                  checkpoint, is not shown.
+                  {tree.truncated &&
+                    ` Only the first ${tree.limit_entries} files are listed.`}
+                </span>
+              </div>
+            </>
+          )}
+        </div>
+      )}
     </>
   );
 }
+
+/** Path trail above the table. Every segment except the last is a link back up,
+ * matching how GitHub and Forgejo move through a repository. */
+function Breadcrumb({
+  root,
+  path,
+  isFile,
+  onNavigate,
+}: {
+  root: string;
+  path: string;
+  isFile: boolean;
+  onNavigate: (dir: string) => void;
+}) {
+  const segments = path ? path.split("/") : [];
+  return (
+    <div className="pathbar">
+      <a
+        href="#"
+        onClick={(event) => {
+          event.preventDefault();
+          onNavigate("");
+        }}
+      >
+        {root}
+      </a>
+      {segments.map((segment, index) => {
+        const last = index === segments.length - 1;
+        const upto = segments.slice(0, index + 1).join("/");
+        return (
+          <>
+            <i key={`sep-${upto}`}>/</i>
+            {last ? (
+              <b key={upto}>{segment}</b>
+            ) : (
+              <a
+                key={upto}
+                href="#"
+                onClick={(event) => {
+                  event.preventDefault();
+                  onNavigate(upto);
+                }}
+              >
+                {segment}
+              </a>
+            )}
+          </>
+        );
+      })}
+      {isFile && segments.length === 0 && <b>{path}</b>}
+    </div>
+  );
+}
+
+/** One directory level of the checkpoint tree. Directories sort before files,
+ * as they do on GitHub and Forgejo. */
+function FileTable({
+  tree,
+  dir,
+  onOpenDir,
+  onOpenFile,
+}: {
+  tree: Tree;
+  dir: string;
+  onOpenDir: (dir: string) => void;
+  onOpenFile: (path: string) => void;
+}) {
+  const rows = useMemo(() => {
+    const prefix = dir ? `${dir}/` : "";
+    const dirs = new Map<string, TreeEntry>();
+    const files: TreeEntry[] = [];
+    for (const entry of tree.files) {
+      if (!entry.path.startsWith(prefix)) continue;
+      const rest = entry.path.slice(prefix.length);
+      const cut = rest.indexOf("/");
+      if (cut === -1) {
+        files.push(entry);
+        continue;
+      }
+      // Keep the newest turn seen anywhere under this directory, so the row
+      // summarizes the directory rather than an arbitrary file inside it.
+      const name = rest.slice(0, cut);
+      const current = dirs.get(name);
+      if (!current || (entry.changed_at ?? "") > (current.changed_at ?? "")) {
+        dirs.set(name, entry);
+      }
+    }
+    return {
+      dirs: [...dirs.entries()].sort(([a], [b]) => a.localeCompare(b)),
+      files: files.sort((a, b) => a.path.localeCompare(b.path)),
+    };
+  }, [tree, dir]);
+
+  const head = rows.dirs[0]?.[1] ?? rows.files[0];
+
+  return (
+    <div className="filebox">
+      <div className="filebox-head">
+        {head?.prompt ? (
+          <>
+            <span className="who">{cleanAdapter(head.adapter) || "turnal"}</span>
+            <span className="msg">{head.prompt}</span>
+          </>
+        ) : (
+          <span className="msg">Captured in this checkpoint</span>
+        )}
+        <span className="sp" />
+        <span className="hash">{shortID(tree.checkpoint_id)}</span>
+        <span>{shortAge(tree.checkpoint_time)}</span>
+      </div>
+      <table className="filetable">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Last recorded change</th>
+            <th className="r">Changed</th>
+          </tr>
+        </thead>
+        <tbody>
+          {dir && (
+            <tr>
+              <td className="name" colSpan={3}>
+                <a
+                  href="#"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    onOpenDir(dir.split("/").slice(0, -1).join(""));
+                  }}
+                >
+                  <span className="ic">↑</span>
+                  <span className="dir">..</span>
+                </a>
+              </td>
+            </tr>
+          )}
+          {rows.dirs.map(([name, entry]) => (
+            <tr key={`d-${name}`}>
+              <td className="name">
+                <a
+                  href="#"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    onOpenDir(dir ? `${dir}/${name}` : name);
+                  }}
+                >
+                  <span className="ic">▸</span>
+                  <span className="dir">{name}</span>
+                </a>
+              </td>
+              <td className="msg">{entry.prompt ?? ""}</td>
+              <td className="when-col">
+                {entry.changed_at ? shortAge(entry.changed_at) : ""}
+              </td>
+            </tr>
+          ))}
+          {rows.files.map((entry) => (
+            <tr key={`f-${entry.path}`}>
+              <td className="name">
+                <a
+                  href="#"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    onOpenFile(entry.path);
+                  }}
+                >
+                  <span className="ic">·</span>
+                  <span className="file">
+                    {entry.path.slice(dir ? dir.length + 1 : 0)}
+                  </span>
+                </a>
+              </td>
+              <td className="msg">{entry.prompt ?? ""}</td>
+              <td className="when-col">
+                {entry.changed_at ? shortAge(entry.changed_at) : ""}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function FilePane({
+  file,
+  error,
+  wordWrap,
+  onToggleWrap,
+}: {
+  file: FileContent | null;
+  error: string | null;
+  wordWrap: boolean;
+  onToggleWrap: () => void;
+}) {
+  const lines = useMemo(
+    () => (file && !file.binary ? file.content.split("\n") : []),
+    [file],
+  );
+
+  if (error && !file) {
+    return (
+      <div className="note" role="alert">
+        <span className="badge">!</span>
+        <span>{error}</span>
+      </div>
+    );
+  }
+  if (!file) return <div className="load-more">loading</div>;
+
+  return (
+    <div className="filebox">
+      <div className="filebox-head">
+        <span className="msg">
+          {file.binary
+            ? `${file.byte_count} B`
+            : `${file.line_count} lines \u00b7 ${file.byte_count} B`}
+        </span>
+        <span className="sp" />
+        <button className="ghost" onClick={onToggleWrap}>
+          Word wrap: {wordWrap ? "on" : "off"}
+        </button>
+      </div>
+      {file.binary ? (
+        <div className="empty compact">
+          <p>This file is not text, so it is not shown.</p>
+        </div>
+      ) : (
+        <>
+          <div className={cx("code", "plain", "stacked", wordWrap && "wrap")}>
+            {lines.map((text, index) => (
+              <div className="ln" key={index}>
+                <span className="g" />
+                <span className="g">{index + 1}</span>
+                <span className="sign" />
+                <code>{text || " "}</code>
+              </div>
+            ))}
+          </div>
+          {file.truncated && (
+            <div className="load-more">
+              <span>
+                Truncated at {file.limit_lines} lines or {file.limit_bytes}{" "}
+                bytes.
+              </span>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 
 function isAbortError(error: unknown) {
   return error instanceof Error && error.name === "AbortError";
