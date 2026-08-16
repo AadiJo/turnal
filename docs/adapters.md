@@ -22,7 +22,7 @@ An adapter is a plugin when its executable is named `turnal-adapter-<name>`, is 
 
 ## Included adapters
 
-Release packages include `turnal-adapter-cursor`, `turnal-adapter-pi`, `turnal-adapter-opencode`, `turnal-adapter-gemini-cli`, and `turnal-adapter-copilot-cli`. Source installs can build all commands together:
+Release packages include `turnal-adapter-cursor`, `turnal-adapter-pi`, `turnal-adapter-opencode`, and `turnal-adapter-copilot-cli`. Source installs can build all commands together:
 
 ```sh
 go install github.com/AadiJo/turnal/cmd/...@latest
@@ -30,7 +30,7 @@ turnal adapter list
 turnal adapter doctor
 ```
 
-`list` shows discovered executables and their advertised versions. `doctor` performs a protocol-v1 handshake and checks that the executable name matches its manifest. A specific installation can be checked with `turnal adapter doctor gemini-cli`.
+`list` shows discovered executables and their advertised versions. `doctor` performs a protocol-v1 handshake and checks that the executable name matches its manifest. Check a specific installation with `turnal adapter doctor cursor`.
 
 Provider hooks pipe their JSON payload to the hidden capture bridge. The bridge always returns successful, valid hook output after reporting capture failures to stderr so recording cannot block the agent.
 
@@ -61,23 +61,6 @@ Cursor loads project hooks from the trusted workspace and user hooks from `~/.cu
 Pi uses an extension to forward typed lifecycle events. Run `turnal init --agent pi` to install the managed project extension at `.pi/extensions/turnal.ts`. To install it for all projects, copy [`integrations/pi/turnal.ts`](../integrations/pi/turnal.ts) to `~/.pi/agent/extensions/turnal.ts`. Approve the project extension when Pi prompts. Capture errors produce diagnostics and never block Pi.
 
 The extension records session start, prompts, tool start and result pairs, structured tool failures, and the settled assistant response. It adds the active Turnal intent command to the system prompt for each turn. When Pi forks or clones a session, the extension reads the parent session header and emits `parent_session_id`. Both `turnal sessions` and `turnal sessions --json` expose the fork topology.
-
-### Gemini CLI
-
-Run `turnal init --agent gemini` to merge Turnal-owned command hooks into `.gemini/settings.json` while preserving unrelated groups. The complete lifecycle uses `SessionStart`, `BeforeAgent`, `BeforeTool`, `AfterTool`, `AfterAgent`, and `SessionEnd`:
-
-```json
-{
-  "hooks": {
-    "SessionStart": [{"matcher":"*","hooks":[{"name":"turnal","type":"command","command":"turnal adapter capture gemini-cli SessionStart"}]}],
-    "BeforeAgent": [{"matcher":"*","hooks":[{"name":"turnal","type":"command","command":"turnal adapter capture gemini-cli BeforeAgent"}]}],
-    "BeforeTool": [{"matcher":"*","hooks":[{"name":"turnal","type":"command","command":"turnal adapter capture gemini-cli BeforeTool"}]}],
-    "AfterTool": [{"matcher":"*","hooks":[{"name":"turnal","type":"command","command":"turnal adapter capture gemini-cli AfterTool"}]}],
-    "AfterAgent": [{"matcher":"*","hooks":[{"name":"turnal","type":"command","command":"turnal adapter capture gemini-cli AfterAgent"}]}],
-    "SessionEnd": [{"matcher":"*","hooks":[{"name":"turnal","type":"command","command":"turnal adapter capture gemini-cli SessionEnd"}]}]
-  }
-}
-```
 
 ### GitHub Copilot CLI
 
@@ -127,7 +110,7 @@ OpenCode message and session events are normalized through the `event` callback;
 
 ## End-to-end parity test
 
-The default suite uses normalized fixtures for all seven providers and compares the durable semantic log after removing provider-specific identifiers and timestamps. An opt-in live contract launches authenticated CLIs in disposable repositories and requires one prompt, one settled assistant response, paired tool activity, exactly one real file mutation, and matching pre/post checkpoints:
+The default suite uses normalized fixtures for all six providers and compares the durable semantic log after removing provider-specific identifiers and timestamps. An opt-in live contract launches authenticated CLIs in disposable repositories and requires one prompt, one settled assistant response, paired tool activity, exactly one real file mutation, and matching pre/post checkpoints:
 
 ```sh
 TURNAL_LIVE_PARITY_TEST=1 go test ./internal/cli -run TestLiveProviderEditParity -count=1
@@ -135,7 +118,7 @@ TURNAL_LIVE_PARITY_TEST=1 TURNAL_LIVE_PARITY_PROVIDER=copilot \
   go test ./internal/cli -run TestLiveProviderEditParity -count=1
 ```
 
-The provider selector accepts `claude`, `codex`, `copilot`, `cursor`, `gemini`, `opencode`, or `pi`. Each selected CLI must already be installed and authenticated. `copilot` always means GitHub Copilot CLI.
+The provider selector accepts `claude`, `codex`, `copilot`, `cursor`, `opencode`, or `pi`. Each selected CLI must already be installed and authenticated. `copilot` always means GitHub Copilot CLI.
 
 ## Compatibility and safety
 

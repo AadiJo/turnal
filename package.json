@@ -6,7 +6,6 @@
     "turnal": "npm/turnal.js",
     "turnal-adapter-cursor": "npm/turnal-adapter-cursor.js",
     "turnal-adapter-opencode": "npm/turnal-adapter-opencode.js",
-    "turnal-adapter-gemini-cli": "npm/turnal-adapter-gemini-cli.js",
     "turnal-adapter-copilot-cli": "npm/turnal-adapter-copilot-cli.js",
     "turnal-adapter-pi": "npm/turnal-adapter-pi.js"
   },

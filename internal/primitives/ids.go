@@ -49,7 +49,6 @@ const (
 	AdapterCodex      AdapterName = "codex"
 	AdapterCopilotCLI AdapterName = "copilot-cli"
 	AdapterCursor     AdapterName = "cursor"
-	AdapterGeminiCLI  AdapterName = "gemini-cli"
 	AdapterManual     AdapterName = "manual"
 	AdapterOpenCode   AdapterName = "opencode"
 	AdapterPi         AdapterName = "pi"

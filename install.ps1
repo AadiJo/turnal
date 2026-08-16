@@ -23,7 +23,6 @@ param(
     $executables = @(
         'turnal.exe'
         'turnal-adapter-opencode.exe'
-        'turnal-adapter-gemini-cli.exe'
         'turnal-adapter-copilot-cli.exe'
         'turnal-adapter-cursor.exe'
         'turnal-adapter-pi.exe'

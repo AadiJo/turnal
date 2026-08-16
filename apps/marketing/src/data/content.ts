@@ -7,7 +7,7 @@ export const product = {
   sub: 'Turnal pairs supported coding-agent activity with local events and hidden Git checkpoints. Search what happened, trace a line to the agent’s stated intent and human request, verify an earlier state, and roll back with a safety checkpoint first.',
   install: 'npm install -g @aadijo/turnal',
   init: 'turnal init',
-  agents: ['Claude Code', 'Codex', 'Cursor', 'Pi', 'OpenCode', 'Gemini CLI', 'GitHub Copilot CLI'],
+  agents: ['Claude Code', 'Codex', 'Cursor', 'Pi', 'OpenCode', 'GitHub Copilot CLI'],
   repo: 'github.com/AadiJo/turnal',
 };
 

@@ -513,13 +513,6 @@ func TestRunCopilotLiveEndToEnd(t *testing.T) {
 	runLiveExternalProvider(t, "copilot", primitives.AdapterCopilotCLI, []string{"--no-auto-update", "--allow-all", "--log-level", "debug", "--prompt", "Reply with exactly: turnal-live"})
 }
 
-func TestRunGeminiLiveEndToEnd(t *testing.T) {
-	if os.Getenv("TURNAL_LIVE_GEMINI_TEST") != "1" {
-		t.Skip("set TURNAL_LIVE_GEMINI_TEST=1 to run the authenticated Gemini integration test")
-	}
-	runLiveExternalProvider(t, "gemini", primitives.AdapterName("gemini-cli"), []string{"--skip-trust", "--approval-mode", "plan", "--prompt", "Reply with exactly: turnal-live"})
-}
-
 func TestLiveProviderEditParity(t *testing.T) {
 	if os.Getenv("TURNAL_LIVE_PARITY_TEST") != "1" {
 		t.Skip("set TURNAL_LIVE_PARITY_TEST=1 to run authenticated cross-provider edit parity")
@@ -537,7 +530,6 @@ func TestLiveProviderEditParity(t *testing.T) {
 		{"cursor", "agent", primitives.AdapterCursor, []string{"--print", "--force", "--trust", prompt}},
 		{"pi", "pi", primitives.AdapterPi, []string{"--print", "--approve", prompt}},
 		{"opencode", "opencode", primitives.AdapterOpenCode, []string{"run", "--auto", prompt}},
-		{"gemini", "gemini", primitives.AdapterGeminiCLI, []string{"--skip-trust", "--approval-mode", "auto_edit", "--prompt", prompt}},
 		{"copilot", "copilot", primitives.AdapterCopilotCLI, []string{"--no-auto-update", "--available-tools=view,edit", "--allow-all", "--silent", "--prompt", prompt}},
 	}
 	for _, provider := range providers {

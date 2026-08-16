@@ -61,7 +61,7 @@ Turnal preserves the installed release channel during upgrades. Use `turnal upgr
 
 ## Quickstart
 
-Initialize Turnal at the workspace root. The `--agent all` selection configures Claude Code, Codex, Cursor, Pi, OpenCode, Gemini CLI, and GitHub Copilot CLI.
+Initialize Turnal at the workspace root. The `--agent all` selection configures Claude Code, Codex, Cursor, Pi, OpenCode, and GitHub Copilot CLI.
 
 ```sh
 npm install -g @aadijo/turnal
@@ -145,7 +145,7 @@ A normal turn has a before-and-after boundary. The prompt hook records context a
 
 ## Agent integrations
 
-Turnal captures Claude Code and Codex through built-in hooks. Cursor, Pi, OpenCode, Gemini CLI, and GitHub Copilot CLI use the versioned external adapter plugin contract. Hook installation is additive: it removes or refreshes Turnal-owned commands while leaving unrelated hook commands in place.
+Turnal captures Claude Code and Codex through built-in hooks. Cursor, Pi, OpenCode, and GitHub Copilot CLI use the versioned external adapter plugin contract. Hook installation is additive: it removes or refreshes Turnal-owned commands while leaving unrelated hook commands in place.
 
 <h3 class="agent-heading"><img src="/brands/claude.svg" alt="" aria-hidden="true"><span>Claude Code</span></h3>
 
@@ -184,10 +184,6 @@ Pi forwards its typed lifecycle events through the packaged [`turnal.ts` extensi
 
 OpenCode uses the managed project plugin `.opencode/plugins/turnal.js` for message, session, and paired tool callbacks. Turnal preserves unrelated plugins and refuses to overwrite a same-named plugin it does not manage. See the [OpenCode adapter setup](https://github.com/AadiJo/turnal/blob/main/docs/adapters.md#opencode).
 
-<h3>Gemini CLI</h3>
-
-Gemini CLI uses command hooks merged into `.gemini/settings.json` for session, prompt, tool, response, and stop boundaries. See the [Gemini CLI hook setup](https://github.com/AadiJo/turnal/blob/main/docs/adapters.md#gemini-cli).
-
 <h3>GitHub Copilot CLI</h3>
 
 This integration targets the [GitHub Copilot CLI](https://docs.github.com/en/copilot/concepts/agents/copilot-cli/about-copilot-cli), not other Copilot products or surfaces. It installs repository hooks at `.github/hooks/turnal.json` using the CLI's cross-platform `bash` and `powershell` hook commands. Because that path is collaborator-visible, `--agent auto` only refreshes an existing Turnal hook file; creating one requires explicit `--agent copilot` or `--agent all`. See the [GitHub Copilot CLI hook setup](https://github.com/AadiJo/turnal/blob/main/docs/adapters.md#github-copilot-cli).
@@ -197,7 +193,7 @@ Inspect the installed adapter contract and verify executable discovery:
 ```sh
 turnal adapter contract
 turnal adapter list
-turnal adapter doctor cursor pi opencode gemini-cli copilot-cli
+turnal adapter doctor cursor pi opencode copilot-cli
 ```
 
 Select an integration explicitly when needed:
@@ -208,7 +204,6 @@ turnal init --agent claude
 turnal init --agent codex
 turnal init --agent copilot
 turnal init --agent cursor
-turnal init --agent gemini
 turnal init --agent opencode
 turnal init --agent pi
 
@@ -221,7 +216,7 @@ turnal init --agent none --skip-hooks
 
 ### Agent wrapper checkpoints
 
-`turnal run` supports Claude Code, Codex, GitHub Copilot CLI, Cursor, Gemini CLI, OpenCode, and Pi. It installs the selected integration and adds independent wrapper-level pre and post checkpoints. If the provider emits no prompt, tool, or assistant payloads, the safety checkpoints still exist but the semantic transcript is sparse.
+`turnal run` supports Claude Code, Codex, GitHub Copilot CLI, Cursor, OpenCode, and Pi. It installs the selected integration and adds independent wrapper-level pre and post checkpoints. If the provider emits no prompt, tool, or assistant payloads, the safety checkpoints still exist but the semantic transcript is sparse.
 
 ### Manual turns
 
@@ -602,7 +597,7 @@ snapshot_deny_globs = [
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `version` | integer | `1` | Configuration schema version. Only version 1 is accepted. |
-| `init.agent` | enum | `"auto"` | Hook target: auto, claude, codex, copilot, cursor, gemini, opencode, pi, all, or none. |
+| `init.agent` | enum | `"auto"` | Hook target: auto, claude, codex, copilot, cursor, opencode, pi, all, or none. |
 | `init.install_hooks` | boolean | `true` | Install or refresh agent hooks during `turnal init`. |
 | `run.install_hooks` | boolean | `true` | Refresh the selected provider integration before `turnal run` launches it. |
 | `run.quiet` | boolean | `false` | Suppress Turnal wrapper status messages. |
@@ -702,13 +697,13 @@ These are Turnal's primary public commands. Low-level hook and checkpoint plumbi
 Create or attach the Turnal store for the current directory and configure agent hooks.
 
 ```text
-turnal init [--agent auto|claude|codex|copilot|cursor|gemini|opencode|pi|all|none] [--skip-hooks]
+turnal init [--agent auto|claude|codex|copilot|cursor|opencode|pi|all|none] [--skip-hooks]
             [--git-sync] [--store PATH]
 ```
 
 | Flag | Description |
 | --- | --- |
-| `--agent VALUE` | Select auto, claude, codex, copilot, cursor, gemini, opencode, pi, all, or none. Default: auto. |
+| `--agent VALUE` | Select auto, claude, codex, copilot, cursor, opencode, pi, all, or none. Default: auto. |
 | `--skip-hooks` | Initialize storage without changing agent hook configuration. |
 | `--git-sync` | Capture workspace Git state for future workspace-git rollbacks. |
 | `--store PATH` | Use or create an explicit physical `.turnal` store. |
@@ -965,7 +960,7 @@ Wrap a supported agent process with independent pre and post safety checkpoints.
 
 ```text
 turnal run [--quiet] [--skip-hook-install]
-           [--bypass-hook-trust] -- <claude|codex|copilot|cursor|agent|gemini|opencode|pi> [ARGS...]
+           [--bypass-hook-trust] -- <claude|codex|copilot|cursor|agent|opencode|pi> [ARGS...]
 ```
 
 | Flag | Description |
@@ -1114,7 +1109,7 @@ Remove Turnal metadata and optionally uninstall Turnal-owned hook commands.
 
 ```text
 turnal destroy [--dry-run] [--remove-hooks]
-               [--agent auto|claude|codex|copilot|cursor|gemini|opencode|pi|all|none]
+               [--agent auto|claude|codex|copilot|cursor|opencode|pi|all|none]
 ```
 
 | Flag | Description |

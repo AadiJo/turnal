@@ -60,14 +60,14 @@ func runCmd() *cobra.Command {
 	var quiet bool
 
 	cmd := &cobra.Command{
-		Use:          "run -- <claude|codex|copilot|cursor|agent|gemini|opencode|pi> [args...]",
+		Use:          "run -- <claude|codex|copilot|cursor|agent|opencode|pi> [args...]",
 		Short:        "Run a supported agent with turnal safety checkpoints",
 		SilenceUsage: true,
 		Args:         cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) (resultErr error) {
 			provider, ok := resolveRunProvider(args[0])
 			if !ok {
-				return fmt.Errorf("turnal run supports claude, codex, copilot, cursor (or agent), gemini, opencode, and pi; unsupported command %q", args[0])
+				return fmt.Errorf("turnal run supports claude, codex, copilot, cursor (or agent), opencode, and pi; unsupported command %q", args[0])
 			}
 			if provider.Target != adapters.TargetCodex && cmd.Flags().Changed("bypass-hook-trust") {
 				return fmt.Errorf("--bypass-hook-trust applies only to Codex")
@@ -239,8 +239,6 @@ func resolveRunProvider(command string) (runProvider, bool) {
 		return runProvider{Adapter: primitives.AdapterCopilotCLI, Target: adapters.TargetCopilot, Name: "GitHub Copilot CLI"}, true
 	case "cursor", "agent":
 		return runProvider{Adapter: primitives.AdapterCursor, Target: adapters.TargetCursor, Name: "Cursor"}, true
-	case "gemini":
-		return runProvider{Adapter: primitives.AdapterGeminiCLI, Target: adapters.TargetGemini, Name: "Gemini CLI"}, true
 	case "opencode":
 		return runProvider{Adapter: primitives.AdapterOpenCode, Target: adapters.TargetOpenCode, Name: "OpenCode"}, true
 	case "pi":

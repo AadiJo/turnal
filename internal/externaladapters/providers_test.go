@@ -167,8 +167,6 @@ func TestBundledProviderNormalization(t *testing.T) {
 	}{
 		{"copilot-cli", "postToolUse", `{"sessionId":"copilot-session","cwd":"/workspace","toolName":"edit","toolArgs":{"path":"a.go"},"toolResult":{"resultType":"success","textResultForLlm":"ok"}}`, []adaptersdk.EventType{adaptersdk.EventToolResult}},
 		{"copilot-cli", "UserPromptSubmit", `{"session_id":"copilot-session","cwd":"/workspace","prompt":"fix it"}`, []adaptersdk.EventType{adaptersdk.EventPromptUser}},
-		{"gemini-cli", "AfterAgent", `{"session_id":"gemini-session","cwd":"/workspace","prompt_response":"done"}`, []adaptersdk.EventType{adaptersdk.EventAssistantMessage}},
-		{"gemini-cli", "AfterTool", `{"session_id":"gemini-session","cwd":"/workspace","tool_name":"write_file","tool_input":{"path":"a.go"},"tool_response":{"ok":true}}`, []adaptersdk.EventType{adaptersdk.EventToolResult}},
 		{"opencode", "event", `{"directory":"/workspace","event":{"type":"session.created","properties":{"info":{"id":"opencode-session"}}}}`, []adaptersdk.EventType{adaptersdk.EventSessionStart}},
 		{"opencode", "tool.execute.after", `{"sessionID":"opencode-session","directory":"/workspace","tool":"bash","callID":"call-1","args":{"command":"true"},"output":"ok"}`, []adaptersdk.EventType{adaptersdk.EventToolResult}},
 		{"cursor", "beforeSubmitPrompt", `{"conversation_id":"cursor-session","generation_id":"turn-1","workspace_roots":["/workspace"],"prompt":"fix it"}`, []adaptersdk.EventType{adaptersdk.EventPromptUser}},
@@ -325,7 +323,6 @@ func TestSharedProviderMetadataDoesNotLeakTopology(t *testing.T) {
 		hook string
 		raw  string
 	}{
-		{name: "gemini-cli", hook: "AfterTool", raw: `{"session_id":"child-session","parent_session_id":"parent-session","parent_tool_use_id":"task-1","cwd":"/workspace","tool_name":"write","tool_input":{},"tool_response":{}}`},
 		{name: "copilot-cli", hook: "postToolUse", raw: `{"session_id":"child-session","parent_session_id":"parent-session","parent_tool_use_id":"task-1","cwd":"/workspace","toolName":"write","toolArgs":{},"toolResult":{}}`},
 		{name: "opencode", hook: "tool.execute.after", raw: `{"sessionID":"child-session","parent_session_id":"parent-session","parent_tool_use_id":"task-1","directory":"/workspace","tool":"write","callID":"tool-1","args":{},"output":{}}`},
 	} {

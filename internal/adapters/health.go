@@ -62,8 +62,6 @@ func InspectHooksForTargets(projectRoot string, command string, targets []Target
 			health = append(health, inspectCopilotHooks(projectRoot, command))
 		case TargetCursor:
 			health = append(health, inspectCursorHooks(projectRoot, command))
-		case TargetGemini:
-			health = append(health, inspectGeminiHooks(projectRoot, command))
 		case TargetOpenCode:
 			health = append(health, inspectOpenCodePlugin(projectRoot, command))
 		case TargetPi:
@@ -79,7 +77,6 @@ func inspectAllHooks(projectRoot string, command string) []HookHealth {
 		inspectCodexHooks(projectRoot, command),
 		inspectCopilotHooks(projectRoot, command),
 		inspectCursorHooks(projectRoot, command),
-		inspectGeminiHooks(projectRoot, command),
 		inspectOpenCodePlugin(projectRoot, command),
 		inspectPiExtension(projectRoot, command),
 	}
@@ -133,43 +130,6 @@ func inspectCopilotHooks(projectRoot, command string) HookHealth {
 			health.Problems = append(health.Problems, fmt.Sprintf("GitHub Copilot CLI hook %s must configure bash and PowerShell commands for %q", eventName, expected))
 		}
 		health.Events = append(health.Events, event)
-	}
-	return health
-}
-
-func inspectGeminiHooks(projectRoot, command string) HookHealth {
-	settingsPath := filepath.Join(projectRoot, ".gemini", "settings.json")
-	health := HookHealth{Target: TargetGemini, ConfigPath: settingsPath, Status: HookConfigurationConfigured}
-	data, err := os.ReadFile(settingsPath)
-	if os.IsNotExist(err) {
-		health.Status = HookConfigurationMissing
-		health.Problems = append(health.Problems, fmt.Sprintf("Gemini CLI hooks missing: %s", settingsPath))
-		return health
-	}
-	if err != nil {
-		health.Status = HookConfigurationMalformed
-		health.Problems = append(health.Problems, fmt.Sprintf("read Gemini CLI hooks: %v", err))
-		return health
-	}
-	var settings map[string]any
-	if err := json.Unmarshal(data, &settings); err != nil {
-		health.Status = HookConfigurationMalformed
-		health.Problems = append(health.Problems, fmt.Sprintf("parse Gemini CLI hooks: %v", err))
-		return health
-	}
-	hooks, exists, err := configMapSection(settings, "hooks")
-	if err != nil {
-		health.Status = HookConfigurationMalformed
-		health.Problems = append(health.Problems, fmt.Sprintf("Gemini CLI hooks: %v", err))
-		return health
-	}
-	if !exists {
-		health.Status = HookConfigurationIncomplete
-		health.Problems = append(health.Problems, "Gemini CLI hooks missing hooks table")
-		return health
-	}
-	for _, eventName := range geminiHookEvents {
-		inspectHookEvent(&health, "Gemini CLI", hooks, eventName, geminiHookCommand(command, eventName))
 	}
 	return health
 }

@@ -96,46 +96,6 @@ func TestUninstallGitHubCopilotCLIRemovesManagedOnlyFile(t *testing.T) {
 	}
 }
 
-func TestInstallGeminiCLIHooksLifecycleAndHealth(t *testing.T) {
-	root := t.TempDir()
-	path := filepath.Join(root, ".gemini", "settings.json")
-	writeHealthFile(t, path, `{"custom":"keep","hooks":{"SessionEnd":[{"matcher":"*","hooks":[{"name":"keep","type":"command","command":"echo keep"}]}]}}`)
-	opts := InstallOptions{HookCommand: "/opt/turnal"}
-	if _, err := InstallGeminiHookWithOptions(root, opts); err != nil {
-		t.Fatal(err)
-	}
-	first, _ := os.ReadFile(path)
-	if _, err := InstallGeminiHookWithOptions(root, opts); err != nil {
-		t.Fatal(err)
-	}
-	second, _ := os.ReadFile(path)
-	if string(first) != string(second) {
-		t.Fatal("idempotent Gemini CLI hook install rewrote settings")
-	}
-	if !strings.Contains(string(second), `"custom": "keep"`) || !strings.Contains(string(second), `"command": "echo keep"`) {
-		t.Fatalf("third-party Gemini CLI settings were not preserved: %s", second)
-	}
-	if health := inspectGeminiHooks(root, opts.HookCommand); !health.OK() || len(health.Events) != len(geminiHookEvents) {
-		t.Fatalf("Gemini CLI health = %#v", health)
-	}
-	dry, err := UninstallGeminiHookWithOptions(root, UninstallOptions{DryRun: true})
-	if err != nil || !dry.Changed || dry.RemovedCommands != len(geminiHookEvents) {
-		t.Fatalf("Gemini CLI dry-run = %#v err=%v", dry, err)
-	}
-	afterDry, _ := os.ReadFile(path)
-	if string(afterDry) != string(second) {
-		t.Fatal("Gemini CLI dry-run changed settings")
-	}
-	removed, err := UninstallGeminiHookWithOptions(root, UninstallOptions{})
-	if err != nil || removed.RemovedCommands != len(geminiHookEvents) {
-		t.Fatalf("Gemini CLI uninstall = %#v err=%v", removed, err)
-	}
-	after, _ := os.ReadFile(path)
-	if !strings.Contains(string(after), `"command": "echo keep"`) || strings.Contains(string(after), "adapter capture gemini-cli") {
-		t.Fatalf("Gemini CLI uninstall did not preserve third-party hook: %s", after)
-	}
-}
-
 func TestInstallOpenCodePluginLifecycleAndHealth(t *testing.T) {
 	root := t.TempDir()
 	opts := InstallOptions{HookCommand: "/opt/turnal"}

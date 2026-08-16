@@ -14,7 +14,6 @@ const AdapterVersion = "1.0.0"
 func Manifest(name string) (adaptersdk.Manifest, bool) {
 	displayNames := map[string]string{
 		"opencode":    "OpenCode",
-		"gemini-cli":  "Gemini CLI",
 		"copilot-cli": "GitHub Copilot CLI",
 		"cursor":      "Cursor",
 		"pi":          "Pi",
@@ -44,8 +43,6 @@ func Normalizer(name string) (adaptersdk.NormalizeFunc, bool) {
 	switch name {
 	case "opencode":
 		return normalizeOpenCode, true
-	case "gemini-cli":
-		return normalizeGemini, true
 	case "copilot-cli":
 		return normalizeCopilot, true
 	case "cursor":
@@ -202,44 +199,6 @@ func normalizeCopilot(hook string, raw json.RawMessage) ([]adaptersdk.Event, err
 		}
 		base.Type = adaptersdk.EventTurnFinish
 		base.TranscriptPath = firstString(payload, "transcript_path", "transcriptPath")
-		return []adaptersdk.Event{base}, nil
-	default:
-		return nil, nil
-	}
-}
-
-func normalizeGemini(hook string, raw json.RawMessage) ([]adaptersdk.Event, error) {
-	payload, err := decodePayload(raw)
-	if err != nil {
-		return nil, err
-	}
-	base := commonEvent(payload)
-	hook = normalizedHook(firstNonEmpty(firstString(payload, "hook_event_name", "hookEventName", "event"), hook))
-	switch hook {
-	case "sessionstart":
-		base.Type = adaptersdk.EventSessionStart
-		applySessionTopology(&base, payload)
-		return []adaptersdk.Event{base}, nil
-	case "beforeagent":
-		base.Type = adaptersdk.EventPromptUser
-		base.Text = firstString(payload, "prompt")
-		return []adaptersdk.Event{base}, nil
-	case "beforetool":
-		base.Type = adaptersdk.EventToolCall
-		base.ToolName = firstString(payload, "tool_name", "toolName")
-		base.ToolUseID = firstString(payload, "tool_use_id", "toolUseId", "tool_call_id", "toolCallId")
-		base.Input = firstJSON(payload, "tool_input", "toolInput")
-		return []adaptersdk.Event{base}, nil
-	case "aftertool":
-		event := toolResultEvent(base, payload, []string{"tool_input", "toolInput"}, []string{"tool_response", "toolResponse"})
-		event.IsError = firstBool(payload, "is_error", "isError")
-		return []adaptersdk.Event{event}, nil
-	case "afteragent":
-		base.Type = adaptersdk.EventAssistantMessage
-		base.Text = firstString(payload, "prompt_response", "promptResponse", "response")
-		return []adaptersdk.Event{base}, nil
-	case "sessionend":
-		base.Type = adaptersdk.EventTurnFinish
 		return []adaptersdk.Event{base}, nil
 	default:
 		return nil, nil

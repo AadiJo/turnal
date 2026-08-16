@@ -1191,7 +1191,7 @@ func TestHandleNormalizedEventsKeepsDurabilityInCore(t *testing.T) {
 	rawPrompt := rawPayload(t, map[string]any{
 		"sessionId": "external-session", "cwd": root.String(), "prompt": "change app.txt",
 	})
-	err = HandleNormalizedEvents("gemini-cli", "BeforeAgent", rawPrompt, []adaptersdk.Event{{
+	err = HandleNormalizedEvents("opencode", "message.updated", rawPrompt, []adaptersdk.Event{{
 		Type: adaptersdk.EventPromptUser, SessionID: "external-session", CWD: root.String(), Text: "change app.txt",
 	}})
 	if err != nil {
@@ -1201,7 +1201,7 @@ func TestHandleNormalizedEventsKeepsDurabilityInCore(t *testing.T) {
 	rawFinish := rawPayload(t, map[string]any{
 		"session_id": "external-session", "cwd": root.String(), "prompt_response": "done",
 	})
-	err = HandleNormalizedEvents("gemini-cli", "AfterAgent", rawFinish, []adaptersdk.Event{{
+	err = HandleNormalizedEvents("opencode", "assistant.completed", rawFinish, []adaptersdk.Event{{
 		Type: adaptersdk.EventAssistantMessage, SessionID: "external-session", CWD: root.String(), Text: "done",
 	}})
 	if err != nil {
@@ -1214,7 +1214,7 @@ func TestHandleNormalizedEventsKeepsDurabilityInCore(t *testing.T) {
 		t.Fatalf("unexpected events: %#v", eventTypes(events))
 	}
 	for _, event := range events {
-		if event.Adapter != "gemini-cli" || event.RawRef == "" {
+		if event.Adapter != "opencode" || event.RawRef == "" {
 			t.Fatalf("event did not retain external adapter provenance: %#v", event)
 		}
 	}
