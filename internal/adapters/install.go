@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,11 +19,15 @@ import (
 type Target string
 
 const (
-	TargetAuto   Target = "auto"
-	TargetClaude Target = "claude"
-	TargetCodex  Target = "codex"
-	TargetAll    Target = "all"
-	TargetNone   Target = "none"
+	TargetAuto     Target = "auto"
+	TargetClaude   Target = "claude"
+	TargetCodex    Target = "codex"
+	TargetCopilot  Target = "copilot"
+	TargetCursor   Target = "cursor"
+	TargetOpenCode Target = "opencode"
+	TargetPi       Target = "pi"
+	TargetAll      Target = "all"
+	TargetNone     Target = "none"
 )
 
 type InstallResult struct {
@@ -57,8 +62,16 @@ func ResolveTargets(projectRoot string, target Target) ([]Target, error) {
 		return []Target{TargetClaude}, nil
 	case TargetCodex:
 		return []Target{TargetCodex}, nil
+	case TargetCopilot:
+		return []Target{TargetCopilot}, nil
+	case TargetCursor:
+		return []Target{TargetCursor}, nil
+	case TargetOpenCode:
+		return []Target{TargetOpenCode}, nil
+	case TargetPi:
+		return []Target{TargetPi}, nil
 	case TargetAll:
-		return []Target{TargetClaude, TargetCodex}, nil
+		return []Target{TargetClaude, TargetCodex, TargetCopilot, TargetCursor, TargetOpenCode, TargetPi}, nil
 	case TargetAuto, "":
 		var targets []Target
 		if pathExists(filepath.Join(projectRoot, ".claude")) || commandExists("claude") {
@@ -67,12 +80,27 @@ func ResolveTargets(projectRoot string, target Target) ([]Target, error) {
 		if pathExists(filepath.Join(EffectiveHookRoot(projectRoot, TargetCodex), ".codex")) || commandExists("codex") {
 			targets = append(targets, TargetCodex)
 		}
+		// GitHub Copilot CLI hooks live in the collaborator-visible .github tree.
+		// Auto refreshes an existing Turnal file but never introduces one merely
+		// because the CLI or another repository hook is present.
+		if pathExists(filepath.Join(projectRoot, ".github", "hooks", "turnal.json")) {
+			targets = append(targets, TargetCopilot)
+		}
+		if pathExists(filepath.Join(projectRoot, ".cursor")) || commandExists("cursor") || commandExists("agent") {
+			targets = append(targets, TargetCursor)
+		}
+		if pathExists(filepath.Join(projectRoot, ".opencode")) || commandExists("opencode") {
+			targets = append(targets, TargetOpenCode)
+		}
+		if pathExists(filepath.Join(projectRoot, ".pi")) || commandExists("pi") {
+			targets = append(targets, TargetPi)
+		}
 		if len(targets) == 0 {
 			targets = append(targets, TargetClaude, TargetCodex)
 		}
 		return targets, nil
 	default:
-		return nil, fmt.Errorf("invalid --agent %q; expected auto, claude, codex, all, or none", target)
+		return nil, fmt.Errorf("invalid --agent %q; expected auto, claude, codex, copilot, cursor, opencode, pi, all, or none", target)
 	}
 }
 
@@ -92,6 +120,30 @@ func InstallWithOptions(projectRoot string, targets []Target, opts InstallOption
 			results = append(results, result)
 		case TargetCodex:
 			result, err := InstallCodexHookWithOptions(projectRoot, opts)
+			if err != nil {
+				return nil, err
+			}
+			results = append(results, result)
+		case TargetCopilot:
+			result, err := InstallCopilotHookWithOptions(projectRoot, opts)
+			if err != nil {
+				return nil, err
+			}
+			results = append(results, result)
+		case TargetCursor:
+			result, err := InstallCursorHookWithOptions(projectRoot, opts)
+			if err != nil {
+				return nil, err
+			}
+			results = append(results, result)
+		case TargetOpenCode:
+			result, err := InstallOpenCodePluginWithOptions(projectRoot, opts)
+			if err != nil {
+				return nil, err
+			}
+			results = append(results, result)
+		case TargetPi:
+			result, err := InstallPiExtensionWithOptions(projectRoot, opts)
 			if err != nil {
 				return nil, err
 			}
@@ -119,6 +171,30 @@ func UninstallWithOptions(projectRoot string, targets []Target, opts UninstallOp
 			results = append(results, result)
 		case TargetCodex:
 			result, err := UninstallCodexHookWithOptions(projectRoot, opts)
+			if err != nil {
+				return nil, err
+			}
+			results = append(results, result)
+		case TargetCopilot:
+			result, err := UninstallCopilotHookWithOptions(projectRoot, opts)
+			if err != nil {
+				return nil, err
+			}
+			results = append(results, result)
+		case TargetCursor:
+			result, err := UninstallCursorHookWithOptions(projectRoot, opts)
+			if err != nil {
+				return nil, err
+			}
+			results = append(results, result)
+		case TargetOpenCode:
+			result, err := UninstallOpenCodePluginWithOptions(projectRoot, opts)
+			if err != nil {
+				return nil, err
+			}
+			results = append(results, result)
+		case TargetPi:
+			result, err := UninstallPiExtensionWithOptions(projectRoot, opts)
 			if err != nil {
 				return nil, err
 			}
@@ -408,6 +484,24 @@ func (opts InstallOptions) hookCommand() string {
 	return hookcmd.Default()
 }
 
+func (opts InstallOptions) piCommand() string {
+	if configured := strings.TrimSpace(opts.HookCommand); configured != "" {
+		if len(configured) >= 2 && configured[0] == '"' && configured[len(configured)-1] == '"' {
+			if unquoted, err := strconv.Unquote(configured); err == nil {
+				return unquoted
+			}
+			// Windows shell quoting does not escape path separators, so it is
+			// not necessarily valid Go string syntax.
+			return configured[1 : len(configured)-1]
+		}
+		if len(configured) >= 2 && configured[0] == '\'' && configured[len(configured)-1] == '\'' {
+			return configured[1 : len(configured)-1]
+		}
+		return configured
+	}
+	return hookcmd.Executable()
+}
+
 func enableCodexHooksFeature(config map[string]any) error {
 	features, exists, err := configMapSection(config, "features")
 	if err != nil {
@@ -563,6 +657,8 @@ func IsTurnalHookCommand(command string) bool {
 		switch field {
 		case "claude-hook", "codex-hook":
 			return index > 0
+		case "adapter":
+			return index > 0 && index+2 < len(fields) && fields[index+1] == "capture"
 		}
 	}
 	return false

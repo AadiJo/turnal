@@ -12,6 +12,7 @@ import (
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/primitives"
+	adaptersdk "github.com/AadiJo/turnal/sdk/adapter"
 )
 
 func TestRecallTurnIncludesProviderEventsAndRawRecords(t *testing.T) {
@@ -271,6 +272,90 @@ func TestRecallTurnIncludesCodexTranscriptOutput(t *testing.T) {
 	}
 	if strings.Contains(got, "Do not include this.") {
 		t.Fatalf("transcript leaked next turn: %#v", turn.Transcript.Messages)
+	}
+}
+
+func TestRecallTurnIncludesCursorAndPiTranscriptOutput(t *testing.T) {
+	requireGit(t)
+	for _, test := range []struct {
+		name       string
+		adapter    primitives.AdapterName
+		transcript func(t *testing.T, home string) string
+		contents   string
+		expected   string
+	}{
+		{
+			name:    "cursor",
+			adapter: primitives.AdapterCursor,
+			transcript: func(t *testing.T, home string) string {
+				t.Helper()
+				return filepath.Join(home, ".cursor", "projects", "conversation.jsonl")
+			},
+			contents: strings.Join([]string{
+				`{"role":"user","id":"u1","text":"change adapter"}`,
+				`{"role":"assistant","id":"a1","parent_id":"u1","text":"Cursor full model output."}`,
+				`{"role":"user","id":"u2","text":"next prompt"}`,
+			}, "\n") + "\n",
+			expected: "Cursor full model output.",
+		},
+		{
+			name:    "pi",
+			adapter: primitives.AdapterPi,
+			transcript: func(t *testing.T, home string) string {
+				t.Helper()
+				path := filepath.Join(home, ".pi", "agent", "sessions", "session.jsonl")
+				t.Setenv("PI_CODING_AGENT_DIR", filepath.Join(home, ".pi", "agent"))
+				return path
+			},
+			contents: strings.Join([]string{
+				`{"type":"session","id":"pi-session"}`,
+				`{"type":"message","id":"u1","message":{"role":"user","content":[{"type":"text","text":"change adapter"}]}}`,
+				`{"type":"message","id":"a1","parentId":"u1","message":{"role":"assistant","content":[{"type":"text","text":"Pi full model output."}]}}`,
+				`{"type":"message","id":"u2","message":{"role":"user","content":[{"type":"text","text":"next prompt"}]}}`,
+			}, "\n") + "\n",
+			expected: "Pi full model output.",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			transcriptPath := test.transcript(t, home)
+			if err := os.MkdirAll(filepath.Dir(transcriptPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(transcriptPath, []byte(test.contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			root := workspaceRoot(t)
+			repo, err := checkpoint.Init(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			session := test.name + "-session"
+			capture := func(hook string, event adaptersdk.Event) {
+				t.Helper()
+				raw, _ := json.Marshal(event)
+				if err := adapters.HandleNormalizedEvents(test.adapter, hook, raw, []adaptersdk.Event{event}); err != nil {
+					t.Fatalf("capture %s: %v", hook, err)
+				}
+			}
+			capture("session", adaptersdk.Event{Type: adaptersdk.EventSessionStart, SessionID: session, CWD: root.String(), TranscriptPath: transcriptPath})
+			capture("prompt", adaptersdk.Event{Type: adaptersdk.EventPromptUser, SessionID: session, CWD: root.String(), Text: "change adapter"})
+			capture("assistant", adaptersdk.Event{Type: adaptersdk.EventAssistantMessage, SessionID: session, CWD: root.String(), Text: "short hook output"})
+
+			turn, err := NewReader(repo.MetadataDir).RecallTurn(sessionID(t, session), 1, Options{IncludeTranscript: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if turn.Transcript == nil || len(turn.Transcript.Errors) != 0 || len(turn.Transcript.Messages) != 2 {
+				t.Fatalf("%s transcript = %#v", test.name, turn.Transcript)
+			}
+			text := transcriptText(turn.Transcript)
+			if !strings.Contains(text, "change adapter") || !strings.Contains(text, test.expected) || strings.Contains(text, "next prompt") {
+				t.Fatalf("%s transcript text = %q", test.name, text)
+			}
+		})
 	}
 }
 

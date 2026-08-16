@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -591,12 +592,35 @@ func TestResolveTargets(t *testing.T) {
 	if len(targets) == 0 || targets[0] != TargetClaude {
 		t.Fatalf("auto targets = %#v, want Claude first", targets)
 	}
+	if err := os.Mkdir(filepath.Join(root, ".cursor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, ".pi"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, directory := range []string{".opencode", filepath.Join(".github", "hooks")} {
+		if err := os.MkdirAll(filepath.Join(root, directory), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	targets, err = ResolveTargets(root, TargetAuto)
+	if err != nil || containsTarget(targets, TargetCopilot) || !containsTarget(targets, TargetCursor) || !containsTarget(targets, TargetOpenCode) || !containsTarget(targets, TargetPi) {
+		t.Fatalf("auto external targets = %#v err=%v", targets, err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".github", "hooks", "turnal.json"), []byte(`{"version":1}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	targets, err = ResolveTargets(root, TargetAuto)
+	if err != nil || !containsTarget(targets, TargetCopilot) {
+		t.Fatalf("auto did not refresh existing GitHub Copilot CLI target: %#v err=%v", targets, err)
+	}
 
 	targets, err = ResolveTargets(root, TargetAll)
 	if err != nil {
 		t.Fatalf("ResolveTargets all: %v", err)
 	}
-	if len(targets) != 2 || targets[0] != TargetClaude || targets[1] != TargetCodex {
+	wantAll := []Target{TargetClaude, TargetCodex, TargetCopilot, TargetCursor, TargetOpenCode, TargetPi}
+	if !slices.Equal(targets, wantAll) {
 		t.Fatalf("all targets = %#v", targets)
 	}
 
@@ -611,6 +635,15 @@ func TestResolveTargets(t *testing.T) {
 	if len(targets) != 0 {
 		t.Fatalf("none targets = %#v, want empty", targets)
 	}
+}
+
+func containsTarget(targets []Target, expected Target) bool {
+	for _, target := range targets {
+		if target == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func readJSONFile(t *testing.T, path string, out any) {

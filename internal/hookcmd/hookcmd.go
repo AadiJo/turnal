@@ -9,6 +9,12 @@ import (
 )
 
 func Default() string {
+	return shellQuote(Executable(), runtime.GOOS)
+}
+
+// Executable returns the Turnal executable path without shell quoting. Hook
+// installers that invoke a process directly should use this form.
+func Executable() string {
 	executable, err := os.Executable()
 	if err != nil {
 		return "turnal"
@@ -23,7 +29,7 @@ func Default() string {
 	if isUnderTempDir(executable) {
 		return "turnal"
 	}
-	return shellQuote(executable, runtime.GOOS)
+	return executable
 }
 
 func isTurnalExecutable(base string, goos string) bool {

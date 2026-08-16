@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -65,6 +66,54 @@ func TestAppendReadAndVerifyHashChain(t *testing.T) {
 	}
 	if err := log.Verify(sessionID); err != nil {
 		t.Fatalf("Verify: %v", err)
+	}
+}
+
+func TestAppendDeduplicatesSourceIDAtomically(t *testing.T) {
+	log := Open(t.TempDir())
+	sessionID := sessionID(t, "atomic-source")
+	const workers = 16
+	results := make(chan Event, workers)
+	errors := make(chan error, workers)
+	var group sync.WaitGroup
+	for range workers {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			event, err := log.Append(AppendInput{
+				SessionID: sessionID,
+				Type:      primitives.EventTypeTurnFinish,
+				Adapter:   primitives.AdapterOpenCode,
+				SourceID:  "one-finish",
+				Payload:   json.RawMessage(`{"turn":1}`),
+			})
+			results <- event
+			errors <- err
+		}()
+	}
+	group.Wait()
+	close(results)
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var first Event
+	for event := range results {
+		if first.Hash == "" {
+			first = event
+		}
+		if event.Seq != first.Seq || event.Hash != first.Hash {
+			t.Fatalf("deduplicated event = %+v, want seq %s hash %s", event, first.Seq, first.Hash)
+		}
+	}
+	events, err := log.Read(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
 	}
 }
 

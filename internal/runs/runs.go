@@ -13,7 +13,8 @@ import (
 )
 
 const (
-	EnvRunID = "TURNAL_RUN_ID"
+	EnvRunID            = "TURNAL_RUN_ID"
+	EnvPostExitFinalize = "TURNAL_RUN_POST_EXIT_FINALIZE"
 
 	CaptureWrapper  = "wrapper"
 	CaptureProvider = "provider"

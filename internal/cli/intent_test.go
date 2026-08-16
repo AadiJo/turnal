@@ -57,6 +57,33 @@ func TestIntentCommandRecordsExplicitAgentStatement(t *testing.T) {
 	}
 }
 
+func TestIntentCommandDefaultsToActiveTurn(t *testing.T) {
+	requireGit(t)
+	rootPath := t.TempDir()
+	root, err := primitives.ParseWorkspaceRoot(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := sessionID(t, "implicit-active-intent")
+	started, err := turns.NewManager(repo).Start(sessionID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(rootPath)
+	runRootStdout(t, "intent", "--session", sessionID.String(), "--problem", "capture active provider intent")
+	events, err := repo.EventLog().Read(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].TurnID == nil || *events[0].TurnID != started.TurnID {
+		t.Fatalf("implicit-turn intent events = %#v", events)
+	}
+}
+
 func TestIntentCommandRedactsAllPromptLikeFields(t *testing.T) {
 	requireGit(t)
 	rootPath := t.TempDir()

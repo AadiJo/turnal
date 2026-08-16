@@ -58,17 +58,19 @@ func sessionsCmd() *cobra.Command {
 }
 
 type sessionView struct {
-	ID             primitives.SessionID
-	Adapter        string
-	Model          string
-	PermissionMode string
-	EventCount     int
-	FirstActivity  time.Time
-	LastActivity   time.Time
-	Turns          map[uint64]*sessionViewTurn
-	Rollbacks      []sessionViewRollback
-	Head           *sessionViewHead
-	Warnings       []string
+	ID              primitives.SessionID
+	ParentSessionID string
+	ParentToolUseID string
+	Adapter         string
+	Model           string
+	PermissionMode  string
+	EventCount      int
+	FirstActivity   time.Time
+	LastActivity    time.Time
+	Turns           map[uint64]*sessionViewTurn
+	Rollbacks       []sessionViewRollback
+	Head            *sessionViewHead
+	Warnings        []string
 }
 
 type sessionViewTurn struct {
@@ -107,6 +109,8 @@ type sessionsJSONOutput struct {
 
 type sessionJSONSummary struct {
 	SessionID         string                `json:"session_id"`
+	ParentSessionID   string                `json:"parent_session_id,omitempty"`
+	ParentToolUseID   string                `json:"parent_tool_use_id,omitempty"`
 	Status            string                `json:"status"`
 	Adapter           string                `json:"adapter,omitempty"`
 	Model             string                `json:"model,omitempty"`
@@ -171,8 +175,10 @@ type sessionRollbackPayload struct {
 }
 
 type sessionStartPayload struct {
-	Model          string `json:"model"`
-	PermissionMode string `json:"permission_mode"`
+	ParentSessionID string `json:"parent_session_id"`
+	ParentToolUseID string `json:"parent_tool_use_id"`
+	Model           string `json:"model"`
+	PermissionMode  string `json:"permission_mode"`
 }
 
 func loadSessionViews(repo *checkpoint.Repo) ([]sessionView, error) {
@@ -356,6 +362,10 @@ func (session *sessionView) applySessionStartPayload(payload json.RawMessage) {
 	if session.Model == "" {
 		session.Model = decoded.Model
 	}
+	if session.ParentSessionID == "" {
+		session.ParentSessionID = decoded.ParentSessionID
+		session.ParentToolUseID = decoded.ParentToolUseID
+	}
 	if session.PermissionMode == "" {
 		session.PermissionMode = decoded.PermissionMode
 	}
@@ -398,6 +408,15 @@ func writeSessionView(w io.Writer, session sessionView) error {
 	}
 	if err := writeSessionField(w, "adapter", adapter); err != nil {
 		return err
+	}
+	if session.ParentSessionID != "" {
+		parent := styleSessionID(session.ParentSessionID)
+		if session.ParentToolUseID != "" {
+			parent += styleSessionsMuted(" via ") + styleSessionsMuted(session.ParentToolUseID)
+		}
+		if err := writeSessionField(w, "parent", parent); err != nil {
+			return err
+		}
 	}
 
 	if err := writeSessionField(w, "turns", formatSessionTurnCounts(counts)); err != nil {
@@ -728,6 +747,8 @@ func sessionsJSONFromViews(sessions []sessionView) sessionsJSONOutput {
 		rollbacks := orderedSessionRollbacks(session)
 		summary := sessionJSONSummary{
 			SessionID:         session.ID.String(),
+			ParentSessionID:   session.ParentSessionID,
+			ParentToolUseID:   session.ParentToolUseID,
 			Status:            sessionStatus(session, counts),
 			Adapter:           session.Adapter,
 			Model:             session.Model,

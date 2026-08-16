@@ -94,6 +94,8 @@ export type FileChange = {
 export type SessionSummary = {
   key: string;
   id: string;
+  parent_session_id?: string;
+  parent_tool_use_id?: string;
   stream_id: string;
   worktree_id?: string;
   adapter?: string;

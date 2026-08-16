@@ -23,7 +23,7 @@ archive="turnal_${version}_${platform}_${architecture}.tar.gz"
 release_dir="$tmp_dir/releases/v$version"
 payload_dir="$tmp_dir/payload"
 install_dir="$tmp_dir/bin"
-executables="turnal turnal-adapter-opencode turnal-adapter-gemini-cli turnal-adapter-copilot-cli"
+executables="turnal turnal-adapter-opencode turnal-adapter-copilot-cli turnal-adapter-cursor turnal-adapter-pi"
 documentation="LICENSE NOTICE"
 archive_members="$executables $documentation"
 mkdir -p "$release_dir" "$payload_dir"
@@ -184,15 +184,15 @@ ln -s "../old/opencode" "$rollback_dir/turnal-adapter-opencode"
 
 if (
   export TURNAL_INSTALLER_TESTING=1
-  export TURNAL_TEST_FAIL_INSTALL=turnal-adapter-gemini-cli
+  export TURNAL_TEST_FAIL_INSTALL=turnal-adapter-copilot-cli
   run_installer --version "$version" --install-dir "$rollback_dir" \
     >"$tmp_dir/rollback.stdout" 2>"$tmp_dir/rollback.stderr"
 ); then
   echo "installer test failure injection unexpectedly succeeded" >&2
   exit 1
 fi
-grep -q "could not install turnal-adapter-gemini-cli" "$tmp_dir/rollback.stderr"
-for executable in turnal turnal-adapter-gemini-cli turnal-adapter-copilot-cli; do
+grep -q "could not install turnal-adapter-copilot-cli" "$tmp_dir/rollback.stderr"
+for executable in turnal turnal-adapter-copilot-cli turnal-adapter-cursor turnal-adapter-pi; do
   grep -q "^old-$executable\$" "$rollback_dir/$executable"
 done
 test -L "$rollback_dir/turnal-adapter-opencode"
@@ -206,7 +206,7 @@ for executable in $executables; do
 done
 if (
   export TURNAL_INSTALLER_TESTING=1
-  export TURNAL_TEST_FAIL_INSTALL=turnal-adapter-gemini-cli
+  export TURNAL_TEST_FAIL_INSTALL=turnal-adapter-copilot-cli
   export TURNAL_TEST_FAIL_RESTORE=turnal-adapter-opencode
   run_installer --version "$version" --install-dir "$failed_rollback_dir" \
     >"$tmp_dir/failed-rollback.stdout" 2>"$tmp_dir/failed-rollback.stderr"
@@ -227,7 +227,7 @@ for executable in $executables; do
 done
 
 TURNAL_INSTALLER_TESTING=1 \
-  TURNAL_TEST_PAUSE_INSTALL=turnal-adapter-gemini-cli \
+  TURNAL_TEST_PAUSE_INSTALL=turnal-adapter-copilot-cli \
   TURNAL_ALLOW_INSECURE_TRANSPORT=1 \
   TURNAL_RELEASE_BASE_URL="file://$tmp_dir/releases" \
   sh "$repo_root/install.sh" --version "$version" --install-dir "$signal_dir" \

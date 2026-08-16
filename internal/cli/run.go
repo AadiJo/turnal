@@ -37,6 +37,12 @@ type childExitError struct {
 	code int
 }
 
+type runProvider struct {
+	Adapter primitives.AdapterName
+	Target  adapters.Target
+	Name    string
+}
+
 func (err childExitError) Error() string {
 	return fmt.Sprintf("wrapped command exited with status %d", err.code)
 }
@@ -54,13 +60,17 @@ func runCmd() *cobra.Command {
 	var quiet bool
 
 	cmd := &cobra.Command{
-		Use:          "run -- codex [args...]",
-		Short:        "Run Codex with turnal safety checkpoints",
+		Use:          "run -- <claude|codex|copilot|cursor|agent|opencode|pi> [args...]",
+		Short:        "Run a supported agent with turnal safety checkpoints",
 		SilenceUsage: true,
 		Args:         cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) (resultErr error) {
-			if !isCodexCommand(args[0]) {
-				return fmt.Errorf("turnal run currently supports Codex only; expected command %q to be codex", args[0])
+			provider, ok := resolveRunProvider(args[0])
+			if !ok {
+				return fmt.Errorf("turnal run supports claude, codex, copilot, cursor (or agent), opencode, and pi; unsupported command %q", args[0])
+			}
+			if provider.Target != adapters.TargetCodex && cmd.Flags().Changed("bypass-hook-trust") {
+				return fmt.Errorf("--bypass-hook-trust applies only to Codex")
 			}
 
 			repo, err := openCheckpointRepo()
@@ -88,14 +98,14 @@ func runCmd() *cobra.Command {
 			}
 
 			if effective.Run.InstallHooks {
-				if _, err := adapters.InstallCodexHookWithOptions(repo.WorkspaceRoot.String(), adapters.InstallOptions{
+				if _, err := adapters.InstallWithOptions(repo.WorkspaceRoot.String(), []adapters.Target{provider.Target}, adapters.InstallOptions{
 					HookCommand: effective.Hooks.Command,
 				}); err != nil {
 					return err
 				}
 			}
 
-			beforeRawCount, err := codexRawRecordCount(repo.MetadataDir)
+			beforeRawCount, err := adapterRawRecordCount(repo.MetadataDir, provider.Adapter)
 			if err != nil {
 				return err
 			}
@@ -103,7 +113,7 @@ func runCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			sessionID, err := newRunSessionID(time.Now())
+			sessionID, err := newRunSessionID(provider.Adapter, time.Now())
 			if err != nil {
 				return err
 			}
@@ -128,25 +138,50 @@ func runCmd() *cobra.Command {
 					runOpen = false
 				}
 			}()
-			if err := runs.LinkCapture(repo, runID, runs.CaptureWrapper, sessionID, primitives.AdapterCodex); err != nil {
+			if err := runs.LinkCapture(repo, runID, runs.CaptureWrapper, sessionID, provider.Adapter); err != nil {
 				return err
 			}
 
-			started, err := startRunTurn(repo, sessionID, args)
+			started, err := startRunTurn(repo, provider.Adapter, sessionID, args)
 			if err != nil {
 				return err
 			}
 
-			childArgs := prepareCodexCommand(args, effective.Run.BypassHookTrust)
-			childErr := runChildCommand(cmd, childArgs, runID)
+			childArgs := args
+			if provider.Target == adapters.TargetCodex {
+				childArgs = prepareCodexCommand(args, effective.Run.BypassHookTrust)
+			}
+			if provider.Target == adapters.TargetCopilot && !containsOption(args[1:], "-C") {
+				cwd, err := os.Getwd()
+				if err != nil {
+					return fmt.Errorf("resolve GitHub Copilot CLI working directory: %w", err)
+				}
+				childArgs = append([]string{args[0], "-C", cwd}, args[1:]...)
+			}
+			childEnvironment := map[string]string{}
+			if provider.Target == adapters.TargetCopilot && !environmentContains(os.Environ(), "GITHUB_COPILOT_PROMPT_MODE_REPO_HOOKS") {
+				childEnvironment["GITHUB_COPILOT_PROMPT_MODE_REPO_HOOKS"] = "true"
+			}
+			postExitFinalize := providerUsesSingleTurnPromptMode(provider.Target, args[1:])
+			if postExitFinalize {
+				childEnvironment[runs.EnvPostExitFinalize] = "1"
+			}
+			childErr := runChildCommand(cmd, childArgs, runID, childEnvironment)
+			var providerFinalizeErr error
+			if postExitFinalize && provider.Target == adapters.TargetCopilot {
+				providerFinalizeErr = adapters.FinalizeCopilotRun(repo, runID)
+			}
+			if postExitFinalize && provider.Target == adapters.TargetCursor {
+				providerFinalizeErr = adapters.FinalizeCursorRun(repo, runID)
+			}
 
-			finishErr := finishRunTurn(repo, sessionID, started.TurnID)
-			afterRawCount, countErr := codexRawRecordCount(repo.MetadataDir)
+			finishErr := finishRunTurn(repo, provider.Adapter, sessionID, started.TurnID)
+			afterRawCount, countErr := adapterRawRecordCount(repo.MetadataDir, provider.Adapter)
 
 			if !effective.Run.Quiet {
 				fmt.Fprintf(cmd.ErrOrStderr(), "turnal: recorded run %s with wrapper checkpoints for %s:%s\n", runID, sessionID, started.TurnID)
 				if countErr == nil && afterRawCount == beforeRawCount {
-					fmt.Fprintln(cmd.ErrOrStderr(), "turnal: no Codex hook payloads were observed; wrapper checkpoints are available, but prompt/tool/assistant capture depends on Codex hooks. Review /hooks in Codex, or rerun with --bypass-hook-trust after reviewing hook sources.")
+					fmt.Fprintf(cmd.ErrOrStderr(), "turnal: no %s hook payloads were observed; wrapper checkpoints are available, but prompt/tool/assistant capture depends on the provider loading Turnal hooks\n", provider.Name)
 				}
 			}
 			if finishErr != nil {
@@ -154,21 +189,25 @@ func runCmd() *cobra.Command {
 					SessionID: sessionID,
 					TurnID:    &started.TurnID,
 					Type:      primitives.EventTypeError,
-					Adapter:   primitives.AdapterCodex,
-					SourceID:  fmt.Sprintf("codex-run:%s:%s:incomplete", sessionID, started.TurnID),
+					Adapter:   provider.Adapter,
+					SourceID:  fmt.Sprintf("%s-run:%s:%s:incomplete", provider.Adapter, sessionID, started.TurnID),
 					Payload:   mustJSON(runIncompletePayload{Reason: finishErr.Error()}),
 				})
 				return finishErr
 			}
+			if childErr != nil {
+				combined := errors.Join(childErr, providerFinalizeErr, countErr)
+				if err := runs.Finish(repo, runID, sessionID, runs.StatusFailed, combined.Error()); err != nil {
+					return errors.Join(combined, err)
+				}
+				runOpen = false
+				return combined
+			}
 			if countErr != nil {
 				return countErr
 			}
-			if childErr != nil {
-				if err := runs.Finish(repo, runID, sessionID, runs.StatusFailed, childErr.Error()); err != nil {
-					return errors.Join(childErr, err)
-				}
-				runOpen = false
-				return childErr
+			if providerFinalizeErr != nil {
+				return providerFinalizeErr
 			}
 			if err := runs.Finish(repo, runID, sessionID, runs.StatusSucceeded, ""); err != nil {
 				return err
@@ -178,16 +217,35 @@ func runCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().BoolVar(&skipHookInstall, "skip-hook-install", false, "Do not update .codex/config.toml before running Codex")
+	cmd.Flags().BoolVar(&skipHookInstall, "skip-hook-install", false, "Do not install the selected provider's Turnal integration")
 	cmd.Flags().BoolVar(&bypassHookTrust, "bypass-hook-trust", false, "Pass --dangerously-bypass-hook-trust to Codex for this invocation")
 	cmd.Flags().BoolVar(&quiet, "quiet", false, "Suppress turnal wrapper status messages")
 	return cmd
 }
 
 func isCodexCommand(command string) bool {
-	base := filepath.Base(command)
-	base = strings.TrimSuffix(base, ".exe")
-	return base == "codex"
+	provider, ok := resolveRunProvider(command)
+	return ok && provider.Target == adapters.TargetCodex
+}
+
+func resolveRunProvider(command string) (runProvider, bool) {
+	base := strings.ToLower(strings.TrimSuffix(filepath.Base(command), ".exe"))
+	switch base {
+	case "claude":
+		return runProvider{Adapter: primitives.AdapterClaudeCode, Target: adapters.TargetClaude, Name: "Claude Code"}, true
+	case "codex":
+		return runProvider{Adapter: primitives.AdapterCodex, Target: adapters.TargetCodex, Name: "Codex"}, true
+	case "copilot":
+		return runProvider{Adapter: primitives.AdapterCopilotCLI, Target: adapters.TargetCopilot, Name: "GitHub Copilot CLI"}, true
+	case "cursor", "agent":
+		return runProvider{Adapter: primitives.AdapterCursor, Target: adapters.TargetCursor, Name: "Cursor"}, true
+	case "opencode":
+		return runProvider{Adapter: primitives.AdapterOpenCode, Target: adapters.TargetOpenCode, Name: "OpenCode"}, true
+	case "pi":
+		return runProvider{Adapter: primitives.AdapterPi, Target: adapters.TargetPi, Name: "Pi"}, true
+	default:
+		return runProvider{}, false
+	}
 }
 
 func prepareCodexCommand(args []string, bypassHookTrust bool) []string {
@@ -240,13 +298,36 @@ func containsArg(args []string, want string) bool {
 	return false
 }
 
-func runChildCommand(cmd *cobra.Command, args []string, runID primitives.RunID) error {
+func containsOption(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want || strings.HasPrefix(arg, want+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+func providerUsesSingleTurnPromptMode(target adapters.Target, args []string) bool {
+	switch target {
+	case adapters.TargetCursor:
+		return containsOption(args, "--print") || containsOption(args, "-p")
+	case adapters.TargetCopilot:
+		return containsOption(args, "--prompt") || containsOption(args, "-p")
+	default:
+		return false
+	}
+}
+
+func runChildCommand(cmd *cobra.Command, args []string, runID primitives.RunID, environment map[string]string) error {
 	child := exec.Command(args[0], args[1:]...)
 	child.Stdin = os.Stdin
 	child.Stdout = cmd.OutOrStdout()
 	child.Stderr = cmd.ErrOrStderr()
 	child.Dir = ""
 	child.Env = runEnvironment(os.Environ(), runID)
+	for name, value := range environment {
+		child.Env = replaceEnvironment(child.Env, name, value)
+	}
 
 	if err := child.Start(); err != nil {
 		return err
@@ -265,6 +346,28 @@ func runChildCommand(cmd *cobra.Command, args []string, runID primitives.RunID) 
 		return err
 	}
 	return nil
+}
+
+func replaceEnvironment(existing []string, name, value string) []string {
+	result := make([]string, 0, len(existing)+1)
+	for _, entry := range existing {
+		entryName, _, found := strings.Cut(entry, "=")
+		if found && environmentNamesEqual(entryName, name) {
+			continue
+		}
+		result = append(result, entry)
+	}
+	return append(result, name+"="+value)
+}
+
+func environmentContains(existing []string, name string) bool {
+	for _, entry := range existing {
+		entryName, _, found := strings.Cut(entry, "=")
+		if found && environmentNamesEqual(entryName, name) {
+			return true
+		}
+	}
+	return false
 }
 
 func runEnvironment(existing []string, runID primitives.RunID) []string {
@@ -298,11 +401,11 @@ func waitForChild(done <-chan error, signals <-chan os.Signal, forward func(os.S
 	}
 }
 
-func newRunSessionID(now time.Time) (primitives.SessionID, error) {
-	return primitives.ParseSessionID(fmt.Sprintf("codex-run-%d", now.UTC().UnixNano()))
+func newRunSessionID(adapter primitives.AdapterName, now time.Time) (primitives.SessionID, error) {
+	return primitives.ParseSessionID(fmt.Sprintf("%s-run-%d", adapter, now.UTC().UnixNano()))
 }
 
-func startRunTurn(repo *checkpoint.Repo, sessionID primitives.SessionID, command []string) (turns.StartResult, error) {
+func startRunTurn(repo *checkpoint.Repo, adapter primitives.AdapterName, sessionID primitives.SessionID, command []string) (turns.StartResult, error) {
 	log := repo.EventLog()
 	if err := turnevents.RecoverCheckpointJournals(log, repo); err != nil {
 		return turns.StartResult{}, err
@@ -310,8 +413,8 @@ func startRunTurn(repo *checkpoint.Repo, sessionID primitives.SessionID, command
 	if _, err := log.Append(eventlog.AppendInput{
 		SessionID: sessionID,
 		Type:      primitives.EventTypeSessionStart,
-		Adapter:   primitives.AdapterCodex,
-		SourceID:  fmt.Sprintf("codex-run:%s:session", sessionID),
+		Adapter:   adapter,
+		SourceID:  fmt.Sprintf("%s-run:%s:session", adapter, sessionID),
 		Payload: mustJSON(runSessionPayload{
 			ProviderSessionID: sessionID.String(),
 			Source:            "turnal run",
@@ -321,44 +424,49 @@ func startRunTurn(repo *checkpoint.Repo, sessionID primitives.SessionID, command
 		return turns.StartResult{}, err
 	}
 
-	manager := turns.NewManager(repo).WithCheckpointEvents(primitives.AdapterCodex, "")
+	manager := turns.NewManager(repo).WithCheckpointEvents(adapter, "")
 	started, err := manager.Start(sessionID, 0)
 	if err != nil {
 		return turns.StartResult{}, err
 	}
-	if err := turnevents.AppendTurnStart(log, primitives.AdapterCodex, sessionID, started.TurnID, ""); err != nil {
+	if err := turnevents.AppendTurnStart(log, adapter, sessionID, started.TurnID, ""); err != nil {
 		return turns.StartResult{}, err
 	}
-	if err := turnevents.AppendCheckpointWithGitSync(log, primitives.AdapterCodex, sessionID, started.TurnID, primitives.CheckpointPhasePre, started.Pre, started.GitSync, ""); err != nil {
+	if err := turnevents.AppendCheckpointWithGitSync(log, adapter, sessionID, started.TurnID, primitives.CheckpointPhasePre, started.Pre, started.GitSync, ""); err != nil {
 		return turns.StartResult{}, err
 	}
 	return started, nil
 }
 
-func finishRunTurn(repo *checkpoint.Repo, sessionID primitives.SessionID, turnID primitives.TurnID) error {
+func finishRunTurn(repo *checkpoint.Repo, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID) error {
 	log := repo.EventLog()
 	if err := turnevents.RecoverCheckpointJournals(log, repo); err != nil {
 		return err
 	}
-	manager := turns.NewManager(repo).WithCheckpointEvents(primitives.AdapterCodex, "")
+	manager := turns.NewManager(repo).WithCheckpointEvents(adapter, "")
 	finished, err := manager.Finish(sessionID, turnID)
 	if err != nil {
 		return err
 	}
-	if err := turnevents.AppendTurnFinish(log, primitives.AdapterCodex, sessionID, finished.TurnID, ""); err != nil {
+	if err := turnevents.AppendTurnFinish(log, adapter, sessionID, finished.TurnID, ""); err != nil {
 		return err
 	}
-	if err := turnevents.AppendCheckpointWithGitSync(log, primitives.AdapterCodex, sessionID, finished.TurnID, primitives.CheckpointPhasePost, finished.Post, finished.GitSync, ""); err != nil {
+	if err := turnevents.AppendCheckpointWithGitSync(log, adapter, sessionID, finished.TurnID, primitives.CheckpointPhasePost, finished.Post, finished.GitSync, ""); err != nil {
 		return err
 	}
 	return nil
 }
 
 func codexRawRecordCount(metadataDir string) (int, error) {
-	paths := []string{filepath.Join(metadataDir, "log", "adapter", "codex.jsonl")}
+	return adapterRawRecordCount(metadataDir, primitives.AdapterCodex)
+}
+
+func adapterRawRecordCount(metadataDir string, adapter primitives.AdapterName) (int, error) {
+	filename := adapter.String() + ".jsonl"
+	paths := []string{filepath.Join(metadataDir, "log", "adapter", filename)}
 	rawRoot := filepath.Join(metadataDir, "log", "raw")
 	_ = filepath.WalkDir(rawRoot, func(path string, entry os.DirEntry, err error) error {
-		if err == nil && !entry.IsDir() && entry.Name() == "codex.jsonl" {
+		if err == nil && !entry.IsDir() && entry.Name() == filename {
 			paths = append(paths, path)
 		}
 		return nil
@@ -370,7 +478,7 @@ func codexRawRecordCount(metadataDir string) (int, error) {
 			if os.IsNotExist(err) {
 				continue
 			}
-			return 0, fmt.Errorf("read Codex raw adapter log: %w", err)
+			return 0, fmt.Errorf("read %s raw adapter log: %w", adapter, err)
 		}
 		count += strings.Count(string(data), "\n")
 	}
