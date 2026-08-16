@@ -19,13 +19,16 @@ import (
 type Target string
 
 const (
-	TargetAuto   Target = "auto"
-	TargetClaude Target = "claude"
-	TargetCodex  Target = "codex"
-	TargetCursor Target = "cursor"
-	TargetPi     Target = "pi"
-	TargetAll    Target = "all"
-	TargetNone   Target = "none"
+	TargetAuto     Target = "auto"
+	TargetClaude   Target = "claude"
+	TargetCodex    Target = "codex"
+	TargetCopilot  Target = "copilot"
+	TargetCursor   Target = "cursor"
+	TargetGemini   Target = "gemini"
+	TargetOpenCode Target = "opencode"
+	TargetPi       Target = "pi"
+	TargetAll      Target = "all"
+	TargetNone     Target = "none"
 )
 
 type InstallResult struct {
@@ -60,12 +63,18 @@ func ResolveTargets(projectRoot string, target Target) ([]Target, error) {
 		return []Target{TargetClaude}, nil
 	case TargetCodex:
 		return []Target{TargetCodex}, nil
+	case TargetCopilot:
+		return []Target{TargetCopilot}, nil
 	case TargetCursor:
 		return []Target{TargetCursor}, nil
+	case TargetGemini:
+		return []Target{TargetGemini}, nil
+	case TargetOpenCode:
+		return []Target{TargetOpenCode}, nil
 	case TargetPi:
 		return []Target{TargetPi}, nil
 	case TargetAll:
-		return []Target{TargetClaude, TargetCodex, TargetCursor, TargetPi}, nil
+		return []Target{TargetClaude, TargetCodex, TargetCopilot, TargetCursor, TargetGemini, TargetOpenCode, TargetPi}, nil
 	case TargetAuto, "":
 		var targets []Target
 		if pathExists(filepath.Join(projectRoot, ".claude")) || commandExists("claude") {
@@ -74,8 +83,20 @@ func ResolveTargets(projectRoot string, target Target) ([]Target, error) {
 		if pathExists(filepath.Join(EffectiveHookRoot(projectRoot, TargetCodex), ".codex")) || commandExists("codex") {
 			targets = append(targets, TargetCodex)
 		}
+		// GitHub Copilot CLI hooks live in the collaborator-visible .github tree.
+		// Auto refreshes an existing Turnal file but never introduces one merely
+		// because the CLI or another repository hook is present.
+		if pathExists(filepath.Join(projectRoot, ".github", "hooks", "turnal.json")) {
+			targets = append(targets, TargetCopilot)
+		}
 		if pathExists(filepath.Join(projectRoot, ".cursor")) || commandExists("cursor") || commandExists("agent") {
 			targets = append(targets, TargetCursor)
+		}
+		if pathExists(filepath.Join(projectRoot, ".gemini")) || commandExists("gemini") {
+			targets = append(targets, TargetGemini)
+		}
+		if pathExists(filepath.Join(projectRoot, ".opencode")) || commandExists("opencode") {
+			targets = append(targets, TargetOpenCode)
 		}
 		if pathExists(filepath.Join(projectRoot, ".pi")) || commandExists("pi") {
 			targets = append(targets, TargetPi)
@@ -85,7 +106,7 @@ func ResolveTargets(projectRoot string, target Target) ([]Target, error) {
 		}
 		return targets, nil
 	default:
-		return nil, fmt.Errorf("invalid --agent %q; expected auto, claude, codex, cursor, pi, all, or none", target)
+		return nil, fmt.Errorf("invalid --agent %q; expected auto, claude, codex, copilot, cursor, gemini, opencode, pi, all, or none", target)
 	}
 }
 
@@ -109,8 +130,26 @@ func InstallWithOptions(projectRoot string, targets []Target, opts InstallOption
 				return nil, err
 			}
 			results = append(results, result)
+		case TargetCopilot:
+			result, err := InstallCopilotHookWithOptions(projectRoot, opts)
+			if err != nil {
+				return nil, err
+			}
+			results = append(results, result)
 		case TargetCursor:
 			result, err := InstallCursorHookWithOptions(projectRoot, opts)
+			if err != nil {
+				return nil, err
+			}
+			results = append(results, result)
+		case TargetGemini:
+			result, err := InstallGeminiHookWithOptions(projectRoot, opts)
+			if err != nil {
+				return nil, err
+			}
+			results = append(results, result)
+		case TargetOpenCode:
+			result, err := InstallOpenCodePluginWithOptions(projectRoot, opts)
 			if err != nil {
 				return nil, err
 			}
@@ -148,8 +187,26 @@ func UninstallWithOptions(projectRoot string, targets []Target, opts UninstallOp
 				return nil, err
 			}
 			results = append(results, result)
+		case TargetCopilot:
+			result, err := UninstallCopilotHookWithOptions(projectRoot, opts)
+			if err != nil {
+				return nil, err
+			}
+			results = append(results, result)
 		case TargetCursor:
 			result, err := UninstallCursorHookWithOptions(projectRoot, opts)
+			if err != nil {
+				return nil, err
+			}
+			results = append(results, result)
+		case TargetGemini:
+			result, err := UninstallGeminiHookWithOptions(projectRoot, opts)
+			if err != nil {
+				return nil, err
+			}
+			results = append(results, result)
+		case TargetOpenCode:
+			result, err := UninstallOpenCodePluginWithOptions(projectRoot, opts)
 			if err != nil {
 				return nil, err
 			}

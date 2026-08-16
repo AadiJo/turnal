@@ -226,6 +226,13 @@ func redactExternalHookPayload(raw []byte, hookName string, secrets agentconfig.
 			}
 		}
 	}
+	if !secrets.StorePrompts && externalHookContainsPromptText(hookName) {
+		if object, ok := value.(map[string]any); ok {
+			if _, exists := object["text"]; exists {
+				object["text"] = redactedText("", false)
+			}
+		}
+	}
 	redactExternalValue(value, secrets, hookCommand)
 	redacted, err := json.Marshal(value)
 	if err != nil {
@@ -236,7 +243,16 @@ func redactExternalHookPayload(raw []byte, hookName string, secrets agentconfig.
 
 func externalHookContainsAssistantText(hookName string) bool {
 	switch normalizeHookName(hookName) {
-	case "afteragentresponse", "agentsettled":
+	case "afteragentresponse", "agentsettled", "assistantcompleted", "assistant.completed", "agentstop":
+		return true
+	default:
+		return false
+	}
+}
+
+func externalHookContainsPromptText(hookName string) bool {
+	switch normalizeHookName(hookName) {
+	case "usercompleted", "user.completed":
 		return true
 	default:
 		return false
@@ -269,7 +285,7 @@ func redactExternalValue(value any, secrets agentconfig.Secrets, hookCommand str
 		normalized := normalizedExternalKey(key)
 		if !secrets.StorePrompts {
 			switch normalized {
-			case "prompt", "initialprompt", "promptresponse", "lastassistantmessage":
+			case "prompt", "initialprompt", "promptresponse", "lastassistantmessage", "title":
 				object[key] = redactedText("", false)
 				continue
 			}
@@ -283,7 +299,7 @@ func redactExternalValue(value any, secrets agentconfig.Secrets, hookCommand str
 		}
 		if !secrets.StoreToolIO {
 			switch normalized {
-			case "toolinput", "toolargs", "args", "input", "toolresponse", "toolresult", "tooloutput", "output", "result", "error", "errormessage":
+			case "toolinput", "toolargs", "args", "input", "toolresponse", "toolresult", "tooloutput", "output", "result", "error", "errormessage", "edits", "oldstring", "newstring":
 				object[key] = map[string]any{"redacted": true, "policy": "turnal.secrets"}
 				continue
 			}

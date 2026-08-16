@@ -290,7 +290,7 @@ func captureStatusWorkspace(t *testing.T, agent string) string {
 	case "codex":
 		targets = []adapters.Target{adapters.TargetCodex}
 	case "all":
-		targets = []adapters.Target{adapters.TargetClaude, adapters.TargetCodex, adapters.TargetCursor, adapters.TargetPi}
+		targets = []adapters.Target{adapters.TargetClaude, adapters.TargetCodex, adapters.TargetCopilot, adapters.TargetCursor, adapters.TargetGemini, adapters.TargetOpenCode, adapters.TargetPi}
 	case "none":
 		targets = nil
 	default:

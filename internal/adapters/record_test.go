@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -76,6 +77,47 @@ func TestRecordExternalHookPayloadRedactsProviderAliases(t *testing.T) {
 	}
 	if !strings.Contains(stored, "redacted") {
 		t.Fatalf("external raw payload has no redaction markers: %s", stored)
+	}
+}
+
+func TestRecordExternalHookPayloadRedactsObservedEditsAndSessionTitles(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := []byte("version = 1\n\n[secrets]\nstore_prompts = false\nstore_tool_io = false\n")
+	if err := os.WriteFile(filepath.Join(repo.MetadataDir, "config.toml"), config, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		adapter primitives.AdapterName
+		hook    string
+		raw     string
+		secrets []string
+	}{
+		{adapter: primitives.AdapterCursor, hook: "afterFileEdit", raw: `{"conversation_id":"redact-edits","workspace_roots":[%q],"edits":[{"old_string":"old-secret","new_string":"new-secret"}]}`, secrets: []string{"old-secret", "new-secret"}},
+		{adapter: primitives.AdapterOpenCode, hook: "event", raw: `{"directory":%q,"event":{"type":"session.created","properties":{"info":{"id":"redact-title","title":"prompt-derived-secret"}}}}`, secrets: []string{"prompt-derived-secret"}},
+	}
+	for _, test := range tests {
+		t.Run(test.adapter.String(), func(t *testing.T) {
+			session, _ := primitives.ParseSessionID(map[primitives.AdapterName]string{primitives.AdapterCursor: "redact-edits", primitives.AdapterOpenCode: "redact-title"}[test.adapter])
+			raw := []byte(fmt.Sprintf(test.raw, root.String()))
+			ref, err := RecordExternalHookPayload(test.adapter, test.hook, raw, root.String(), session)
+			if err != nil {
+				t.Fatal(err)
+			}
+			record, err := ReadRawHookRecord(repo.MetadataDir, ref)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, secret := range test.secrets {
+				if strings.Contains(string(record.Payload), secret) {
+					t.Fatalf("raw payload retained %q: %s", secret, record.Payload)
+				}
+			}
+		})
 	}
 }
 

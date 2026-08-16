@@ -64,40 +64,44 @@ The extension records session start, prompts, tool start and result pairs, struc
 
 ### Gemini CLI
 
-Add the following commands under `hooks` in `.gemini/settings.json` (or merge them with existing hook groups):
+Run `turnal init --agent gemini` to merge Turnal-owned command hooks into `.gemini/settings.json` while preserving unrelated groups. The complete lifecycle uses `SessionStart`, `BeforeAgent`, `BeforeTool`, `AfterTool`, `AfterAgent`, and `SessionEnd`:
 
 ```json
 {
   "hooks": {
     "SessionStart": [{"matcher":"*","hooks":[{"name":"turnal","type":"command","command":"turnal adapter capture gemini-cli SessionStart"}]}],
     "BeforeAgent": [{"matcher":"*","hooks":[{"name":"turnal","type":"command","command":"turnal adapter capture gemini-cli BeforeAgent"}]}],
+    "BeforeTool": [{"matcher":"*","hooks":[{"name":"turnal","type":"command","command":"turnal adapter capture gemini-cli BeforeTool"}]}],
     "AfterTool": [{"matcher":"*","hooks":[{"name":"turnal","type":"command","command":"turnal adapter capture gemini-cli AfterTool"}]}],
-    "AfterAgent": [{"matcher":"*","hooks":[{"name":"turnal","type":"command","command":"turnal adapter capture gemini-cli AfterAgent"}] }]
+    "AfterAgent": [{"matcher":"*","hooks":[{"name":"turnal","type":"command","command":"turnal adapter capture gemini-cli AfterAgent"}]}],
+    "SessionEnd": [{"matcher":"*","hooks":[{"name":"turnal","type":"command","command":"turnal adapter capture gemini-cli SessionEnd"}]}]
   }
 }
 ```
 
-### Copilot CLI
+### GitHub Copilot CLI
 
-Create or merge `.github/hooks/turnal.json`. Both camelCase and VS Code-compatible PascalCase payloads are accepted; this example uses the cross-platform `command` field:
+This integration is specifically for the GitHub Copilot CLI. It does not claim support for unrelated Copilot products or surfaces. Run `turnal init --agent copilot` to create or merge the repository hook file `.github/hooks/turnal.json`. Turnal writes the GitHub Copilot CLI's platform-specific `bash` and `powershell` commands:
 
 ```json
 {
   "version": 1,
   "hooks": {
-    "sessionStart": [{"type":"command","command":"turnal adapter capture copilot-cli sessionStart"}],
-    "userPromptSubmitted": [{"type":"command","command":"turnal adapter capture copilot-cli userPromptSubmitted"}],
-    "postToolUse": [{"type":"command","command":"turnal adapter capture copilot-cli postToolUse"}],
-    "agentStop": [{"type":"command","command":"turnal adapter capture copilot-cli agentStop"}]
+    "sessionStart": [{"type":"command","bash":"turnal adapter capture copilot-cli sessionStart","powershell":"& turnal adapter capture copilot-cli sessionStart"}],
+    "userPromptSubmitted": [{"type":"command","bash":"turnal adapter capture copilot-cli userPromptSubmitted","powershell":"& turnal adapter capture copilot-cli userPromptSubmitted"}],
+    "preToolUse": [{"type":"command","bash":"turnal adapter capture copilot-cli preToolUse","powershell":"& turnal adapter capture copilot-cli preToolUse"}],
+    "postToolUse": [{"type":"command","bash":"turnal adapter capture copilot-cli postToolUse","powershell":"& turnal adapter capture copilot-cli postToolUse"}],
+    "errorOccurred": [{"type":"command","bash":"turnal adapter capture copilot-cli errorOccurred","powershell":"& turnal adapter capture copilot-cli errorOccurred"}],
+    "agentStop": [{"type":"command","bash":"turnal adapter capture copilot-cli agentStop","powershell":"& turnal adapter capture copilot-cli agentStop"}]
   }
 }
 ```
 
-Copilot's stop hook does not expose assistant text, so the adapter emits `turn.finish`; Turnal still creates the post-turn checkpoint.
+GitHub Copilot CLI's stop hook points at its session transcript instead of carrying settled assistant text. During single-turn prompt-mode `turnal run`, Turnal waits until the child exits, validates that transcript against the session and workspace, records the final assistant response, and only then completes the provider turn. Interactive wrappers complete each turn at its stop hook instead of deferring every turn until process exit. The wrapper defaults `GITHUB_COPILOT_PROMPT_MODE_REPO_HOOKS` to `true` so repository hooks load in programmatic prompt mode, but preserves an explicitly configured value. Review every file under `.github/hooks/` before enabling repository hooks. The default `--agent auto` only refreshes an existing `.github/hooks/turnal.json`; creating repository hooks requires explicit `--agent copilot` or `--agent all`.
 
 ### OpenCode
 
-OpenCode plugins can forward their event and tool callbacks. Save this as `.opencode/plugins/turnal.js`:
+Run `turnal init --agent opencode` to install the managed plugin at `.opencode/plugins/turnal.js`. Turnal refuses to overwrite a same-named plugin it does not manage. The installed plugin forwards message deltas, settled replies, session state, and both tool boundaries through the capture bridge. Its core shape is:
 
 ```js
 export const TurnalPlugin = async ({ directory }) => {
@@ -111,13 +115,27 @@ export const TurnalPlugin = async ({ directory }) => {
 
   return {
     event: async ({ event }) => capture("event", { event }),
+    "tool.execute.before": async (input, output) =>
+      capture("tool.execute.before", { ...input, args: output.args }),
     "tool.execute.after": async (input, output) =>
       capture("tool.execute.after", { ...input, output }),
   }
 }
 ```
 
-OpenCode message and session events are normalized through the `event` callback; completed tool calls use `tool.execute.after`.
+OpenCode message and session events are normalized through the `event` callback; tools use paired `tool.execute.before` and `tool.execute.after` callbacks.
+
+## End-to-end parity test
+
+The default suite uses normalized fixtures for all seven providers and compares the durable semantic log after removing provider-specific identifiers and timestamps. An opt-in live contract launches authenticated CLIs in disposable repositories and requires one prompt, one settled assistant response, paired tool activity, exactly one real file mutation, and matching pre/post checkpoints:
+
+```sh
+TURNAL_LIVE_PARITY_TEST=1 go test ./internal/cli -run TestLiveProviderEditParity -count=1
+TURNAL_LIVE_PARITY_TEST=1 TURNAL_LIVE_PARITY_PROVIDER=copilot \
+  go test ./internal/cli -run TestLiveProviderEditParity -count=1
+```
+
+The provider selector accepts `claude`, `codex`, `copilot`, `cursor`, `gemini`, `opencode`, or `pi`. Each selected CLI must already be installed and authenticated. `copilot` always means GitHub Copilot CLI.
 
 ## Compatibility and safety
 

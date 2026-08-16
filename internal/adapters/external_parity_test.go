@@ -40,6 +40,29 @@ func TestAdapterLifecycleLogParity(t *testing.T) {
 			{"tool_execution_end", map[string]any{"session_id": paritySessionID, "tool_name": parityTool, "tool_call_id": parityToolID, "result": parityOutput, "is_error": false}},
 			{"agent_settled", map[string]any{"session_id": paritySessionID, "text": parityAssistant, "model": parityModel}},
 		})},
+		{name: "gemini-cli", run: runExternalParityLifecycle("gemini-cli", []parityHook{
+			{"SessionStart", map[string]any{"session_id": paritySessionID, "model": parityModel}},
+			{"BeforeAgent", map[string]any{"session_id": paritySessionID, "prompt": parityPrompt, "model": parityModel}},
+			{"BeforeTool", map[string]any{"session_id": paritySessionID, "tool_name": parityTool, "tool_use_id": parityToolID, "tool_input": parityInput}},
+			{"AfterTool", map[string]any{"session_id": paritySessionID, "tool_name": parityTool, "tool_use_id": parityToolID, "tool_input": parityInput, "tool_response": parityOutput}},
+			{"AfterAgent", map[string]any{"session_id": paritySessionID, "prompt_response": parityAssistant, "model": parityModel}},
+			{"SessionEnd", map[string]any{"session_id": paritySessionID}},
+		})},
+		{name: "opencode", run: runExternalParityLifecycle("opencode", []parityHook{
+			{"session.created", map[string]any{"session_id": paritySessionID, "model": parityModel}},
+			{"message.updated", map[string]any{"session_id": paritySessionID, "role": "user", "text": parityPrompt, "model": parityModel}},
+			{"tool.execute.before", map[string]any{"session_id": paritySessionID, "tool": parityTool, "call_id": parityToolID, "args": parityInput}},
+			{"tool.execute.after", map[string]any{"session_id": paritySessionID, "tool": parityTool, "call_id": parityToolID, "args": parityInput, "output": parityOutput}},
+			{"assistant.completed", map[string]any{"session_id": paritySessionID, "text": parityAssistant, "model": parityModel}},
+			{"session.idle", map[string]any{"session_id": paritySessionID}},
+		})},
+		{name: "copilot-cli", run: runExternalParityLifecycle("copilot-cli", []parityHook{
+			{"sessionStart", map[string]any{"session_id": paritySessionID, "model": parityModel}},
+			{"userPromptSubmitted", map[string]any{"session_id": paritySessionID, "prompt": parityPrompt, "model": parityModel}},
+			{"preToolUse", map[string]any{"session_id": paritySessionID, "tool_name": parityTool, "tool_use_id": parityToolID, "tool_input": parityInput}},
+			{"postToolUse", map[string]any{"session_id": paritySessionID, "tool_name": parityTool, "tool_use_id": parityToolID, "tool_input": parityInput, "tool_result": parityOutput}},
+			{"agentStop", map[string]any{"session_id": paritySessionID, "response": parityAssistant, "model": parityModel}},
+		})},
 	}
 
 	var baseline []comparableLogEvent
@@ -93,6 +116,29 @@ func TestAdapterFailureLogParity(t *testing.T) {
 			{"tool_execution_end", map[string]any{"session_id": paritySessionID, "tool_name": parityTool, "tool_call_id": parityToolID, "result": map[string]any{"error": "boom"}, "is_error": true}},
 			{"agent_settled", map[string]any{"session_id": paritySessionID, "text": parityAssistant, "model": parityModel}},
 		})},
+		{name: "gemini-cli", run: runExternalParityLifecycle("gemini-cli", []parityHook{
+			{"SessionStart", map[string]any{"session_id": paritySessionID, "model": parityModel}},
+			{"BeforeAgent", map[string]any{"session_id": paritySessionID, "prompt": parityPrompt, "model": parityModel}},
+			{"BeforeTool", map[string]any{"session_id": paritySessionID, "tool_name": parityTool, "tool_use_id": parityToolID, "tool_input": parityInput}},
+			{"AfterTool", map[string]any{"session_id": paritySessionID, "tool_name": parityTool, "tool_use_id": parityToolID, "tool_input": parityInput, "tool_response": map[string]any{"error": "boom"}, "is_error": true}},
+			{"AfterAgent", map[string]any{"session_id": paritySessionID, "prompt_response": parityAssistant, "model": parityModel}},
+			{"SessionEnd", map[string]any{"session_id": paritySessionID}},
+		})},
+		{name: "opencode", run: runExternalParityLifecycle("opencode", []parityHook{
+			{"session.created", map[string]any{"session_id": paritySessionID, "model": parityModel}},
+			{"user.completed", map[string]any{"session_id": paritySessionID, "text": parityPrompt, "model": parityModel}},
+			{"tool.execute.before", map[string]any{"session_id": paritySessionID, "tool": parityTool, "call_id": parityToolID, "args": parityInput}},
+			{"tool.execute.after", map[string]any{"session_id": paritySessionID, "tool": parityTool, "call_id": parityToolID, "args": parityInput, "output": map[string]any{"error": "boom"}, "is_error": true}},
+			{"assistant.completed", map[string]any{"session_id": paritySessionID, "text": parityAssistant, "model": parityModel}},
+			{"session.idle", map[string]any{"session_id": paritySessionID}},
+		})},
+		{name: "copilot-cli", run: runExternalParityLifecycle("copilot-cli", []parityHook{
+			{"sessionStart", map[string]any{"session_id": paritySessionID, "model": parityModel}},
+			{"userPromptSubmitted", map[string]any{"session_id": paritySessionID, "prompt": parityPrompt, "model": parityModel}},
+			{"preToolUse", map[string]any{"session_id": paritySessionID, "tool_name": parityTool, "tool_use_id": parityToolID, "tool_input": parityInput}},
+			{"postToolUse", map[string]any{"session_id": paritySessionID, "tool_name": parityTool, "tool_use_id": parityToolID, "tool_input": parityInput, "tool_result": map[string]any{"error": "boom"}, "is_error": true}},
+			{"agentStop", map[string]any{"session_id": paritySessionID, "response": parityAssistant, "model": parityModel}},
+		})},
 	}
 	assertAdapterLogParity(t, harnesses, true)
 }
@@ -113,6 +159,23 @@ func TestAdapterEmptyAssistantLogParity(t *testing.T) {
 			{"session_start", map[string]any{"session_id": paritySessionID, "model": parityModel}},
 			{"before_agent_start", map[string]any{"session_id": paritySessionID, "prompt": parityPrompt, "model": parityModel}},
 			{"agent_settled", map[string]any{"session_id": paritySessionID, "text": "", "model": parityModel}},
+		})},
+		{name: "gemini-cli", run: runExternalParityLifecycle("gemini-cli", []parityHook{
+			{"SessionStart", map[string]any{"session_id": paritySessionID, "model": parityModel}},
+			{"BeforeAgent", map[string]any{"session_id": paritySessionID, "prompt": parityPrompt, "model": parityModel}},
+			{"AfterAgent", map[string]any{"session_id": paritySessionID, "prompt_response": "", "model": parityModel}},
+			{"SessionEnd", map[string]any{"session_id": paritySessionID}},
+		})},
+		{name: "opencode", run: runExternalParityLifecycle("opencode", []parityHook{
+			{"session.created", map[string]any{"session_id": paritySessionID, "model": parityModel}},
+			{"user.completed", map[string]any{"session_id": paritySessionID, "text": parityPrompt, "model": parityModel}},
+			{"assistant.completed", map[string]any{"session_id": paritySessionID, "text": "", "model": parityModel}},
+			{"session.idle", map[string]any{"session_id": paritySessionID}},
+		})},
+		{name: "copilot-cli", run: runExternalParityLifecycle("copilot-cli", []parityHook{
+			{"sessionStart", map[string]any{"session_id": paritySessionID, "model": parityModel}},
+			{"userPromptSubmitted", map[string]any{"session_id": paritySessionID, "prompt": parityPrompt, "model": parityModel}},
+			{"agentStop", map[string]any{"session_id": paritySessionID, "response": "", "model": parityModel}},
 		})},
 	}
 	assertAdapterLogParity(t, harnesses, false)
@@ -300,7 +363,7 @@ func canonicalizeSnapshot(payload map[string]any, key string) {
 }
 
 func TestNewAdapterToolRetriesAreIdempotent(t *testing.T) {
-	for _, name := range []string{"cursor", "pi"} {
+	for _, name := range []string{"cursor", "pi", "gemini-cli", "opencode", "copilot-cli"} {
 		t.Run(name, func(t *testing.T) {
 			root := workspaceRoot(t)
 			repo, err := checkpoint.Init(root)
@@ -325,15 +388,30 @@ func TestNewAdapterToolRetriesAreIdempotent(t *testing.T) {
 			}
 
 			promptHook, callHook, resultHook := "before_agent_start", "tool_execution_start", "tool_execution_end"
+			promptFields := map[string]any{"prompt": parityPrompt}
 			callFields := map[string]any{"tool_name": parityTool, "tool_call_id": parityToolID, "args": parityInput}
 			resultFields := map[string]any{"tool_name": parityTool, "tool_call_id": parityToolID, "result": parityOutput}
-			if name == "cursor" {
+			switch name {
+			case "cursor":
 				promptHook, callHook, resultHook = "beforeSubmitPrompt", "preToolUse", "postToolUse"
 				callFields = map[string]any{"tool_name": parityTool, "tool_use_id": parityToolID, "tool_input": parityInput}
 				resultFields = map[string]any{"tool_name": parityTool, "tool_use_id": parityToolID, "tool_input": parityInput, "tool_output": parityOutput}
+			case "gemini-cli":
+				promptHook, callHook, resultHook = "BeforeAgent", "BeforeTool", "AfterTool"
+				callFields = map[string]any{"tool_name": parityTool, "tool_use_id": parityToolID, "tool_input": parityInput}
+				resultFields = map[string]any{"tool_name": parityTool, "tool_use_id": parityToolID, "tool_input": parityInput, "tool_response": parityOutput}
+			case "opencode":
+				promptHook, callHook, resultHook = "user.completed", "tool.execute.before", "tool.execute.after"
+				promptFields = map[string]any{"text": parityPrompt}
+				callFields = map[string]any{"tool": parityTool, "call_id": parityToolID, "args": parityInput}
+				resultFields = map[string]any{"tool": parityTool, "call_id": parityToolID, "args": parityInput, "output": parityOutput}
+			case "copilot-cli":
+				promptHook, callHook, resultHook = "userPromptSubmitted", "preToolUse", "postToolUse"
+				callFields = map[string]any{"tool_name": parityTool, "tool_use_id": parityToolID, "tool_input": parityInput}
+				resultFields = map[string]any{"tool_name": parityTool, "tool_use_id": parityToolID, "tool_input": parityInput, "tool_result": parityOutput}
 			}
 
-			capture(promptHook, map[string]any{"prompt": parityPrompt})
+			capture(promptHook, promptFields)
 			capture(callHook, callFields)
 			writeFile(t, root, "app.txt", "after\n")
 			capture(resultHook, resultFields)
@@ -370,6 +448,24 @@ func TestNewAdapterRawLogsHonorSecretsPolicy(t *testing.T) {
 			{"tool_execution_start", map[string]any{"session_id": "pi-private", "tool_name": "read", "tool_call_id": "tool-1", "args": map[string]any{"path": "input-secret"}}},
 			{"tool_execution_end", map[string]any{"session_id": "pi-private", "tool_name": "read", "tool_call_id": "tool-1", "result": "output-secret"}},
 			{"agent_settled", map[string]any{"session_id": "pi-private", "text": "assistant-secret"}},
+		}},
+		{name: "gemini-cli", hooks: []parityHook{
+			{"BeforeAgent", map[string]any{"session_id": "gemini-cli-private", "prompt": "prompt-secret"}},
+			{"BeforeTool", map[string]any{"session_id": "gemini-cli-private", "tool_name": "read", "tool_use_id": "tool-1", "tool_input": map[string]any{"path": "input-secret"}}},
+			{"AfterTool", map[string]any{"session_id": "gemini-cli-private", "tool_name": "read", "tool_use_id": "tool-1", "tool_input": map[string]any{"path": "input-secret"}, "tool_response": "output-secret"}},
+			{"AfterAgent", map[string]any{"session_id": "gemini-cli-private", "prompt_response": "assistant-secret"}},
+		}},
+		{name: "opencode", hooks: []parityHook{
+			{"user.completed", map[string]any{"session_id": "opencode-private", "text": "prompt-secret"}},
+			{"tool.execute.before", map[string]any{"session_id": "opencode-private", "tool": "read", "call_id": "tool-1", "args": map[string]any{"path": "input-secret"}}},
+			{"tool.execute.after", map[string]any{"session_id": "opencode-private", "tool": "read", "call_id": "tool-1", "args": map[string]any{"path": "input-secret"}, "output": "output-secret"}},
+			{"assistant.completed", map[string]any{"session_id": "opencode-private", "text": "assistant-secret"}},
+		}},
+		{name: "copilot-cli", hooks: []parityHook{
+			{"userPromptSubmitted", map[string]any{"session_id": "copilot-cli-private", "prompt": "prompt-secret"}},
+			{"preToolUse", map[string]any{"session_id": "copilot-cli-private", "tool_name": "read", "tool_use_id": "tool-1", "tool_input": map[string]any{"path": "input-secret"}}},
+			{"postToolUse", map[string]any{"session_id": "copilot-cli-private", "tool_name": "read", "tool_use_id": "tool-1", "tool_input": map[string]any{"path": "input-secret"}, "tool_result": "output-secret"}},
+			{"agentStop", map[string]any{"session_id": "copilot-cli-private", "response": "assistant-secret"}},
 		}},
 	}
 

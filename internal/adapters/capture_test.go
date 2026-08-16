@@ -1225,6 +1225,331 @@ func TestHandleNormalizedEventsKeepsDurabilityInCore(t *testing.T) {
 	}
 }
 
+func TestHandleNormalizedEventsPairsProviderToolsWithoutIDs(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root.String())
+	writeFile(t, root, "app.txt", "before\n")
+	const session = "idless-tools"
+	capture := func(hook string, event adaptersdk.Event) {
+		t.Helper()
+		event.SessionID = session
+		event.CWD = root.String()
+		raw := rawPayload(t, map[string]any{"session_id": session, "cwd": root.String(), "hook": hook, "tool": event.ToolName})
+		if err := HandleNormalizedEvents(primitives.AdapterCopilotCLI, hook, raw, []adaptersdk.Event{event}); err != nil {
+			t.Fatalf("capture %s: %v", hook, err)
+		}
+	}
+	capture("prompt", adaptersdk.Event{Type: adaptersdk.EventPromptUser, Text: "edit app.txt"})
+	capture("late-session", adaptersdk.Event{Type: adaptersdk.EventSessionStart})
+	capture("view-call", adaptersdk.Event{Type: adaptersdk.EventToolCall, ToolName: "view", Input: json.RawMessage(`{"path":"app.txt"}`)})
+	capture("view-result", adaptersdk.Event{Type: adaptersdk.EventToolResult, ToolName: "view", Input: json.RawMessage(`{"path":"app.txt"}`), Output: json.RawMessage(`"before"`)})
+	capture("patch-call", adaptersdk.Event{Type: adaptersdk.EventToolCall, ToolName: "apply_patch", Input: json.RawMessage(`"patch"`)})
+	writeFile(t, root, "app.txt", "after\n")
+	capture("patch-result", adaptersdk.Event{Type: adaptersdk.EventToolResult, ToolName: "apply_patch", Input: json.RawMessage(`"patch"`), Output: json.RawMessage(`"ok"`)})
+
+	events := readEvents(t, repo, sessionID(t, session))
+	if countEvents(events, primitives.EventTypeSessionStart) != 1 {
+		t.Fatalf("session starts = %d, want 1", countEvents(events, primitives.EventTypeSessionStart))
+	}
+	var calls []toolCallPayload
+	var resultPayloads []toolResultPayload
+	for _, event := range events {
+		switch event.Type {
+		case primitives.EventTypeToolCall:
+			var payload toolCallPayload
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				t.Fatal(err)
+			}
+			calls = append(calls, payload)
+		case primitives.EventTypeToolResult:
+			var payload toolResultPayload
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				t.Fatal(err)
+			}
+			resultPayloads = append(resultPayloads, payload)
+		}
+	}
+	if len(calls) != 2 || len(resultPayloads) != 2 {
+		t.Fatalf("tool events = calls:%d results:%d", len(calls), len(resultPayloads))
+	}
+	for index := range calls {
+		if calls[index].ToolUseID == "" || calls[index].ToolUseID != resultPayloads[index].ToolUseID {
+			t.Fatalf("tool %d IDs = call:%q result:%q", index, calls[index].ToolUseID, resultPayloads[index].ToolUseID)
+		}
+	}
+	if calls[0].PreSnapshot != nil || resultPayloads[0].PostSnapshot != nil {
+		t.Fatalf("view snapshots = pre:%+v post:%+v", calls[0].PreSnapshot, resultPayloads[0].PostSnapshot)
+	}
+	if calls[1].PreSnapshot == nil || resultPayloads[1].PostSnapshot == nil {
+		t.Fatalf("patch snapshots = pre:%+v post:%+v", calls[1].PreSnapshot, resultPayloads[1].PostSnapshot)
+	}
+}
+
+func TestHandleNormalizedEventsPairsConcurrentIDLessToolsByInput(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root.String())
+	const session = "parallel-idless-tools"
+	capture := func(hook string, event adaptersdk.Event) {
+		t.Helper()
+		event.SessionID = session
+		event.CWD = root.String()
+		raw := rawPayload(t, map[string]any{"session_id": session, "cwd": root.String(), "hook": hook, "input": event.Input})
+		if err := HandleNormalizedEvents(primitives.AdapterCopilotCLI, hook, raw, []adaptersdk.Event{event}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	capture("prompt", adaptersdk.Event{Type: adaptersdk.EventPromptUser, Text: "read both files"})
+	capture("call-a", adaptersdk.Event{Type: adaptersdk.EventToolCall, ToolName: "view", Input: json.RawMessage(`{"path":"a.txt"}`)})
+	capture("call-b", adaptersdk.Event{Type: adaptersdk.EventToolCall, ToolName: "view", Input: json.RawMessage(`{"path":"b.txt"}`)})
+	capture("result-a", adaptersdk.Event{Type: adaptersdk.EventToolResult, ToolName: "view", Input: json.RawMessage(`{"path":"a.txt"}`), Output: json.RawMessage(`"a"`)})
+	capture("result-b", adaptersdk.Event{Type: adaptersdk.EventToolResult, ToolName: "view", Input: json.RawMessage(`{"path":"b.txt"}`), Output: json.RawMessage(`"b"`)})
+
+	callIDs := map[string]string{}
+	resultIDs := map[string]string{}
+	for _, event := range readEvents(t, repo, sessionID(t, session)) {
+		switch event.Type {
+		case primitives.EventTypeToolCall:
+			var payload toolCallPayload
+			if json.Unmarshal(event.Payload, &payload) == nil {
+				callIDs[string(payload.Input)] = payload.ToolUseID
+			}
+		case primitives.EventTypeToolResult:
+			var payload toolResultPayload
+			if json.Unmarshal(event.Payload, &payload) == nil {
+				resultIDs[string(payload.Output)] = payload.ToolUseID
+			}
+		}
+	}
+	if callIDs[`{"path":"a.txt"}`] == "" || callIDs[`{"path":"a.txt"}`] != resultIDs[`"a"`] {
+		t.Fatalf("a pairing: calls=%v results=%v", callIDs, resultIDs)
+	}
+	if callIDs[`{"path":"b.txt"}`] == "" || callIDs[`{"path":"b.txt"}`] != resultIDs[`"b"`] {
+		t.Fatalf("b pairing: calls=%v results=%v", callIDs, resultIDs)
+	}
+}
+
+func TestHandleNormalizedEventsPairsConcurrentIDLessToolsInPrivacyMode(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root.String())
+	writeFile(t, root, ".turnal/config.toml", "version = 1\n\n[secrets]\nstore_prompts = false\nstore_tool_io = false\n")
+	const session = "private-parallel-idless-tools"
+	capture := func(hook string, event adaptersdk.Event) {
+		t.Helper()
+		event.SessionID = session
+		event.CWD = root.String()
+		raw := rawPayload(t, map[string]any{"session_id": session, "cwd": root.String(), "hook": hook, "input": event.Input})
+		if err := HandleNormalizedEvents(primitives.AdapterCopilotCLI, hook, raw, []adaptersdk.Event{event}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	capture("prompt", adaptersdk.Event{Type: adaptersdk.EventPromptUser, Text: "read both files"})
+	capture("call-a", adaptersdk.Event{Type: adaptersdk.EventToolCall, ToolName: "view", Input: json.RawMessage(`{"path":"a.txt"}`)})
+	capture("call-b", adaptersdk.Event{Type: adaptersdk.EventToolCall, ToolName: "view", Input: json.RawMessage(`{"path":"b.txt"}`)})
+	capture("result-a", adaptersdk.Event{Type: adaptersdk.EventToolResult, ToolName: "view", Input: json.RawMessage(`{"path":"a.txt"}`), Output: json.RawMessage(`"a"`)})
+	capture("result-b", adaptersdk.Event{Type: adaptersdk.EventToolResult, ToolName: "view", Input: json.RawMessage(`{"path":"b.txt"}`), Output: json.RawMessage(`"b"`)})
+
+	var callIDs []string
+	var resultIDs []string
+	for _, event := range readEvents(t, repo, sessionID(t, session)) {
+		switch event.Type {
+		case primitives.EventTypeToolCall:
+			var payload toolCallPayload
+			if json.Unmarshal(event.Payload, &payload) == nil {
+				callIDs = append(callIDs, payload.ToolUseID)
+			}
+		case primitives.EventTypeToolResult:
+			var payload toolResultPayload
+			if json.Unmarshal(event.Payload, &payload) == nil {
+				resultIDs = append(resultIDs, payload.ToolUseID)
+			}
+		}
+	}
+	if len(callIDs) != 2 || len(resultIDs) != 2 || callIDs[0] != resultIDs[0] || callIDs[1] != resultIDs[1] {
+		t.Fatalf("privacy-mode pairing: calls=%v results=%v", callIDs, resultIDs)
+	}
+}
+
+func TestHandleNormalizedEventsAnchorsObservedMutationToTurnPreCheckpoint(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root.String())
+	writeFile(t, root, "app.txt", "before\n")
+	const session = "observed-mutation"
+	promptRaw := rawPayload(t, map[string]any{"session_id": session, "cwd": root.String(), "prompt": "edit app.txt"})
+	if err := HandleNormalizedEvents(primitives.AdapterCursor, "prompt", promptRaw, []adaptersdk.Event{{
+		Type: adaptersdk.EventPromptUser, SessionID: session, CWD: root.String(), Text: "edit app.txt",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, root, "app.txt", "after\n")
+	toolRaw := rawPayload(t, map[string]any{"session_id": session, "cwd": root.String(), "file_path": "app.txt"})
+	if err := HandleNormalizedEvents(primitives.AdapterCursor, "afterFileEdit", toolRaw, []adaptersdk.Event{
+		{Type: adaptersdk.EventToolCall, SessionID: session, CWD: root.String(), ToolName: "Write", ToolUseID: "edit-1", Input: json.RawMessage(`{"file_path":"app.txt"}`), MutationAlreadyApplied: true},
+		{Type: adaptersdk.EventToolResult, SessionID: session, CWD: root.String(), ToolName: "Write", ToolUseID: "edit-1", Output: json.RawMessage(`{"ok":true}`)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	events := readEvents(t, repo, sessionID(t, session))
+	var preCommit primitives.CommitSHA
+	var call toolCallPayload
+	var result toolResultPayload
+	for _, event := range events {
+		switch event.Type {
+		case primitives.EventTypeCheckpoint:
+			var payload struct {
+				Phase     string               `json:"phase"`
+				CommitSHA primitives.CommitSHA `json:"commit_sha"`
+			}
+			if json.Unmarshal(event.Payload, &payload) == nil && payload.Phase == "pre" {
+				preCommit = payload.CommitSHA
+			}
+		case primitives.EventTypeToolCall:
+			_ = json.Unmarshal(event.Payload, &call)
+		case primitives.EventTypeToolResult:
+			_ = json.Unmarshal(event.Payload, &result)
+		}
+	}
+	if preCommit == "" || call.PreSnapshot == nil || call.PreSnapshot.Commit != preCommit {
+		t.Fatalf("observed mutation pre = %+v, turn pre commit = %s", call.PreSnapshot, preCommit)
+	}
+	if result.PostSnapshot == nil || result.PostSnapshot.Commit == preCommit {
+		t.Fatalf("observed mutation post = %+v, turn pre commit = %s", result.PostSnapshot, preCommit)
+	}
+}
+
+func TestAssistantClosesProviderToolCallsWithUnknownTerminalOutcome(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root.String())
+	const session = "missing-tool-result"
+	capture := func(hook string, event adaptersdk.Event) {
+		t.Helper()
+		event.SessionID = session
+		event.CWD = root.String()
+		raw := rawPayload(t, map[string]any{"session_id": session, "cwd": root.String(), "hook": hook})
+		if err := HandleNormalizedEvents(primitives.AdapterCopilotCLI, hook, raw, []adaptersdk.Event{event}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	capture("prompt", adaptersdk.Event{Type: adaptersdk.EventPromptUser, Text: "edit app.txt"})
+	capture("call", adaptersdk.Event{Type: adaptersdk.EventToolCall, ToolName: "edit", ToolUseID: "failed-edit", Input: json.RawMessage(`{"path":"app.txt"}`)})
+	capture("assistant", adaptersdk.Event{Type: adaptersdk.EventAssistantMessage, Text: "done"})
+
+	events := readEvents(t, repo, sessionID(t, session))
+	resultIndex := -1
+	assistantIndex := -1
+	for index, event := range events {
+		if event.Type == primitives.EventTypeToolResult {
+			var payload toolResultPayload
+			if json.Unmarshal(event.Payload, &payload) == nil && payload.ToolUseID == "failed-edit" && payload.OutcomeUnknown && !payload.IsError {
+				resultIndex = index
+			}
+		}
+		if event.Type == primitives.EventTypeAssistantMessage {
+			assistantIndex = index
+		}
+	}
+	if resultIndex < 0 || assistantIndex < 0 || resultIndex > assistantIndex {
+		t.Fatalf("missing result index = %d, assistant index = %d, events = %v", resultIndex, assistantIndex, eventTypes(events))
+	}
+}
+
+func TestHookOnlyProviderStopFinishesTurn(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		adapter    primitives.AdapterName
+		transcript string
+	}{
+		{name: "cursor", adapter: primitives.AdapterCursor},
+		{name: "github-copilot-cli", adapter: primitives.AdapterCopilotCLI, transcript: "/tmp/session-state/hook-only/events.jsonl"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			requireGit(t)
+			root := workspaceRoot(t)
+			repo, err := checkpoint.Init(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Chdir(root.String())
+			const session = "hook-only"
+			promptRaw := rawPayload(t, map[string]any{"session_id": session, "cwd": root.String(), "prompt": "work"})
+			if err := HandleNormalizedEvents(test.adapter, "prompt", promptRaw, []adaptersdk.Event{{
+				Type: adaptersdk.EventPromptUser, SessionID: session, CWD: root.String(), Text: "work",
+			}}); err != nil {
+				t.Fatal(err)
+			}
+			stopRaw := rawPayload(t, map[string]any{"session_id": session, "cwd": root.String(), "transcript_path": test.transcript})
+			if err := HandleNormalizedEvents(test.adapter, "stop", stopRaw, []adaptersdk.Event{{
+				Type: adaptersdk.EventTurnFinish, SessionID: session, CWD: root.String(), TranscriptPath: test.transcript,
+			}}); err != nil {
+				t.Fatal(err)
+			}
+			events := readEvents(t, repo, sessionID(t, session))
+			if countEvents(events, primitives.EventTypeTurnFinish) != 1 || countEvents(events, primitives.EventTypeCheckpoint) != 2 {
+				t.Fatalf("hook-only lifecycle = %v", eventTypes(events))
+			}
+			if _, active, err := turns.NewManager(repo).Active(sessionID(t, session)); err != nil || active {
+				t.Fatalf("hook-only active = %v err=%v", active, err)
+			}
+		})
+	}
+}
+
+func TestWrappedSingleTurnProviderStopDefersUntilPostExitFinalizer(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root.String())
+	t.Setenv(runs.EnvPostExitFinalize, "1")
+	const session = "wrapped-single-turn"
+	runID, _ := primitives.ParseRunID("run_0123456789abcdef0123456789abcdef")
+	promptRaw := rawPayload(t, map[string]any{"session_id": session, "cwd": root.String(), "prompt": "work"})
+	if err := HandleNormalizedEventsWithRunID(primitives.AdapterCursor, "prompt", promptRaw, []adaptersdk.Event{{
+		Type: adaptersdk.EventPromptUser, SessionID: session, CWD: root.String(), Text: "work",
+	}}, runID.String()); err != nil {
+		t.Fatal(err)
+	}
+	stopRaw := rawPayload(t, map[string]any{"session_id": session, "cwd": root.String()})
+	if err := HandleNormalizedEventsWithRunID(primitives.AdapterCursor, "stop", stopRaw, []adaptersdk.Event{{
+		Type: adaptersdk.EventTurnFinish, SessionID: session, CWD: root.String(),
+	}}, runID.String()); err != nil {
+		t.Fatal(err)
+	}
+	if _, active, err := turns.NewManager(repo).Active(sessionID(t, session)); err != nil || !active {
+		t.Fatalf("wrapped single-turn active = %v err=%v", active, err)
+	}
+	if countEvents(readEvents(t, repo, sessionID(t, session)), primitives.EventTypeTurnFinish) != 0 {
+		t.Fatal("wrapped single-turn stop finished before post-exit finalization")
+	}
+}
+
 func TestHandleNormalizedEventsCorrelatesExternalProviderRun(t *testing.T) {
 	requireGit(t)
 	root := workspaceRoot(t)

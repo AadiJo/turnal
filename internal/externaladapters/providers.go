@@ -1,6 +1,7 @@
 package externaladapters
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -14,7 +15,7 @@ func Manifest(name string) (adaptersdk.Manifest, bool) {
 	displayNames := map[string]string{
 		"opencode":    "OpenCode",
 		"gemini-cli":  "Gemini CLI",
-		"copilot-cli": "Copilot CLI",
+		"copilot-cli": "GitHub Copilot CLI",
 		"cursor":      "Cursor",
 		"pi":          "Pi",
 	}
@@ -85,6 +86,28 @@ func normalizeCursor(hook string, raw json.RawMessage) ([]adaptersdk.Event, erro
 		event.Output = jsonObject("error", firstString(payload, "error_message", "errorMessage", "failure_type"))
 		event.IsError = true
 		return []adaptersdk.Event{event}, nil
+	case "afterfileedit":
+		digest := sha256.Sum256(raw)
+		toolUseID := fmt.Sprintf("cursor-file-edit-%x", digest[:12])
+		input, err := json.Marshal(map[string]any{
+			"file_path": firstString(payload, "file_path", "filePath"),
+			"edits":     payload["edits"],
+		})
+		if err != nil {
+			return nil, err
+		}
+		call := base
+		call.Type = adaptersdk.EventToolCall
+		call.ToolName = "Write"
+		call.ToolUseID = toolUseID
+		call.Input = input
+		call.MutationAlreadyApplied = true
+		result := base
+		result.Type = adaptersdk.EventToolResult
+		result.ToolName = call.ToolName
+		result.ToolUseID = toolUseID
+		result.Output = jsonObject("file_path", firstString(payload, "file_path", "filePath"))
+		return []adaptersdk.Event{call, result}, nil
 	case "afteragentresponse":
 		base.Type = adaptersdk.EventAssistantMessage
 		base.Text = firstString(payload, "text", "response")
@@ -160,9 +183,23 @@ func normalizeCopilot(hook string, raw json.RawMessage) ([]adaptersdk.Event, err
 		base.Type = adaptersdk.EventPromptUser
 		base.Text = firstString(payload, "prompt")
 		return []adaptersdk.Event{base}, nil
+	case "pretooluse":
+		base.Type = adaptersdk.EventToolCall
+		base.ToolName = firstString(payload, "tool_name", "toolName")
+		base.ToolUseID = firstString(payload, "tool_use_id", "toolUseId", "tool_call_id", "toolCallId")
+		base.Input = firstJSON(payload, "tool_input", "toolArgs")
+		return []adaptersdk.Event{base}, nil
 	case "posttooluse", "posttoolusefailure":
-		return toolEvents(base, payload, []string{"tool_input", "toolArgs"}, []string{"tool_result", "toolResult", "error"}), nil
+		event := toolResultEvent(base, payload, []string{"tool_input", "toolArgs"}, []string{"tool_result", "toolResult", "error"})
+		event.IsError = hook == "posttoolusefailure" || firstBool(payload, "is_error", "isError")
+		return []adaptersdk.Event{event}, nil
 	case "agentstop", "stop", "sessionend":
+		if response, present := firstPresentString(payload, "response", "text", "last_assistant_message"); present {
+			base.Type = adaptersdk.EventAssistantMessage
+			base.Text = response
+			base.TranscriptPath = firstString(payload, "transcript_path", "transcriptPath")
+			return []adaptersdk.Event{base}, nil
+		}
 		base.Type = adaptersdk.EventTurnFinish
 		base.TranscriptPath = firstString(payload, "transcript_path", "transcriptPath")
 		return []adaptersdk.Event{base}, nil
@@ -187,8 +224,16 @@ func normalizeGemini(hook string, raw json.RawMessage) ([]adaptersdk.Event, erro
 		base.Type = adaptersdk.EventPromptUser
 		base.Text = firstString(payload, "prompt")
 		return []adaptersdk.Event{base}, nil
+	case "beforetool":
+		base.Type = adaptersdk.EventToolCall
+		base.ToolName = firstString(payload, "tool_name", "toolName")
+		base.ToolUseID = firstString(payload, "tool_use_id", "toolUseId", "tool_call_id", "toolCallId")
+		base.Input = firstJSON(payload, "tool_input", "toolInput")
+		return []adaptersdk.Event{base}, nil
 	case "aftertool":
-		return toolEvents(base, payload, []string{"tool_input", "toolInput"}, []string{"tool_response", "toolResponse"}), nil
+		event := toolResultEvent(base, payload, []string{"tool_input", "toolInput"}, []string{"tool_response", "toolResponse"})
+		event.IsError = firstBool(payload, "is_error", "isError")
+		return []adaptersdk.Event{event}, nil
 	case "afteragent":
 		base.Type = adaptersdk.EventAssistantMessage
 		base.Text = firstString(payload, "prompt_response", "promptResponse", "response")
@@ -245,8 +290,24 @@ func normalizeOpenCode(hook string, raw json.RawMessage) ([]adaptersdk.Event, er
 		// session.idle event closes the turn without risking an early post
 		// checkpoint from a partial response.
 		return nil, nil
+	case "usercompleted":
+		base.Type = adaptersdk.EventPromptUser
+		base.Text = firstString(merged, "text", "prompt")
+		return []adaptersdk.Event{base}, nil
+	case "assistantcompleted":
+		base.Type = adaptersdk.EventAssistantMessage
+		base.Text = firstString(merged, "text", "response")
+		return []adaptersdk.Event{base}, nil
+	case "toolexecutebefore":
+		base.Type = adaptersdk.EventToolCall
+		base.ToolName = firstString(merged, "tool", "tool_name", "toolName")
+		base.ToolUseID = firstString(merged, "callID", "call_id", "tool_use_id", "toolUseId")
+		base.Input = firstJSON(merged, "args", "input")
+		return []adaptersdk.Event{base}, nil
 	case "toolexecuteafter":
-		return toolEvents(base, merged, []string{"args", "input"}, []string{"output", "result"}), nil
+		event := toolResultEvent(base, merged, []string{"args", "input"}, []string{"output", "result"})
+		event.IsError = firstBool(merged, "is_error", "isError")
+		return []adaptersdk.Event{event}, nil
 	case "sessionidle":
 		base.Type = adaptersdk.EventTurnFinish
 		return []adaptersdk.Event{base}, nil
@@ -322,6 +383,15 @@ func firstString(payload map[string]any, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func firstPresentString(payload map[string]any, keys ...string) (string, bool) {
+	for _, key := range keys {
+		if value, ok := payload[key].(string); ok {
+			return value, true
+		}
+	}
+	return "", false
 }
 
 func firstStringArray(payload map[string]any, keys ...string) string {

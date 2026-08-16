@@ -165,12 +165,12 @@ func TestBundledProviderNormalization(t *testing.T) {
 		raw  string
 		want []adaptersdk.EventType
 	}{
-		{"copilot-cli", "postToolUse", `{"sessionId":"copilot-session","cwd":"/workspace","toolName":"edit","toolArgs":{"path":"a.go"},"toolResult":{"resultType":"success","textResultForLlm":"ok"}}`, []adaptersdk.EventType{adaptersdk.EventToolCall, adaptersdk.EventToolResult}},
+		{"copilot-cli", "postToolUse", `{"sessionId":"copilot-session","cwd":"/workspace","toolName":"edit","toolArgs":{"path":"a.go"},"toolResult":{"resultType":"success","textResultForLlm":"ok"}}`, []adaptersdk.EventType{adaptersdk.EventToolResult}},
 		{"copilot-cli", "UserPromptSubmit", `{"session_id":"copilot-session","cwd":"/workspace","prompt":"fix it"}`, []adaptersdk.EventType{adaptersdk.EventPromptUser}},
 		{"gemini-cli", "AfterAgent", `{"session_id":"gemini-session","cwd":"/workspace","prompt_response":"done"}`, []adaptersdk.EventType{adaptersdk.EventAssistantMessage}},
-		{"gemini-cli", "AfterTool", `{"session_id":"gemini-session","cwd":"/workspace","tool_name":"write_file","tool_input":{"path":"a.go"},"tool_response":{"ok":true}}`, []adaptersdk.EventType{adaptersdk.EventToolCall, adaptersdk.EventToolResult}},
+		{"gemini-cli", "AfterTool", `{"session_id":"gemini-session","cwd":"/workspace","tool_name":"write_file","tool_input":{"path":"a.go"},"tool_response":{"ok":true}}`, []adaptersdk.EventType{adaptersdk.EventToolResult}},
 		{"opencode", "event", `{"directory":"/workspace","event":{"type":"session.created","properties":{"info":{"id":"opencode-session"}}}}`, []adaptersdk.EventType{adaptersdk.EventSessionStart}},
-		{"opencode", "tool.execute.after", `{"sessionID":"opencode-session","directory":"/workspace","tool":"bash","callID":"call-1","args":{"command":"true"},"output":"ok"}`, []adaptersdk.EventType{adaptersdk.EventToolCall, adaptersdk.EventToolResult}},
+		{"opencode", "tool.execute.after", `{"sessionID":"opencode-session","directory":"/workspace","tool":"bash","callID":"call-1","args":{"command":"true"},"output":"ok"}`, []adaptersdk.EventType{adaptersdk.EventToolResult}},
 		{"cursor", "beforeSubmitPrompt", `{"conversation_id":"cursor-session","generation_id":"turn-1","workspace_roots":["/workspace"],"prompt":"fix it"}`, []adaptersdk.EventType{adaptersdk.EventPromptUser}},
 		{"cursor", "postToolUse", `{"conversation_id":"cursor-session","workspace_roots":["/workspace"],"tool_name":"Shell","tool_use_id":"call-1","tool_input":{"command":"true"},"tool_output":"{\"exitCode\":0}"}`, []adaptersdk.EventType{adaptersdk.EventToolResult}},
 		{"cursor", "postToolUseFailure", `{"conversation_id":"cursor-session","workspace_roots":["/workspace"],"tool_name":"Shell","tool_use_id":"call-1","tool_input":{"command":"false"},"error_message":"exit 1"}`, []adaptersdk.EventType{adaptersdk.EventToolResult}},
@@ -256,6 +256,34 @@ func TestCursorAndPiPreserveStructuredToolFailures(t *testing.T) {
 				t.Fatalf("Cursor failure output = %s, want Claude-compatible error object", events[0].Output)
 			}
 		})
+	}
+}
+
+func TestCursorAfterFileEditNormalizesObservedMutationPair(t *testing.T) {
+	normalize, _ := Normalizer("cursor")
+	events, err := normalize("afterFileEdit", json.RawMessage(`{
+		"conversation_id":"session-1",
+		"generation_id":"turn-1",
+		"workspace_roots":["/workspace"],
+		"file_path":"/workspace/app.go",
+		"edits":[{"old_string":"before","new_string":"after"}]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[0].Type != adaptersdk.EventToolCall || events[1].Type != adaptersdk.EventToolResult {
+		t.Fatalf("events = %#v", events)
+	}
+	if events[0].ToolUseID == "" || events[0].ToolUseID != events[1].ToolUseID {
+		t.Fatalf("tool IDs = %q, %q", events[0].ToolUseID, events[1].ToolUseID)
+	}
+	if events[0].ToolName != "Write" || !events[0].MutationAlreadyApplied {
+		t.Fatalf("call = %+v", events[0])
+	}
+	for _, event := range events {
+		if err := adaptersdk.ValidateEvent(event); err != nil {
+			t.Fatalf("invalid event %+v: %v", event, err)
+		}
 	}
 }
 

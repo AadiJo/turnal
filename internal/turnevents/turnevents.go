@@ -163,6 +163,12 @@ func RecoverCheckpointJournals(log eventlog.Log, repo *checkpoint.Repo) error {
 	if repo == nil {
 		return nil
 	}
+	return repo.WithWorkspaceLock("recover checkpoint journals", func() error {
+		return recoverCheckpointJournalsLocked(log, repo)
+	})
+}
+
+func recoverCheckpointJournalsLocked(log eventlog.Log, repo *checkpoint.Repo) error {
 	journals, err := repo.ListCheckpointJournals()
 	if err != nil {
 		return err
@@ -327,7 +333,7 @@ func recoverCheckpointJournal(log eventlog.Log, repo *checkpoint.Repo, journal c
 		return err
 	}
 	if journal.Phase == primitives.CheckpointPhasePost {
-		if err := turns.NewManager(repo).ClearActiveForRecovery(journal.SessionID, journal.TurnID); err != nil {
+		if err := turns.NewManager(repo).ClearActiveForRecoveryLocked(journal.SessionID, journal.TurnID); err != nil {
 			return fmt.Errorf("clear recovered active turn state: %w", err)
 		}
 	}

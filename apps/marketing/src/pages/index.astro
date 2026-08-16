@@ -92,10 +92,13 @@ const capabilities = [
       </section>
 
       <section class="adapter-strip th-wrap" aria-label="Supported coding agents">
-        <img src="/brands/claude.svg" alt="Claude Code" width="34" height="34" />
-        <img src="/brands/codex.svg" alt="Codex" width="34" height="34" />
-        <img src="/brands/cursor.svg" alt="Cursor" width="34" height="34" />
-        <img src="/brands/pi.svg" alt="Pi" width="34" height="34" />
+        <div class="adapter-logos">
+          <img src="/brands/claude.svg" alt="Claude Code" width="34" height="34" />
+          <img src="/brands/codex.svg" alt="Codex" width="34" height="34" />
+          <img src="/brands/cursor.svg" alt="Cursor" width="34" height="34" />
+          <img src="/brands/pi.svg" alt="Pi" width="34" height="34" />
+        </div>
+        <p>OpenCode · Gemini CLI · GitHub Copilot CLI</p>
       </section>
 
       <section id="features" class="capabilities th-wrap">
@@ -413,8 +416,10 @@ const capabilities = [
     border-top: 1px solid var(--hair);
     border-bottom: 1px solid var(--hair);
   }
+  .terminal-home-theme .adapter-logos { display: flex; align-items: center; gap: 32px; }
   .terminal-home-theme .adapter-strip img { width: 30px; height: 30px; object-fit: contain; opacity: 0.65; filter: saturate(0.55); transition: opacity 160ms ease, filter 160ms ease; }
   .terminal-home-theme .adapter-strip img:hover { opacity: 1; filter: none; }
+  .terminal-home-theme .adapter-strip p { margin: 0; color: var(--muted); font-family: var(--mono); font-size: 12px; letter-spacing: -0.01em; }
 
   .terminal-home-theme .capabilities { padding-top: 145px; padding-bottom: 74px; scroll-margin-top: 82px; }
   .terminal-home-theme .section-heading { max-width: 700px; }
@@ -579,7 +584,7 @@ const capabilities = [
        row stacks. */
     .terminal-home-theme .secondary-divider { display: none; }
     .terminal-home-theme .docs-link { padding: 7px 2px; }
-    .terminal-home-theme .adapter-strip { min-height: 80px; }
+    .terminal-home-theme .adapter-strip { min-height: 104px; flex-direction: column; gap: 12px; }
     .terminal-home-theme .capabilities { padding-top: 115px; padding-bottom: 50px; }
     .terminal-home-theme .prism-section { padding-top: 58px; padding-bottom: 90px; }
     .terminal-home-theme .prism-frame { margin-top: 34px; }

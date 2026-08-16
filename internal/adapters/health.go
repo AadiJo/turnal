@@ -58,8 +58,14 @@ func InspectHooksForTargets(projectRoot string, command string, targets []Target
 			health = append(health, inspectClaudeHooks(projectRoot, command))
 		case TargetCodex:
 			health = append(health, inspectCodexHooks(projectRoot, command))
+		case TargetCopilot:
+			health = append(health, inspectCopilotHooks(projectRoot, command))
 		case TargetCursor:
 			health = append(health, inspectCursorHooks(projectRoot, command))
+		case TargetGemini:
+			health = append(health, inspectGeminiHooks(projectRoot, command))
+		case TargetOpenCode:
+			health = append(health, inspectOpenCodePlugin(projectRoot, command))
 		case TargetPi:
 			health = append(health, inspectPiExtension(projectRoot, command))
 		}
@@ -71,9 +77,153 @@ func inspectAllHooks(projectRoot string, command string) []HookHealth {
 	return []HookHealth{
 		inspectClaudeHooks(projectRoot, command),
 		inspectCodexHooks(projectRoot, command),
+		inspectCopilotHooks(projectRoot, command),
 		inspectCursorHooks(projectRoot, command),
+		inspectGeminiHooks(projectRoot, command),
+		inspectOpenCodePlugin(projectRoot, command),
 		inspectPiExtension(projectRoot, command),
 	}
+}
+
+func inspectCopilotHooks(projectRoot, command string) HookHealth {
+	configPath := filepath.Join(projectRoot, ".github", "hooks", "turnal.json")
+	health := HookHealth{Target: TargetCopilot, ConfigPath: configPath, Status: HookConfigurationConfigured}
+	data, err := os.ReadFile(configPath)
+	if os.IsNotExist(err) {
+		health.Status = HookConfigurationMissing
+		health.Problems = append(health.Problems, fmt.Sprintf("GitHub Copilot CLI hooks missing: %s", configPath))
+		return health
+	}
+	if err != nil {
+		health.Status = HookConfigurationMalformed
+		health.Problems = append(health.Problems, fmt.Sprintf("read GitHub Copilot CLI hooks: %v", err))
+		return health
+	}
+	var config map[string]any
+	if err := json.Unmarshal(data, &config); err != nil {
+		health.Status = HookConfigurationMalformed
+		health.Problems = append(health.Problems, fmt.Sprintf("parse GitHub Copilot CLI hooks: %v", err))
+		return health
+	}
+	if err := validateCursorHookVersion(config); err != nil {
+		health.Status = HookConfigurationMalformed
+		health.Problems = append(health.Problems, fmt.Sprintf("GitHub Copilot CLI hooks: %v", err))
+		return health
+	}
+	hooks, exists, err := configMapSection(config, "hooks")
+	if err != nil {
+		health.Status = HookConfigurationMalformed
+		health.Problems = append(health.Problems, fmt.Sprintf("GitHub Copilot CLI hooks: %v", err))
+		return health
+	}
+	if !exists {
+		health.Status = HookConfigurationIncomplete
+		health.Problems = append(health.Problems, "GitHub Copilot CLI hooks missing hooks table")
+		return health
+	}
+	for _, eventName := range copilotHookEvents {
+		entries, _ := normalizeHookArray(hooks[eventName])
+		commands := flatHookCommands(entries, "bash", "powershell", "command")
+		expected := copilotHookCommand(command, eventName)
+		expectedPowerShell := copilotPowerShellHookCommand(command, eventName)
+		event := HookEventHealth{Name: eventName, Commands: commands, Status: HookEventConfigured}
+		if !containsHookCommand(commands, expected) || !containsHookCommand(commands, expectedPowerShell) {
+			event.Status = HookEventDifferentCommand
+			health.Status = HookConfigurationIncomplete
+			health.Problems = append(health.Problems, fmt.Sprintf("GitHub Copilot CLI hook %s must configure bash and PowerShell commands for %q", eventName, expected))
+		}
+		health.Events = append(health.Events, event)
+	}
+	return health
+}
+
+func inspectGeminiHooks(projectRoot, command string) HookHealth {
+	settingsPath := filepath.Join(projectRoot, ".gemini", "settings.json")
+	health := HookHealth{Target: TargetGemini, ConfigPath: settingsPath, Status: HookConfigurationConfigured}
+	data, err := os.ReadFile(settingsPath)
+	if os.IsNotExist(err) {
+		health.Status = HookConfigurationMissing
+		health.Problems = append(health.Problems, fmt.Sprintf("Gemini CLI hooks missing: %s", settingsPath))
+		return health
+	}
+	if err != nil {
+		health.Status = HookConfigurationMalformed
+		health.Problems = append(health.Problems, fmt.Sprintf("read Gemini CLI hooks: %v", err))
+		return health
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		health.Status = HookConfigurationMalformed
+		health.Problems = append(health.Problems, fmt.Sprintf("parse Gemini CLI hooks: %v", err))
+		return health
+	}
+	hooks, exists, err := configMapSection(settings, "hooks")
+	if err != nil {
+		health.Status = HookConfigurationMalformed
+		health.Problems = append(health.Problems, fmt.Sprintf("Gemini CLI hooks: %v", err))
+		return health
+	}
+	if !exists {
+		health.Status = HookConfigurationIncomplete
+		health.Problems = append(health.Problems, "Gemini CLI hooks missing hooks table")
+		return health
+	}
+	for _, eventName := range geminiHookEvents {
+		inspectHookEvent(&health, "Gemini CLI", hooks, eventName, geminiHookCommand(command, eventName))
+	}
+	return health
+}
+
+func inspectOpenCodePlugin(projectRoot, command string) HookHealth {
+	pluginPath := filepath.Join(projectRoot, ".opencode", "plugins", "turnal.js")
+	health := HookHealth{Target: TargetOpenCode, ConfigPath: pluginPath, Status: HookConfigurationConfigured}
+	data, err := os.ReadFile(pluginPath)
+	if os.IsNotExist(err) {
+		health.Status = HookConfigurationMissing
+		health.Problems = append(health.Problems, fmt.Sprintf("OpenCode plugin missing: %s", pluginPath))
+		return health
+	}
+	if err != nil {
+		health.Status = HookConfigurationMalformed
+		health.Problems = append(health.Problems, fmt.Sprintf("read OpenCode plugin: %v", err))
+		return health
+	}
+	event := HookEventHealth{Name: "plugin", Commands: []string{pluginPath}}
+	expected, expectedErr := openCodePluginForCommand(InstallOptions{HookCommand: command}.piCommand())
+	switch {
+	case expectedErr != nil:
+		health.Status = HookConfigurationMalformed
+		event.Status = HookEventDifferentCommand
+		health.Problems = append(health.Problems, expectedErr.Error())
+	case !bytes.HasPrefix(data, []byte(openCodePluginMarker)):
+		health.Status = HookConfigurationMalformed
+		event.Status = HookEventDifferentCommand
+		health.Problems = append(health.Problems, "OpenCode plugin at the Turnal path is not managed by Turnal")
+	case !bytes.Equal(data, expected):
+		health.Status = HookConfigurationIncomplete
+		event.Status = HookEventDifferentCommand
+		health.Problems = append(health.Problems, "OpenCode plugin is stale; run turnal init --agent opencode")
+	default:
+		event.Status = HookEventConfigured
+	}
+	health.Events = append(health.Events, event)
+	return health
+}
+
+func flatHookCommands(entries []any, fields ...string) []string {
+	var commands []string
+	for _, entry := range entries {
+		entryMap, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, field := range fields {
+			if command, _ := entryMap[field].(string); command != "" {
+				commands = append(commands, command)
+			}
+		}
+	}
+	return commands
 }
 
 func inspectCursorHooks(projectRoot string, command string) HookHealth {

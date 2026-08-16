@@ -63,7 +63,7 @@ func destroyCmd() *cobra.Command {
 
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show what would be removed without deleting it")
 	cmd.Flags().BoolVar(&removeHooks, "remove-hooks", false, "Remove turnal commands from supported agent hook configs")
-	cmd.Flags().StringVar(&agent, "agent", string(adapters.TargetAuto), "Agent hooks to remove: auto, claude, codex, cursor, pi, all, or none")
+	cmd.Flags().StringVar(&agent, "agent", string(adapters.TargetAuto), "Agent hooks to remove: auto, claude, codex, copilot, cursor, gemini, opencode, pi, all, or none")
 	return cmd
 }
 

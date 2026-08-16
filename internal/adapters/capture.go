@@ -5,7 +5,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 	"unicode"
@@ -23,28 +25,30 @@ import (
 )
 
 type hookPayload struct {
-	SessionID            string          `json:"session_id"`
-	ParentSessionID      string          `json:"parent_session_id"`
-	ParentToolUseID      string          `json:"parent_tool_use_id"`
-	TurnID               string          `json:"turn_id"`
-	TranscriptPath       string          `json:"transcript_path"`
-	CWD                  string          `json:"cwd"`
-	HookEventName        string          `json:"hook_event_name"`
-	Model                string          `json:"model"`
-	PermissionMode       string          `json:"permission_mode"`
-	Prompt               string          `json:"prompt"`
-	LastAssistantMessage string          `json:"last_assistant_message"`
-	ToolName             string          `json:"tool_name"`
-	ToolInput            json.RawMessage `json:"tool_input"`
-	ToolUseID            string          `json:"tool_use_id"`
-	ToolResponse         json.RawMessage `json:"tool_response"`
-	ToolError            string          `json:"error"`
-	ToolFailed           bool            `json:"is_error"`
-	ToolInterrupted      bool            `json:"is_interrupt"`
-	ToolDurationMS       int64           `json:"duration_ms"`
-	AgentID              string          `json:"agent_id"`
-	AgentType            string          `json:"agent_type"`
-	IntentCommand        bool            `json:"-"`
+	SessionID              string          `json:"session_id"`
+	ParentSessionID        string          `json:"parent_session_id"`
+	ParentToolUseID        string          `json:"parent_tool_use_id"`
+	TurnID                 string          `json:"turn_id"`
+	TranscriptPath         string          `json:"transcript_path"`
+	CWD                    string          `json:"cwd"`
+	HookEventName          string          `json:"hook_event_name"`
+	Model                  string          `json:"model"`
+	PermissionMode         string          `json:"permission_mode"`
+	Prompt                 string          `json:"prompt"`
+	LastAssistantMessage   string          `json:"last_assistant_message"`
+	ToolName               string          `json:"tool_name"`
+	ToolInput              json.RawMessage `json:"tool_input"`
+	ToolUseID              string          `json:"tool_use_id"`
+	ToolResponse           json.RawMessage `json:"tool_response"`
+	ToolError              string          `json:"error"`
+	ToolFailed             bool            `json:"is_error"`
+	ToolOutcomeUnknown     bool            `json:"-"`
+	ToolInterrupted        bool            `json:"is_interrupt"`
+	ToolDurationMS         int64           `json:"duration_ms"`
+	MutationAlreadyApplied bool            `json:"-"`
+	AgentID                string          `json:"agent_id"`
+	AgentType              string          `json:"agent_type"`
+	IntentCommand          bool            `json:"-"`
 }
 
 type codexHookPayload struct {
@@ -130,6 +134,7 @@ type toolResultPayload struct {
 	ProviderTurnID string                     `json:"provider_turn_id,omitempty"`
 	Output         json.RawMessage            `json:"output"`
 	IsError        bool                       `json:"is_error,omitempty"`
+	OutcomeUnknown bool                       `json:"outcome_unknown,omitempty"`
 	PostSnapshot   *provenance.ActionSnapshot `json:"post_snapshot,omitempty"`
 }
 
@@ -357,6 +362,7 @@ func HandleNormalizedEventsWithRunID(adapter primitives.AdapterName, hookName st
 	if err != nil || rawRef == "" {
 		return err
 	}
+	deferFinish := strings.TrimSpace(runIDText) != "" && os.Getenv(runs.EnvPostExitFinalize) == "1"
 	for index, event := range normalized {
 		if event.ParentSessionID != "" {
 			parentSessionID, err := primitives.ParseSessionID(event.ParentSessionID)
@@ -365,7 +371,7 @@ func HandleNormalizedEventsWithRunID(adapter primitives.AdapterName, hookName st
 			}
 			event.ParentSessionID = parentSessionID.String()
 		}
-		if err := processNormalizedEvent(log, manager, parsedAdapter, rawRef, raw, index, sessionID, event, effective); err != nil {
+		if err := processNormalizedEvent(log, manager, parsedAdapter, rawRef, raw, index, sessionID, event, effective, deferFinish); err != nil {
 			_ = appendErrorEvent(log, parsedAdapter, sessionID, rawRef, string(event.Type), err)
 			return err
 		}
@@ -405,23 +411,24 @@ func reconcileNormalizedRun(repo *checkpoint.Repo, adapter primitives.AdapterNam
 	}
 }
 
-func processNormalizedEvent(log eventlog.Log, manager turns.Manager, adapter primitives.AdapterName, rawRef string, raw []byte, index int, sessionID primitives.SessionID, event adaptersdk.Event, effective agentconfig.Effective) error {
+func processNormalizedEvent(log eventlog.Log, manager turns.Manager, adapter primitives.AdapterName, rawRef string, raw []byte, index int, sessionID primitives.SessionID, event adaptersdk.Event, effective agentconfig.Effective, wrapped bool) error {
 	payload := hookPayload{
-		SessionID:            event.SessionID,
-		ParentSessionID:      event.ParentSessionID,
-		ParentToolUseID:      event.ParentToolUseID,
-		TurnID:               event.ProviderTurnID,
-		TranscriptPath:       event.TranscriptPath,
-		CWD:                  event.CWD,
-		Model:                event.Model,
-		PermissionMode:       event.PermissionMode,
-		Prompt:               event.Text,
-		LastAssistantMessage: event.Text,
-		ToolName:             event.ToolName,
-		ToolInput:            event.Input,
-		ToolUseID:            event.ToolUseID,
-		ToolResponse:         event.Output,
-		ToolFailed:           event.IsError,
+		SessionID:              event.SessionID,
+		ParentSessionID:        event.ParentSessionID,
+		ParentToolUseID:        event.ParentToolUseID,
+		TurnID:                 event.ProviderTurnID,
+		TranscriptPath:         event.TranscriptPath,
+		CWD:                    event.CWD,
+		Model:                  event.Model,
+		PermissionMode:         event.PermissionMode,
+		Prompt:                 event.Text,
+		LastAssistantMessage:   event.Text,
+		ToolName:               event.ToolName,
+		ToolInput:              event.Input,
+		ToolUseID:              event.ToolUseID,
+		ToolResponse:           event.Output,
+		ToolFailed:             event.IsError,
+		MutationAlreadyApplied: event.MutationAlreadyApplied,
 	}
 	if !effective.Secrets.StorePrompts && (event.Type == adaptersdk.EventToolCall || event.Type == adaptersdk.EventToolResult) && rawContainsIntentCommand(raw, effective.Hooks.Command) {
 		// A partial normalized input must not override core's observation that
@@ -465,6 +472,19 @@ func processNormalizedEvent(log eventlog.Log, manager turns.Manager, adapter pri
 		if err != nil {
 			return err
 		}
+		if strings.TrimSpace(payload.ToolUseID) == "" {
+			if event.Type == adaptersdk.EventToolCall {
+				payload.ToolUseID = sourceID
+			} else {
+				payload.ToolUseID, err = latestUnmatchedToolUseID(log, sessionID, turnID, payload.ToolName, payload.ToolInput)
+				if err != nil {
+					return err
+				}
+				if payload.ToolUseID == "" {
+					payload.ToolUseID = sourceID
+				}
+			}
+		}
 		if event.Type == adaptersdk.EventToolCall {
 			return captureAndAppendToolCall(log, manager.Repo, adapter, sessionID, turnID, rawRef, sourceID, payload, effective)
 		}
@@ -474,8 +494,21 @@ func processNormalizedEvent(log eventlog.Log, manager turns.Manager, adapter pri
 		}
 		return captureAndAppendToolResult(log, manager.Repo, adapter, sessionID, turnID, rawRef, sourceID, payload, effective)
 	case adaptersdk.EventAssistantMessage, adaptersdk.EventTurnFinish:
+		if wrapped && event.Type == adaptersdk.EventTurnFinish && adapter == primitives.AdapterCopilotCLI && event.TranscriptPath != "" {
+			// Copilot writes the final transcript record after the stop hook
+			// returns. The wrapping command hydrates it once the child exits.
+			return nil
+		}
+		if wrapped && event.Type == adaptersdk.EventTurnFinish && adapter == primitives.AdapterCursor {
+			// Cursor CLI omits some lifecycle and write-tool hook events. The
+			// wrapping command settles the turn from the provider transcript.
+			return nil
+		}
 		active, ok, err := manager.Active(sessionID)
 		if err != nil || !ok {
+			return err
+		}
+		if err := closeUnmatchedToolCalls(log, adapter, sessionID, active.TurnID, rawRef, effective); err != nil {
 			return err
 		}
 		if event.Type == adaptersdk.EventAssistantMessage {
@@ -671,6 +704,9 @@ func processHook(log eventlog.Log, manager turns.Manager, adapter primitives.Ada
 		if payload.Model = strings.TrimSpace(payload.Model); payload.Model == "" && adapter == primitives.AdapterClaudeCode {
 			payload.Model = claudeCompletedTurnModel(payload)
 		}
+		if err := closeUnmatchedToolCalls(log, adapter, sessionID, active.TurnID, rawRef, effective); err != nil {
+			return err
+		}
 		if err := appendAssistant(log, adapter, sessionID, active.TurnID, rawRef, sourceID, payload, effective.Secrets); err != nil {
 			return err
 		}
@@ -713,6 +749,10 @@ func hasSessionStart(log eventlog.Log, adapter primitives.AdapterName, sessionID
 }
 
 func appendSessionStart(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, rawRef, sourceID string, payload hookPayload) error {
+	started, err := hasSessionStart(log, adapter, sessionID)
+	if err != nil || started {
+		return err
+	}
 	return appendPayloadEvent(log, eventlog.AppendInput{
 		SessionID: sessionID,
 		Type:      primitives.EventTypeSessionStart,
@@ -907,6 +947,7 @@ func appendToolResult(log eventlog.Log, adapter primitives.AdapterName, sessionI
 			ProviderTurnID: payload.TurnID,
 			Output:         redactedToolOutput(payload, effective),
 			IsError:        payload.ToolFailed,
+			OutcomeUnknown: payload.ToolOutcomeUnknown,
 			PostSnapshot:   postSnapshot,
 		}),
 	})
@@ -930,6 +971,13 @@ func captureAndAppendToolCall(log eventlog.Log, repo *checkpoint.Repo, adapter p
 	if !shouldCaptureAction(payload.ToolName) {
 		return record(nil)
 	}
+	if payload.MutationAlreadyApplied {
+		snapshot, err := priorActionSnapshot(log, repo, sessionID, turnID)
+		if err != nil {
+			return err
+		}
+		return record(snapshot)
+	}
 	return repo.WithWorkspaceLock("record action pre snapshot", func() error {
 		snapshot, err := captureActionSnapshotLocked(repo, sessionID, turnID, payload.ToolUseID, provenance.ActionSnapshotPhasePre)
 		if err != nil {
@@ -937,6 +985,31 @@ func captureAndAppendToolCall(log eventlog.Log, repo *checkpoint.Repo, adapter p
 		}
 		return record(snapshot)
 	})
+}
+
+func priorActionSnapshot(log eventlog.Log, repo *checkpoint.Repo, sessionID primitives.SessionID, turnID primitives.TurnID) (*provenance.ActionSnapshot, error) {
+	events, err := log.Read(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	for index := len(events) - 1; index >= 0; index-- {
+		event := events[index]
+		if event.TurnID == nil || *event.TurnID != turnID || event.Type != primitives.EventTypeToolResult {
+			continue
+		}
+		var payload toolResultPayload
+		if json.Unmarshal(event.Payload, &payload) == nil && payload.PostSnapshot != nil {
+			return payload.PostSnapshot, nil
+		}
+	}
+	active, ok, err := turns.NewManager(repo).Active(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok || active.TurnID != turnID {
+		return nil, fmt.Errorf("active turn %s is unavailable for an observed mutation in session %s", turnID, sessionID)
+	}
+	return &provenance.ActionSnapshot{Ref: active.PreRef.String(), Commit: active.PreCommit}, nil
 }
 
 func captureAndAppendToolResult(log eventlog.Log, repo *checkpoint.Repo, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, rawRef, sourceID string, payload hookPayload, effective agentconfig.Effective) error {
@@ -1032,6 +1105,111 @@ func turnHasToolEvent(events []eventlog.Event, turnID primitives.TurnID, toolUse
 	return false
 }
 
+func latestUnmatchedToolUseID(log eventlog.Log, sessionID primitives.SessionID, turnID primitives.TurnID, toolName string, input json.RawMessage) (string, error) {
+	events, err := log.Read(sessionID)
+	if err != nil {
+		return "", err
+	}
+	completed := make(map[string]struct{})
+	for _, event := range events {
+		if event.TurnID == nil || *event.TurnID != turnID || event.Type != primitives.EventTypeToolResult {
+			continue
+		}
+		var payload toolResultPayload
+		if json.Unmarshal(event.Payload, &payload) == nil && payload.ToolUseID != "" {
+			completed[payload.ToolUseID] = struct{}{}
+		}
+	}
+	var candidates []toolCallPayload
+	for index := len(events) - 1; index >= 0; index-- {
+		event := events[index]
+		if event.TurnID == nil || *event.TurnID != turnID || event.Type != primitives.EventTypeToolCall {
+			continue
+		}
+		var payload toolCallPayload
+		if json.Unmarshal(event.Payload, &payload) != nil || !strings.EqualFold(strings.TrimSpace(payload.ToolName), strings.TrimSpace(toolName)) {
+			continue
+		}
+		if _, exists := completed[payload.ToolUseID]; !exists {
+			candidates = append(candidates, payload)
+		}
+	}
+	if len(candidates) == 1 {
+		return candidates[0].ToolUseID, nil
+	}
+	if len(input) > 0 {
+		matched := ""
+		for _, candidate := range candidates {
+			if !jsonValuesEqual(candidate.Input, input) {
+				continue
+			}
+			if matched != "" {
+				matched = ""
+				break
+			}
+			matched = candidate.ToolUseID
+		}
+		if matched != "" {
+			return matched, nil
+		}
+	}
+	if len(candidates) > 0 {
+		// ID-less providers invoke hooks synchronously. If privacy redaction makes
+		// same-name inputs indistinguishable, preserve callback order instead of
+		// fabricating a second call/result chain.
+		return candidates[len(candidates)-1].ToolUseID, nil
+	}
+	return "", nil
+}
+
+func jsonValuesEqual(left, right json.RawMessage) bool {
+	var leftValue any
+	var rightValue any
+	return json.Unmarshal(left, &leftValue) == nil && json.Unmarshal(right, &rightValue) == nil && reflect.DeepEqual(leftValue, rightValue)
+}
+
+func closeUnmatchedToolCalls(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, rawRef string, effective agentconfig.Effective) error {
+	events, err := log.Read(sessionID)
+	if err != nil {
+		return err
+	}
+	completed := make(map[string]struct{})
+	for _, event := range events {
+		if event.TurnID == nil || *event.TurnID != turnID || event.Type != primitives.EventTypeToolResult {
+			continue
+		}
+		var payload toolResultPayload
+		if json.Unmarshal(event.Payload, &payload) == nil {
+			completed[payload.ToolUseID] = struct{}{}
+		}
+	}
+	for _, event := range events {
+		if event.TurnID == nil || *event.TurnID != turnID || event.Type != primitives.EventTypeToolCall {
+			continue
+		}
+		var call toolCallPayload
+		if json.Unmarshal(event.Payload, &call) != nil || call.IntentCommand {
+			continue
+		}
+		if _, exists := completed[call.ToolUseID]; exists {
+			continue
+		}
+		payload := hookPayload{
+			TurnID:             call.ProviderTurnID,
+			ToolName:           call.ToolName,
+			ToolUseID:          call.ToolUseID,
+			ToolResponse:       mustJSON(map[string]string{"outcome": "unknown", "reason": "provider emitted no terminal tool result"}),
+			ToolOutcomeUnknown: true,
+		}
+		sourceID := fmt.Sprintf("%s:turn:%s:tool:%s:missing-result", adapter, turnID, call.ToolUseID)
+		if err := appendToolResult(log, adapter, sessionID, turnID, rawRef, sourceID, payload, effective, nil); err != nil {
+			return err
+		}
+		completed[call.ToolUseID] = struct{}{}
+	}
+	return nil
+}
+
 func normalizedBatchHasPriorIntentResult(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, normalized []adaptersdk.Event) (bool, error) {
 	events, err := log.Read(sessionID)
 	if err != nil {
@@ -1108,7 +1286,7 @@ func shouldCaptureAction(toolName string) bool {
 		name = name[index+1:]
 	}
 	switch name {
-	case "read", "grep", "glob", "ls", "find", "open", "search_query", "image_query", "screenshot", "view_image", "webfetch", "websearch", "finance", "weather", "sports", "time":
+	case "read", "view", "grep", "glob", "ls", "find", "open", "search_query", "image_query", "screenshot", "view_image", "webfetch", "websearch", "finance", "weather", "sports", "time":
 		return false
 	default:
 		return true

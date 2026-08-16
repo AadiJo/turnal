@@ -60,14 +60,14 @@ func runCmd() *cobra.Command {
 	var quiet bool
 
 	cmd := &cobra.Command{
-		Use:          "run -- <codex|cursor|agent|pi> [args...]",
+		Use:          "run -- <claude|codex|copilot|cursor|agent|gemini|opencode|pi> [args...]",
 		Short:        "Run a supported agent with turnal safety checkpoints",
 		SilenceUsage: true,
 		Args:         cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) (resultErr error) {
 			provider, ok := resolveRunProvider(args[0])
 			if !ok {
-				return fmt.Errorf("turnal run supports codex, cursor (or agent), and pi; unsupported command %q", args[0])
+				return fmt.Errorf("turnal run supports claude, codex, copilot, cursor (or agent), gemini, opencode, and pi; unsupported command %q", args[0])
 			}
 			if provider.Target != adapters.TargetCodex && cmd.Flags().Changed("bypass-hook-trust") {
 				return fmt.Errorf("--bypass-hook-trust applies only to Codex")
@@ -151,7 +151,29 @@ func runCmd() *cobra.Command {
 			if provider.Target == adapters.TargetCodex {
 				childArgs = prepareCodexCommand(args, effective.Run.BypassHookTrust)
 			}
-			childErr := runChildCommand(cmd, childArgs, runID)
+			if provider.Target == adapters.TargetCopilot && !containsOption(args[1:], "-C") {
+				cwd, err := os.Getwd()
+				if err != nil {
+					return fmt.Errorf("resolve GitHub Copilot CLI working directory: %w", err)
+				}
+				childArgs = append([]string{args[0], "-C", cwd}, args[1:]...)
+			}
+			childEnvironment := map[string]string{}
+			if provider.Target == adapters.TargetCopilot && !environmentContains(os.Environ(), "GITHUB_COPILOT_PROMPT_MODE_REPO_HOOKS") {
+				childEnvironment["GITHUB_COPILOT_PROMPT_MODE_REPO_HOOKS"] = "true"
+			}
+			postExitFinalize := providerUsesSingleTurnPromptMode(provider.Target, args[1:])
+			if postExitFinalize {
+				childEnvironment[runs.EnvPostExitFinalize] = "1"
+			}
+			childErr := runChildCommand(cmd, childArgs, runID, childEnvironment)
+			var providerFinalizeErr error
+			if postExitFinalize && provider.Target == adapters.TargetCopilot {
+				providerFinalizeErr = adapters.FinalizeCopilotRun(repo, runID)
+			}
+			if postExitFinalize && provider.Target == adapters.TargetCursor {
+				providerFinalizeErr = adapters.FinalizeCursorRun(repo, runID)
+			}
 
 			finishErr := finishRunTurn(repo, provider.Adapter, sessionID, started.TurnID)
 			afterRawCount, countErr := adapterRawRecordCount(repo.MetadataDir, provider.Adapter)
@@ -173,15 +195,19 @@ func runCmd() *cobra.Command {
 				})
 				return finishErr
 			}
+			if childErr != nil {
+				combined := errors.Join(childErr, providerFinalizeErr, countErr)
+				if err := runs.Finish(repo, runID, sessionID, runs.StatusFailed, combined.Error()); err != nil {
+					return errors.Join(combined, err)
+				}
+				runOpen = false
+				return combined
+			}
 			if countErr != nil {
 				return countErr
 			}
-			if childErr != nil {
-				if err := runs.Finish(repo, runID, sessionID, runs.StatusFailed, childErr.Error()); err != nil {
-					return errors.Join(childErr, err)
-				}
-				runOpen = false
-				return childErr
+			if providerFinalizeErr != nil {
+				return providerFinalizeErr
 			}
 			if err := runs.Finish(repo, runID, sessionID, runs.StatusSucceeded, ""); err != nil {
 				return err
@@ -205,10 +231,18 @@ func isCodexCommand(command string) bool {
 func resolveRunProvider(command string) (runProvider, bool) {
 	base := strings.ToLower(strings.TrimSuffix(filepath.Base(command), ".exe"))
 	switch base {
+	case "claude":
+		return runProvider{Adapter: primitives.AdapterClaudeCode, Target: adapters.TargetClaude, Name: "Claude Code"}, true
 	case "codex":
 		return runProvider{Adapter: primitives.AdapterCodex, Target: adapters.TargetCodex, Name: "Codex"}, true
+	case "copilot":
+		return runProvider{Adapter: primitives.AdapterCopilotCLI, Target: adapters.TargetCopilot, Name: "GitHub Copilot CLI"}, true
 	case "cursor", "agent":
 		return runProvider{Adapter: primitives.AdapterCursor, Target: adapters.TargetCursor, Name: "Cursor"}, true
+	case "gemini":
+		return runProvider{Adapter: primitives.AdapterGeminiCLI, Target: adapters.TargetGemini, Name: "Gemini CLI"}, true
+	case "opencode":
+		return runProvider{Adapter: primitives.AdapterOpenCode, Target: adapters.TargetOpenCode, Name: "OpenCode"}, true
 	case "pi":
 		return runProvider{Adapter: primitives.AdapterPi, Target: adapters.TargetPi, Name: "Pi"}, true
 	default:
@@ -266,13 +300,36 @@ func containsArg(args []string, want string) bool {
 	return false
 }
 
-func runChildCommand(cmd *cobra.Command, args []string, runID primitives.RunID) error {
+func containsOption(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want || strings.HasPrefix(arg, want+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+func providerUsesSingleTurnPromptMode(target adapters.Target, args []string) bool {
+	switch target {
+	case adapters.TargetCursor:
+		return containsOption(args, "--print") || containsOption(args, "-p")
+	case adapters.TargetCopilot:
+		return containsOption(args, "--prompt") || containsOption(args, "-p")
+	default:
+		return false
+	}
+}
+
+func runChildCommand(cmd *cobra.Command, args []string, runID primitives.RunID, environment map[string]string) error {
 	child := exec.Command(args[0], args[1:]...)
 	child.Stdin = os.Stdin
 	child.Stdout = cmd.OutOrStdout()
 	child.Stderr = cmd.ErrOrStderr()
 	child.Dir = ""
 	child.Env = runEnvironment(os.Environ(), runID)
+	for name, value := range environment {
+		child.Env = replaceEnvironment(child.Env, name, value)
+	}
 
 	if err := child.Start(); err != nil {
 		return err
@@ -291,6 +348,28 @@ func runChildCommand(cmd *cobra.Command, args []string, runID primitives.RunID) 
 		return err
 	}
 	return nil
+}
+
+func replaceEnvironment(existing []string, name, value string) []string {
+	result := make([]string, 0, len(existing)+1)
+	for _, entry := range existing {
+		entryName, _, found := strings.Cut(entry, "=")
+		if found && environmentNamesEqual(entryName, name) {
+			continue
+		}
+		result = append(result, entry)
+	}
+	return append(result, name+"="+value)
+}
+
+func environmentContains(existing []string, name string) bool {
+	for _, entry := range existing {
+		entryName, _, found := strings.Cut(entry, "=")
+		if found && environmentNamesEqual(entryName, name) {
+			return true
+		}
+	}
+	return false
 }
 
 func runEnvironment(existing []string, runID primitives.RunID) []string {

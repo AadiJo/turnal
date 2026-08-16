@@ -8,6 +8,176 @@ import (
 	"testing"
 )
 
+func TestInstallGitHubCopilotCLIHooksLifecycleAndHealth(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, ".github", "hooks", "turnal.json")
+	writeHealthFile(t, path, `{"version":1,"custom":"keep","hooks":{"agentStop":[{"type":"command","bash":"echo keep","powershell":"echo keep"}]}}`)
+	opts := InstallOptions{HookCommand: "/opt/turnal"}
+	if _, err := InstallCopilotHookWithOptions(root, opts); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := os.ReadFile(path)
+	if _, err := InstallCopilotHookWithOptions(root, opts); err != nil {
+		t.Fatal(err)
+	}
+	second, _ := os.ReadFile(path)
+	if string(first) != string(second) {
+		t.Fatal("idempotent GitHub Copilot CLI hook install rewrote config")
+	}
+	if !strings.Contains(string(second), `"custom": "keep"`) || !strings.Contains(string(second), `"bash": "echo keep"`) {
+		t.Fatalf("third-party GitHub Copilot CLI config was not preserved: %s", second)
+	}
+	if health := inspectCopilotHooks(root, opts.HookCommand); !health.OK() || len(health.Events) != len(copilotHookEvents) {
+		t.Fatalf("GitHub Copilot CLI health = %#v", health)
+	}
+	dry, err := UninstallCopilotHookWithOptions(root, UninstallOptions{DryRun: true})
+	if err != nil || !dry.Changed || dry.RemovedCommands != len(copilotHookEvents) {
+		t.Fatalf("GitHub Copilot CLI dry-run = %#v err=%v", dry, err)
+	}
+	afterDry, _ := os.ReadFile(path)
+	if string(afterDry) != string(second) {
+		t.Fatal("GitHub Copilot CLI dry-run changed config")
+	}
+	removed, err := UninstallCopilotHookWithOptions(root, UninstallOptions{})
+	if err != nil || removed.RemovedCommands != len(copilotHookEvents) {
+		t.Fatalf("GitHub Copilot CLI uninstall = %#v err=%v", removed, err)
+	}
+	after, _ := os.ReadFile(path)
+	if !strings.Contains(string(after), `"bash": "echo keep"`) || strings.Contains(string(after), "adapter capture copilot-cli") {
+		t.Fatalf("GitHub Copilot CLI uninstall did not preserve third-party hook: %s", after)
+	}
+}
+
+func TestInstallGitHubCopilotCLIQuotesPowerShellExecutablePath(t *testing.T) {
+	root := t.TempDir()
+	opts := InstallOptions{HookCommand: `C:\Program Files\Turnal\turnal.exe`}
+	if _, err := InstallCopilotHookWithOptions(root, opts); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, ".github", "hooks", "turnal.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(data, &config); err != nil {
+		t.Fatal(err)
+	}
+	hooks, _, err := configMapSection(config, "hooks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, _ := normalizeHookArray(hooks["sessionStart"])
+	command := entries[0].(map[string]any)["powershell"]
+	want := `& 'C:\Program Files\Turnal\turnal.exe' adapter capture copilot-cli sessionStart`
+	if command != want {
+		t.Fatalf("PowerShell hook = %q, want %q", command, want)
+	}
+	bash := entries[0].(map[string]any)["bash"]
+	wantBash := `'C:\Program Files\Turnal\turnal.exe' adapter capture copilot-cli sessionStart`
+	if bash != wantBash {
+		t.Fatalf("bash hook = %q, want %q", bash, wantBash)
+	}
+	if health := inspectCopilotHooks(root, opts.HookCommand); !health.OK() {
+		t.Fatalf("quoted GitHub Copilot CLI health = %#v", health)
+	}
+}
+
+func TestUninstallGitHubCopilotCLIRemovesManagedOnlyFile(t *testing.T) {
+	root := t.TempDir()
+	if _, err := InstallCopilotHookWithOptions(root, InstallOptions{HookCommand: "turnal"}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, ".github", "hooks", "turnal.json")
+	if _, err := UninstallCopilotHookWithOptions(root, UninstallOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("managed-only GitHub Copilot CLI hook remains: %v", err)
+	}
+}
+
+func TestInstallGeminiCLIHooksLifecycleAndHealth(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, ".gemini", "settings.json")
+	writeHealthFile(t, path, `{"custom":"keep","hooks":{"SessionEnd":[{"matcher":"*","hooks":[{"name":"keep","type":"command","command":"echo keep"}]}]}}`)
+	opts := InstallOptions{HookCommand: "/opt/turnal"}
+	if _, err := InstallGeminiHookWithOptions(root, opts); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := os.ReadFile(path)
+	if _, err := InstallGeminiHookWithOptions(root, opts); err != nil {
+		t.Fatal(err)
+	}
+	second, _ := os.ReadFile(path)
+	if string(first) != string(second) {
+		t.Fatal("idempotent Gemini CLI hook install rewrote settings")
+	}
+	if !strings.Contains(string(second), `"custom": "keep"`) || !strings.Contains(string(second), `"command": "echo keep"`) {
+		t.Fatalf("third-party Gemini CLI settings were not preserved: %s", second)
+	}
+	if health := inspectGeminiHooks(root, opts.HookCommand); !health.OK() || len(health.Events) != len(geminiHookEvents) {
+		t.Fatalf("Gemini CLI health = %#v", health)
+	}
+	dry, err := UninstallGeminiHookWithOptions(root, UninstallOptions{DryRun: true})
+	if err != nil || !dry.Changed || dry.RemovedCommands != len(geminiHookEvents) {
+		t.Fatalf("Gemini CLI dry-run = %#v err=%v", dry, err)
+	}
+	afterDry, _ := os.ReadFile(path)
+	if string(afterDry) != string(second) {
+		t.Fatal("Gemini CLI dry-run changed settings")
+	}
+	removed, err := UninstallGeminiHookWithOptions(root, UninstallOptions{})
+	if err != nil || removed.RemovedCommands != len(geminiHookEvents) {
+		t.Fatalf("Gemini CLI uninstall = %#v err=%v", removed, err)
+	}
+	after, _ := os.ReadFile(path)
+	if !strings.Contains(string(after), `"command": "echo keep"`) || strings.Contains(string(after), "adapter capture gemini-cli") {
+		t.Fatalf("Gemini CLI uninstall did not preserve third-party hook: %s", after)
+	}
+}
+
+func TestInstallOpenCodePluginLifecycleAndHealth(t *testing.T) {
+	root := t.TempDir()
+	opts := InstallOptions{HookCommand: "/opt/turnal"}
+	installed, err := InstallOpenCodePluginWithOptions(root, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _ := os.ReadFile(installed.ConfigPath)
+	if _, err := InstallOpenCodePluginWithOptions(root, opts); err != nil {
+		t.Fatal(err)
+	}
+	second, _ := os.ReadFile(installed.ConfigPath)
+	if string(first) != string(second) {
+		t.Fatal("idempotent OpenCode plugin install rewrote plugin")
+	}
+	if health := inspectOpenCodePlugin(root, opts.HookCommand); !health.OK() {
+		t.Fatalf("OpenCode health = %#v", health)
+	}
+	dry, err := UninstallOpenCodePluginWithOptions(root, UninstallOptions{DryRun: true})
+	if err != nil || !dry.Changed || dry.RemovedCommands != 1 {
+		t.Fatalf("OpenCode dry-run = %#v err=%v", dry, err)
+	}
+	if _, err := os.Stat(installed.ConfigPath); err != nil {
+		t.Fatalf("OpenCode plugin removed during dry-run: %v", err)
+	}
+	if _, err := UninstallOpenCodePluginWithOptions(root, UninstallOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(installed.ConfigPath); !os.IsNotExist(err) {
+		t.Fatalf("OpenCode plugin still exists: %v", err)
+	}
+
+	writeHealthFile(t, installed.ConfigPath, "export const custom = true;\n")
+	if _, err := InstallOpenCodePluginWithOptions(root, opts); err == nil || !strings.Contains(err.Error(), "not managed by Turnal") {
+		t.Fatalf("unmanaged OpenCode install error = %v", err)
+	}
+	removed, err := UninstallOpenCodePluginWithOptions(root, UninstallOptions{})
+	if err != nil || removed.Changed || removed.RemovedCommands != 0 {
+		t.Fatalf("unmanaged OpenCode uninstall = %#v err=%v", removed, err)
+	}
+}
+
 func TestInstallCursorHookPreservesOtherHooksAndIsIdempotent(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, ".cursor", "hooks.json")

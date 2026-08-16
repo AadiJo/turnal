@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -597,16 +598,29 @@ func TestResolveTargets(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(root, ".pi"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	for _, directory := range []string{".gemini", ".opencode", filepath.Join(".github", "hooks")} {
+		if err := os.MkdirAll(filepath.Join(root, directory), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	targets, err = ResolveTargets(root, TargetAuto)
-	if err != nil || !containsTarget(targets, TargetCursor) || !containsTarget(targets, TargetPi) {
+	if err != nil || containsTarget(targets, TargetCopilot) || !containsTarget(targets, TargetCursor) || !containsTarget(targets, TargetGemini) || !containsTarget(targets, TargetOpenCode) || !containsTarget(targets, TargetPi) {
 		t.Fatalf("auto external targets = %#v err=%v", targets, err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".github", "hooks", "turnal.json"), []byte(`{"version":1}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	targets, err = ResolveTargets(root, TargetAuto)
+	if err != nil || !containsTarget(targets, TargetCopilot) {
+		t.Fatalf("auto did not refresh existing GitHub Copilot CLI target: %#v err=%v", targets, err)
 	}
 
 	targets, err = ResolveTargets(root, TargetAll)
 	if err != nil {
 		t.Fatalf("ResolveTargets all: %v", err)
 	}
-	if len(targets) != 4 || targets[0] != TargetClaude || targets[1] != TargetCodex || targets[2] != TargetCursor || targets[3] != TargetPi {
+	wantAll := []Target{TargetClaude, TargetCodex, TargetCopilot, TargetCursor, TargetGemini, TargetOpenCode, TargetPi}
+	if !slices.Equal(targets, wantAll) {
 		t.Fatalf("all targets = %#v", targets)
 	}
 

@@ -87,6 +87,10 @@ type Event struct {
 	Input           json.RawMessage `json:"input,omitempty"`
 	Output          json.RawMessage `json:"output,omitempty"`
 	IsError         bool            `json:"is_error,omitempty"`
+	// MutationAlreadyApplied marks provider events that are emitted only after
+	// a workspace mutation. Core then anchors the call to the last durable
+	// workspace state instead of snapshotting the already-mutated tree as pre.
+	MutationAlreadyApplied bool `json:"mutation_already_applied,omitempty"`
 }
 
 type Error struct {

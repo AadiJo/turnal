@@ -221,10 +221,17 @@ func (log Log) Append(input AppendInput) (Event, error) {
 	var events []Event
 	var last Event
 	var hasLast bool
-	if input.BuildPayload != nil {
+	if input.BuildPayload != nil || input.SourceID != "" {
 		events, err = log.readPath(sessionID, path, streamID)
 		if err != nil {
 			return Event{}, err
+		}
+		if input.SourceID != "" {
+			for index := len(events) - 1; index >= 0; index-- {
+				if events[index].SourceID == input.SourceID {
+					return events[index], nil
+				}
+			}
 		}
 		if len(events) > 0 {
 			last, hasLast = events[len(events)-1], true
