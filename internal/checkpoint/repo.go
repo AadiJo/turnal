@@ -245,22 +245,20 @@ func InitAt(root primitives.WorkspaceRoot, metadataDir string) (*Repo, error) {
 	}
 	repo := pathsAt(root, metadataDir)
 
-	for _, dir := range []string{repo.MetadataDir, repo.TmpDir, filepath.Join(repo.MetadataDir, logDirName), filepath.Join(repo.MetadataDir, indexDirName)} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return nil, fmt.Errorf("create %s: %w", dir, err)
-		}
-		if err := os.Chmod(dir, 0o700); err != nil {
-			return nil, fmt.Errorf("secure %s: %w", dir, err)
-		}
+	if err := prepareMetadataLayout(repo); err != nil {
+		return nil, err
 	}
 
-	if _, err := os.Stat(repo.GitDir); err != nil {
+	if _, err := os.Lstat(repo.GitDir); err != nil {
 		if !os.IsNotExist(err) {
 			return nil, fmt.Errorf("stat hidden git repo: %w", err)
 		}
 		if _, err := runGitNoRepo(root.String(), "init", "--bare", repo.GitDir); err != nil {
 			return nil, err
 		}
+	}
+	if err := requireRealDirectory(repo.GitDir); err != nil {
+		return nil, fmt.Errorf("hidden git repo: %w", err)
 	}
 
 	if err := writeFileIfMissing(filepath.Join(repo.MetadataDir, versionFileName), []byte("1\n")); err != nil {
@@ -348,7 +346,10 @@ func OpenAt(root primitives.WorkspaceRoot, metadataDir string) (*Repo, error) {
 		return nil, fmt.Errorf("resolve metadata dir: %w", err)
 	}
 	repo := pathsAt(root, metadataDir)
-	if _, err := os.Stat(repo.GitDir); err != nil {
+	if err := validateMetadataLayout(repo); err != nil {
+		return nil, err
+	}
+	if _, err := os.Lstat(repo.GitDir); err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("hidden git repo not initialized at %s", repo.GitDir)
 		}
@@ -372,6 +373,16 @@ func OpenAt(root primitives.WorkspaceRoot, metadataDir string) (*Repo, error) {
 	return repo, nil
 }
 
+// OpenExplicitAt opens a store path the user selected explicitly. Existing
+// symlink aliases are resolved before the store's own layout is validated.
+func OpenExplicitAt(root primitives.WorkspaceRoot, metadataDir string) (*Repo, error) {
+	resolved, err := resolveExplicitStorePath(metadataDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve explicit store path: %w", err)
+	}
+	return OpenAt(root, resolved)
+}
+
 // OpenAtReadOnly loads an existing store and worktree binding without writing
 // migrations or last-seen bookkeeping.
 func OpenAtReadOnly(root primitives.WorkspaceRoot, metadataDir string) (*Repo, error) {
@@ -380,7 +391,10 @@ func OpenAtReadOnly(root primitives.WorkspaceRoot, metadataDir string) (*Repo, e
 		return nil, fmt.Errorf("resolve metadata dir: %w", err)
 	}
 	repo := pathsAt(root, metadataDir)
-	if _, err := os.Stat(repo.GitDir); err != nil {
+	if err := validateMetadataLayout(repo); err != nil {
+		return nil, err
+	}
+	if _, err := os.Lstat(repo.GitDir); err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("hidden git repo not initialized at %s", repo.GitDir)
 		}
@@ -2705,6 +2719,95 @@ func pathsAt(root primitives.WorkspaceRoot, metadataDir string) *Repo {
 	}
 }
 
+func prepareMetadataLayout(repo *Repo) error {
+	if err := ensureRealDirectory(repo.MetadataDir, 0o700); err != nil {
+		return fmt.Errorf("prepare metadata directory: %w", err)
+	}
+	for _, dir := range []string{
+		repo.TmpDir,
+		filepath.Join(repo.MetadataDir, logDirName),
+		filepath.Join(repo.MetadataDir, indexDirName),
+	} {
+		if err := ensureRealDirectory(dir, 0o700); err != nil {
+			return fmt.Errorf("prepare metadata directory: %w", err)
+		}
+	}
+	return validateMetadataLayout(repo)
+}
+
+func validateMetadataLayout(repo *Repo) error {
+	for _, dir := range []string{
+		repo.MetadataDir,
+		repo.GitDir,
+		repo.TmpDir,
+		filepath.Join(repo.MetadataDir, logDirName),
+		filepath.Join(repo.MetadataDir, indexDirName),
+		filepath.Join(repo.MetadataDir, worktreesDirName),
+	} {
+		if err := validateRealDirectory(dir); err != nil {
+			return fmt.Errorf("unsafe Turnal metadata path: %w", err)
+		}
+	}
+	for _, name := range []string{
+		versionFileName,
+		configFileName,
+		identityFileName,
+		permissionsVersionFileName,
+	} {
+		path := filepath.Join(repo.MetadataDir, name)
+		if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("unsafe Turnal metadata path: symlink is not allowed: %s", path)
+		} else if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("inspect Turnal metadata path %s: %w", path, err)
+		}
+	}
+	return nil
+}
+
+func ensureRealDirectory(path string, mode fs.FileMode) error {
+	if info, err := os.Lstat(path); err == nil {
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("must be a real directory; symlinks are not allowed: %s", path)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect directory %s: %w", path, err)
+	} else if err := os.MkdirAll(path, mode); err != nil {
+		return fmt.Errorf("create directory %s: %w", path, err)
+	}
+	if err := requireRealDirectory(path); err != nil {
+		return err
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		return fmt.Errorf("secure directory %s: %w", path, err)
+	}
+	return nil
+}
+
+func validateRealDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("inspect directory %s: %w", path, err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("must be a real directory; symlinks are not allowed: %s", path)
+	}
+	return nil
+}
+
+func requireRealDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("inspect directory %s: %w", path, err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("must be a real directory; symlinks are not allowed: %s", path)
+	}
+	return nil
+}
+
 func (repo *Repo) tempIndex() (string, func(), error) {
 	if err := os.MkdirAll(repo.TmpDir, 0o700); err != nil {
 		return "", nil, fmt.Errorf("create temp dir: %w", err)
@@ -2730,7 +2833,10 @@ func (repo *Repo) tempIndex() (string, func(), error) {
 }
 
 func writeFileIfMissing(path string, content []byte) error {
-	if _, err := os.Stat(path); err == nil {
+	if info, err := os.Lstat(path); err == nil {
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to use non-regular metadata file %s", path)
+		}
 		return nil
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("stat %s: %w", path, err)

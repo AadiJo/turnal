@@ -130,6 +130,57 @@ command = "echo keep"
 	}
 }
 
+func TestInstallHooksRejectSymlinkedWorkspaceConfig(t *testing.T) {
+	for _, provider := range []struct {
+		name      string
+		directory string
+		config    string
+		install   func(string) error
+	}{
+		{name: "claude", directory: ".claude", config: "settings.json", install: func(root string) error {
+			_, err := InstallClaudeHookWithOptions(root, InstallOptions{HookCommand: "turnal"})
+			return err
+		}},
+		{name: "codex", directory: ".codex", config: "config.toml", install: func(root string) error {
+			_, err := InstallCodexHookWithOptions(root, InstallOptions{HookCommand: "turnal"})
+			return err
+		}},
+	} {
+		for _, kind := range []string{"directory", "config"} {
+			t.Run(provider.name+"/"+kind, func(t *testing.T) {
+				root := t.TempDir()
+				targetRoot := t.TempDir()
+				target := targetRoot
+				link := filepath.Join(root, provider.directory)
+				if kind == "config" {
+					if err := os.Mkdir(link, 0o755); err != nil {
+						t.Fatal(err)
+					}
+					target = filepath.Join(targetRoot, provider.config)
+					if err := os.WriteFile(target, []byte("outside\n"), 0o644); err != nil {
+						t.Fatal(err)
+					}
+					link = filepath.Join(link, provider.config)
+				}
+				if err := os.Symlink(target, link); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+
+				err := provider.install(root)
+				if err == nil || !strings.Contains(err.Error(), "symlink") {
+					t.Fatalf("install error = %v, want symlink refusal", err)
+				}
+				if kind == "config" {
+					content, readErr := os.ReadFile(target)
+					if readErr != nil || string(content) != "outside\n" {
+						t.Fatalf("outside config = %q, err=%v", content, readErr)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestCodexHookLifecycleUsesRootCheckoutFromLinkedWorktree(t *testing.T) {
 	rootCheckout, linkedWorktree := createAdapterLinkedWorktree(t)
 	installed, err := InstallCodexHookWithOptions(linkedWorktree, InstallOptions{HookCommand: "turnal"})

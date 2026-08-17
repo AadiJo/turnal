@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/safepath"
 )
 
 const GitignoreEntry = ".turnal/"
@@ -85,7 +86,7 @@ func BootstrapWithOptions(root primitives.WorkspaceRoot, opts BootstrapOptions) 
 
 func bootstrapRepo(root primitives.WorkspaceRoot, explicitStorePath string) (*Repo, bool, error) {
 	if strings.TrimSpace(explicitStorePath) != "" {
-		storePath, err := filepath.Abs(explicitStorePath)
+		storePath, err := resolveExplicitStorePath(explicitStorePath)
 		if err != nil {
 			return nil, false, fmt.Errorf("resolve explicit store path: %w", err)
 		}
@@ -133,6 +134,21 @@ func bootstrapRepo(root primitives.WorkspaceRoot, explicitStorePath string) (*Re
 	return repo, !sameIdentityPath(storePath, localMetadata), err
 }
 
+func resolveExplicitStorePath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err == nil {
+		return resolved, nil
+	}
+	if !os.IsNotExist(err) {
+		return "", err
+	}
+	return abs, nil
+}
+
 func findAncestorGitPath(root primitives.WorkspaceRoot) (string, bool, error) {
 	current := filepath.Dir(root.String())
 	for {
@@ -153,6 +169,9 @@ func findAncestorGitPath(root primitives.WorkspaceRoot) (string, bool, error) {
 
 func EnsureGitignoreEntry(root primitives.WorkspaceRoot) (string, bool, error) {
 	gitignorePath := filepath.Join(root.String(), ".gitignore")
+	if err := safepath.ValidateNoSymlinks(root.String(), ".gitignore"); err != nil {
+		return gitignorePath, false, fmt.Errorf("refusing to update .gitignore: %w", err)
+	}
 	content, err := os.ReadFile(gitignorePath)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -181,6 +200,9 @@ func EnsureGitignoreEntry(root primitives.WorkspaceRoot) (string, bool, error) {
 	builder.WriteString(GitignoreEntry)
 	builder.WriteByte('\n')
 
+	if err := safepath.ValidateNoSymlinks(root.String(), ".gitignore"); err != nil {
+		return gitignorePath, false, fmt.Errorf("refusing to update .gitignore: %w", err)
+	}
 	if err := os.WriteFile(gitignorePath, []byte(builder.String()), info.Mode().Perm()); err != nil {
 		return gitignorePath, false, fmt.Errorf("write .gitignore: %w", err)
 	}
