@@ -1,0 +1,15 @@
+{"id":"security-prose","text":"token bucket, secret sauce, bearer capacity, and password reset","expect":"allow"}
+{"id":"normal-url","text":"https://example.invalid/private/path","expect":"allow"}
+{"id":"password-placeholder","text":"DB_PASSWORD=${DB_PASSWORD}","expect":"allow"}
+{"id":"angle-placeholder","text":"password=<your-password>","expect":"allow"}
+{"id":"masked-placeholder","text":"password=********","expect":"allow"}
+{"id":"example-placeholder","text":"password=example","expect":"allow"}
+{"id":"credentialed-uri-placeholder","text":"postgres://reviewer:${DB_PASSWORD}@db.example.invalid/app","expect":"allow"}
+{"id":"dsn-placeholder","text":"host=db.example.invalid user=reviewer password=${DB_PASSWORD} dbname=app","expect":"allow"}
+{"id":"sql-server-placeholder","text":"Server=db.example.invalid;Database=app;User Id=reviewer;Password=changeme","expect":"allow"}
+{"id":"uuid","text":"request id 550e8400-e29b-41d4-a716-446655440000","expect":"allow"}
+{"id":"git-sha","text":"commit 0123456789abcdef0123456789abcdef01234567","expect":"allow"}
+{"id":"checksum","text":"sha256-rX3Jd8mF2qL7vN4sT9wK1cH6aP0yB5uE8gZ2oC4iQ7M=","expect":"allow"}
+{"id":"branch-name","text":"feature/redaction-policy-review","expect":"allow"}
+{"id":"opaque-identifier","text":"turn_01JQ7Z6HX2V8W4M9K3N5P0R1ST","expect":"allow"}
+{"id":"documentation","text":"Set API_KEY to your project credential before running the example.","expect":"allow"}

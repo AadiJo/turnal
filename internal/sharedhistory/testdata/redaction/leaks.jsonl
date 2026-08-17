@@ -1,0 +1,21 @@
+{"id":"github-token","text":"github_pat_11AA22bb33CC44dd55EE66ff77GG88hh","expect":"redact"}
+{"id":"gitlab-token","text":"glpat-11AA22bb33CC44dd55EE66ff77GG88hh","expect":"redact"}
+{"id":"npm-token","text":"npm_11AA22bb33CC44dd55EE66ff77GG88hh99","expect":"redact"}
+{"id":"pypi-token","text":"pypi-11AA22bb33CC44dd55EE66ff77GG88hh","expect":"redact"}
+{"id":"hugging-face-token","text":"hf_11AA22bb33CC44dd55EE66ff77GG88hh","expect":"redact"}
+{"id":"google-api-key","text":"AIzaSyA1234567890abcdefghijklmnop","expect":"redact"}
+{"id":"openai-api-key","text":"sk-proj-11AA22bb33CC44dd55EE66ff77GG88hh","expect":"redact"}
+{"id":"stripe-restricted-key","text":"rk_test_11AA22bb33CC44dd55EE66ff77GG88hh","expect":"redact"}
+{"id":"aws-access-key","text":"AKIAIOSFODNN7EXAMPLE","expect":"redact"}
+{"id":"datadog-known-rule","text":"datadog api key = 0123456789abcdef0123456789abcdef","expect":"redact"}
+{"id":"bearer-token","text":"Authorization: Bearer abcdefghijklmnopqrstuvwxyz.123456789","expect":"redact"}
+{"id":"jwt","text":"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmno","expect":"redact"}
+{"id":"private-key","text":"-----BEGIN OPENSSH PRIVATE KEY-----\nsynthetic-private-material","expect":"redact"}
+{"id":"credential-assignment","text":"SERVICE_API_KEY=correct-horse-battery-staple","expect":"redact"}
+{"id":"high-entropy-token","text":"q7L2mN9xP4vK8sD1aF6hJ3cR5tY0uW2z","expect":"redact"}
+{"id":"credentialed-postgres-uri","text":"postgres://reviewer:p4ssw0rd@db.example.invalid/app","expect":"redact"}
+{"id":"credentialed-redis-uri","text":"redis://:r3dis-pass@cache.example.invalid/0","expect":"redact"}
+{"id":"jdbc-password","text":"jdbc:postgresql://db.example.invalid/app?user=reviewer&password=p4ssw0rd","expect":"redact"}
+{"id":"database-query-password","text":"mongodb://db.example.invalid/app?password=m0ngo-pass","expect":"redact"}
+{"id":"postgres-dsn","text":"host=db.example.invalid user=reviewer password=p4ssw0rd dbname=app","expect":"redact"}
+{"id":"sql-server-connection","text":"Server=db.example.invalid;Database=app;User Id=reviewer;Password=p4ssw0rd","expect":"redact"}

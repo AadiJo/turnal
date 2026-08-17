@@ -719,7 +719,7 @@ func validateManifest(repoID primitives.RepoID, deviceID string, item BatchBundl
 		}
 	}
 	for reason, count := range manifest.Redactions {
-		if (reason != "path_full" && reason != "workspace_path" && reason != "secret") || count <= 0 {
+		if !validRedactionReason(reason) || count <= 0 {
 			return fmt.Errorf("manifest contains invalid redaction metadata")
 		}
 	}
@@ -754,6 +754,15 @@ func validateManifest(repoID primitives.RepoID, deviceID string, item BatchBundl
 		return fmt.Errorf("manifest contains an invalid producer version")
 	}
 	return nil
+}
+
+func validRedactionReason(value string) bool {
+	switch value {
+	case "path_full", "workspace_path", "secret":
+		return true
+	}
+	detector, found := strings.CutPrefix(value, "secret:")
+	return found && validProjectionLabel(detector, 64, "_-")
 }
 
 // validProjectionLabel bounds a publisher-supplied descriptive string. These

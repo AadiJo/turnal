@@ -12,4 +12,6 @@ Turnal stores agent activity locally under `.turnal`. New metadata directories a
 
 Turnal is a local developer tool, not a multi-tenant security boundary. Anyone with access to the user account, workspace, backups, or underlying disk may be able to read retained data. Use encrypted storage and operating-system access controls for sensitive workspaces.
 
+Shared-history redaction is a best-effort safety layer, not a guarantee. Run `turnal share redaction diagnose`, review project-specific examples with `turnal share redaction review`, and inspect the complete publication preview before approval. Novel low-entropy secrets can evade detection, so avoid putting sensitive values in agent context and rotate any credential found in published history.
+
 Only the latest stable release receives security fixes. Recovery and retention behavior is documented under `docs/`.
