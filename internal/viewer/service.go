@@ -31,9 +31,14 @@ const (
 )
 
 type Service struct {
-	Repo      *checkpoint.Repo
-	codec     keyCodec
-	startedAt time.Time
+	Repo           *checkpoint.Repo
+	codec          keyCodec
+	startedAt      time.Time
+	recordMu       sync.Mutex
+	recordCache    map[resourceIdentity]cachedSessionRecord
+	refFingerprint string
+	refCache       []checkpoint.CheckpointRefInfo
+
 	diffMu    sync.Mutex
 	diffCache map[string]checkpoint.DiffSummary
 }
@@ -43,10 +48,11 @@ func NewService(repo *checkpoint.Repo) (*Service, error) {
 		return nil, fmt.Errorf("viewer service requires checkpoint repo")
 	}
 	return &Service{
-		Repo:      repo,
-		codec:     newKeyCodec(repo),
-		startedAt: time.Now().UTC(),
-		diffCache: make(map[string]checkpoint.DiffSummary),
+		Repo:        repo,
+		codec:       newKeyCodec(repo),
+		startedAt:   time.Now().UTC(),
+		diffCache:   make(map[string]checkpoint.DiffSummary),
+		recordCache: make(map[resourceIdentity]cachedSessionRecord),
 	}, nil
 }
 
@@ -124,7 +130,7 @@ func (service *Service) workspaceWithSessions(ctx context.Context, sessions []Se
 }
 
 func (service *Service) Sessions(ctx context.Context) ([]SessionSummaryView, error) {
-	records, _, err := service.loadRecords(ctx)
+	records, err := service.loadRecords(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -378,16 +384,19 @@ func (service *Service) Blame(ctx context.Context, key, path string, line int) (
 	}, nil
 }
 
-func (service *Service) loadRecords(ctx context.Context) ([]sessionRecord, string, error) {
+func (service *Service) loadRecords(ctx context.Context) ([]sessionRecord, error) {
 	streams, err := service.listDurableStreams(ctx)
 	if err != nil {
-		return nil, "unavailable", err
+		return nil, err
 	}
 	infos, err := service.Repo.ListAllCheckpointRefInfos()
 	if err != nil {
-		return nil, "unavailable", err
+		return nil, err
 	}
-	indexState := service.indexState()
+	return service.buildRecords(ctx, streams, infos)
+}
+
+func (service *Service) buildRecords(ctx context.Context, streams []eventlog.DurableStream, infos []checkpoint.CheckpointRefInfo) ([]sessionRecord, error) {
 	type recordKey struct{ session, stream string }
 	records := make(map[recordKey]*sessionRecord)
 	ensure := func(sessionID primitives.SessionID, streamID primitives.EventStreamID, worktreeID primitives.WorktreeID) *sessionRecord {
@@ -401,7 +410,7 @@ func (service *Service) loadRecords(ctx context.Context) ([]sessionRecord, strin
 	}
 	for _, stream := range streams {
 		if err := ctx.Err(); err != nil {
-			return nil, indexState, err
+			return nil, err
 		}
 		if stream.Workspace {
 			continue
@@ -445,7 +454,12 @@ func (service *Service) loadRecords(ctx context.Context) ([]sessionRecord, strin
 		}
 		ensure(info.SessionID, info.StreamID, info.WorktreeID)
 	}
-	for _, record := range records {
+	refsByRecord := make(map[recordKey][]checkpoint.CheckpointRefInfo)
+	for _, info := range infos {
+		key := recordKey{session: info.SessionID.String(), stream: info.StreamID.String()}
+		refsByRecord[key] = append(refsByRecord[key], info)
+	}
+	for key, record := range records {
 		summaries := queryindex.SummarizeTurnEvents(record.stream.Events)
 		turns := make(map[uint64]*turnRecord)
 		ensureTurn := func(turnID primitives.TurnID) *turnRecord {
@@ -462,10 +476,7 @@ func (service *Service) loadRecords(ctx context.Context) ([]sessionRecord, strin
 				ensureTurn(turnID).summary = summary
 			}
 		}
-		for _, info := range infos {
-			if info.SessionID != record.stream.SessionID || info.StreamID != record.stream.StreamID {
-				continue
-			}
+		for _, info := range refsByRecord[key] {
 			turn := ensureTurn(info.TurnID)
 			copyInfo := info
 			switch info.Phase {
@@ -479,7 +490,7 @@ func (service *Service) loadRecords(ctx context.Context) ([]sessionRecord, strin
 			if turn.pre != nil && turn.post != nil {
 				diff, diffErr := service.cachedDiff(turn.pre.Ref, turn.post.Ref)
 				if diffErr != nil {
-					return nil, indexState, fmt.Errorf("summarize turn %s:%s diff: %w", record.stream.SessionID, turn.id, diffErr)
+					return nil, fmt.Errorf("summarize turn %s:%s diff: %w", record.stream.SessionID, turn.id, diffErr)
 				}
 				turn.diff = diff
 			}
@@ -491,7 +502,7 @@ func (service *Service) loadRecords(ctx context.Context) ([]sessionRecord, strin
 	for _, record := range records {
 		result = append(result, *record)
 	}
-	return result, indexState, nil
+	return result, nil
 }
 
 func (service *Service) listDurableStreams(ctx context.Context) ([]eventlog.DurableStream, error) {
@@ -677,20 +688,6 @@ func (service *Service) turnView(stream eventlog.DurableStream, turn turnRecord)
 		view.Status = "attention"
 	}
 	return view, nil
-}
-
-func (service *Service) recordForIdentity(ctx context.Context, identity resourceIdentity) (sessionRecord, error) {
-	records, _, err := service.loadRecords(ctx)
-	if err != nil {
-		return sessionRecord{}, err
-	}
-	for _, record := range records {
-		if record.stream.SessionID.String() == identity.SessionID && record.stream.StreamID.String() == identity.StreamID &&
-			(identity.WorktreeID == "" || record.stream.WorktreeID.String() == identity.WorktreeID) {
-			return record, nil
-		}
-	}
-	return sessionRecord{}, fmt.Errorf("resource no longer exists in this Turnal store")
 }
 
 func (service *Service) turnRecordForKey(ctx context.Context, key string) (resourceIdentity, turnRecord, error) {
