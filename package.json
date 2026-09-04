@@ -27,7 +27,7 @@
     "build": "npm run build:web && go build -o bin/turnal ./cmd/turnal",
     "build:web": "vite build",
     "check:web": "tsc --noEmit && npm run build:web && git diff --exit-code -- internal/viewer/web/dist",
-    "dev:web": "vite",
+    "dev:web": "node scripts/viewer-preview.mjs",
     "build:npm-binaries": "node scripts/build-npm-binaries.js",
     "test": "go test ./...",
     "test:postinstall": "node --test scripts/remove-powershell-shims.test.js",
@@ -38,7 +38,9 @@
     "test:release-sbom": "node --test scripts/validate-release-sbom.test.js",
     "postinstall": "node npm/postinstall.js",
     "prepack": "node scripts/build-npm-binaries.js",
-    "prepublishOnly": "go test ./..."
+    "prepublishOnly": "go test ./...",
+    "preview:viewer": "node scripts/viewer-preview.mjs",
+    "test:browser": "playwright test"
   },
   "repository": {
     "type": "git",
@@ -66,6 +68,7 @@
     "preact": "^10.29.7"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@preact/preset-vite": "^2.10.5",
     "@types/node": "^26.1.1",
     "typescript": "^7.0.2",
