@@ -38,9 +38,14 @@ func (engine Engine) Compute(query Query) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	turns, err := engine.completeTurnsForWorktree(query.SessionID, query.StreamID, query.ThroughTurnID, worktreeID)
-	if err != nil {
-		return Result{}, err
+	turns := make([]completeTurn, 0, len(history.Complete))
+	for _, turn := range history.Complete {
+		if query.SessionID != "" && turn.SessionID != query.SessionID ||
+			query.StreamID != "" && turn.Pre.StreamID != query.StreamID ||
+			query.ThroughTurnID != 0 && turn.TurnID > query.ThroughTurnID {
+			continue
+		}
+		turns = append(turns, turn)
 	}
 	if len(turns) == 0 {
 		return Result{}, ErrNoHistory
@@ -165,32 +170,24 @@ func withoutAlternateTurnRepresentations(history observedHistory, selected []com
 }
 
 func (engine Engine) validateCachedEvidence(turns []completeTurn, concurrent concurrentTurnAttribution) error {
-	seen := make(map[primitives.CommitSHA]struct{})
-	validate := func(commit primitives.CommitSHA, description string) error {
+	descriptions := make(map[primitives.CommitSHA]string)
+	var commits []primitives.CommitSHA
+	collect := func(commit primitives.CommitSHA, description string) {
 		if commit == "" {
-			return nil
+			return
 		}
-		if _, ok := seen[commit]; ok {
-			return nil
+		if _, ok := descriptions[commit]; ok {
+			return
 		}
-		seen[commit] = struct{}{}
-		if err := engine.Repo.ValidateCommit(commit); err != nil {
-			return fmt.Errorf("validate cached %s at %s: %w", description, commit, err)
-		}
-		return nil
+		descriptions[commit] = description
+		commits = append(commits, commit)
 	}
 	for _, turn := range turns {
 		turnLabel := fmt.Sprintf("checkpoint for %s:turn:%s", turn.SessionID, turn.TurnID)
-		if err := validate(turn.Pre.Commit, "pre "+turnLabel); err != nil {
-			return err
-		}
-		if err := validate(turn.Post.Commit, "post "+turnLabel); err != nil {
-			return err
-		}
+		collect(turn.Pre.Commit, "pre "+turnLabel)
+		collect(turn.Post.Commit, "post "+turnLabel)
 		if fact, ok := concurrent[completeTurnIdentity(turn)]; ok && fact.Baseline != nil {
-			if err := validate(fact.Baseline.Commit, "concurrent baseline checkpoint "+fact.Baseline.Ref.String()); err != nil {
-				return err
-			}
+			collect(fact.Baseline.Commit, "concurrent baseline checkpoint "+fact.Baseline.Ref.String())
 		}
 		for _, event := range turn.Records {
 			switch event.Type {
@@ -199,9 +196,7 @@ func (engine Engine) validateCachedEvidence(turns []completeTurn, concurrent con
 				if json.Unmarshal(event.Payload, &payload) == nil {
 					if payload.PreSnapshot != nil {
 						description := fmt.Sprintf("action snapshot %s", payload.PreSnapshot.Ref)
-						if err := validate(payload.PreSnapshot.Commit, description); err != nil {
-							return err
-						}
+						collect(payload.PreSnapshot.Commit, description)
 					}
 				}
 			case primitives.EventTypeToolResult:
@@ -209,13 +204,21 @@ func (engine Engine) validateCachedEvidence(turns []completeTurn, concurrent con
 				if json.Unmarshal(event.Payload, &payload) == nil {
 					if payload.PostSnapshot != nil {
 						description := fmt.Sprintf("action snapshot %s", payload.PostSnapshot.Ref)
-						if err := validate(payload.PostSnapshot.Commit, description); err != nil {
-							return err
-						}
+						collect(payload.PostSnapshot.Commit, description)
 					}
 				}
 			}
 		}
+	}
+	if err := engine.Repo.ValidateCommits(commits); err != nil {
+		// Keep the detailed evidence error on the exceptional path, without
+		// launching one Git process per commit on every successful cache hit.
+		for _, commit := range commits {
+			if cause := engine.Repo.ValidateCommit(commit); cause != nil {
+				return fmt.Errorf("validate cached %s at %s: %w", descriptions[commit], commit, cause)
+			}
+		}
+		return err
 	}
 	return nil
 }
