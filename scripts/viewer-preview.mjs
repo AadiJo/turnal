@@ -32,12 +32,18 @@ export async function startPreview({ host = '127.0.0.1' } = {}) {
       proxy.closeAllConnections();
       await new Promise(resolve => proxy.close(resolve));
     }
-    if (child && child.exitCode === null && child.signalCode === null) {
+    if (child?.pid && child.exitCode === null && child.signalCode === null) {
       const exited = once(child, 'exit');
-      kill('SIGTERM');
-      const timer = setTimeout(() => kill('SIGKILL'), 5000);
-      await exited;
-      clearTimeout(timer);
+      if (process.platform === 'win32') {
+        const taskkill = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+        await once(taskkill, 'exit');
+        await exited;
+      } else {
+        kill('SIGTERM');
+        const timer = setTimeout(() => kill('SIGKILL'), 5000);
+        await exited;
+        clearTimeout(timer);
+      }
     }
     await rm(directory, { recursive: true, force: true });
   })();
