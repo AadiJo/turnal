@@ -18,7 +18,7 @@ func (log Log) sourceIndexPath(session primitives.SessionID, stream primitives.E
 	if name == "" {
 		name = "legacy"
 	}
-	return filepath.Join(filepath.Dir(log.Dir), "source-index", session.String(), name+".sqlite")
+	return filepath.Join(filepath.Dir(log.Dir), "source", session.String(), "index", name+".sqlite")
 }
 
 func openSourceIndex(path string) (*sql.DB, error) {
