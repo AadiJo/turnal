@@ -24,12 +24,15 @@ type codexTokenUsage struct {
 
 // codexCumulativeUsage reads the newest cumulative token_count from a rollout.
 // The session_meta check prevents an unrelated JSONL file from being accepted.
-func codexCumulativeUsage(payload hookPayload) *usage.TokenUsage {
+func codexCumulativeUsage(payload hookPayload) *transcriptUsage {
 	path := strings.TrimSpace(payload.TranscriptPath)
 	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path {
 		return nil
 	}
 	file, err := os.Open(path)
+	if os.IsNotExist(err) {
+		return &transcriptUsage{}
+	}
 	if err != nil {
 		return nil
 	}
@@ -41,7 +44,6 @@ func codexCumulativeUsage(payload hookPayload) *usage.TokenUsage {
 
 	sessionMatched := false
 	var latest *codexTokenUsage
-	var calls int64
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64<<10), 8<<20)
 	for scanner.Scan() {
@@ -67,19 +69,25 @@ func codexCumulativeUsage(payload hookPayload) *usage.TokenUsage {
 			if json.Unmarshal(line.Payload, &event) == nil && event.Type == "token_count" && event.Info.Total != nil {
 				copy := *event.Info.Total
 				latest = &copy
-				calls++
 			}
 		}
 	}
-	if scanner.Err() != nil || !sessionMatched || latest == nil || latest.CachedInputTokens > latest.InputTokens {
+	if scanner.Err() != nil || !sessionMatched {
+		return nil
+	}
+	if latest == nil {
+		return &transcriptUsage{}
+	}
+	if latest.CachedInputTokens > latest.InputTokens {
 		return nil
 	}
 	result := usage.TokenUsage{
 		InputTokens: latest.InputTokens - latest.CachedInputTokens, CacheReadTokens: latest.CachedInputTokens,
-		OutputTokens: latest.OutputTokens, ReasoningTokens: latest.ReasoningOutputTokens, APICalls: calls,
+		OutputTokens: latest.OutputTokens, ReasoningTokens: latest.ReasoningOutputTokens,
 	}
 	if !result.Valid() {
 		return nil
 	}
-	return &result
+	// token_count also appears on rate-limit updates, so it cannot count requests.
+	return &transcriptUsage{Total: result, HasUsage: true}
 }

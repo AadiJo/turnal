@@ -106,10 +106,11 @@ type sessionPayload struct {
 }
 
 type promptPayload struct {
-	Text           string `json:"text"`
-	ProviderTurnID string `json:"provider_turn_id,omitempty"`
-	Model          string `json:"model,omitempty"`
-	Redacted       bool   `json:"redacted"`
+	Text           string            `json:"text"`
+	ProviderTurnID string            `json:"provider_turn_id,omitempty"`
+	Model          string            `json:"model,omitempty"`
+	Redacted       bool              `json:"redacted"`
+	UsageTotal     *usage.TokenUsage `json:"usage_total,omitempty"`
 }
 
 type assistantPayload struct {
@@ -471,6 +472,9 @@ func processNormalizedEvent(log eventlog.Log, manager turns.Manager, adapter pri
 			return err
 		}
 		payload.Model = model
+		if reading := readProviderUsage(adapter, payload); reading != nil {
+			payload.UsageTotal = &reading.Total
+		}
 		turnID, err := startPromptTurn(log, manager, adapter, sessionID, rawRef, payload)
 		if err != nil {
 			return err
@@ -669,6 +673,9 @@ func processHook(log eventlog.Log, manager turns.Manager, adapter primitives.Ada
 			return err
 		}
 		payload.Model = model
+		if reading := readProviderUsage(adapter, payload); reading != nil {
+			payload.UsageTotal = &reading.Total
+		}
 		turnID, err := startPromptTurn(log, manager, adapter, sessionID, rawRef, payload)
 		if err != nil {
 			return err
@@ -716,7 +723,9 @@ func processHook(log eventlog.Log, manager turns.Manager, adapter primitives.Ada
 		if payload.Model = strings.TrimSpace(payload.Model); payload.Model == "" && adapter == primitives.AdapterClaudeCode {
 			payload.Model = claudeCompletedTurnModel(payload)
 		}
-		hydrateProviderUsage(log, adapter, sessionID, &payload)
+		if err := hydrateProviderUsage(log, adapter, sessionID, active.TurnID, &payload); err != nil {
+			return err
+		}
 		if err := closeUnmatchedToolCalls(log, adapter, sessionID, active.TurnID, rawRef, effective); err != nil {
 			return err
 		}
@@ -903,6 +912,7 @@ func appendPrompt(log eventlog.Log, adapter primitives.AdapterName, sessionID pr
 			ProviderTurnID: payload.TurnID,
 			Model:          payload.Model,
 			Redacted:       !secrets.StorePrompts,
+			UsageTotal:     payload.UsageTotal,
 		}),
 	})
 }
@@ -925,35 +935,51 @@ func appendAssistant(log eventlog.Log, adapter primitives.AdapterName, sessionID
 	})
 }
 
-func hydrateProviderUsage(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, payload *hookPayload) {
-	var cumulative *usage.TokenUsage
+// A readable empty transcript is a valid zero baseline, but does not establish
+// coverage. A nil reading means the transcript could not be read or validated.
+type transcriptUsage struct {
+	Total    usage.TokenUsage
+	HasUsage bool
+}
+
+func readProviderUsage(adapter primitives.AdapterName, payload hookPayload) *transcriptUsage {
 	switch adapter {
 	case primitives.AdapterClaudeCode:
-		cumulative = claudeCumulativeUsage(*payload)
+		return claudeCumulativeUsage(payload)
 	case primitives.AdapterCodex:
-		cumulative = codexCumulativeUsage(*payload)
+		return codexCumulativeUsage(payload)
+	default:
+		return nil
 	}
-	if cumulative == nil {
-		return
+}
+
+func hydrateProviderUsage(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, payload *hookPayload) error {
+	current := readProviderUsage(adapter, *payload)
+	if current == nil || !current.HasUsage {
+		return nil
 	}
-	var previous *usage.TokenUsage
 	events, err := log.Read(sessionID)
-	if err == nil {
-		for index := len(events) - 1; index >= 0; index-- {
-			event := events[index]
-			if event.Type != primitives.EventTypeAssistantMessage || event.Adapter != adapter {
-				continue
-			}
-			var prior assistantPayload
-			if json.Unmarshal(event.Payload, &prior) == nil && prior.UsageTotal != nil {
-				previous = prior.UsageTotal
-				break
-			}
-		}
+	if err != nil {
+		return err
 	}
-	delta := usage.Delta(*cumulative, previous)
-	payload.Usage = &delta
-	payload.UsageTotal = cumulative
+	// Only this turn's prompt establishes a baseline. Using the previous completed
+	// turn would attribute unrecorded or interrupted work to the current turn.
+	for _, event := range events {
+		if event.Type != primitives.EventTypePromptUser || event.Adapter != adapter || event.TurnID == nil || *event.TurnID != turnID {
+			continue
+		}
+		var prompt promptPayload
+		if err := json.Unmarshal(event.Payload, &prompt); err != nil {
+			return fmt.Errorf("decode usage baseline for %s:%s: %w", sessionID, turnID, err)
+		}
+		delta, ok := usage.Delta(current.Total, prompt.UsageTotal)
+		if ok && delta != (usage.TokenUsage{}) {
+			payload.Usage = &delta
+			payload.UsageTotal = &current.Total
+		}
+		return nil
+	}
+	return nil
 }
 
 func appendToolCall(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, rawRef, sourceID string, payload hookPayload, effective agentconfig.Effective, preSnapshot *provenance.ActionSnapshot, intentSeq *primitives.EventSeq) error {

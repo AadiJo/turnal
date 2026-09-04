@@ -10,11 +10,11 @@ turnal ui
 
 ## Coverage
 
-Built-in Claude Code and Codex capture reads cumulative usage from the provider transcript and stores the turn delta in the durable event log. External protocol-v1 adapters can attach `usage` to an `assistant.message` event. Existing events are not rewritten, so usage begins with turns captured after this feature is installed.
+Built-in Claude Code and Codex capture reads cumulative usage when each prompt arrives, then stores the completed turn's delta in the durable event log. Resumed sessions exclude usage from before that prompt. External protocol-v1 adapters can attach `usage` to an `assistant.message` event. Existing events are not rewritten, so usage begins with turns captured after this feature is installed.
 
-Every summary includes `covered_turns` and `total_turns`. Missing usage stays missing instead of being treated as zero. Unknown models retain their token counts but do not receive a cost estimate.
+Every summary includes `covered_turns` and `total_turns`. Missing usage stays missing instead of being treated as zero. Turns without a readable starting baseline or a new usage reading remain uncovered, as do turns whose counters reset. Unknown models retain their token counts but do not receive a cost estimate.
 
-The normalized categories are fresh input, cache reads, cache writes, output, reasoning output, and API calls. Reasoning tokens are informational because Codex includes them in output tokens. Turnal excludes them from the total to prevent double counting.
+The normalized categories are fresh input, cache reads, cache writes, output, reasoning output, and API calls. Codex API-call counts are unavailable because usage notifications do not reliably identify requests. Reasoning tokens are informational because Codex includes them in output tokens. Turnal excludes them from the total to prevent double counting.
 
 ## Cost estimates
 

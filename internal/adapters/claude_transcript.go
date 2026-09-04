@@ -22,7 +22,7 @@ type claudeTranscriptEntry struct {
 		Model   string          `json:"model"`
 		Role    string          `json:"role"`
 		Content json.RawMessage `json:"content"`
-		Usage   struct {
+		Usage   *struct {
 			InputTokens              int64 `json:"input_tokens"`
 			OutputTokens             int64 `json:"output_tokens"`
 			CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
@@ -109,13 +109,16 @@ func claudeCompletedTurnModel(payload hookPayload) string {
 
 // claudeCumulativeUsage sums the final streamed record for each provider
 // message. Claude repeats message ids while streaming output tokens.
-func claudeCumulativeUsage(payload hookPayload) *usage.TokenUsage {
+func claudeCumulativeUsage(payload hookPayload) *transcriptUsage {
 	path := strings.TrimSpace(payload.TranscriptPath)
 	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path ||
 		!strings.EqualFold(filepath.Base(path), payload.SessionID+".jsonl") {
 		return nil
 	}
 	file, err := os.Open(path)
+	if os.IsNotExist(err) {
+		return &transcriptUsage{}
+	}
 	if err != nil {
 		return nil
 	}
@@ -131,7 +134,7 @@ func claudeCumulativeUsage(payload hookPayload) *usage.TokenUsage {
 	for scanner.Scan() {
 		var entry claudeTranscriptEntry
 		if json.Unmarshal(scanner.Bytes(), &entry) != nil || entry.Type != "assistant" || entry.Message.Role != "assistant" ||
-			!strings.EqualFold(entry.SessionID, payload.SessionID) || !sameCleanPath(entry.CWD, payload.CWD) || entry.Message.ID == "" {
+			!strings.EqualFold(entry.SessionID, payload.SessionID) || !sameCleanPath(entry.CWD, payload.CWD) || entry.Message.ID == "" || entry.Message.Usage == nil {
 			continue
 		}
 		candidate := usage.TokenUsage{
@@ -146,14 +149,14 @@ func claudeCumulativeUsage(payload hookPayload) *usage.TokenUsage {
 			byMessage[entry.Message.ID] = candidate
 		}
 	}
-	if scanner.Err() != nil || len(byMessage) == 0 {
+	if scanner.Err() != nil {
 		return nil
 	}
 	total := usage.TokenUsage{APICalls: int64(len(byMessage))}
 	for _, item := range byMessage {
 		total.Add(item)
 	}
-	return &total
+	return &transcriptUsage{Total: total, HasUsage: len(byMessage) > 0}
 }
 
 func claudeTranscriptText(raw json.RawMessage) (string, bool) {
