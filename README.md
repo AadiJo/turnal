@@ -355,6 +355,13 @@ it. The first semantic search downloads the 8 MB `minishlab/potion-base-2M`
 model from Hugging Face into the user cache; Turnal sends no prompts,
 transcripts, tool data, or other recorded history.
 
+Repeated semantic searches reuse embeddings from `turnal/embeddings` under the
+OS user-cache directory. Cache files contain vectors keyed by text hashes, not
+raw text. Model or tokenizer changes invalidate them. Deleting this directory
+forces recomputation; deleting a project or pruning its history does not remove
+these user-cache files. An unavailable or damaged cache falls back to local
+inference.
+
 ### Local viewer
 
 Run `turnal ui` to open Turnal Prism, a local browser interface for browsing recorded projects, sessions, turns, prompts, tool activity, diffs, and line-level blame. It runs on the loopback interface and can be launched from inside a recorded project or elsewhere to open the project index.
