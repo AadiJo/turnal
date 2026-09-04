@@ -11,8 +11,14 @@ import (
 )
 
 type codexTranscriptLine struct {
-	Type    string          `json:"type"`
-	Payload json.RawMessage `json:"payload"`
+	Type    string `json:"type"`
+	Payload struct {
+		ID   string `json:"id"`
+		Type string `json:"type"`
+		Info *struct {
+			Total *codexTokenUsage `json:"total_token_usage"`
+		} `json:"info"`
+	} `json:"payload"`
 }
 
 type codexTokenUsage struct {
@@ -53,22 +59,13 @@ func codexCumulativeUsage(payload hookPayload) *transcriptUsage {
 		}
 		switch line.Type {
 		case "session_meta":
-			var meta struct {
-				ID string `json:"id"`
-			}
-			if json.Unmarshal(line.Payload, &meta) == nil && strings.EqualFold(meta.ID, payload.SessionID) {
+			if strings.EqualFold(line.Payload.ID, payload.SessionID) {
 				sessionMatched = true
 			}
 		case "event_msg":
-			var event struct {
-				Type string `json:"type"`
-				Info struct {
-					Total *codexTokenUsage `json:"total_token_usage"`
-				} `json:"info"`
-			}
-			if json.Unmarshal(line.Payload, &event) == nil && event.Type == "token_count" && event.Info.Total != nil {
-				copy := *event.Info.Total
-				latest = &copy
+			event := line.Payload
+			if event.Type == "token_count" && event.Info != nil && event.Info.Total != nil {
+				latest = event.Info.Total
 			}
 		}
 	}

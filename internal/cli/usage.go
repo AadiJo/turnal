@@ -70,36 +70,25 @@ func usageCmd() *cobra.Command {
 }
 
 func writeUsageReport(out io.Writer, report usageReport) error {
-	if _, err := fmt.Fprintf(out, "Usage for %s\n\n", report.Project); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(out, "Tokens: %s (%s input, %s cached, %s output)\n",
+	var text strings.Builder
+	fmt.Fprintf(&text, "Usage for %s\n\n", report.Project)
+	fmt.Fprintf(&text, "Tokens: %s (%s input, %s cached, %s output)\n",
 		formatTokenCount(report.Usage.Tokens()), formatTokenCount(report.Usage.InputTokens),
-		formatTokenCount(report.Usage.CacheReadTokens+report.Usage.CacheWriteTokens), formatTokenCount(report.Usage.OutputTokens)); err != nil {
-		return err
-	}
+		formatTokenCount(report.Usage.CacheReadTokens+report.Usage.CacheWriteTokens), formatTokenCount(report.Usage.OutputTokens))
 	if report.Usage.PricedTokens > 0 {
 		partial := ""
 		if report.Usage.PricedTokens < report.Usage.Tokens() {
 			partial = "; some tokens are unpriced"
 		}
-		if _, err := fmt.Fprintf(out, "Estimated API cost: $%.2f (pricing %s%s)\n", float64(report.Usage.EstimatedCostMicros)/1_000_000, report.PricingVersion, partial); err != nil {
-			return err
-		}
+		fmt.Fprintf(&text, "Estimated API cost: $%.2f (pricing %s%s)\n", float64(report.Usage.EstimatedCostMicros)/1_000_000, report.PricingVersion, partial)
 	} else if report.Usage.Tokens() > 0 {
-		if _, err := fmt.Fprintln(out, "Estimated API cost: unavailable for the recorded models"); err != nil {
-			return err
-		}
+		fmt.Fprintln(&text, "Estimated API cost: unavailable for the recorded models")
 	}
-	if _, err := fmt.Fprintf(out, "Coverage: %d/%d turns\n", report.Usage.CoveredTurns, report.Usage.TotalTurns); err != nil {
-		return err
-	}
+	fmt.Fprintf(&text, "Coverage: %d/%d turns\n", report.Usage.CoveredTurns, report.Usage.TotalTurns)
 	if len(report.Sessions) == 0 {
-		_, err := fmt.Fprintln(out, "\nNo recorded sessions.")
-		return err
-	}
-	if _, err := fmt.Fprintln(out, "\nSessions"); err != nil {
-		return err
+		fmt.Fprintln(&text, "\nNo recorded sessions.")
+	} else {
+		fmt.Fprintln(&text, "\nSessions")
 	}
 	for _, session := range report.Sessions {
 		label := strings.TrimSpace(session.Prompt)
@@ -116,11 +105,10 @@ func writeUsageReport(out io.Writer, report usageReport) error {
 				cost += "+"
 			}
 		}
-		if _, err := fmt.Fprintf(out, "%-52s  %8s  %8s  %s\n", label, formatTokenCount(session.Usage.Tokens()), cost, session.Model); err != nil {
-			return err
-		}
+		fmt.Fprintf(&text, "%-52s  %8s  %8s  %s\n", label, formatTokenCount(session.Usage.Tokens()), cost, session.Model)
 	}
-	return nil
+	_, err := io.WriteString(out, text.String())
+	return err
 }
 
 func formatTokenCount(value int64) string {

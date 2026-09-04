@@ -11,6 +11,7 @@ import {
   shortAge,
   shortID,
   tokenCount,
+  totalTokens,
 } from "./format";
 import type {
   Blame,
@@ -349,12 +350,7 @@ export function ProjectView({
                   )}
                   {(item.usage.covered_turns ?? 0) > 0 && (
                     <span className="usage-inline">
-                      {tokenCount(
-                        (item.usage.input_tokens ?? 0) +
-                          (item.usage.cache_read_tokens ?? 0) +
-                          (item.usage.cache_write_tokens ?? 0) +
-                          (item.usage.output_tokens ?? 0),
-                      )}
+                      {tokenCount(totalTokens(item.usage))}
                       {(item.usage.priced_tokens ?? 0) > 0 && (
                         <> · {estimatedCost(item.usage.estimated_cost_micros)}</>
                       )}

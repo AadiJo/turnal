@@ -10,6 +10,7 @@ import {
   isRealTime,
   shortAge,
   tokenCount,
+  totalTokens,
 } from "./format";
 import type {
   ActivityItem,
@@ -314,12 +315,7 @@ function UsageView({
 }) {
   const totals = projects.reduce(
     (sum, project) => ({
-      tokens:
-        sum.tokens +
-        (project.usage.input_tokens ?? 0) +
-        (project.usage.cache_read_tokens ?? 0) +
-        (project.usage.cache_write_tokens ?? 0) +
-        (project.usage.output_tokens ?? 0),
+      tokens: sum.tokens + totalTokens(project.usage),
       cached:
         sum.cached +
         (project.usage.cache_read_tokens ?? 0) +
@@ -357,7 +353,7 @@ function UsageView({
           <span>Estimated API cost</span>
           <strong>
             {totals.priced
-              ? `${estimatedCost(totals.cost)}${totals.priced < totals.tokens ? "+" : ""}`
+              ? estimatedCost(totals.cost, totals.priced, totals.tokens)
               : "Unavailable"}
           </strong>
         </div>
@@ -390,11 +386,7 @@ function UsageView({
       ) : (
         <div className="rows usage-rows">
           {used.map((project) => {
-            const projectTokens =
-              (project.usage.input_tokens ?? 0) +
-              (project.usage.cache_read_tokens ?? 0) +
-              (project.usage.cache_write_tokens ?? 0) +
-              (project.usage.output_tokens ?? 0);
+            const projectTokens = totalTokens(project.usage);
             const content = (
               <>
                 <span className="avatar">{initials(project.name)}</span>
@@ -414,7 +406,7 @@ function UsageView({
                 <span className="usage-value cost">
                   <strong>
                     {(project.usage.priced_tokens ?? 0) > 0
-                      ? `${estimatedCost(project.usage.estimated_cost_micros)}${(project.usage.priced_tokens ?? 0) < projectTokens ? "+" : ""}`
+                      ? estimatedCost(project.usage.estimated_cost_micros, project.usage.priced_tokens, projectTokens)
                       : "Unpriced"}
                   </strong>
                   <span>estimate</span>
