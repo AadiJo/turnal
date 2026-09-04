@@ -638,10 +638,22 @@ Turnal may occasionally print a channel-preserving update notice after interacti
 
 ## Development
 
+Install the frontend dependencies, then build the CLI and all bundled adapters with freshly rebuilt viewer assets:
+
+```sh
+npm ci
+npm run build
+```
+
+`make build` performs the same build. Both commands write the executables to `bin/` and require Go, Node.js, and npm.
+
+For Go-only changes, use `make build-go` or `npm run build:go` to reuse the checked-in viewer assets. `make build-go` requires only Go and Make. Both Make build targets accept `GO` and `BIN_DIR` overrides, for example `make build BIN_DIR=/tmp/turnal-build`.
+
+Run the Go checks with:
+
 ```sh
 go test ./...
 go vet ./...
-go build -o bin/turnal ./cmd/turnal
 ```
 
 The Astro marketing and documentation site is kept outside the npm package:
