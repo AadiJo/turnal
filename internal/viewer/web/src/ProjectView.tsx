@@ -6,9 +6,11 @@ import {
   cx,
   displayTime,
   duration,
+  estimatedCost,
   isActive,
   shortAge,
   shortID,
+  tokenCount,
 } from "./format";
 import type {
   Blame,
@@ -344,6 +346,19 @@ export function ProjectView({
                   </span>
                   {item.branch && (
                     <span className="tag mono">{item.branch}</span>
+                  )}
+                  {(item.usage.covered_turns ?? 0) > 0 && (
+                    <span className="usage-inline">
+                      {tokenCount(
+                        (item.usage.input_tokens ?? 0) +
+                          (item.usage.cache_read_tokens ?? 0) +
+                          (item.usage.cache_write_tokens ?? 0) +
+                          (item.usage.output_tokens ?? 0),
+                      )}
+                      {(item.usage.priced_tokens ?? 0) > 0 && (
+                        <> · {estimatedCost(item.usage.estimated_cost_micros)}</>
+                      )}
+                    </span>
                   )}
                   <Delta
                     additions={item.additions}

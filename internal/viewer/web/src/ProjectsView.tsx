@@ -5,9 +5,11 @@ import {
   cleanAdapter,
   cx,
   displayTime,
+  estimatedCost,
   initials,
   isRealTime,
   shortAge,
+  tokenCount,
 } from "./format";
 import type {
   ActivityItem,
@@ -116,6 +118,7 @@ export function ProjectsView({
         tabs={[
           { id: "projects", label: "Projects", count: index.projects.length },
           { id: "activity", label: "Activity", count: activity.length },
+          { id: "usage", label: "Usage" },
         ]}
         active={tab}
         onSelect={setTab}
@@ -187,7 +190,7 @@ export function ProjectsView({
               </Note>
             )}
           </>
-        ) : (
+        ) : tab === "activity" ? (
           <>
             <Section title="Activity" note="newest first" />
             {activityError ? (
@@ -269,6 +272,8 @@ export function ProjectsView({
               </Note>
             )}
           </>
+        ) : (
+          <UsageView projects={index.projects} onOpen={onOpenProject} />
         )}
 
         {!writable && (
@@ -296,6 +301,155 @@ export function ProjectsView({
           onConfirm={() => submitRemove(removing)}
         />
       )}
+    </>
+  );
+}
+
+function UsageView({
+  projects,
+  onOpen,
+}: {
+  projects: Project[];
+  onOpen: (project: Project) => void;
+}) {
+  const totals = projects.reduce(
+    (sum, project) => ({
+      tokens:
+        sum.tokens +
+        (project.usage.input_tokens ?? 0) +
+        (project.usage.cache_read_tokens ?? 0) +
+        (project.usage.cache_write_tokens ?? 0) +
+        (project.usage.output_tokens ?? 0),
+      cached:
+        sum.cached +
+        (project.usage.cache_read_tokens ?? 0) +
+        (project.usage.cache_write_tokens ?? 0),
+      input: sum.input + (project.usage.input_tokens ?? 0),
+      cost:
+        sum.cost + (project.usage.estimated_cost_micros ?? 0),
+      priced: sum.priced + (project.usage.priced_tokens ?? 0),
+      covered: sum.covered + (project.usage.covered_turns ?? 0),
+      turns: sum.turns + (project.usage.total_turns ?? 0),
+    }),
+    {
+      tokens: 0,
+      cached: 0,
+      input: 0,
+      cost: 0,
+      priced: 0,
+      covered: 0,
+      turns: 0,
+    },
+  );
+  const used = projects
+    .filter((project) => (project.usage.covered_turns ?? 0) > 0)
+    .sort(
+      (left, right) =>
+        (right.usage.estimated_cost_micros ?? 0) -
+        (left.usage.estimated_cost_micros ?? 0),
+    );
+
+  return (
+    <>
+      <Section title="Usage" note="recorded locally" />
+      <div className="usage-metrics">
+        <div>
+          <span>Estimated API cost</span>
+          <strong>
+            {totals.priced
+              ? `${estimatedCost(totals.cost)}${totals.priced < totals.tokens ? "+" : ""}`
+              : "Unavailable"}
+          </strong>
+        </div>
+        <div>
+          <span>Tokens</span>
+          <strong>{tokenCount(totals.tokens)}</strong>
+        </div>
+        <div>
+          <span>Cached</span>
+          <strong>
+            {totals.input + totals.cached
+              ? `${Math.round((totals.cached / (totals.input + totals.cached)) * 100)}%`
+              : "0%"}
+          </strong>
+        </div>
+        <div>
+          <span>Coverage</span>
+          <strong>
+            {totals.covered}/{totals.turns} turns
+          </strong>
+        </div>
+      </div>
+
+      <Section title="By project" note={`${used.length}`} />
+      {used.length === 0 ? (
+        <div className="empty compact">
+          <strong>No token usage recorded yet</strong>
+          <p>New turns with provider usage metadata will appear here.</p>
+        </div>
+      ) : (
+        <div className="rows usage-rows">
+          {used.map((project) => {
+            const projectTokens =
+              (project.usage.input_tokens ?? 0) +
+              (project.usage.cache_read_tokens ?? 0) +
+              (project.usage.cache_write_tokens ?? 0) +
+              (project.usage.output_tokens ?? 0);
+            const content = (
+              <>
+                <span className="avatar">{initials(project.name)}</span>
+                <span className="row-main">
+                  <strong>{project.name}</strong>
+                  <span>
+                    {project.usage.covered_turns ?? 0}/
+                    {project.usage.total_turns ?? 0} turns covered <i>·</i>{" "}
+                    {project.session_count} session
+                    {project.session_count === 1 ? "" : "s"}
+                  </span>
+                </span>
+                <span className="usage-value">
+                  <strong>{tokenCount(projectTokens)}</strong>
+                  <span>tokens</span>
+                </span>
+                <span className="usage-value cost">
+                  <strong>
+                    {(project.usage.priced_tokens ?? 0) > 0
+                      ? `${estimatedCost(project.usage.estimated_cost_micros)}${(project.usage.priced_tokens ?? 0) < projectTokens ? "+" : ""}`
+                      : "Unpriced"}
+                  </strong>
+                  <span>estimate</span>
+                </span>
+                <span className="when">{shortAge(project.last_activity)}</span>
+              </>
+            );
+            return project.present ? (
+              <a
+                href="#"
+                key={project.store_id}
+                onClick={(event) => {
+                  event.preventDefault();
+                  onOpen(project);
+                }}
+              >
+                {content}
+              </a>
+            ) : (
+              <div
+                className="activity-row gone"
+                key={project.store_id}
+                aria-disabled="true"
+              >
+                {content}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <Note>
+        <b>Cost is an API-equivalent estimate.</b> Subscription charges and
+        provider discounts are not included. Unknown models remain visible as
+        unpriced token usage.
+      </Note>
     </>
   );
 }

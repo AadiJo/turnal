@@ -87,10 +87,22 @@ type Event struct {
 	Input           json.RawMessage `json:"input,omitempty"`
 	Output          json.RawMessage `json:"output,omitempty"`
 	IsError         bool            `json:"is_error,omitempty"`
+	Usage           *TokenUsage     `json:"usage,omitempty"`
 	// MutationAlreadyApplied marks provider events that are emitted only after
 	// a workspace mutation. Core then anchors the call to the last durable
 	// workspace state instead of snapshotting the already-mutated tree as pre.
 	MutationAlreadyApplied bool `json:"mutation_already_applied,omitempty"`
+}
+
+// TokenUsage lets external adapters report the provider's usage for one
+// assistant message without exposing provider-specific transcript formats.
+type TokenUsage struct {
+	InputTokens      int64 `json:"input_tokens,omitempty"`
+	CacheReadTokens  int64 `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int64 `json:"cache_write_tokens,omitempty"`
+	OutputTokens     int64 `json:"output_tokens,omitempty"`
+	ReasoningTokens  int64 `json:"reasoning_tokens,omitempty"`
+	APICalls         int64 `json:"api_calls,omitempty"`
 }
 
 type Error struct {
