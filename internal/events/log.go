@@ -218,10 +218,15 @@ func (log Log) Append(input AppendInput) (Event, error) {
 		return Event{}, err
 	}
 
+	sourceIndex := log.openSourceIndexForAppend(sessionID, streamID, input.SourceID != "")
+	if sourceIndex != nil {
+		defer sourceIndex.Close()
+	}
+
 	var events []Event
 	var last Event
 	var hasLast bool
-	if input.BuildPayload != nil || input.SourceID != "" {
+	if input.BuildPayload != nil {
 		events, err = log.readPath(sessionID, path, streamID)
 		if err != nil {
 			return Event{}, err
@@ -237,6 +242,15 @@ func (log Log) Append(input AppendInput) (Event, error) {
 			last, hasLast = events[len(events)-1], true
 		}
 	} else {
+		if input.SourceID != "" {
+			found, ok, err := log.findSourceInStream(sourceIndex, sessionID, path, streamID, input.SourceID)
+			if err != nil {
+				return Event{}, err
+			}
+			if ok {
+				return found, nil
+			}
+		}
 		last, hasLast, err = log.readLastForAppend(sessionID, path, streamID)
 		if err != nil {
 			return Event{}, err
@@ -320,6 +334,7 @@ func (log Log) Append(input AppendInput) (Event, error) {
 		}
 	}
 
+	log.advanceSourceIndex(event, sourceIndex)
 	return event, nil
 }
 
@@ -359,6 +374,32 @@ func (log Log) FindSourceID(sessionID primitives.SessionID, sourceID string) (Ev
 	parsedSessionID, err := primitives.ParseSessionID(sessionID.String())
 	if err != nil {
 		return Event{}, false, err
+	}
+	if log.ProducerID != "" && !log.Aggregate {
+		stream, err := primitives.DeriveEventStreamID(log.ProducerID, parsedSessionID)
+		if err != nil {
+			return Event{}, false, err
+		}
+		if !log.useSourceIndex(parsedSessionID, stream) {
+			return log.findSourceInStream(nil, parsedSessionID, log.streamPath(parsedSessionID, stream), stream, sourceID)
+		}
+		if event, found, current := log.cachedSource(parsedSessionID, stream, sourceID); current {
+			return event, found, nil
+		}
+		path := log.streamPath(parsedSessionID, stream)
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			return Event{}, false, err
+		}
+		lock, err := filelock.Acquire(path+".lock", 30*time.Second)
+		if err != nil {
+			return Event{}, false, err
+		}
+		defer lock.Release()
+		db := log.openSourceIndexForAppend(parsedSessionID, stream, true)
+		if db != nil {
+			defer db.Close()
+		}
+		return log.findSourceInStream(db, parsedSessionID, path, stream, sourceID)
 	}
 	markerPath := log.sourceMarkerPath(parsedSessionID, sourceID)
 	if data, err := os.ReadFile(markerPath); err == nil {
@@ -559,23 +600,33 @@ func (log Log) readLast(sessionID primitives.SessionID, path string, expectedStr
 		return Event{}, false, nil
 	}
 	const maxEventRecordBytes = int64(64 << 20)
-	readSize := info.Size()
-	if readSize > maxEventRecordBytes+2 {
-		readSize = maxEventRecordBytes + 2
+	readSize := min(info.Size(), int64(4096))
+	var data []byte
+	for {
+		data = make([]byte, readSize)
+		if _, err := file.ReadAt(data, info.Size()-readSize); err != nil && err != io.EOF {
+			return Event{}, false, fmt.Errorf("read event log tail: %w", err)
+		}
+		if data[len(data)-1] != '\n' {
+			return Event{}, false, fmt.Errorf("event log invariant failed for session %s: trailing partial line", sessionID)
+		}
+		data = data[:len(data)-1]
+		if index := bytes.LastIndexByte(data, '\n'); index >= 0 {
+			data = data[index+1:]
+			break
+		}
+		if readSize == info.Size() {
+			break
+		}
+		if readSize == maxEventRecordBytes+2 {
+			return Event{}, false, fmt.Errorf("event log record exceeds %d-byte limit", maxEventRecordBytes)
+		}
+		readSize = min(readSize*2, info.Size(), maxEventRecordBytes+2)
 	}
-	data := make([]byte, readSize)
-	if _, err := file.ReadAt(data, info.Size()-readSize); err != nil && err != io.EOF {
-		return Event{}, false, fmt.Errorf("read event log tail: %w", err)
-	}
-	if data[len(data)-1] != '\n' {
-		return Event{}, false, fmt.Errorf("event log invariant failed for session %s: trailing partial line", sessionID)
-	}
-	data = bytes.TrimSuffix(data, []byte{'\n'})
-	if index := bytes.LastIndexByte(data, '\n'); index >= 0 {
-		data = data[index+1:]
-	} else if info.Size() > readSize {
+	if int64(len(data)) > maxEventRecordBytes {
 		return Event{}, false, fmt.Errorf("event log record exceeds %d-byte limit", maxEventRecordBytes)
 	}
+
 	event, err := parseEventLine(data)
 	if err != nil {
 		return Event{}, false, fmt.Errorf("event log tail invariant failed for session %s: %w", sessionID, err)
@@ -810,6 +861,10 @@ func (log Log) readPath(sessionID primitives.SessionID, path string, expectedStr
 		}
 		return nil, fmt.Errorf("read event log: %w", err)
 	}
+	return log.readBytes(sessionID, data, expectedStreamID)
+}
+
+func (log Log) readBytes(sessionID primitives.SessionID, data []byte, expectedStreamID primitives.EventStreamID) ([]Event, error) {
 	if len(data) == 0 {
 		return nil, nil
 	}

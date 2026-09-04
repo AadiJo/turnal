@@ -173,7 +173,7 @@ func inspectDurableStream(log Log, sessionID primitives.SessionID, streamID prim
 		return DurableStream{}, fmt.Errorf("read event stream %s: %w", path, err)
 	}
 	digest := sha256.Sum256(data)
-	events, err := log.readPath(sessionID, path, func() primitives.EventStreamID {
+	events, err := log.readBytes(sessionID, data, func() primitives.EventStreamID {
 		if legacy {
 			return ""
 		}

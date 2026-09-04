@@ -1319,15 +1319,6 @@ func appendErrorEvent(log eventlog.Log, adapter primitives.AdapterName, sessionI
 }
 
 func appendPayloadEvent(log eventlog.Log, input eventlog.AppendInput) error {
-	if input.SourceID != "" {
-		seen, err := log.ContainsSourceID(input.SessionID, input.SourceID)
-		if err != nil {
-			return err
-		}
-		if seen {
-			return nil
-		}
-	}
 	_, err := log.Append(input)
 	return err
 }
