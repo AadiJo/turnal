@@ -1879,42 +1879,7 @@ func (repo *Repo) deleteFilesAbsentFrom(entries []TreeEntry, indexPath string, d
 		targetPaths[entry.Path] = struct{}{}
 	}
 
-	root := repo.WorkspaceRoot.String()
-	return filepath.WalkDir(root, func(absPath string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		relPath, err := filepath.Rel(root, absPath)
-		if err != nil {
-			return fmt.Errorf("relative path for %s: %w", absPath, err)
-		}
-		if relPath == "." {
-			return nil
-		}
-
-		repoPath := filepath.ToSlash(relPath)
-		if excludedPath(repoPath) {
-			if entry.IsDir() {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if secretDeniedPath(repoPath, denyGlobs) {
-			if entry.IsDir() {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		ignored, err := repo.gitignoredPath(indexPath, repoPath)
-		if err != nil {
-			return err
-		}
-		if ignored {
-			if entry.IsDir() {
-				return fs.SkipDir
-			}
-			return nil
-		}
+	return repo.walkUnignoredPaths(indexPath, denyGlobs, func(absPath, repoPath string, entry fs.DirEntry) error {
 		if entry.IsDir() {
 			return nil
 		}
@@ -1926,6 +1891,49 @@ func (repo *Repo) deleteFilesAbsentFrom(entries []TreeEntry, indexPath string, d
 		}
 		return nil
 	})
+}
+
+// walkUnignoredPaths batches Git ignore checks by directory and prunes protected
+// directories before descending. Symlinks are visited as files, never followed.
+func (repo *Repo) walkUnignoredPaths(indexPath string, denyGlobs []string, visit func(string, string, fs.DirEntry) error) error {
+	root := repo.WorkspaceRoot.String()
+	var walk func(string) error
+	walk = func(relative string) error {
+		entries, err := os.ReadDir(filepath.Join(root, relative))
+		if err != nil {
+			return err
+		}
+		paths := make([]snapshotPath, 0, len(entries))
+		candidates := make([]fs.DirEntry, 0, len(entries))
+		for _, entry := range entries {
+			repoPath := newSnapshotPath(filepath.Join(relative, entry.Name()))
+			if excludedPath(repoPath.String()) || secretDeniedPath(repoPath.String(), denyGlobs) {
+				continue
+			}
+			paths = append(paths, repoPath)
+			candidates = append(candidates, entry)
+		}
+		ignored, err := repo.gitignoredPaths(indexPath, paths)
+		if err != nil {
+			return err
+		}
+		for i, entry := range candidates {
+			if ignored[paths[i]] {
+				continue
+			}
+			repoPath := paths[i].String()
+			if err := visit(filepath.Join(root, filepath.FromSlash(repoPath)), repoPath, entry); err != nil {
+				return err
+			}
+			if entry.IsDir() {
+				if err := walk(filepath.FromSlash(repoPath)); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	return walk("")
 }
 
 func (repo *Repo) restoreTreeEntry(entry TreeEntry) error {
@@ -2228,34 +2236,7 @@ func (repo *Repo) writeBlobTo(objectID string, destination io.Writer) error {
 func (repo *Repo) removeEmptyDirs(indexPath string) error {
 	root := repo.WorkspaceRoot.String()
 	var dirs []string
-	if err := filepath.WalkDir(root, func(absPath string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		relPath, err := filepath.Rel(root, absPath)
-		if err != nil {
-			return fmt.Errorf("relative path for %s: %w", absPath, err)
-		}
-		if relPath == "." {
-			return nil
-		}
-		repoPath := filepath.ToSlash(relPath)
-		if excludedPath(repoPath) {
-			if entry.IsDir() {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		ignored, err := repo.gitignoredPath(indexPath, repoPath)
-		if err != nil {
-			return err
-		}
-		if ignored {
-			if entry.IsDir() {
-				return fs.SkipDir
-			}
-			return nil
-		}
+	if err := repo.walkUnignoredPaths(indexPath, nil, func(absPath, _ string, entry fs.DirEntry) error {
 		if entry.IsDir() {
 			dirs = append(dirs, absPath)
 		}
@@ -2615,27 +2596,6 @@ func (repo *Repo) secretDenyGlobs() ([]string, error) {
 		return nil, err
 	}
 	return effective.Secrets.SnapshotDenyGlobs, nil
-}
-
-func (repo *Repo) gitignoredPath(indexPath string, repoPath string) (bool, error) {
-	cmd := exec.Command("git", "check-ignore", "--quiet", "--no-index", "--", repoPath)
-	cmd.Dir = repo.WorkspaceRoot.String()
-	cmd.Env = append(cleanGitEnv(os.Environ()),
-		"GIT_DIR="+repo.GitDir,
-		"GIT_WORK_TREE="+repo.WorkspaceRoot.String(),
-		"GIT_INDEX_FILE="+indexPath,
-	)
-
-	output, err := cmd.CombinedOutput()
-	if err == nil {
-		return true, nil
-	}
-
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-		return false, nil
-	}
-	return false, fmt.Errorf("git check-ignore --quiet --no-index -- %s: %w\n%s", repoPath, err, strings.TrimSpace(string(output)))
 }
 
 func (repo *Repo) gitignoredPaths(indexPath string, repoPaths []snapshotPath) (map[snapshotPath]bool, error) {
