@@ -51,7 +51,7 @@ func claudeCompletedTurnModel(payload hookPayload) string {
 		return ""
 	}
 
-	file, err := os.Open(path)
+	file, err := openTranscriptFile(path)
 	if err != nil {
 		return ""
 	}
@@ -115,7 +115,7 @@ func claudeCumulativeUsage(payload hookPayload) *transcriptUsage {
 		!strings.EqualFold(filepath.Base(path), payload.SessionID+".jsonl") {
 		return nil
 	}
-	file, err := os.Open(path)
+	file, err := openTranscriptFile(path)
 	if os.IsNotExist(err) {
 		return &transcriptUsage{}
 	}

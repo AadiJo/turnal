@@ -35,7 +35,7 @@ func codexCumulativeUsage(payload hookPayload) *transcriptUsage {
 	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path {
 		return nil
 	}
-	file, err := os.Open(path)
+	file, err := openTranscriptFile(path)
 	if os.IsNotExist(err) {
 		return &transcriptUsage{}
 	}
