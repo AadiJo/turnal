@@ -21,6 +21,7 @@ import (
 	"github.com/AadiJo/turnal/internal/manualcheckpoints"
 	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/AadiJo/turnal/internal/recall"
+	"github.com/AadiJo/turnal/internal/usage"
 )
 
 const (
@@ -640,6 +641,7 @@ func (service *Service) sessionView(record sessionRecord) (SessionSummaryView, e
 		}
 	}
 	for _, turn := range record.turns {
+		view.Usage.Add(usage.SummarizeTurn(turn.summary.Model, turn.summary.Usage))
 		if turn.pre != nil && turn.post != nil {
 			view.CompleteTurns++
 		} else {
@@ -672,6 +674,7 @@ func (service *Service) turnView(stream eventlog.DurableStream, turn turnRecord)
 		Prompt: turn.summary.Prompt, Assistant: turn.summary.Assistant, ToolNames: turn.summary.ToolNames,
 		EventCount: turn.summary.Count, Files: fileViews(turn.diff.Files),
 		Additions: turn.diff.Additions, Deletions: turn.diff.Deletions,
+		Usage: usage.SummarizeTurn(turn.summary.Model, turn.summary.Usage),
 	}
 	view.ErrorCount = turn.summary.TypeCounts[primitives.EventTypeError]
 	if turn.pre != nil {

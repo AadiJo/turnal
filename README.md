@@ -24,6 +24,7 @@ Turnal should be piloted before company-wide adoption. Pin a version and validat
 - Roll the workspace back with a safety checkpoint created first.
 - Save an explicit rollback point without committing to the project's Git history.
 - Search recorded turns without making SQLite the source of truth.
+- Track recorded token usage and API-equivalent cost by turn, session, and project.
 - Replay checkpoints in isolated worktrees.
 - Run repository-defined checks against the live workspace or a recorded checkpoint.
 - Promote recorded turns into immutable Cases, compare isolated Attempts, and apply a selected result.
@@ -138,6 +139,10 @@ turnal sessions
 # Read recent history or a transcript.
 turnal log
 turnal log --transcript
+
+# Summarize token usage and estimated API cost.
+turnal usage
+turnal usage --json
 
 # Inspect and diff one turn.
 turnal show <session>:<turn>
@@ -364,7 +369,7 @@ inference.
 
 ### Local viewer
 
-Run `turnal ui` to open Turnal Prism, a local browser interface for browsing recorded projects, sessions, turns, prompts, tool activity, diffs, and line-level blame. It runs on the loopback interface and can be launched from inside a recorded project or elsewhere to open the project index.
+Run `turnal ui` to open Turnal Prism, a local browser interface for browsing recorded projects, usage, sessions, turns, prompts, tool activity, diffs, and line-level blame. It runs on the loopback interface and can be launched from inside a recorded project or elsewhere to open the project index.
 
 ```sh
 turnal ui

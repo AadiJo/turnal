@@ -25,6 +25,8 @@ The machine-wide list of recorded projects comes from two files in the Turnal st
 
 `projects.sqlite` is disposable. Delete it and the next launch rebuilds it. It is never a source of truth, and nothing is recoverable only from it.
 
+The Usage tab aggregates provider-reported tokens from durable assistant events. It shows coverage alongside every total because events captured before usage support remain valid history without token metadata. Cost is an API-equivalent estimate from Turnal's versioned local price table. See [token usage and cost estimates](usage.md).
+
 A project whose store directory has disappeared stays listed and is marked absent. Recorded history outlives the working tree, so silently dropping the entry would make lost history look like history that never existed.
 
 ## Security boundary
@@ -66,6 +68,7 @@ The viewer retries a transient partial event tail only while an event-writer loc
 - One turn response is limited to 500 normalized events.
 - The review surface loads file patches in pages of 20, with an explicit control to load more.
 - The cross-project activity feed is capped per request and defaults to the most recent 40 sessions.
+- Usage totals distinguish covered turns from turns without provider token metadata.
 - Truncation is reported in the response and UI.
 
 Prism intentionally omits rollback buttons, editing, cloud accounts, automatic uploads, arbitrary network binding, Electron packaging, raw adapter-record browsing, and a search UI. Machine-wide local search is available through `turnal search --all-projects`.

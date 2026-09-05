@@ -118,6 +118,22 @@ func TestValidateEventAcceptsSessionTopology(t *testing.T) {
 	}
 }
 
+func TestValidateEventUsageIsNonNegativeAndAssistantOnly(t *testing.T) {
+	event := Event{Type: EventAssistantMessage, SessionID: "fixture", CWD: "/workspace", Usage: &TokenUsage{InputTokens: 12}}
+	if err := ValidateEvent(event); err != nil {
+		t.Fatalf("ValidateEvent: %v", err)
+	}
+	event.Usage.InputTokens = -1
+	if err := ValidateEvent(event); err == nil {
+		t.Fatal("negative usage accepted")
+	}
+	event.Usage.InputTokens = 1
+	event.Type = EventPromptUser
+	if err := ValidateEvent(event); err == nil {
+		t.Fatal("prompt usage accepted")
+	}
+}
+
 func testManifest() Manifest {
 	return Manifest{
 		Name: "example", DisplayName: "Example", AdapterVersion: "1.0.0", Provider: "Example",

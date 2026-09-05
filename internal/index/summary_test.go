@@ -54,3 +54,15 @@ func TestSummarizeTurnEventsTracksObservedModelChanges(t *testing.T) {
 		t.Fatalf("turn 3 model = %q", summaries[3].Model)
 	}
 }
+
+func TestSummarizeTurnEventsAddsAssistantUsage(t *testing.T) {
+	turn, _ := primitives.NewTurnID(1)
+	events := []eventlog.Event{
+		{TurnID: &turn, Type: primitives.EventTypeAssistantMessage, Payload: json.RawMessage(`{"usage":{"input_tokens":10,"cache_read_tokens":20,"output_tokens":3}}`)},
+		{TurnID: &turn, Type: primitives.EventTypeAssistantMessage, Payload: json.RawMessage(`{"usage":{"input_tokens":4,"output_tokens":2}}`)},
+	}
+	summary := SummarizeTurnEvents(events)[1]
+	if summary.Usage == nil || summary.Usage.InputTokens != 14 || summary.Usage.CacheReadTokens != 20 || summary.Usage.OutputTokens != 5 {
+		t.Fatalf("usage = %+v", summary.Usage)
+	}
+}

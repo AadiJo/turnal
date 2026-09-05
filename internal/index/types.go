@@ -7,10 +7,11 @@ import (
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	"github.com/AadiJo/turnal/internal/primitives"
 	"github.com/AadiJo/turnal/internal/provenance"
+	"github.com/AadiJo/turnal/internal/usage"
 )
 
 const (
-	SchemaVersion = 7
+	SchemaVersion = 8
 	DBFileName    = "index.sqlite"
 )
 
@@ -73,6 +74,7 @@ type TurnEventSummary struct {
 	TypeCounts map[primitives.EventType]int
 	First      time.Time
 	Last       time.Time
+	Usage      *usage.TokenUsage
 }
 
 type SearchQuery struct {

@@ -1,6 +1,10 @@
 package viewer
 
-import "time"
+import (
+	"time"
+
+	"github.com/AadiJo/turnal/internal/usage"
+)
 
 // ProjectView is one recorded project in the global index. Present is false
 // when the store directory is gone; the project stays listed because its
@@ -23,6 +27,7 @@ type ProjectView struct {
 	LastAdapter  string                `json:"last_adapter,omitempty"`
 	AddedAt      time.Time             `json:"added_at,omitempty"`
 	Worktrees    []ProjectWorktreeView `json:"worktrees,omitempty"`
+	Usage        usage.Summary         `json:"usage"`
 }
 
 type ProjectWorktreeView struct {
@@ -34,21 +39,22 @@ type ProjectWorktreeView struct {
 // ActivityView is one session in the cross-project feed. It carries the owning
 // store so a click can route back into that project.
 type ActivityView struct {
-	StoreID     string    `json:"store_id"`
-	ProjectName string    `json:"project_name"`
-	SessionKey  string    `json:"session_key"`
-	SessionID   string    `json:"session_id"`
-	Title       string    `json:"title,omitempty"`
-	Adapter     string    `json:"adapter,omitempty"`
-	Model       string    `json:"model,omitempty"`
-	Branch      string    `json:"branch,omitempty"`
-	Status      string    `json:"status,omitempty"`
-	TurnCount   int       `json:"turn_count"`
-	FileCount   int       `json:"file_count"`
-	Additions   int       `json:"additions"`
-	Deletions   int       `json:"deletions"`
-	StartedAt   time.Time `json:"started_at,omitempty"`
-	FinishedAt  time.Time `json:"finished_at,omitempty"`
+	StoreID     string        `json:"store_id"`
+	ProjectName string        `json:"project_name"`
+	SessionKey  string        `json:"session_key"`
+	SessionID   string        `json:"session_id"`
+	Title       string        `json:"title,omitempty"`
+	Adapter     string        `json:"adapter,omitempty"`
+	Model       string        `json:"model,omitempty"`
+	Branch      string        `json:"branch,omitempty"`
+	Status      string        `json:"status,omitempty"`
+	TurnCount   int           `json:"turn_count"`
+	FileCount   int           `json:"file_count"`
+	Additions   int           `json:"additions"`
+	Deletions   int           `json:"deletions"`
+	StartedAt   time.Time     `json:"started_at,omitempty"`
+	FinishedAt  time.Time     `json:"finished_at,omitempty"`
+	Usage       usage.Summary `json:"usage"`
 }
 
 type ActivityPageView struct {
@@ -103,26 +109,27 @@ type WorkspaceView struct {
 }
 
 type SessionSummaryView struct {
-	Key             string    `json:"key"`
-	ID              string    `json:"id"`
-	ParentSessionID string    `json:"parent_session_id,omitempty"`
-	ParentToolUseID string    `json:"parent_tool_use_id,omitempty"`
-	StreamID        string    `json:"stream_id"`
-	WorktreeID      string    `json:"worktree_id,omitempty"`
-	Adapter         string    `json:"adapter,omitempty"`
-	Model           string    `json:"model,omitempty"`
-	Branch          string    `json:"branch,omitempty"`
-	StartedAt       time.Time `json:"started_at,omitempty"`
-	FinishedAt      time.Time `json:"finished_at,omitempty"`
-	EventCount      int       `json:"event_count"`
-	TurnCount       int       `json:"turn_count"`
-	CompleteTurns   int       `json:"complete_turns"`
-	ErrorCount      int       `json:"error_count"`
-	FileCount       int       `json:"file_count"`
-	Additions       int       `json:"additions"`
-	Deletions       int       `json:"deletions"`
-	Status          string    `json:"status"`
-	PromptPreview   string    `json:"prompt_preview,omitempty"`
+	Key             string        `json:"key"`
+	ID              string        `json:"id"`
+	ParentSessionID string        `json:"parent_session_id,omitempty"`
+	ParentToolUseID string        `json:"parent_tool_use_id,omitempty"`
+	StreamID        string        `json:"stream_id"`
+	WorktreeID      string        `json:"worktree_id,omitempty"`
+	Adapter         string        `json:"adapter,omitempty"`
+	Model           string        `json:"model,omitempty"`
+	Branch          string        `json:"branch,omitempty"`
+	StartedAt       time.Time     `json:"started_at,omitempty"`
+	FinishedAt      time.Time     `json:"finished_at,omitempty"`
+	EventCount      int           `json:"event_count"`
+	TurnCount       int           `json:"turn_count"`
+	CompleteTurns   int           `json:"complete_turns"`
+	ErrorCount      int           `json:"error_count"`
+	FileCount       int           `json:"file_count"`
+	Additions       int           `json:"additions"`
+	Deletions       int           `json:"deletions"`
+	Status          string        `json:"status"`
+	PromptPreview   string        `json:"prompt_preview,omitempty"`
+	Usage           usage.Summary `json:"usage"`
 	runID           string
 	captureKind     string
 }
@@ -137,23 +144,24 @@ type ManualSaveView struct {
 }
 
 type TurnSummaryView struct {
-	Key          string     `json:"key"`
-	ID           uint64     `json:"id"`
-	Status       string     `json:"status"`
-	StartedAt    time.Time  `json:"started_at,omitempty"`
-	FinishedAt   time.Time  `json:"finished_at,omitempty"`
-	Adapter      string     `json:"adapter,omitempty"`
-	Prompt       string     `json:"prompt,omitempty"`
-	Assistant    string     `json:"assistant,omitempty"`
-	ToolNames    []string   `json:"tool_names,omitempty"`
-	EventCount   int        `json:"event_count"`
-	ErrorCount   int        `json:"error_count"`
-	Files        []FileView `json:"files,omitempty"`
-	Additions    int        `json:"additions"`
-	Deletions    int        `json:"deletions"`
-	PreCommit    string     `json:"pre_commit,omitempty"`
-	PostCommit   string     `json:"post_commit,omitempty"`
-	Checkpointed bool       `json:"checkpointed"`
+	Key          string        `json:"key"`
+	ID           uint64        `json:"id"`
+	Status       string        `json:"status"`
+	StartedAt    time.Time     `json:"started_at,omitempty"`
+	FinishedAt   time.Time     `json:"finished_at,omitempty"`
+	Adapter      string        `json:"adapter,omitempty"`
+	Prompt       string        `json:"prompt,omitempty"`
+	Assistant    string        `json:"assistant,omitempty"`
+	ToolNames    []string      `json:"tool_names,omitempty"`
+	EventCount   int           `json:"event_count"`
+	ErrorCount   int           `json:"error_count"`
+	Files        []FileView    `json:"files,omitempty"`
+	Additions    int           `json:"additions"`
+	Deletions    int           `json:"deletions"`
+	PreCommit    string        `json:"pre_commit,omitempty"`
+	PostCommit   string        `json:"post_commit,omitempty"`
+	Checkpointed bool          `json:"checkpointed"`
+	Usage        usage.Summary `json:"usage"`
 }
 
 type FileView struct {

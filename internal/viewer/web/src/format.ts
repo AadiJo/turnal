@@ -1,6 +1,8 @@
 /** Shared display helpers. Kept separate from components so the formatting
  * rules for time, ids, and adapter names have one home. */
 
+import type { UsageSummary } from "./types";
+
 export function cx(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(" ");
 }
@@ -66,6 +68,26 @@ export function cleanAdapter(value?: string) {
 export function initials(value?: string) {
   const label = value?.trim() || "?";
   return label.slice(0, 2).toLowerCase();
+}
+
+export function totalTokens(usage: UsageSummary) {
+  return (usage.input_tokens ?? 0) + (usage.cache_read_tokens ?? 0) +
+    (usage.cache_write_tokens ?? 0) + (usage.output_tokens ?? 0);
+}
+
+export function tokenCount(value = 0) {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+  return String(value);
+}
+
+export function estimatedCost(micros = 0, pricedTokens = 0, totalTokens = 0) {
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: micros < 1_000_000 ? 3 : 2,
+  }).format(micros / 1_000_000) + (pricedTokens < totalTokens ? "+" : "");
 }
 
 /** True when an agent may still be working, which is the one state that earns

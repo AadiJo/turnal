@@ -627,10 +627,10 @@ func insertTurns(ctx context.Context, tx *sql.Tx, turns []turnRecord) error {
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO turns (
 			stream_id, worktree_id, session_id, turn_id, status, event_count, adapter, model, prompt_preview, assistant_preview,
-			tool_names_json, event_type_counts_json, events_first_at, events_last_at,
+			usage_json, tool_names_json, event_type_counts_json, events_first_at, events_last_at,
 			diff_loaded, diff_file_count, diff_additions, diff_deletions, diff_binary_files, warnings_json
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare turns insert: %w", err)
 	}
@@ -653,6 +653,11 @@ func insertTurns(ctx context.Context, tx *sql.Tx, turns []turnRecord) error {
 		if err != nil {
 			return fmt.Errorf("encode warnings for %s:%s: %w", turn.SessionID, turn.TurnID, err)
 		}
+		usageBytes, err := json.Marshal(turn.Events.Usage)
+		if err != nil {
+			return fmt.Errorf("encode usage for %s:%s: %w", turn.SessionID, turn.TurnID, err)
+		}
+		usageJSON := string(usageBytes)
 		if _, err := stmt.ExecContext(ctx,
 			turn.StreamID.String(),
 			nullableText(turn.WorktreeID.String()),
@@ -664,6 +669,7 @@ func insertTurns(ctx context.Context, tx *sql.Tx, turns []turnRecord) error {
 			nullableText(turn.Events.Model),
 			nullableText(turn.Events.Prompt),
 			nullableText(turn.Events.Assistant),
+			nullableText(usageJSON),
 			toolNamesJSON,
 			typeCountsJSON,
 			nullableTime(turn.Events.First),
