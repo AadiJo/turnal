@@ -124,12 +124,13 @@ func claudeCumulativeUsage(payload hookPayload) *transcriptUsage {
 	}
 	defer file.Close()
 	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() {
+	if err != nil || !info.Mode().IsRegular() || info.Size() > usageTranscriptLimit {
 		return nil
 	}
 
 	byMessage := make(map[string]usage.TokenUsage)
-	scanner := bufio.NewScanner(file)
+	reader := &io.LimitedReader{R: file, N: usageTranscriptLimit + 1}
+	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64<<10), 8<<20)
 	for scanner.Scan() {
 		var entry claudeTranscriptEntry
@@ -149,7 +150,7 @@ func claudeCumulativeUsage(payload hookPayload) *transcriptUsage {
 			byMessage[entry.Message.ID] = candidate
 		}
 	}
-	if scanner.Err() != nil {
+	if scanner.Err() != nil || reader.N == 0 {
 		return nil
 	}
 	total := usage.TokenUsage{APICalls: int64(len(byMessage))}

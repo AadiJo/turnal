@@ -14,6 +14,8 @@ Built-in Claude Code and Codex capture reads cumulative usage when each prompt a
 
 Every summary includes `covered_turns` and `total_turns`. Missing usage stays missing instead of being treated as zero. Turns without a readable starting baseline or a new usage reading remain uncovered, as do turns whose counters reset. Unknown models retain their token counts but do not receive a cost estimate.
 
+Transcript usage reads are limited to 16 MiB so usage collection cannot scan an unbounded file while capture holds the session lock. Larger transcripts remain uncovered; Turnal continues recording agent events without usage totals. A transcript that grows past the limit during a read is also rejected rather than counted partially.
+
 The normalized categories are fresh input, cache reads, cache writes, output, reasoning output, and API calls. Codex API-call counts are unavailable because usage notifications do not reliably identify requests. Reasoning tokens are informational because Codex includes them in output tokens. Turnal excludes them from the total to prevent double counting.
 
 ## Cost estimates

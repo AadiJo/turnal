@@ -5,6 +5,10 @@ import (
 	"os"
 )
 
+// Usage is optional. Bound synchronous reads while capture holds the session
+// lock, and leave oversized transcripts uncovered rather than counting a prefix.
+const usageTranscriptLimit int64 = 16 << 20
+
 // Reject special paths before opening them. Unix opens also use O_NONBLOCK so
 // replacing a regular path with a FIFO cannot stall capture between Stat and
 // OpenFile. Callers must still validate the opened file before reading it.

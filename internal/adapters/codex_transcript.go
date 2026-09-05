@@ -3,6 +3,7 @@ package adapters
 import (
 	"bufio"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,13 +45,14 @@ func codexCumulativeUsage(payload hookPayload) *transcriptUsage {
 	}
 	defer file.Close()
 	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() {
+	if err != nil || !info.Mode().IsRegular() || info.Size() > usageTranscriptLimit {
 		return nil
 	}
 
 	sessionMatched := false
 	var latest *codexTokenUsage
-	scanner := bufio.NewScanner(file)
+	reader := &io.LimitedReader{R: file, N: usageTranscriptLimit + 1}
+	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64<<10), 8<<20)
 	for scanner.Scan() {
 		var line codexTranscriptLine
@@ -69,7 +71,7 @@ func codexCumulativeUsage(payload hookPayload) *transcriptUsage {
 			}
 		}
 	}
-	if scanner.Err() != nil || !sessionMatched {
+	if scanner.Err() != nil || reader.N == 0 || !sessionMatched {
 		return nil
 	}
 	if latest == nil {

@@ -1,6 +1,7 @@
 package adapters
 
 import (
+	"bytes"
 	"encoding/json"
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	"github.com/AadiJo/turnal/internal/primitives"
@@ -10,6 +11,41 @@ import (
 
 	"github.com/AadiJo/turnal/internal/usage"
 )
+
+func TestUsageReadersLeaveOversizedTranscriptsUncovered(t *testing.T) {
+	for _, reader := range []struct {
+		name   string
+		prefix string
+		read   func(hookPayload) *transcriptUsage
+	}{
+		{"claude", `{"type":"assistant","sessionId":"session-1","cwd":"/workspace","message":{"id":"msg-1","role":"assistant","usage":{"input_tokens":10,"output_tokens":2}}}` + "\n", claudeCumulativeUsage},
+		{"codex", `{"type":"session_meta","payload":{"id":"session-1"}}` + "\n" + `{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"output_tokens":2}}}}` + "\n", codexCumulativeUsage},
+	} {
+		t.Run(reader.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "session-1.jsonl")
+			if err := os.WriteFile(path, []byte(reader.prefix), 0600); err != nil {
+				t.Fatal(err)
+			}
+			payload := hookPayload{SessionID: "session-1", CWD: "/workspace", TranscriptPath: path}
+			if got := reader.read(payload); got == nil || !got.HasUsage {
+				t.Fatalf("small transcript lost usage: %+v", got)
+			}
+			file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			line := append(bytes.Repeat([]byte{' '}, 4095), '\n')
+			_, err = file.Write(bytes.Repeat(line, int(usageTranscriptLimit)/len(line)+1))
+			_ = file.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := reader.read(payload); got != nil {
+				t.Fatalf("oversized transcript reported usage: %+v", got)
+			}
+		})
+	}
+}
 
 func TestClaudeCumulativeUsageDeduplicatesStreamingMessages(t *testing.T) {
 	dir := t.TempDir()
