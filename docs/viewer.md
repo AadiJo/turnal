@@ -74,4 +74,4 @@ Prism intentionally omits rollback buttons, editing, cloud accounts, automatic u
 
 `npm run build:web` creates deterministic production assets in `internal/viewer/web/dist`. Those generated assets are committed and embedded with `go:embed`, so direct `go install` and unsupported-platform npm fallback builds do not require Node.
 
-`npm run check:web` type-checks, rebuilds, and fails if the committed assets differ; `scripts/ci/quality.sh` runs it in CI. Tests enforce a 1.5 MB compressed asset budget, reject source maps, and reject remote runtime URL dependencies.
+`npm run check:web` type-checks without rebuilding. `npm run check:web:assets` also rebuilds and fails if the tracked assets differ from the Git index; `scripts/ci/quality.sh` runs it in CI. Tests enforce a 1.5 MB compressed asset budget, reject source maps, and reject remote runtime URL dependencies.

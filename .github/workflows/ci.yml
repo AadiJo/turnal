@@ -43,10 +43,11 @@ jobs:
         with:
           node-version: "24"
           package-manager-cache: false
-      # The embedded viewer assets are type-checked and rebuilt here, which needs
-      # the frontend toolchain and its type packages installed.
-      - name: Install frontend dependencies
-        run: npm ci
+      - name: Install verification dependencies
+        run: |
+          npm ci
+          npm --prefix apps/vscode ci
+          npm --prefix apps/marketing ci
       - name: Quality and race
         run: scripts/ci/quality.sh
       - id: stable-ref
