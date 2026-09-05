@@ -21,34 +21,37 @@ import (
 	"github.com/AadiJo/turnal/internal/runs"
 	"github.com/AadiJo/turnal/internal/turnevents"
 	"github.com/AadiJo/turnal/internal/turns"
+	"github.com/AadiJo/turnal/internal/usage"
 	adaptersdk "github.com/AadiJo/turnal/sdk/adapter"
 )
 
 type hookPayload struct {
-	SessionID              string          `json:"session_id"`
-	ParentSessionID        string          `json:"parent_session_id"`
-	ParentToolUseID        string          `json:"parent_tool_use_id"`
-	TurnID                 string          `json:"turn_id"`
-	TranscriptPath         string          `json:"transcript_path"`
-	CWD                    string          `json:"cwd"`
-	HookEventName          string          `json:"hook_event_name"`
-	Model                  string          `json:"model"`
-	PermissionMode         string          `json:"permission_mode"`
-	Prompt                 string          `json:"prompt"`
-	LastAssistantMessage   string          `json:"last_assistant_message"`
-	ToolName               string          `json:"tool_name"`
-	ToolInput              json.RawMessage `json:"tool_input"`
-	ToolUseID              string          `json:"tool_use_id"`
-	ToolResponse           json.RawMessage `json:"tool_response"`
-	ToolError              string          `json:"error"`
-	ToolFailed             bool            `json:"is_error"`
-	ToolOutcomeUnknown     bool            `json:"-"`
-	ToolInterrupted        bool            `json:"is_interrupt"`
-	ToolDurationMS         int64           `json:"duration_ms"`
-	MutationAlreadyApplied bool            `json:"-"`
-	AgentID                string          `json:"agent_id"`
-	AgentType              string          `json:"agent_type"`
-	IntentCommand          bool            `json:"-"`
+	SessionID              string            `json:"session_id"`
+	ParentSessionID        string            `json:"parent_session_id"`
+	ParentToolUseID        string            `json:"parent_tool_use_id"`
+	TurnID                 string            `json:"turn_id"`
+	TranscriptPath         string            `json:"transcript_path"`
+	CWD                    string            `json:"cwd"`
+	HookEventName          string            `json:"hook_event_name"`
+	Model                  string            `json:"model"`
+	PermissionMode         string            `json:"permission_mode"`
+	Prompt                 string            `json:"prompt"`
+	LastAssistantMessage   string            `json:"last_assistant_message"`
+	ToolName               string            `json:"tool_name"`
+	ToolInput              json.RawMessage   `json:"tool_input"`
+	ToolUseID              string            `json:"tool_use_id"`
+	ToolResponse           json.RawMessage   `json:"tool_response"`
+	ToolError              string            `json:"error"`
+	ToolFailed             bool              `json:"is_error"`
+	ToolOutcomeUnknown     bool              `json:"-"`
+	ToolInterrupted        bool              `json:"is_interrupt"`
+	ToolDurationMS         int64             `json:"duration_ms"`
+	MutationAlreadyApplied bool              `json:"-"`
+	AgentID                string            `json:"agent_id"`
+	AgentType              string            `json:"agent_type"`
+	IntentCommand          bool              `json:"-"`
+	Usage                  *usage.TokenUsage `json:"-"`
+	UsageTotal             *usage.TokenUsage `json:"-"`
 }
 
 type codexHookPayload struct {
@@ -103,16 +106,19 @@ type sessionPayload struct {
 }
 
 type promptPayload struct {
-	Text           string `json:"text"`
-	ProviderTurnID string `json:"provider_turn_id,omitempty"`
-	Model          string `json:"model,omitempty"`
-	Redacted       bool   `json:"redacted"`
+	Text           string            `json:"text"`
+	ProviderTurnID string            `json:"provider_turn_id,omitempty"`
+	Model          string            `json:"model,omitempty"`
+	Redacted       bool              `json:"redacted"`
+	UsageTotal     *usage.TokenUsage `json:"usage_total,omitempty"`
 }
 
 type assistantPayload struct {
-	Text           string `json:"text"`
-	ProviderTurnID string `json:"provider_turn_id,omitempty"`
-	Model          string `json:"model,omitempty"`
+	Text           string            `json:"text"`
+	ProviderTurnID string            `json:"provider_turn_id,omitempty"`
+	Model          string            `json:"model,omitempty"`
+	Usage          *usage.TokenUsage `json:"usage,omitempty"`
+	UsageTotal     *usage.TokenUsage `json:"usage_total,omitempty"`
 }
 
 type toolCallPayload struct {
@@ -430,6 +436,13 @@ func processNormalizedEvent(log eventlog.Log, manager turns.Manager, adapter pri
 		ToolFailed:             event.IsError,
 		MutationAlreadyApplied: event.MutationAlreadyApplied,
 	}
+	if event.Usage != nil {
+		payload.Usage = &usage.TokenUsage{
+			InputTokens: event.Usage.InputTokens, CacheReadTokens: event.Usage.CacheReadTokens,
+			CacheWriteTokens: event.Usage.CacheWriteTokens, OutputTokens: event.Usage.OutputTokens,
+			ReasoningTokens: event.Usage.ReasoningTokens, APICalls: event.Usage.APICalls,
+		}
+	}
 	if !effective.Secrets.StorePrompts && (event.Type == adaptersdk.EventToolCall || event.Type == adaptersdk.EventToolResult) && rawContainsIntentCommand(raw, effective.Hooks.Command) {
 		// A partial normalized input must not override core's observation that
 		// the provider payload contains prompt-like intent arguments. Keep the
@@ -459,6 +472,9 @@ func processNormalizedEvent(log eventlog.Log, manager turns.Manager, adapter pri
 			return err
 		}
 		payload.Model = model
+		if reading := readProviderUsage(adapter, payload); reading != nil {
+			payload.UsageTotal = &reading.Total
+		}
 		turnID, err := startPromptTurn(log, manager, adapter, sessionID, rawRef, payload)
 		if err != nil {
 			return err
@@ -657,6 +673,9 @@ func processHook(log eventlog.Log, manager turns.Manager, adapter primitives.Ada
 			return err
 		}
 		payload.Model = model
+		if reading := readProviderUsage(adapter, payload); reading != nil {
+			payload.UsageTotal = &reading.Total
+		}
 		turnID, err := startPromptTurn(log, manager, adapter, sessionID, rawRef, payload)
 		if err != nil {
 			return err
@@ -703,6 +722,9 @@ func processHook(log eventlog.Log, manager turns.Manager, adapter primitives.Ada
 		}
 		if payload.Model = strings.TrimSpace(payload.Model); payload.Model == "" && adapter == primitives.AdapterClaudeCode {
 			payload.Model = claudeCompletedTurnModel(payload)
+		}
+		if err := hydrateProviderUsage(log, adapter, sessionID, active.TurnID, &payload); err != nil {
+			return err
 		}
 		if err := closeUnmatchedToolCalls(log, adapter, sessionID, active.TurnID, rawRef, effective); err != nil {
 			return err
@@ -890,6 +912,7 @@ func appendPrompt(log eventlog.Log, adapter primitives.AdapterName, sessionID pr
 			ProviderTurnID: payload.TurnID,
 			Model:          payload.Model,
 			Redacted:       !secrets.StorePrompts,
+			UsageTotal:     payload.UsageTotal,
 		}),
 	})
 }
@@ -906,8 +929,57 @@ func appendAssistant(log eventlog.Log, adapter primitives.AdapterName, sessionID
 			Text:           redactedText(payload.LastAssistantMessage, secrets.StorePrompts),
 			ProviderTurnID: payload.TurnID,
 			Model:          payload.Model,
+			Usage:          payload.Usage,
+			UsageTotal:     payload.UsageTotal,
 		}),
 	})
+}
+
+// A readable empty transcript is a valid zero baseline, but does not establish
+// coverage. A nil reading means the transcript could not be read or validated.
+type transcriptUsage struct {
+	Total    usage.TokenUsage
+	HasUsage bool
+}
+
+func readProviderUsage(adapter primitives.AdapterName, payload hookPayload) *transcriptUsage {
+	switch adapter {
+	case primitives.AdapterClaudeCode:
+		return claudeCumulativeUsage(payload)
+	case primitives.AdapterCodex:
+		return codexCumulativeUsage(payload)
+	default:
+		return nil
+	}
+}
+
+func hydrateProviderUsage(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, payload *hookPayload) error {
+	current := readProviderUsage(adapter, *payload)
+	if current == nil || !current.HasUsage {
+		return nil
+	}
+	events, err := log.Read(sessionID)
+	if err != nil {
+		return err
+	}
+	// Only this turn's prompt establishes a baseline. Using the previous completed
+	// turn would attribute unrecorded or interrupted work to the current turn.
+	for _, event := range events {
+		if event.Type != primitives.EventTypePromptUser || event.Adapter != adapter || event.TurnID == nil || *event.TurnID != turnID {
+			continue
+		}
+		var prompt promptPayload
+		if err := json.Unmarshal(event.Payload, &prompt); err != nil {
+			return fmt.Errorf("decode usage baseline for %s:%s: %w", sessionID, turnID, err)
+		}
+		delta, ok := usage.Delta(current.Total, prompt.UsageTotal)
+		if ok && delta != (usage.TokenUsage{}) {
+			payload.Usage = &delta
+			payload.UsageTotal = &current.Total
+		}
+		return nil
+	}
+	return nil
 }
 
 func appendToolCall(log eventlog.Log, adapter primitives.AdapterName, sessionID primitives.SessionID, turnID primitives.TurnID, rawRef, sourceID string, payload hookPayload, effective agentconfig.Effective, preSnapshot *provenance.ActionSnapshot, intentSeq *primitives.EventSeq) error {
@@ -1319,15 +1391,6 @@ func appendErrorEvent(log eventlog.Log, adapter primitives.AdapterName, sessionI
 }
 
 func appendPayloadEvent(log eventlog.Log, input eventlog.AppendInput) error {
-	if input.SourceID != "" {
-		seen, err := log.ContainsSourceID(input.SessionID, input.SourceID)
-		if err != nil {
-			return err
-		}
-		if seen {
-			return nil
-		}
-	}
 	_, err := log.Append(input)
 	return err
 }

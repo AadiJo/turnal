@@ -4,7 +4,7 @@ package projects
 // database structurally unhealthy, which Open resolves by rebuilding from the
 // registry rather than migrating: every row here is derived state.
 const (
-	SchemaVersion = 1
+	SchemaVersion = 2
 	DBFileName    = "projects.sqlite"
 )
 
@@ -37,6 +37,7 @@ CREATE TABLE projects (
 	last_activity   TEXT,
 	last_prompt     TEXT,
 	last_adapter    TEXT,
+	usage_json      TEXT NOT NULL DEFAULT '{}',
 	added_at        TEXT NOT NULL,
 	refreshed_at    TEXT
 );
@@ -67,6 +68,7 @@ CREATE TABLE activity (
 	deletions    INTEGER NOT NULL DEFAULT 0,
 	started_at   TEXT,
 	finished_at  TEXT,
+	usage_json   TEXT NOT NULL DEFAULT '{}',
 	PRIMARY KEY (store_id, session_key),
 	FOREIGN KEY (store_id) REFERENCES projects(store_id) ON DELETE CASCADE
 );

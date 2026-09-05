@@ -3,7 +3,7 @@ import * as vscode from "vscode";
 import { TurnTarget } from "../model";
 import { BlameEntry, BlameResult } from "../turnal/types";
 import { displayAgent, formatTimestamp, relativeTime, truncate } from "../utils/format";
-import { blameTitle, intentConfidence, recordedTextMatches } from "../utils/blame";
+import { blameTitle, intentConfidence, RecordedTextMatcher } from "../utils/blame";
 import { cliForFolder } from "../workspaces";
 
 interface BlameControllerOptions {
@@ -18,6 +18,7 @@ export class BlameController implements vscode.HoverProvider, vscode.Disposable 
       margin: "0 0 0 3em",
     },
   });
+  private readonly textMatcher = new RecordedTextMatcher();
   private readonly cache = new Map<string, BlameResult>();
   private readonly inFlight = new Map<string, Promise<BlameResult | undefined>>();
   private readonly disposables: vscode.Disposable[] = [];
@@ -55,7 +56,7 @@ export class BlameController implements vscode.HoverProvider, vscode.Disposable 
       return undefined;
     }
     const result = await this.blame(context.folder, context.relativePath);
-    if (!result || token.isCancellationRequested || !matchesRecordedFile(document, result)) {
+    if (!result || token.isCancellationRequested || !this.textMatcher.matchesDocument(document, result.entries)) {
       return undefined;
     }
     const entry = result.entries[position.line];
@@ -104,7 +105,7 @@ export class BlameController implements vscode.HoverProvider, vscode.Disposable 
       return;
     }
     const result = await this.blame(context.folder, context.relativePath);
-    if (!result || editor !== vscode.window.activeTextEditor || !matchesRecordedFile(editor.document, result)) {
+    if (!result || editor !== vscode.window.activeTextEditor || !this.textMatcher.matchesDocument(editor.document, result.entries)) {
       editor.setDecorations(this.decoration, []);
       return;
     }
@@ -172,10 +173,6 @@ export class BlameController implements vscode.HoverProvider, vscode.Disposable 
 
 function inlineBlameEnabled(uri: vscode.Uri): boolean {
   return vscode.workspace.getConfiguration("turnal", uri).get<boolean>("inlineBlame.enabled", true);
-}
-
-export function matchesRecordedFile(document: vscode.TextDocument, result: BlameResult): boolean {
-  return recordedTextMatches(document.getText(), result.entries);
 }
 
 function blameHover(entry: BlameEntry, folder: vscode.WorkspaceFolder): vscode.MarkdownString | undefined {

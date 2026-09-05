@@ -911,3 +911,33 @@ func writeFile(t *testing.T, root primitives.WorkspaceRoot, relPath, content str
 		t.Fatalf("write %s: %v", relPath, err)
 	}
 }
+
+func TestDropSessionRemovesSourceIndex(t *testing.T) {
+	repo, err := checkpoint.Init(workspaceRoot(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := sessionID(t, "indexed-retention")
+	payload, err := json.Marshal(map[string]string{"text": strings.Repeat("x", 1<<20)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := repo.EventLog()
+	if _, err := log.Append(eventlog.AppendInput{SessionID: session, Type: primitives.EventTypeAssistantMessage, SourceID: "message", Payload: payload}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := log.ContainsSourceID(session, "message"); err != nil {
+		t.Fatal(err)
+	}
+	cacheDir := filepath.Join(repo.MetadataDir, "log", "source", session.String(), "index")
+	entries, err := os.ReadDir(cacheDir)
+	if err != nil || len(entries) == 0 {
+		t.Fatalf("source index was not created: %v", err)
+	}
+	if _, err := DropSession(repo, session, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(cacheDir); !os.IsNotExist(err) {
+		t.Fatalf("source index survives session deletion: %v", err)
+	}
+}

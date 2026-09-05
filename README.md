@@ -12,7 +12,7 @@
 
 Turnal records what an agent did, the problem it said it was trying to solve, what the workspace looked like before and after each turn, and how to get back safely.
 
-It combines an append-only activity log with private Git checkpoints. Your project history stays local, normal recording never commits to or modifies your existing `.git/`, and SQLite is only a disposable search index. The optional workspace-Git rollback mode is the explicit exception: it can restore a previously captured HEAD and index.
+It combines an append-only activity log with private Git checkpoints. Your project history stays local, normal recording never commits to or modifies your existing `.git/`, and SQLite holds only disposable indexes. The optional workspace-Git rollback mode is the explicit exception: it can restore a previously captured HEAD and index.
 
 Turnal should be piloted before company-wide adoption. Pin a version and validate hook compatibility, retention, and rollback behavior on representative repositories; see the [compatibility policy](docs/compatibility.md), [retention semantics](docs/retention.md), and [recovery runbook](docs/recovery.md).
 
@@ -24,6 +24,7 @@ Turnal should be piloted before company-wide adoption. Pin a version and validat
 - Roll the workspace back with a safety checkpoint created first.
 - Save an explicit rollback point without committing to the project's Git history.
 - Search recorded turns without making SQLite the source of truth.
+- Track recorded token usage and API-equivalent cost by turn, session, and project.
 - Replay checkpoints in isolated worktrees.
 - Run repository-defined checks against the live workspace or a recorded checkpoint.
 - Promote recorded turns into immutable Cases, compare isolated Attempts, and apply a selected result.
@@ -138,6 +139,10 @@ turnal sessions
 # Read recent history or a transcript.
 turnal log
 turnal log --transcript
+
+# Summarize token usage and estimated API cost.
+turnal usage
+turnal usage --json
 
 # Inspect and diff one turn.
 turnal show <session>:<turn>
@@ -355,9 +360,16 @@ it. The first semantic search downloads the 8 MB `minishlab/potion-base-2M`
 model from Hugging Face into the user cache; Turnal sends no prompts,
 transcripts, tool data, or other recorded history.
 
+Repeated semantic searches reuse embeddings from `turnal/embeddings` under the
+OS user-cache directory. Cache files contain vectors keyed by text hashes, not
+raw text. Model or tokenizer changes invalidate them. Deleting this directory
+forces recomputation; deleting a project or pruning its history does not remove
+these user-cache files. An unavailable or damaged cache falls back to local
+inference.
+
 ### Local viewer
 
-Run `turnal ui` to open Turnal Prism, a local browser interface for browsing recorded projects, sessions, turns, prompts, tool activity, diffs, and line-level blame. It runs on the loopback interface and can be launched from inside a recorded project or elsewhere to open the project index.
+Run `turnal ui` to open Turnal Prism, a local browser interface for browsing recorded projects, usage, sessions, turns, prompts, tool activity, diffs, and line-level blame. It runs on the loopback interface and can be launched from inside a recorded project or elsewhere to open the project index.
 
 ```sh
 turnal ui
@@ -638,10 +650,22 @@ Turnal may occasionally print a channel-preserving update notice after interacti
 
 ## Development
 
+Install the frontend dependencies, then build the CLI and all bundled adapters with freshly rebuilt viewer assets:
+
+```sh
+npm ci
+npm run build
+```
+
+`make build` performs the same build. Both commands write the executables to `bin/` and require Go, Node.js, and npm.
+
+For Go-only changes, use `make build-go` or `npm run build:go` to reuse the checked-in viewer assets. `make build-go` requires only Go and Make. Both Make build targets accept `GO` and `BIN_DIR` overrides, for example `make build BIN_DIR=/tmp/turnal-build`.
+
+Run the Go checks with:
+
 ```sh
 go test ./...
 go vet ./...
-go build -o bin/turnal ./cmd/turnal
 ```
 
 The Astro marketing and documentation site is kept outside the npm package:
