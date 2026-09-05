@@ -28,7 +28,7 @@
     "build:go": "go build -o bin/ ./cmd/...",
     "build:web": "vite build",
     "check:web": "tsc --noEmit",
-    "dev:web": "vite",
+    "dev:web": "node scripts/viewer-preview.mjs",
     "build:npm-binaries": "node scripts/build-npm-binaries.js",
     "test": "go test ./...",
     "test:postinstall": "node --test scripts/remove-powershell-shims.test.js",
@@ -44,7 +44,9 @@
     "check:go": "bash scripts/ci/check-go.sh",
     "check:vscode": "npm --prefix apps/vscode run check",
     "check:marketing": "npm --prefix apps/marketing run build",
-    "check:all": "npm run check:web && npm run build:web && npm run check:vscode && npm run check:marketing && npm run test:postinstall && npm run test:release-sbom && npm run check:go"
+    "check:all": "npm run check:web && npm run build:web && npm run check:vscode && npm run check:marketing && npm run test:postinstall && npm run test:release-sbom && npm run check:go",
+    "preview:viewer": "node scripts/viewer-preview.mjs",
+    "test:browser": "playwright test"
   },
   "repository": {
     "type": "git",
@@ -72,6 +74,7 @@
     "preact": "^10.29.7"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@preact/preset-vite": "^2.10.5",
     "@types/node": "^26.1.1",
     "typescript": "^7.0.2",

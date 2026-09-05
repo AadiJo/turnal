@@ -24,12 +24,13 @@ func TestCreateVisualFixture(t *testing.T) {
 	if rootPath == "" {
 		t.Skip("TURNAL_VISUAL_FIXTURE is not set")
 	}
-	if err := os.RemoveAll(rootPath); err != nil {
+	container := rootPath
+	rootPath, err := claimVisualFixtureDirectory(container)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(rootPath, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	t.Setenv("TURNAL_STATE_DIR", filepath.Join(container, "state"))
+	t.Setenv("TURNAL_CONFIG", filepath.Join(container, "config.toml"))
 	root, err := primitives.ParseWorkspaceRoot(rootPath)
 	if err != nil {
 		t.Fatal(err)
@@ -106,8 +107,7 @@ func TestCreateVisualFixture(t *testing.T) {
 
 	// The viewer indexes every registered project, so a screenshot of the global
 	// index needs more than one. Create sibling projects with a little history
-	// each. They register in whatever TURNAL_STATE_DIR is set, so the caller is
-	// responsible for pointing that away from a real registry.
+	// each, inside the newly claimed container and isolated registry.
 	for _, sibling := range []struct {
 		name    string
 		adapter primitives.AdapterName
@@ -144,9 +144,6 @@ func TestCreateVisualFixture(t *testing.T) {
 		},
 	} {
 		siblingPath := filepath.Join(filepath.Dir(rootPath), sibling.name)
-		if err := os.RemoveAll(siblingPath); err != nil {
-			t.Fatal(err)
-		}
 		if err := os.MkdirAll(siblingPath, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -167,6 +164,33 @@ func TestCreateVisualFixture(t *testing.T) {
 	}
 
 	t.Logf("visual fixture created at %s", rootPath)
+}
+
+// Claim a new container before creating anything. Never remove caller paths.
+func claimVisualFixtureDirectory(container string) (string, error) {
+	if err := os.Mkdir(container, 0o700); err != nil {
+		return "", err
+	}
+	rootPath := filepath.Join(container, "turnal-demo")
+	if err := os.Mkdir(rootPath, 0o755); err != nil {
+		return "", err
+	}
+	return rootPath, nil
+}
+
+func TestVisualFixtureRefusesExistingDirectory(t *testing.T) {
+	container := t.TempDir()
+	sentinel := filepath.Join(container, "keep.txt")
+	if err := os.WriteFile(sentinel, []byte("existing data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := claimVisualFixtureDirectory(container); !os.IsExist(err) {
+		t.Fatalf("expected existing-path rejection, got %v", err)
+	}
+	data, err := os.ReadFile(sentinel)
+	if err != nil || string(data) != "existing data" {
+		t.Fatalf("existing data changed: %q, %v", data, err)
+	}
 }
 
 type visualTurn struct {

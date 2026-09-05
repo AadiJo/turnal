@@ -18,3 +18,7 @@ turnal.spdx.json
 npm/bin/
 
 tmp/
+
+# Browser verification artifacts
+test-results/
+playwright-report/
