@@ -7,6 +7,31 @@ export function recordedTextMatches(currentText: string, entries: readonly Blame
   return current === recorded;
 }
 
+interface VersionedDocument {
+  readonly version: number;
+  getText(): string;
+}
+
+/** Reuses a whole-file comparison until the document or recorded entries change.
+ * Weak keys allow closed editor documents to be collected. */
+export class RecordedTextMatcher {
+  private readonly matches = new WeakMap<VersionedDocument, {
+    version: number;
+    entries: readonly BlameEntry[];
+    matches: boolean;
+  }>();
+
+  matchesDocument(document: VersionedDocument, entries: readonly BlameEntry[]): boolean {
+    const cached = this.matches.get(document);
+    if (cached?.version === document.version && cached.entries === entries) {
+      return cached.matches;
+    }
+    const matches = recordedTextMatches(document.getText(), entries);
+    this.matches.set(document, { version: document.version, entries, matches });
+    return matches;
+  }
+}
+
 export function blameTitle(origin: BlameOrigin, maxLength = 64): string {
   if (origin.intent?.redacted) {
     return truncate("agent intent redacted", maxLength);
