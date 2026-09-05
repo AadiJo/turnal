@@ -24,7 +24,8 @@
     "docs/"
   ],
   "scripts": {
-    "build": "npm run build:web && go build -o bin/turnal ./cmd/turnal",
+    "build": "npm run build:web && npm run build:go",
+    "build:go": "go build -o bin/ ./cmd/...",
     "build:web": "vite build",
     "check:web": "tsc --noEmit && npm run build:web && git diff --exit-code -- internal/viewer/web/dist",
     "dev:web": "vite",
