@@ -94,29 +94,30 @@ type EventPayload struct {
 }
 
 type Journal struct {
-	Version            int                        `json:"version"`
-	State              string                     `json:"state"`
-	RestorePhase       string                     `json:"restore_phase"`
-	StartedAt          string                     `json:"started_at"`
-	UpdatedAt          string                     `json:"updated_at"`
-	Target             string                     `json:"target"`
-	CheckpointRef      string                     `json:"checkpoint_ref"`
-	TargetCommitSHA    string                     `json:"target_commit_sha"`
-	Manual             bool                       `json:"manual,omitempty"`
-	Mode               string                     `json:"mode,omitempty"`
-	GitSyncRef         string                     `json:"git_sync_ref,omitempty"`
-	SafetyRef          string                     `json:"safety_ref"`
-	SafetyCommitSHA    string                     `json:"safety_commit_sha"`
-	GitSafetyRef       string                     `json:"git_safety_ref,omitempty"`
-	GitSafetyCommitSHA string                     `json:"git_safety_commit_sha,omitempty"`
-	EventSourceID      string                     `json:"event_source_id"`
-	Changes            []checkpoint.RestoreChange `json:"changes"`
-	GitChanges         *WorkspaceGitChanges       `json:"git_changes,omitempty"`
-	CaseApplication    *ApplicationMetadata       `json:"case_application,omitempty"`
-	RepoID             primitives.RepoID          `json:"repo_id,omitempty"`
-	StoreID            primitives.StoreID         `json:"store_id,omitempty"`
-	WorktreeID         primitives.WorktreeID      `json:"worktree_id,omitempty"`
-	WorkspaceRoot      string                     `json:"workspace_root,omitempty"`
+	Version            int                           `json:"version"`
+	State              string                        `json:"state"`
+	RestorePhase       string                        `json:"restore_phase"`
+	StartedAt          string                        `json:"started_at"`
+	UpdatedAt          string                        `json:"updated_at"`
+	Target             string                        `json:"target"`
+	CheckpointRef      string                        `json:"checkpoint_ref"`
+	TargetCommitSHA    string                        `json:"target_commit_sha"`
+	Manual             bool                          `json:"manual,omitempty"`
+	Mode               string                        `json:"mode,omitempty"`
+	GitSyncRef         string                        `json:"git_sync_ref,omitempty"`
+	SafetyRef          string                        `json:"safety_ref"`
+	SafetyCommitSHA    string                        `json:"safety_commit_sha"`
+	GitSafetyRef       string                        `json:"git_safety_ref,omitempty"`
+	GitSafetyCommitSHA string                        `json:"git_safety_commit_sha,omitempty"`
+	EventSourceID      string                        `json:"event_source_id"`
+	Changes            []checkpoint.RestoreChange    `json:"changes"`
+	RestoreProtection  *checkpoint.RestoreProtection `json:"restore_protection,omitempty"`
+	GitChanges         *WorkspaceGitChanges          `json:"git_changes,omitempty"`
+	CaseApplication    *ApplicationMetadata          `json:"case_application,omitempty"`
+	RepoID             primitives.RepoID             `json:"repo_id,omitempty"`
+	StoreID            primitives.StoreID            `json:"store_id,omitempty"`
+	WorktreeID         primitives.WorktreeID         `json:"worktree_id,omitempty"`
+	WorkspaceRoot      string                        `json:"workspace_root,omitempty"`
 }
 
 type WorkspaceGitChanges struct {
@@ -247,12 +248,27 @@ func (engine Engine) ResumeRecovery() error {
 		case "intent":
 			return clearJournal(path)
 		case "planned", "restoring":
-			target, _, _, _, err := journalRollback(engine.Repo, journal)
+			phase := journal.phase()
+			target, _, plan, _, err := journalRollback(engine.Repo, journal)
 			if err != nil {
 				return err
 			}
 			if journal.Mode != primitives.RollbackModeWorkspaceGit.String() {
-				if err := engine.Repo.PreflightRestoreCommit(target.Commit); err != nil {
+				if journal.RestoreProtection == nil {
+					if phase == "restoring" {
+						return fmt.Errorf("cannot safely resume legacy checkpoint restore after mutation began; restore protection was not recorded")
+					}
+					plan, err = engine.Repo.PlanRestoreCommit(target.Commit)
+					if err != nil {
+						return fmt.Errorf("refresh resumed restore plan: %w", err)
+					}
+					journal.Changes = plan.Changes
+					journal.RestoreProtection = &plan.Protection
+					if err := writeJournal(path, journal); err != nil {
+						return err
+					}
+				}
+				if err := engine.Repo.PreflightRestoreCommitWithProtection(target.Commit, plan.Protection); err != nil {
 					return fmt.Errorf("preflight resumed restore: %w", err)
 				}
 			} else {
@@ -285,7 +301,7 @@ func (engine Engine) ResumeRecovery() error {
 					return fmt.Errorf("resume workspace-git restore: %w", err)
 				}
 			} else {
-				if err := engine.Repo.RestoreCommitLocked(target.Commit); err != nil {
+				if err := engine.Repo.RestoreCommitWithProtectionLocked(target.Commit, plan.Protection); err != nil {
 					return fmt.Errorf("resume checkpoint restore: %w", err)
 				}
 			}
@@ -352,7 +368,20 @@ func (engine Engine) RestoreSafety() error {
 			if refCommit != commit {
 				return fmt.Errorf("rollback safety ref points to %s, journal records %s", refCommit, commit)
 			}
-			if err := engine.Repo.RestoreCommitLocked(commit); err != nil {
+			if journal.RestoreProtection == nil {
+				if journal.phase() != "planned" {
+					return fmt.Errorf("cannot safely restore legacy checkpoint safety after mutation began; restore protection was not recorded")
+				}
+				plan, err := engine.Repo.PlanRestoreCommit(commit)
+				if err != nil {
+					return fmt.Errorf("plan checkpoint safety restore: %w", err)
+				}
+				journal.RestoreProtection = &plan.Protection
+				if err := writeJournal(path, journal); err != nil {
+					return err
+				}
+			}
+			if err := engine.Repo.RestoreCommitWithProtectionLocked(commit, *journal.RestoreProtection); err != nil {
 				return fmt.Errorf("restore checkpoint safety snapshot: %w", err)
 			}
 		}
@@ -506,18 +535,19 @@ func (engine Engine) runCheckpointUnlocked(request Request) (Result, error) {
 
 	now := time.Now().UTC()
 	journal := Journal{
-		Version:         1,
-		State:           "intent",
-		RestorePhase:    "intent",
-		StartedAt:       now.Format(time.RFC3339Nano),
-		Mode:            primitives.RollbackModeCheckpoint.String(),
-		Target:          target.selector(),
-		CheckpointRef:   target.CheckpointRef.String(),
-		TargetCommitSHA: target.Commit.String(),
-		Manual:          target.Manual,
-		Changes:         plan.Changes,
-		CaseApplication: cloneApplicationMetadata(request.Application),
-		RepoID:          engine.Repo.RepoID, StoreID: engine.Repo.StoreID, WorktreeID: engine.Repo.WorktreeID, WorkspaceRoot: engine.Repo.WorkspaceRoot.String(),
+		Version:           1,
+		State:             "intent",
+		RestorePhase:      "intent",
+		StartedAt:         now.Format(time.RFC3339Nano),
+		Mode:              primitives.RollbackModeCheckpoint.String(),
+		Target:            target.selector(),
+		CheckpointRef:     target.CheckpointRef.String(),
+		TargetCommitSHA:   target.Commit.String(),
+		Manual:            target.Manual,
+		Changes:           plan.Changes,
+		RestoreProtection: &plan.Protection,
+		CaseApplication:   cloneApplicationMetadata(request.Application),
+		RepoID:            engine.Repo.RepoID, StoreID: engine.Repo.StoreID, WorktreeID: engine.Repo.WorktreeID, WorkspaceRoot: engine.Repo.WorkspaceRoot.String(),
 	}
 	if err := writeJournal(JournalPath(engine.Repo), journal); err != nil {
 		return result, fmt.Errorf("write rollback journal: %w", err)
@@ -539,14 +569,14 @@ func (engine Engine) runCheckpointUnlocked(request Request) (Result, error) {
 		return result, engine.safetyError("write rollback journal", safety, err)
 	}
 
-	if err := engine.Repo.PreflightRestoreCommit(target.Commit); err != nil {
+	if err := engine.Repo.PreflightRestoreCommitWithProtection(target.Commit, plan.Protection); err != nil {
 		return result, engine.safetyError("preflight checkpoint restore", safety, err)
 	}
 	journal = journal.withPhase("restoring")
 	if err := writeJournal(JournalPath(engine.Repo), journal); err != nil {
 		return result, engine.safetyError("write rollback journal", safety, err)
 	}
-	if err := engine.Repo.RestoreCommitLocked(target.Commit); err != nil {
+	if err := engine.Repo.RestoreCommitWithProtectionLocked(target.Commit, plan.Protection); err != nil {
 		return result, engine.safetyError("restore checkpoint", safety, err)
 	}
 
@@ -971,6 +1001,12 @@ func journalRollback(repo *checkpoint.Repo, journal Journal) (ResolvedTarget, ch
 	}
 	safety := checkpoint.Snapshot{Ref: journal.SafetyRef, Commit: safetyCommit}
 	plan := checkpoint.RestorePlan{TargetCommit: commit, Changes: journal.Changes}
+	if journal.RestoreProtection != nil {
+		if err := journal.RestoreProtection.Validate(); err != nil {
+			return ResolvedTarget{}, checkpoint.Snapshot{}, checkpoint.RestorePlan{}, "", fmt.Errorf("rollback journal restore protection invariant failed: %w", err)
+		}
+		plan.Protection = *journal.RestoreProtection
+	}
 	eventSourceID := journal.EventSourceID
 	if eventSourceID == "" {
 		eventSourceID = rollbackEventSourceID(target, safety)
