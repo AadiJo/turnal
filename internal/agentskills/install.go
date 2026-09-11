@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/AadiJo/turnal/internal/safepath"
 )
 
 const managedDirectory = "skills"
@@ -19,7 +21,7 @@ type Result struct {
 // them into each selected agent's project-scoped skill directory.
 func Install(projectRoot, metadataDir string, agents []string) ([]Result, error) {
 	sourceRoot := filepath.Join(metadataDir, managedDirectory)
-	if err := writeBundledSkills(sourceRoot); err != nil {
+	if err := writeBundledSkills(metadataDir); err != nil {
 		return nil, err
 	}
 
@@ -29,7 +31,11 @@ func Install(projectRoot, metadataDir string, agents []string) ([]Result, error)
 		if !ok {
 			continue
 		}
-		if err := os.MkdirAll(destinationRoot, 0o755); err != nil {
+		relative, err := filepath.Rel(projectRoot, destinationRoot)
+		if err != nil {
+			return nil, fmt.Errorf("resolve %s skill directory: %w", agent, err)
+		}
+		if err := safepath.MkdirAllNoSymlinks(projectRoot, relative, 0o755); err != nil {
 			return nil, fmt.Errorf("create %s skill directory %s: %w", agent, destinationRoot, err)
 		}
 		for _, skill := range bundledSkillNames() {
@@ -55,16 +61,29 @@ func agentSkillDirectory(projectRoot, agent string) (string, bool) {
 	}
 }
 
-func writeBundledSkills(root string) error {
+func writeBundledSkills(metadataDir string) error {
+	if info, err := os.Lstat(metadataDir); err == nil {
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("metadata path must be a real directory; symlinks are not allowed: %s", metadataDir)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect metadata directory: %w", err)
+	} else if err := os.MkdirAll(metadataDir, 0o700); err != nil {
+		return fmt.Errorf("create metadata directory: %w", err)
+	}
 	paths := make([]string, 0, len(bundledSkillFiles))
 	for path := range bundledSkillFiles {
 		paths = append(paths, path)
 	}
 	sort.Strings(paths)
 	for _, path := range paths {
-		destination := filepath.Join(root, filepath.FromSlash(path))
-		if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		relative := filepath.Join(managedDirectory, filepath.FromSlash(path))
+		destination := filepath.Join(metadataDir, relative)
+		if err := safepath.MkdirAllNoSymlinks(metadataDir, filepath.Dir(relative), 0o755); err != nil {
 			return fmt.Errorf("create bundled skill directory: %w", err)
+		}
+		if err := safepath.ValidateNoSymlinks(metadataDir, relative); err != nil {
+			return fmt.Errorf("inspect bundled skill path: %w", err)
 		}
 		if err := os.WriteFile(destination, bundledSkillFiles[path], 0o644); err != nil {
 			return fmt.Errorf("write bundled skill %s: %w", destination, err)
