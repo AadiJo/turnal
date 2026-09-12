@@ -47,7 +47,11 @@ type AdapterName string
 const (
 	AdapterClaudeCode AdapterName = "claude-code"
 	AdapterCodex      AdapterName = "codex"
+	AdapterCopilotCLI AdapterName = "copilot-cli"
+	AdapterCursor     AdapterName = "cursor"
 	AdapterManual     AdapterName = "manual"
+	AdapterOpenCode   AdapterName = "opencode"
+	AdapterPi         AdapterName = "pi"
 )
 
 func ParseAdapterName(value string) (AdapterName, error) {

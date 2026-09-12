@@ -79,6 +79,46 @@ func TestRecoverCheckpointJournalsAppendsMissingCheckpointEvent(t *testing.T) {
 	}
 }
 
+func TestRecoverCheckpointJournalsWaitsForCheckpointTransaction(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t)
+	repo, err := checkpoint.Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	log := eventlog.Open(repo.MetadataDir)
+	sessionID := sessionID(t, "recovery-lock")
+	turnID, err := primitives.NewTurnID(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	recoveryStarted := make(chan struct{})
+	recoveryDone := make(chan error, 1)
+	err = repo.WithWorkspaceLock("checkpoint transaction", func() error {
+		if err := repo.BeginCheckpointJournal(sessionID, turnID, primitives.CheckpointPhasePre, primitives.AdapterManual, ""); err != nil {
+			return err
+		}
+		go func() {
+			close(recoveryStarted)
+			recoveryDone <- RecoverCheckpointJournals(log, repo)
+		}()
+		<-recoveryStarted
+		select {
+		case err := <-recoveryDone:
+			t.Fatalf("recovery completed during checkpoint transaction: %v", err)
+		case <-time.After(100 * time.Millisecond):
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-recoveryDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRecoverCheckpointIntentJournalPromotesExistingRef(t *testing.T) {
 	requireGit(t)
 

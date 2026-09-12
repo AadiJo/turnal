@@ -26,6 +26,19 @@ func TestServiceTraversesTurnDiffAndBlameWithoutWritingHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	sessionStart, err := json.Marshal(map[string]any{
+		"parent_session_id":  "root-session",
+		"parent_tool_use_id": "task-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.EventLog().Append(eventlog.AppendInput{
+		SessionID: sessionID, Type: primitives.EventTypeSessionStart, Adapter: primitives.AdapterManual,
+		Time: primitives.NowTimestamp(), Payload: sessionStart,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	recorder := turnevents.Recorder{
 		Log: repo.EventLog(), Manager: turns.NewManager(repo), Adapter: primitives.AdapterManual,
 	}
@@ -62,7 +75,8 @@ func TestServiceTraversesTurnDiffAndBlameWithoutWritingHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sessions) != 1 || sessions[0].TurnCount != 1 || sessions[0].FileCount != 1 {
+	if len(sessions) != 1 || sessions[0].TurnCount != 1 || sessions[0].FileCount != 1 ||
+		sessions[0].ParentSessionID != "root-session" || sessions[0].ParentToolUseID != "task-1" {
 		t.Fatalf("sessions = %#v", sessions)
 	}
 	turnList, err := service.SessionTurns(ctx, sessions[0].Key)

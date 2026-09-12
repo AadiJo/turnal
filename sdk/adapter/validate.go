@@ -84,6 +84,30 @@ func ValidateEvent(event Event) error {
 	if !isAbsolutePath(event.CWD) {
 		return fmt.Errorf("cwd must be an absolute path")
 	}
+	if event.ParentSessionID != "" {
+		if event.Type != EventSessionStart {
+			return fmt.Errorf("parent_session_id is only valid on session.start")
+		}
+		if !sessionIDPattern.MatchString(strings.TrimSpace(event.ParentSessionID)) {
+			return fmt.Errorf("invalid parent_session_id %q", event.ParentSessionID)
+		}
+		if strings.EqualFold(strings.TrimSpace(event.ParentSessionID), strings.TrimSpace(event.SessionID)) {
+			return fmt.Errorf("parent_session_id must differ from session_id")
+		}
+	}
+	if event.ParentToolUseID != "" && event.ParentSessionID == "" {
+		return fmt.Errorf("parent_tool_use_id requires parent_session_id")
+	}
+	if event.Usage != nil {
+		if event.Type != EventAssistantMessage {
+			return fmt.Errorf("usage is only valid on assistant.message")
+		}
+		if event.Usage.InputTokens < 0 || event.Usage.CacheReadTokens < 0 ||
+			event.Usage.CacheWriteTokens < 0 || event.Usage.OutputTokens < 0 ||
+			event.Usage.ReasoningTokens < 0 || event.Usage.APICalls < 0 {
+			return fmt.Errorf("usage counters must not be negative")
+		}
+	}
 	switch event.Type {
 	case EventToolCall:
 		if event.ToolName == "" {

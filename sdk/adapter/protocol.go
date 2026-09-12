@@ -71,19 +71,38 @@ const (
 // Event is the provider-neutral boundary. Lifecycle fields live alongside the
 // event-specific fields so adapters can be small streaming programs.
 type Event struct {
-	Type           EventType       `json:"type"`
-	SessionID      string          `json:"session_id"`
-	CWD            string          `json:"cwd"`
-	SourceID       string          `json:"source_id,omitempty"`
-	ProviderTurnID string          `json:"provider_turn_id,omitempty"`
-	Model          string          `json:"model,omitempty"`
-	PermissionMode string          `json:"permission_mode,omitempty"`
-	TranscriptPath string          `json:"transcript_path,omitempty"`
-	Text           string          `json:"text,omitempty"`
-	ToolName       string          `json:"tool_name,omitempty"`
-	ToolUseID      string          `json:"tool_use_id,omitempty"`
-	Input          json.RawMessage `json:"input,omitempty"`
-	Output         json.RawMessage `json:"output,omitempty"`
+	Type            EventType       `json:"type"`
+	SessionID       string          `json:"session_id"`
+	ParentSessionID string          `json:"parent_session_id,omitempty"`
+	ParentToolUseID string          `json:"parent_tool_use_id,omitempty"`
+	CWD             string          `json:"cwd"`
+	SourceID        string          `json:"source_id,omitempty"`
+	ProviderTurnID  string          `json:"provider_turn_id,omitempty"`
+	Model           string          `json:"model,omitempty"`
+	PermissionMode  string          `json:"permission_mode,omitempty"`
+	TranscriptPath  string          `json:"transcript_path,omitempty"`
+	Text            string          `json:"text,omitempty"`
+	ToolName        string          `json:"tool_name,omitempty"`
+	ToolUseID       string          `json:"tool_use_id,omitempty"`
+	Input           json.RawMessage `json:"input,omitempty"`
+	Output          json.RawMessage `json:"output,omitempty"`
+	IsError         bool            `json:"is_error,omitempty"`
+	Usage           *TokenUsage     `json:"usage,omitempty"`
+	// MutationAlreadyApplied marks provider events that are emitted only after
+	// a workspace mutation. Core then anchors the call to the last durable
+	// workspace state instead of snapshotting the already-mutated tree as pre.
+	MutationAlreadyApplied bool `json:"mutation_already_applied,omitempty"`
+}
+
+// TokenUsage lets external adapters report the provider's usage for one
+// assistant message without exposing provider-specific transcript formats.
+type TokenUsage struct {
+	InputTokens      int64 `json:"input_tokens,omitempty"`
+	CacheReadTokens  int64 `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int64 `json:"cache_write_tokens,omitempty"`
+	OutputTokens     int64 `json:"output_tokens,omitempty"`
+	ReasoningTokens  int64 `json:"reasoning_tokens,omitempty"`
+	APICalls         int64 `json:"api_calls,omitempty"`
 }
 
 type Error struct {

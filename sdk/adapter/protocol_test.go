@@ -94,6 +94,46 @@ func TestValidateEventAcceptsCrossPlatformAbsolutePaths(t *testing.T) {
 	}
 }
 
+func TestValidateEventAcceptsSessionTopology(t *testing.T) {
+	event := Event{
+		Type: EventSessionStart, SessionID: "child", ParentSessionID: "parent",
+		ParentToolUseID: "task-1", CWD: "/workspace",
+	}
+	if err := ValidateEvent(event); err != nil {
+		t.Fatalf("ValidateEvent: %v", err)
+	}
+
+	for name, mutate := range map[string]func(*Event){
+		"self parent": func(event *Event) { event.ParentSessionID = "CHILD" },
+		"non-start":   func(event *Event) { event.Type = EventPromptUser },
+		"orphan tool": func(event *Event) { event.ParentSessionID = "" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			invalid := event
+			mutate(&invalid)
+			if err := ValidateEvent(invalid); err == nil {
+				t.Fatalf("ValidateEvent(%+v) succeeded", invalid)
+			}
+		})
+	}
+}
+
+func TestValidateEventUsageIsNonNegativeAndAssistantOnly(t *testing.T) {
+	event := Event{Type: EventAssistantMessage, SessionID: "fixture", CWD: "/workspace", Usage: &TokenUsage{InputTokens: 12}}
+	if err := ValidateEvent(event); err != nil {
+		t.Fatalf("ValidateEvent: %v", err)
+	}
+	event.Usage.InputTokens = -1
+	if err := ValidateEvent(event); err == nil {
+		t.Fatal("negative usage accepted")
+	}
+	event.Usage.InputTokens = 1
+	event.Type = EventPromptUser
+	if err := ValidateEvent(event); err == nil {
+		t.Fatal("prompt usage accepted")
+	}
+}
+
 func testManifest() Manifest {
 	return Manifest{
 		Name: "example", DisplayName: "Example", AdapterVersion: "1.0.0", Provider: "Example",

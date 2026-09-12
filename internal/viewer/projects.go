@@ -126,6 +126,7 @@ func (r *registry) summarize(ctx context.Context, store checkpoint.RegisteredSto
 		summary.TurnCount += session.TurnCount
 		summary.Additions += session.Additions
 		summary.Deletions += session.Deletions
+		summary.Usage.Add(session.Usage)
 		summary.Sessions = append(summary.Sessions, projects.Activity{
 			StoreID:    storeID,
 			SessionKey: session.Key,
@@ -141,6 +142,7 @@ func (r *registry) summarize(ctx context.Context, store checkpoint.RegisteredSto
 			Deletions:  session.Deletions,
 			StartedAt:  session.StartedAt,
 			FinishedAt: session.FinishedAt,
+			Usage:      session.Usage,
 		})
 	}
 	// The newest session supplies the branch and headline on the project row.
@@ -250,6 +252,7 @@ func projectViews(list []projects.Project) []ProjectView {
 			LastPrompt:   project.LastPrompt,
 			LastAdapter:  project.LastAdapter,
 			AddedAt:      project.AddedAt,
+			Usage:        project.Usage,
 		}
 		for _, worktree := range project.Worktrees {
 			view.Worktrees = append(view.Worktrees, ProjectWorktreeView{
@@ -280,6 +283,7 @@ func activityViews(list []projects.Activity) []ActivityView {
 			Deletions:   item.Deletions,
 			StartedAt:   item.StartedAt,
 			FinishedAt:  item.FinishedAt,
+			Usage:       item.Usage,
 		})
 	}
 	return views

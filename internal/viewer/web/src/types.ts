@@ -1,3 +1,16 @@
+export type UsageSummary = {
+  input_tokens?: number;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
+  output_tokens?: number;
+  reasoning_tokens?: number;
+  api_calls?: number;
+  estimated_cost_micros?: number;
+  priced_tokens?: number;
+  covered_turns?: number;
+  total_turns?: number;
+};
+
 export type Project = {
   store_id: string;
   repo_id?: string;
@@ -18,6 +31,7 @@ export type Project = {
   last_adapter?: string;
   added_at?: string;
   worktrees?: Array<{ root: string; git_dir?: string; last_seen_at?: string }>;
+  usage: UsageSummary;
 };
 
 export type ActivityItem = {
@@ -36,6 +50,7 @@ export type ActivityItem = {
   deletions: number;
   started_at?: string;
   finished_at?: string;
+  usage: UsageSummary;
 };
 
 export type ActivityPage = {
@@ -94,6 +109,8 @@ export type FileChange = {
 export type SessionSummary = {
   key: string;
   id: string;
+  parent_session_id?: string;
+  parent_tool_use_id?: string;
   stream_id: string;
   worktree_id?: string;
   adapter?: string;
@@ -110,6 +127,7 @@ export type SessionSummary = {
   deletions: number;
   status: "complete" | "active" | "attention";
   prompt_preview?: string;
+  usage: UsageSummary;
 };
 
 export type ManualSave = {
@@ -137,6 +155,7 @@ export type TurnSummary = {
   pre_commit?: string;
   post_commit?: string;
   checkpointed: boolean;
+  usage: UsageSummary;
 };
 
 export type SessionTurns = {

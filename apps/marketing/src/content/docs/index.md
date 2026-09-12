@@ -5,7 +5,7 @@ description: Production documentation for Turnal, including local agent history,
 
 <h1 id="overview">Record the work.<br>Keep the stated intent.</h1>
 
-<p class="docs-lead">Turnal is a local flight recorder for Claude Code and Codex. It captures each agent turn as an append-only event trail and hidden Git checkpoints, so you can reconstruct what happened, see the agent's stated intent and the human request behind a line, test an earlier state, or safely return to it.</p>
+<p class="docs-lead">Turnal is a local flight recorder for AI coding agents. It captures each agent turn as an append-only event trail and hidden Git checkpoints, so you can reconstruct what happened, see the agent's stated intent and the human request behind a line, test an earlier state, or safely return to it.</p>
 
 [Start in five minutes](#quickstart) · [Understand the model](#mental-model)
 
@@ -61,7 +61,7 @@ Turnal preserves the installed release channel during upgrades. Use `turnal upgr
 
 ## Quickstart
 
-Initialize Turnal at the directory you consider the workspace root. The `--agent all` selection prepares every supported agent integration.
+Initialize Turnal at the workspace root. The `--agent all` selection configures Claude Code, Codex, Cursor, Pi, OpenCode, and GitHub Copilot CLI.
 
 ```sh
 npm install -g @aadijo/turnal
@@ -70,7 +70,7 @@ turnal init --agent all
 turnal status
 turnal status --probe-agent-capture
 
-# Use Claude Code or Codex normally, then inspect the recording.
+# Use a configured agent normally, then inspect the recording.
 turnal sessions
 turnal log --transcript
 ```
@@ -145,7 +145,7 @@ A normal turn has a before-and-after boundary. The prompt hook records context a
 
 ## Agent integrations
 
-Turnal currently supports Claude Code and Codex. Hook installation is additive: it removes or refreshes Turnal-owned commands while leaving unrelated hook commands in place.
+Turnal captures Claude Code and Codex through built-in hooks. Cursor, Pi, OpenCode, and GitHub Copilot CLI use the versioned external adapter plugin contract. Hook installation is additive: it removes or refreshes Turnal-owned commands while leaving unrelated hook commands in place.
 
 <h3 class="agent-heading"><img src="/brands/claude.svg" alt="" aria-hidden="true"><span>Claude Code</span></h3>
 
@@ -172,23 +172,51 @@ Codex is configured in `.codex/config.toml` with hooks enabled.
 | `PostToolUse` | Tool activity and post-action snapshot |
 | `Stop` | Reply and post boundary |
 
-Select integrations explicitly when needed:
+<h3 class="agent-heading"><img src="/brands/cursor.svg" alt="" aria-hidden="true"><span>Cursor</span></h3>
+
+Cursor uses command hooks from `.cursor/hooks.json` or `~/.cursor/hooks.json`. Configure its session, prompt, tool, response, stop, and subagent hooks to call `turnal adapter capture cursor <hook>`. Cursor subagents become separate sessions with their parent conversation and spawning tool call retained. See the [complete Cursor hook configuration](https://github.com/AadiJo/turnal/blob/main/docs/adapters.md#cursor).
+
+<h3 class="agent-heading"><img src="/brands/pi.svg" alt="" aria-hidden="true"><span>Pi</span></h3>
+
+Pi forwards its typed lifecycle events through the packaged [`turnal.ts` extension](https://github.com/AadiJo/turnal/blob/main/integrations/pi/turnal.ts). Install it under `.pi/extensions/turnal.ts` for one project or `~/.pi/agent/extensions/turnal.ts` globally. Pi forks and clones retain their parent session in Turnal. See the [complete Pi extension setup](https://github.com/AadiJo/turnal/blob/main/docs/adapters.md#pi).
+
+<h3>OpenCode</h3>
+
+OpenCode uses the managed project plugin `.opencode/plugins/turnal.js` for message, session, and paired tool callbacks. Turnal preserves unrelated plugins and refuses to overwrite a same-named plugin it does not manage. See the [OpenCode adapter setup](https://github.com/AadiJo/turnal/blob/main/docs/adapters.md#opencode).
+
+<h3>GitHub Copilot CLI</h3>
+
+This integration targets the [GitHub Copilot CLI](https://docs.github.com/en/copilot/concepts/agents/copilot-cli/about-copilot-cli), not other Copilot products or surfaces. It installs repository hooks at `.github/hooks/turnal.json` using the CLI's cross-platform `bash` and `powershell` hook commands. Because that path is collaborator-visible, `--agent auto` only refreshes an existing Turnal hook file; creating one requires explicit `--agent copilot` or `--agent all`. See the [GitHub Copilot CLI hook setup](https://github.com/AadiJo/turnal/blob/main/docs/adapters.md#github-copilot-cli).
+
+Inspect the installed adapter contract and verify executable discovery:
+
+```sh
+turnal adapter contract
+turnal adapter list
+turnal adapter doctor cursor pi opencode copilot-cli
+```
+
+Select an integration explicitly when needed:
 
 ```sh
 # Configure only one adapter.
 turnal init --agent claude
 turnal init --agent codex
+turnal init --agent copilot
+turnal init --agent cursor
+turnal init --agent opencode
+turnal init --agent pi
 
-# Configure both explicitly.
+# Configure all supported integrations.
 turnal init --agent all
 
 # Create storage without changing hook files.
 turnal init --agent none --skip-hooks
 ```
 
-### Codex wrapper checkpoints
+### Agent wrapper checkpoints
 
-`turnal run -- codex` launches Codex with hooks enabled and adds independent wrapper-level pre/post checkpoints. If hooks emit no prompt, tool, or assistant payloads, the safety checkpoints still exist but the semantic transcript will be sparse. The wrapper currently supports Codex only.
+`turnal run` supports Claude Code, Codex, GitHub Copilot CLI, Cursor, OpenCode, and Pi. It installs the selected integration and adds independent wrapper-level pre and post checkpoints. If the provider emits no prompt, tool, or assistant payloads, the safety checkpoints still exist but the semantic transcript is sparse.
 
 ### Manual turns
 
@@ -569,12 +597,12 @@ snapshot_deny_globs = [
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `version` | integer | `1` | Configuration schema version. Only version 1 is accepted. |
-| `init.agent` | enum | `"auto"` | Hook target: auto, claude, codex, all, or none. |
+| `init.agent` | enum | `"auto"` | Hook target: auto, claude, codex, copilot, cursor, opencode, pi, all, or none. |
 | `init.install_hooks` | boolean | `true` | Install or refresh agent hooks during `turnal init`. |
-| `run.install_hooks` | boolean | `true` | Refresh Codex hooks before `turnal run` launches Codex. |
+| `run.install_hooks` | boolean | `true` | Refresh the selected provider integration before `turnal run` launches it. |
 | `run.quiet` | boolean | `false` | Suppress Turnal wrapper status messages. |
 | `run.bypass_hook_trust` | boolean | `false` | Pass Codex the dangerous hook-trust bypass flag. |
-| `hooks.command` | string | `"turnal"` | Executable prefix written into Claude Code and Codex hooks. |
+| `hooks.command` | string | `"turnal"` | Turnal executable written into supported provider integrations. |
 | `bootstrap.update_gitignore` | boolean | `true` | Ensure `.turnal/` appears in the workspace `.gitignore`. |
 | `git_sync.enabled` | boolean | `false` | Capture `HEAD`, index, tracked patches, and untracked files alongside future checkpoints. |
 | `rollback.mode` | enum | `"checkpoint"` | Default rollback engine: checkpoint or workspace-git. |
@@ -595,6 +623,7 @@ snapshot_deny_globs = [
 | `PAGER` | Pager for long `turnal log` output. Set it to `cat` or pass `--no-pager` to disable paging. |
 | `CLAUDE_CONFIG_DIR` | Allowed Claude transcript root used by `turnal show --transcript`. |
 | `CODEX_HOME` | Allowed Codex transcript root used by `turnal show --transcript`. |
+| `PI_CODING_AGENT_DIR` | Allowed Pi transcript root used by `turnal show --transcript`. |
 
 ---
 
@@ -609,7 +638,7 @@ Two other features contact the network without sending recorded history. The fir
 | **Event streams** | Normalized semantic events and raw adapter references | Durable and hash-chained |
 | **Hidden Git** | Checkpoint commits and safety refs | Durable and local |
 | **SQLite** | FTS search and derived metadata | Disposable and rebuildable |
-| **Provider transcript** | Claude Code or Codex-owned conversation file | Read on demand and not copied |
+| **Provider transcript** | Agent-owned conversation file | Read on demand and not copied |
 
 ### Recording policy
 
@@ -633,7 +662,7 @@ snapshot_deny_globs = [
 ]
 ```
 
-Transcript reads are limited to recognized Claude Code or Codex roots, such as `CLAUDE_CONFIG_DIR` and `CODEX_HOME`. They reject `.git` paths and enforce a 64 MiB file-size limit.
+Transcript reads are limited to recognized Claude Code, Codex, Cursor, or Pi roots, including `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and `PI_CODING_AGENT_DIR`. They reject `.git` paths and enforce a 64 MiB file-size limit.
 
 ---
 
@@ -668,13 +697,13 @@ These are Turnal's primary public commands. Low-level hook and checkpoint plumbi
 Create or attach the Turnal store for the current directory and configure agent hooks.
 
 ```text
-turnal init [--agent auto|claude|codex|all|none] [--skip-hooks]
+turnal init [--agent auto|claude|codex|copilot|cursor|opencode|pi|all|none] [--skip-hooks]
             [--git-sync] [--store PATH]
 ```
 
 | Flag | Description |
 | --- | --- |
-| `--agent VALUE` | Select auto, claude, codex, all, or none. Default: auto. |
+| `--agent VALUE` | Select auto, claude, codex, copilot, cursor, opencode, pi, all, or none. Default: auto. |
 | `--skip-hooks` | Initialize storage without changing agent hook configuration. |
 | `--git-sync` | Capture workspace Git state for future workspace-git rollbacks. |
 | `--store PATH` | Use or create an explicit physical `.turnal` store. |
@@ -927,20 +956,20 @@ turnal recovery restore-safety --yes
 
 ### `turnal run`
 
-Wrap a Codex process with independent pre/post safety checkpoints.
+Wrap a supported agent process with independent pre and post safety checkpoints.
 
 ```text
 turnal run [--quiet] [--skip-hook-install]
-           [--bypass-hook-trust] -- codex [CODEX_ARGS...]
+           [--bypass-hook-trust] -- <claude|codex|copilot|cursor|agent|opencode|pi> [ARGS...]
 ```
 
 | Flag | Description |
 | --- | --- |
 | `--quiet` | Suppress wrapper status messages. |
-| `--skip-hook-install` | Do not update `.codex/config.toml` before launch. |
+| `--skip-hook-install` | Do not install or update the selected provider integration before launch. |
 | `--bypass-hook-trust` | Pass `--dangerously-bypass-hook-trust` to Codex for this invocation. |
 
-The wrapper currently supports Codex only. Wrapper checkpoints still exist if hooks emit no prompt, tool, or assistant payloads.
+The `--bypass-hook-trust` flag applies only to Codex. Wrapper checkpoints still exist if the provider emits no prompt, tool, or assistant payloads.
 
 ### `turnal turn start` and `turnal turn finish`
 
@@ -1080,7 +1109,7 @@ Remove Turnal metadata and optionally uninstall Turnal-owned hook commands.
 
 ```text
 turnal destroy [--dry-run] [--remove-hooks]
-               [--agent auto|claude|codex|all|none]
+               [--agent auto|claude|codex|copilot|cursor|opencode|pi|all|none]
 ```
 
 | Flag | Description |
@@ -1162,7 +1191,7 @@ Run `turnal status` first. It is the fastest offline way to separate hook, store
   </details>
   <details>
     <summary>Provider transcript text cannot be loaded</summary>
-    <p>The captured file must still exist under an allowed Claude Code or Codex config root, must not traverse a <code>.git</code> directory, and must be no larger than 64 MiB. Normalized Turnal events remain available without it.</p>
+    <p>The captured file must still exist under an allowed Claude Code, Codex, Cursor, or Pi transcript root, must not traverse a <code>.git</code> directory, and must be no larger than 64 MiB. Normalized Turnal events remain available without it.</p>
   </details>
   <details>
     <summary>An interrupted merge is reported</summary>
