@@ -11,5 +11,8 @@
 {"id":"git-sha","text":"commit 0123456789abcdef0123456789abcdef01234567","expect":"allow"}
 {"id":"checksum","text":"sha256-rX3Jd8mF2qL7vN4sT9wK1cH6aP0yB5uE8gZ2oC4iQ7M=","expect":"allow"}
 {"id":"branch-name","text":"feature/redaction-policy-review","expect":"allow"}
+{"id":"relative-path","text":"internal/sharedhistory/redaction_test.go","expect":"allow"}
 {"id":"opaque-identifier","text":"turn_01JQ7Z6HX2V8W4M9K3N5P0R1ST","expect":"allow"}
 {"id":"documentation","text":"Set API_KEY to your project credential before running the example.","expect":"allow"}
+{"id":"checksum-base64-slash","text":"sha512-rX3Jd8mF2qL7vN4sT9wK1cH6aP0yB5uE8gZ2oC4iQ7M/rX3Jd8mF2qL7vN4sT9wK1cH6aP0yB5uE8gZ2oC4iQ7M=","expect":"allow"}
+{"id":"credentialed-uri-encoded-placeholder","text":"postgres://reviewer:%24%7BDB_PASSWORD%7D@db.example.invalid/app","expect":"allow"}

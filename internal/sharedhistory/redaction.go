@@ -197,7 +197,7 @@ func (pipeline *secretPipeline) Redact(value string) secretDetectionResult {
 
 type entropyDetector struct{}
 
-var entropyCandidatePattern = regexp.MustCompile(`[A-Za-z0-9+_=-]{10,}`)
+var entropyCandidatePattern = regexp.MustCompile(`[A-Za-z0-9+/_=-]{10,}`)
 
 func (entropyDetector) Info() RedactionDetectorInfo {
 	return RedactionDetectorInfo{ID: "high_entropy", Description: "Unstructured token-shaped values with Shannon entropy above 4.5"}
@@ -274,10 +274,17 @@ func (detector *betterleaksDetector) Detect(value string) []secretFinding {
 		return []secretFinding{{detector: "known_secret_unavailable", fullField: true}}
 	}
 	var findings []secretFinding
+	seenSecrets := make(map[string]struct{})
 	for _, finding := range detector.detector.DetectString(value) {
 		if finding.Secret == "" || isPlaceholderSecretValue(finding.Secret) {
 			continue
 		}
+		// Betterleaks reports each occurrence. Search the source only once per
+		// distinct secret so repeated credentials do not multiply the findings.
+		if _, seen := seenSecrets[finding.Secret]; seen {
+			continue
+		}
+		seenSecrets[finding.Secret] = struct{}{}
 		searchFrom := 0
 		for searchFrom < len(value) {
 			index := strings.Index(value[searchFrom:], finding.Secret)
@@ -333,11 +340,19 @@ func (credentialedURIDetector) Detect(value string) []secretFinding {
 	var findings []secretFinding
 	for _, location := range credentialedURIPattern.FindAllStringIndex(value, -1) {
 		candidate := strings.TrimRight(value[location[0]:location[1]], ".,;:!?)]}")
-		parsed, err := url.Parse(candidate)
-		if err != nil || parsed.User == nil {
-			continue
+		// The pattern establishes a password-bearing authority. Inspect its
+		// userinfo directly: malformed URL escapes or punctuation in a pasted
+		// password must not disable redaction. Decode valid escapes only to
+		// recognize the same placeholders as their unescaped spelling.
+		_, authority, _ := strings.Cut(candidate, "://")
+		if end := strings.IndexAny(authority, "/?#"); end >= 0 {
+			authority = authority[:end]
 		}
-		password, present := parsed.User.Password()
+		userinfo := authority[:strings.LastIndexByte(authority, '@')]
+		_, password, present := strings.Cut(userinfo, ":")
+		if decoded, err := url.PathUnescape(password); err == nil {
+			password = decoded
+		}
 		if !present || isPlaceholderSecretValue(password) {
 			continue
 		}
@@ -348,12 +363,17 @@ func (credentialedURIDetector) Detect(value string) []secretFinding {
 
 type connectionStringDetector struct{}
 
+// Quoted values may escape a delimiter with a backslash or double it, as in
+// JSON, keyword DSNs, and SQL connection strings. Consume the entire value
+// before considering placeholder exemptions or choosing a redaction span.
+const quotedCredentialValuePattern = `(?:"(?:\\[\s\S]|""|[^"\\])*"|'(?:\\[\s\S]|''|[^'\\])*')`
+
 var (
 	jdbcConnectionPattern      = regexp.MustCompile("(?i)\\bjdbc:[^\\s\\\"'<>`]+")
 	databaseURLPattern         = regexp.MustCompile("(?i)\\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\\+srv)?|redis)://[^\\s\\\"'<>`]+")
-	keywordDSNPattern          = regexp.MustCompile(`(?i)\b[a-z_][a-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s"']+)(?:\s+[a-z_][a-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s"']+)){2,}`)
-	semicolonConnectionPattern = regexp.MustCompile(`(?i)\b[a-z][a-z0-9 _-]*=(?:\{[^}]*\}|"[^"]*"|'[^']*'|[^=;"'\s]+)(?:;[a-z][a-z0-9 _-]*=(?:\{[^}]*\}|"[^"]*"|'[^']*'|[^=;"'\s]+)){2,}`)
-	passwordValuePattern       = regexp.MustCompile(`(?i)(?:^|[?&;\s])(?:password|passwd|pwd)\s*=\s*("[^"]*"|'[^']*'|[^&;\s"']+)`)
+	keywordDSNPattern          = regexp.MustCompile(`(?i)\b[a-z_][a-z0-9_]*=(?:` + quotedCredentialValuePattern + `|[^\s"']+)(?:\s+[a-z_][a-z0-9_]*=(?:` + quotedCredentialValuePattern + `|[^\s"']+)){2,}`)
+	semicolonConnectionPattern = regexp.MustCompile(`(?i)\b[a-z][a-z0-9 _-]*=(?:\{[^}]*\}|` + quotedCredentialValuePattern + `|[^=;"'\s]+)(?:;[a-z][a-z0-9 _-]*=(?:\{[^}]*\}|` + quotedCredentialValuePattern + `|[^=;"'\s]+)){2,}`)
+	passwordValuePattern       = regexp.MustCompile(`(?i)(?:^|[?&;\s])(?:password|passwd|pwd)\s*=\s*(` + quotedCredentialValuePattern + `|[^&;\s"']+)`)
 	keywordHostPattern         = regexp.MustCompile(`(?i)(?:^|\s)host\s*=`)
 	keywordUserPattern         = regexp.MustCompile(`(?i)(?:^|\s)user\s*=`)
 	semicolonServerPattern     = regexp.MustCompile(`(?i)(?:^|;)\s*(?:server|data source|datasource|addr|address|network address)\s*=`)
@@ -430,7 +450,7 @@ func hasPasswordAssignment(candidate string) bool {
 
 type credentialAssignmentDetector struct{}
 
-var credentialAssignmentPattern = regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_])(?:[a-z0-9_]*(?:password|passwd|pwd|secret|token|api[_-]?key)[a-z0-9_]*)["']?\s*[:=]\s*("[^"]*"|'[^']*'|\$\{[^}]+\}|[^\s,;}\]]+)`)
+var credentialAssignmentPattern = regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_])(?:[a-z0-9_]*(?:password|passwd|pwd|secret|token|api[_-]?key)[a-z0-9_]*)["']?\s*[:=]\s*(` + quotedCredentialValuePattern + `|\$\{[^}]+\}|[^\s,;]+)`)
 
 func (credentialAssignmentDetector) Info() RedactionDetectorInfo {
 	return RedactionDetectorInfo{ID: "credential_value", Description: "Non-placeholder values assigned to credential-shaped keys"}
@@ -562,7 +582,9 @@ func ensureJSONEOF(decoder *json.Decoder) error {
 }
 
 func appendReviewResult(report *RedactionReviewReport, reviewCase RedactionReviewCase) {
-	findings := defaultSecretPipeline.Detect(reviewCase.Text)
+	// Publication strips invisible separators before secret detection too.
+	value, _ := stripInvisible(reviewCase.Text)
+	findings := defaultSecretPipeline.Detect(value)
 	actual := "allow"
 	if len(findings) > 0 {
 		actual = "redact"
@@ -642,26 +664,26 @@ func DiagnoseRedaction(repo *checkpoint.Repo) (RedactionDiagnostics, error) {
 		return RedactionDiagnostics{}, err
 	}
 	diagnostics := RedactionDiagnostics{ScannerVersion: ScannerVersion, Detectors: defaultSecretPipeline.Info(), GoldenCorpus: golden}
-	return withSharedHistoryLock(repo, "diagnose shared history redaction", func() (RedactionDiagnostics, error) {
-		if _, err := os.Lstat(policyPath(repo)); err != nil {
-			if os.IsNotExist(err) {
-				return diagnostics, nil
-			}
-			return RedactionDiagnostics{}, err
+	if _, err := os.Lstat(policyPath(repo)); err != nil {
+		if os.IsNotExist(err) {
+			return diagnostics, nil
 		}
-		policy, err := loadPolicyForUpdate(repo)
-		if err != nil {
-			return RedactionDiagnostics{}, err
-		}
-		digest, err := policyHash(policy)
-		if err != nil {
-			return RedactionDiagnostics{}, err
-		}
-		diagnostics.Configured = true
-		diagnostics.ConfiguredScanner = policy.ScannerVersion
-		diagnostics.PolicyHash = digest
-		diagnostics.Approved = policy.ApprovedHash == digest
-		diagnostics.MigrationRequired = policy.ScannerVersion != ScannerVersion || policy.AllowlistVersion != AllowlistVersion
-		return diagnostics, nil
-	})
+		return RedactionDiagnostics{}, err
+	}
+	// Policy writers replace the file atomically. Read one coherent snapshot
+	// without creating a lock file or changing the store during diagnosis.
+	policy, err := loadPolicyForUpdate(repo)
+	if err != nil {
+		return RedactionDiagnostics{}, err
+	}
+	digest, err := policyHash(policy)
+	if err != nil {
+		return RedactionDiagnostics{}, err
+	}
+	diagnostics.Configured = true
+	diagnostics.ConfiguredScanner = policy.ScannerVersion
+	diagnostics.PolicyHash = digest
+	diagnostics.Approved = policy.ApprovedHash == digest
+	diagnostics.MigrationRequired = policy.ScannerVersion != ScannerVersion || policy.AllowlistVersion != AllowlistVersion
+	return diagnostics, nil
 }

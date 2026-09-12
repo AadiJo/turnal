@@ -13,6 +13,8 @@
 {"id":"private-key","text":"-----BEGIN OPENSSH PRIVATE KEY-----\nsynthetic-private-material","expect":"redact"}
 {"id":"credential-assignment","text":"SERVICE_API_KEY=correct-horse-battery-staple","expect":"redact"}
 {"id":"high-entropy-token","text":"q7L2mN9xP4vK8sD1aF6hJ3cR5tY0uW2z","expect":"redact"}
+{"id":"high-entropy-base64-slashes","text":"aB3dE5/gH7jK9/mN2pQ4/rS6tV8/xY0zC2","expect":"redact"}
+{"id":"invisible-token-separator","text":"github_pat_11AA22bb33CC44dd55\u200bEE66ff77GG88hh","expect":"redact"}
 {"id":"credentialed-postgres-uri","text":"postgres://reviewer:p4ssw0rd@db.example.invalid/app","expect":"redact"}
 {"id":"credentialed-redis-uri","text":"redis://:r3dis-pass@cache.example.invalid/0","expect":"redact"}
 {"id":"jdbc-password","text":"jdbc:postgresql://db.example.invalid/app?user=reviewer&password=p4ssw0rd","expect":"redact"}
