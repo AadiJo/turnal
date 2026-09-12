@@ -27,9 +27,8 @@ const ACCENT = '#ff4f00';
 const HAIR = 'rgba(236,227,212,0.11)';
 const MUTED = 'rgba(236,227,212,0.58)';
 
-// Reuse the real brand mark rather than a copy, so the card cannot drift from
-// the logo. currentColor is resolved here because the SVG is inlined without
-// an inheriting parent.
+// Read the shared brand mark whenever the card is regenerated. currentColor
+// is resolved here because the SVG is inlined without an inheriting parent.
 const markInner = readFileSync(resolve(repoRoot, 'assets/logo-mark.svg'), 'utf8')
   .replace(/^[\s\S]*?<svg[^>]*>/, '')
   .replace(/<\/svg>\s*$/, '')
@@ -59,7 +58,8 @@ const termLines = lines
     return parts
       .map(([text, fill]) => {
         const y = termY + 68 + i * lineH;
-        const el = `<text x="${x}" y="${y}" font-family="JetBrains Mono" font-size="19" fill="${fill}">${text.replace(/&/g, '&amp;')}</text>`;
+        const escaped = text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+        const el = `<text x="${x}" y="${y}" font-family="JetBrains Mono" font-size="19" fill="${fill}">${escaped}</text>`;
         x += text.length * MONO_ADVANCE;
         return el;
       })

@@ -8,6 +8,8 @@ interface Props {
   title?: string;
   description?: string;
   theme?: string; // maps to a body class for page-level palettes
+  /** Error pages have no canonical URL. */
+  canonical?: boolean;
   /** Omit the SoftwareApplication JSON-LD on pages that are not about the product itself. */
   structuredData?: boolean;
 }
@@ -16,6 +18,7 @@ const {
   title = 'Turnal | Local history for AI coding agents',
   description = 'Turnal pairs AI agent activity with hidden Git checkpoints. Search what happened, inspect file changes, verify earlier states, and roll back safely.',
   theme,
+  canonical = true,
   structuredData = true,
 } = Astro.props;
 
@@ -24,20 +27,22 @@ const {
 // collapses the /index.html duplicate of every URL.
 const canonicalUrl = new URL(Astro.url.pathname, Astro.site);
 const ogImageUrl = new URL('/og-image.png', Astro.site);
+const siteUrl = new URL('/', Astro.site);
 
 const softwareApplication = {
   '@context': 'https://schema.org',
   '@type': 'SoftwareApplication',
+  '@id': new URL('#software', siteUrl).href,
   name: 'Turnal',
   description:
     'A local-first flight recorder for AI coding agents. Turnal records what an agent did, the problem it said it was solving, and what the workspace looked like before and after each turn.',
-  url: 'https://turnal.johari-dev.com',
+  url: siteUrl.href,
   applicationCategory: 'DeveloperApplication',
   operatingSystem: 'macOS, Linux, Windows',
   license: 'https://www.apache.org/licenses/LICENSE-2.0',
   codeRepository: 'https://github.com/AadiJo/turnal',
   downloadUrl: 'https://www.npmjs.com/package/@aadijo/turnal',
-  softwareHelp: 'https://turnal.johari-dev.com/docs',
+  softwareHelp: new URL('/docs/', siteUrl).href,
   author: { '@type': 'Person', name: 'Advait Johari' },
   // Turnal is free and open source. schema.org expects an explicit zero-price
   // Offer rather than an omitted one.
@@ -53,13 +58,13 @@ const softwareApplication = {
     <meta name="description" content={description} />
     <title>{title}</title>
 
-    <link rel="canonical" href={canonicalUrl} />
+    {canonical && <link rel="canonical" href={canonicalUrl} />}
 
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Turnal" />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
-    <meta property="og:url" content={canonicalUrl} />
+    {canonical && <meta property="og:url" content={canonicalUrl} />}
     <meta property="og:image" content={ogImageUrl} />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
