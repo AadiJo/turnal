@@ -11,8 +11,10 @@ const (
 	// AllowlistVersion changes whenever the set of publishable fields widens.
 	// v2 added the source branch, which leaves the machine only after the
 	// publisher approves the resulting policy hash again.
-	AllowlistVersion       = "turnal-context-v2"
-	ScannerVersion         = "turnal-secrets-v2"
+	AllowlistVersion = "turnal-context-v2"
+	// v3 replaces the fixed regex list with the detector pipeline. Any detector
+	// or threshold change must bump this version and require fresh approval.
+	ScannerVersion         = "turnal-secrets-v3"
 	EvidencePublisherClaim = "publisher_attested_projection"
 	DefaultFieldLimit      = 64 << 10
 	DefaultBundleLimit     = 2 << 20

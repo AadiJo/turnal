@@ -32,19 +32,6 @@ type builtBundle struct {
 	Path       string
 }
 
-var secretPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)\b(?:gh[pousr]_[a-z0-9_]{20,}|github_pat_[a-z0-9_]{20,}|gl(?:pat|ptt|rt|soat|ft|cbt)-[a-z0-9_-]{20,}|npm_[a-z0-9]{30,}|pypi-[a-z0-9_-]{16,}|hf_[a-z0-9]{20,}|sk-[a-z0-9_-]{20,}|[sr]k_(?:live|test)_[a-z0-9]{16,}|(?:akia|asia|abia|acca)[0-9a-z]{16}|xox[baprs]-[a-z0-9-]{10,}|aiza[0-9a-z_-]{20,})\b`),
-	regexp.MustCompile(`(?i)\bhttps://hooks\.slack\.com/services/[a-z0-9/_-]{10,}`),
-	regexp.MustCompile(`(?i)\b[a-z0-9_]*(?:password|passwd|pwd|secret|token|api[_-]?key)[a-z0-9_]*\s*[:=]\s*[^\s,;]+`),
-	regexp.MustCompile(`(?i)\bbearer\s+[a-z0-9._~+/-]{16,}=*`),
-	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b`),
-	regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://[^\s/@:]+:[^\s/@]+@`),
-}
-
-var fullFieldSecretPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----`),
-}
-
 func listCompletedTurns(repo *checkpoint.Repo) ([]turnSource, error) {
 	worktrees, err := repo.ListWorktrees()
 	if err != nil {
@@ -384,6 +371,7 @@ type sanitizedText struct {
 	PathFullyRedacted   bool
 	WorkspaceNormalized bool
 	SecretRedacted      bool
+	SecretDetections    map[string]int
 }
 
 const workspaceProjectionMarker = "\x00turnal-workspace\x00"
@@ -397,6 +385,7 @@ func sanitizeText(workspaceRoot, value string, limit int, truncations *Truncatio
 		result.Text = strings.ReplaceAll(result.Text, workspaceProjectionMarker, "[REDACTED]")
 		result.Redacted = true
 		result.SecretRedacted = true
+		result.SecretDetections = map[string]int{"internal_marker": 1}
 	}
 	// Invisible characters are removed before any path scanning. A zero-width
 	// space or BOM wedged in front of a separator would otherwise hide a path
@@ -424,19 +413,16 @@ func sanitizeText(workspaceRoot, value string, limit int, truncations *Truncatio
 		result.Redacted = true
 		result.PathFullyRedacted = true
 	}
-	for _, pattern := range fullFieldSecretPatterns {
-		if pattern.MatchString(result.Text) {
-			result.Text = "[REDACTED]"
-			result.Redacted = true
-			result.SecretRedacted = true
-			break
+	detection := defaultSecretPipeline.Redact(result.Text)
+	if len(detection.counts) > 0 {
+		result.Text = detection.text
+		result.Redacted = true
+		result.SecretRedacted = true
+		if result.SecretDetections == nil {
+			result.SecretDetections = make(map[string]int)
 		}
-	}
-	for _, pattern := range secretPatterns {
-		if pattern.MatchString(result.Text) {
-			result.Text = pattern.ReplaceAllString(result.Text, "[REDACTED]")
-			result.Redacted = true
-			result.SecretRedacted = true
+		for detector, count := range detection.counts {
+			result.SecretDetections[detector] += count
 		}
 	}
 	result.Text = strings.ReplaceAll(result.Text, workspaceProjectionMarker, "$WORKSPACE")
@@ -763,17 +749,7 @@ func containsParentPathComponent(value string) bool {
 }
 
 func containsDetectedSecret(value string) bool {
-	for _, pattern := range fullFieldSecretPatterns {
-		if pattern.MatchString(value) {
-			return true
-		}
-	}
-	for _, pattern := range secretPatterns {
-		if pattern.MatchString(value) {
-			return true
-		}
-	}
-	return false
+	return len(defaultSecretPipeline.Detect(value)) > 0
 }
 
 func sanitizeList(workspaceRoot string, values []string, limit int, redactions map[string]int, truncations *Truncations) ([]string, bool) {
@@ -797,6 +773,9 @@ func recordRedactions(redactions map[string]int, text sanitizedText) {
 	}
 	if text.SecretRedacted {
 		redactions["secret"]++
+	}
+	for detector, count := range text.SecretDetections {
+		redactions["secret:"+detector] += count
 	}
 }
 
