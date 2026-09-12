@@ -4,13 +4,15 @@
   "description": "Local-first CLI for recording AI coding agent history, file changes, diffs, and safe rollbacks.",
   "bin": {
     "turnal": "npm/turnal.js",
+    "turnal-adapter-cursor": "npm/turnal-adapter-cursor.js",
     "turnal-adapter-opencode": "npm/turnal-adapter-opencode.js",
-    "turnal-adapter-gemini-cli": "npm/turnal-adapter-gemini-cli.js",
-    "turnal-adapter-copilot-cli": "npm/turnal-adapter-copilot-cli.js"
+    "turnal-adapter-copilot-cli": "npm/turnal-adapter-copilot-cli.js",
+    "turnal-adapter-pi": "npm/turnal-adapter-pi.js"
   },
   "files": [
     "cmd/",
     "internal/",
+    "integrations/",
     "sdk/",
     "npm/",
     "go.mod",
@@ -22,10 +24,11 @@
     "docs/"
   ],
   "scripts": {
-    "build": "npm run build:web && go build -o bin/turnal ./cmd/turnal",
+    "build": "npm run build:web && npm run build:go",
+    "build:go": "go build -o bin/ ./cmd/...",
     "build:web": "vite build",
-    "check:web": "tsc --noEmit && npm run build:web && git diff --exit-code -- internal/viewer/web/dist",
-    "dev:web": "vite",
+    "check:web": "tsc --noEmit",
+    "dev:web": "node scripts/viewer-preview.mjs",
     "build:npm-binaries": "node scripts/build-npm-binaries.js",
     "test": "go test ./...",
     "test:postinstall": "node --test scripts/remove-powershell-shims.test.js",
@@ -36,7 +39,14 @@
     "test:release-sbom": "node --test scripts/validate-release-sbom.test.js",
     "postinstall": "node npm/postinstall.js",
     "prepack": "node scripts/build-npm-binaries.js",
-    "prepublishOnly": "go test ./..."
+    "prepublishOnly": "go test ./...",
+    "check:web:assets": "npm run check:web && npm run build:web && git diff --exit-code -- internal/viewer/web/dist",
+    "check:go": "bash scripts/ci/check-go.sh",
+    "check:vscode": "npm --prefix apps/vscode run check",
+    "check:marketing": "npm --prefix apps/marketing run build",
+    "check:all": "npm run check:web && npm run build:web && npm run check:vscode && npm run check:marketing && npm run test:postinstall && npm run test:release-sbom && npm run check:go",
+    "preview:viewer": "node scripts/viewer-preview.mjs",
+    "test:browser": "playwright test"
   },
   "repository": {
     "type": "git",
@@ -64,6 +74,7 @@
     "preact": "^10.29.7"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@preact/preset-vite": "^2.10.5",
     "@types/node": "^26.1.1",
     "typescript": "^7.0.2",

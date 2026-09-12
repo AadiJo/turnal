@@ -58,6 +58,26 @@ func TestDiagnoseReportsMissingClaudeProjectHooks(t *testing.T) {
 	}
 }
 
+func TestDiagnoseClassifiesCursorAndPiSurfaces(t *testing.T) {
+	root := t.TempDir()
+	if _, err := adapters.InstallWithOptions(root, []adapters.Target{adapters.TargetCursor, adapters.TargetPi}, adapters.InstallOptions{HookCommand: "turnal"}); err != nil {
+		t.Fatal(err)
+	}
+	report := Diagnose(context.Background(), Options{
+		WorkspaceRoot: root,
+		HookCommand:   "turnal",
+		Targets:       []adapters.Target{adapters.TargetCursor, adapters.TargetPi},
+	})
+	if len(report.Surfaces) != 2 || report.Surfaces[0].Surface != SurfaceCursorCLI || report.Surfaces[1].Surface != SurfacePiCLI {
+		t.Fatalf("external surfaces = %#v", report.Surfaces)
+	}
+	for _, surface := range report.Surfaces {
+		if surface.Configuration != adapters.HookConfigurationConfigured || surface.Expectation != CaptureAvailable || surface.Certainty != CertaintyLikely {
+			t.Fatalf("surface = %#v", surface)
+		}
+	}
+}
+
 type panicProbe struct{}
 
 func (panicProbe) Probe(context.Context, string, string) (CodexHooksResult, error) {

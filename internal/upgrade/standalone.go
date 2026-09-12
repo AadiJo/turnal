@@ -26,8 +26,9 @@ const defaultStandaloneDownloadTimeout = 5 * time.Minute
 var standaloneCommands = []string{
 	"turnal",
 	"turnal-adapter-opencode",
-	"turnal-adapter-gemini-cli",
 	"turnal-adapter-copilot-cli",
+	"turnal-adapter-cursor",
+	"turnal-adapter-pi",
 }
 
 var standaloneExecutables = standaloneExecutableNames(runtime.GOOS)

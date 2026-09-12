@@ -38,7 +38,7 @@ const capabilities = [
 <Base
   theme="terminal-home-theme"
   title="Turnal - local history for AI coding agents"
-  description="Turnal preserves Claude Code and Codex turns as local checkpoints you can search, diff, verify, and roll back safely."
+  description="Turnal preserves AI coding agent turns as local checkpoints you can search, diff, verify, and roll back safely."
 >
   <a class="skip-link" href="#main-content">Skip to content</a>
 
@@ -92,8 +92,14 @@ const capabilities = [
       </section>
 
       <section class="adapter-strip th-wrap" aria-label="Supported coding agents">
-        <img src="/brands/claude.svg" alt="Claude Code" width="34" height="34" />
-        <img src="/brands/codex.svg" alt="Codex" width="34" height="34" />
+        <div class="adapter-logos">
+          <span class="adapter-tile"><img src="/brands/claude.svg" alt="Claude Code" width="34" height="34" /></span>
+          <span class="adapter-tile"><img src="/brands/codex.svg" alt="Codex" width="34" height="34" /></span>
+          <span class="adapter-tile"><img src="/brands/cursor.svg" alt="Cursor" width="34" height="34" /></span>
+          <span class="adapter-tile"><img src="/brands/pi.svg" alt="Pi" width="34" height="34" /></span>
+          <span class="adapter-tile"><img src="/brands/opencode.svg" alt="OpenCode" width="34" height="34" /></span>
+          <span class="adapter-tile"><img src="/brands/github-copilot.svg" alt="GitHub Copilot CLI" width="34" height="34" /></span>
+        </div>
       </section>
 
       <section id="features" class="capabilities th-wrap">
@@ -180,7 +186,7 @@ const capabilities = [
       <section id="prism" class="prism-section th-wrap" aria-labelledby="prism-title">
         <header class="section-heading">
           <h2 id="prism-title">Every project. One local view.</h2>
-          <p>Run <code>turnal ui</code> to see sessions from Claude Code and Codex in one place. Open a project to review its prompts, models, turns, branches, and file changes.</p>
+          <p>Run <code>turnal ui</code> to see sessions from every configured agent in one place. Open a project to review its prompts, models, turns, branches, and file changes.</p>
         </header>
 
         <figure class="prism-frame">
@@ -207,7 +213,7 @@ const capabilities = [
       <section class="final-cta">
         <div class="th-wrap final-cta-inner">
           <h2>Keep the story next to the code.</h2>
-          <p>Install Turnal, initialize the workspace, then let Claude Code and Codex work normally.</p>
+          <p>Install Turnal, initialize the workspace, then let your configured coding agents work normally.</p>
           <InstallMethods id="final-install" size="large" />
           <a class="docs-link docs-link-icon" href="https://marketplace.visualstudio.com/items?itemName=aadijo.turnal-vscode">
             <img src="/brands/vscode.svg" alt="" width="15" height="15" aria-hidden="true" />
@@ -405,14 +411,17 @@ const capabilities = [
   .terminal-home-theme .adapter-strip {
     display: flex;
     min-height: 78px;
+    padding-block: 24px;
     align-items: center;
     justify-content: center;
     gap: 32px;
     border-top: 1px solid var(--hair);
     border-bottom: 1px solid var(--hair);
   }
-  .terminal-home-theme .adapter-strip img { width: 30px; height: 30px; object-fit: contain; opacity: 0.65; filter: saturate(0.55); transition: opacity 160ms ease, filter 160ms ease; }
-  .terminal-home-theme .adapter-strip img:hover { opacity: 1; filter: none; }
+  .terminal-home-theme .adapter-logos { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 12px; }
+  .terminal-home-theme .adapter-tile { display: grid; place-items: center; width: 62px; height: 62px; border: 1px solid #292929; border-radius: 20px; background: #131313; box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.018); }
+  .terminal-home-theme .adapter-strip img { width: 29px; height: 29px; object-fit: contain; opacity: 0.88; filter: saturate(0.72); }
+  .terminal-home-theme .adapter-strip img[src*="claude"] { opacity: 0.95; filter: none; }
 
   .terminal-home-theme .capabilities { padding-top: 145px; padding-bottom: 74px; scroll-margin-top: 82px; }
   .terminal-home-theme .section-heading { max-width: 700px; }
@@ -475,7 +484,7 @@ const capabilities = [
     height: auto;
   }
 
-  .terminal-home-theme .evidence-section { padding-top: 112px; padding-bottom: 118px; border-top: 1px solid var(--hair); scroll-margin-top: 82px; }
+  .terminal-home-theme .evidence-section { padding-top: 112px; padding-bottom: 118px; scroll-margin-top: 82px; }
 
   .terminal-home-theme .workflow-section { padding-top: 104px; padding-bottom: 104px; scroll-margin-top: 82px; }
   .terminal-home-theme .workflow-heading { max-width: 660px; margin-bottom: 24px; }
@@ -493,7 +502,7 @@ const capabilities = [
   }
 
   .terminal-home-theme .compare-section { padding-top: 24px; padding-bottom: 112px; }
-  .terminal-home-theme .commands-section { padding-top: 104px; padding-bottom: 112px; border-top: 1px solid var(--hair); }
+  .terminal-home-theme .commands-section { padding-top: 104px; padding-bottom: 112px; }
   .terminal-home-theme .commands-heading { max-width: 710px; margin-bottom: 48px; }
   .terminal-home-theme .command-workbench { display: grid; grid-template-columns: minmax(250px, 0.72fr) minmax(0, 1.62fr); gap: 30px; align-items: stretch; }
   .terminal-home-theme .command-menu { min-width: 0; padding-right: 8px; }
@@ -577,7 +586,10 @@ const capabilities = [
        row stacks. */
     .terminal-home-theme .secondary-divider { display: none; }
     .terminal-home-theme .docs-link { padding: 7px 2px; }
-    .terminal-home-theme .adapter-strip { min-height: 80px; }
+    .terminal-home-theme .adapter-strip { min-height: 104px; }
+    .terminal-home-theme .adapter-logos { gap: 8px; }
+    .terminal-home-theme .adapter-tile { width: 48px; height: 48px; border-radius: 16px; }
+    .terminal-home-theme .adapter-strip img { width: 25px; height: 25px; }
     .terminal-home-theme .capabilities { padding-top: 115px; padding-bottom: 50px; }
     .terminal-home-theme .prism-section { padding-top: 58px; padding-bottom: 90px; }
     .terminal-home-theme .prism-frame { margin-top: 34px; }

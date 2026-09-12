@@ -7,6 +7,8 @@ type Provider string
 const (
 	ProviderClaude Provider = "claude"
 	ProviderCodex  Provider = "codex"
+	ProviderCursor Provider = "cursor"
+	ProviderPi     Provider = "pi"
 )
 
 type Surface string
@@ -16,6 +18,8 @@ const (
 	SurfaceClaudeAgentSDK Surface = "Claude Agent SDK"
 	SurfaceCodexCLI       Surface = "Codex CLI"
 	SurfaceCodexAppServer Surface = "Codex app-server"
+	SurfaceCursorCLI      Surface = "Cursor CLI"
+	SurfacePiCLI          Surface = "Pi CLI"
 )
 
 type VisibilityStatus string

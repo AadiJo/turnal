@@ -186,6 +186,25 @@ func transcriptAllowedRoots(adapter primitives.AdapterName) ([]string, error) {
 			return nil, fmt.Errorf("resolve home directory for Codex transcript root: %w", err)
 		}
 		return []string{filepath.Join(home, ".codex")}, nil
+	case primitives.AdapterCursor:
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("resolve home directory for Cursor transcript root: %w", err)
+		}
+		return []string{filepath.Join(home, ".cursor")}, nil
+	case primitives.AdapterPi:
+		if configured := strings.TrimSpace(os.Getenv("PI_CODING_AGENT_DIR")); configured != "" {
+			root, err := cleanAbsoluteRoot(configured)
+			if err != nil {
+				return nil, fmt.Errorf("invalid PI_CODING_AGENT_DIR: %w", err)
+			}
+			return []string{root}, nil
+		}
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("resolve home directory for Pi transcript root: %w", err)
+		}
+		return []string{filepath.Join(home, ".pi", "agent")}, nil
 	default:
 		return nil, fmt.Errorf("transcript adapter %q is not supported", adapter)
 	}

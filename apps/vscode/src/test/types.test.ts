@@ -16,6 +16,8 @@ test("parses session turns and accepts the older latest_turn fallback", () => {
     sessions: [
       {
         session_id: "demo",
+        parent_session_id: "root",
+        parent_tool_use_id: "task-1",
         status: "complete",
         turn_count: 1,
         complete_turn_count: 1,
@@ -30,6 +32,8 @@ test("parses session turns and accepts the older latest_turn fallback", () => {
   assert.deepEqual(turnsForSession(result.sessions[0]).map((turn) => turn.turn_id), [1]);
   assert.deepEqual(result.sessions[0].rollbacks, []);
   assert.equal(result.sessions[0].rollback_count, 0);
+  assert.equal(result.sessions[0].parent_session_id, "root");
+  assert.equal(result.sessions[0].parent_tool_use_id, "task-1");
 });
 
 test("parses first-class rollback activity from sessions", () => {

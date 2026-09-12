@@ -173,7 +173,7 @@ func inspectDurableStream(log Log, sessionID primitives.SessionID, streamID prim
 		return DurableStream{}, fmt.Errorf("read event stream %s: %w", path, err)
 	}
 	digest := sha256.Sum256(data)
-	events, err := log.readPath(sessionID, path, func() primitives.EventStreamID {
+	events, err := log.readBytes(sessionID, data, func() primitives.EventStreamID {
 		if legacy {
 			return ""
 		}
@@ -221,4 +221,43 @@ func inspectDurableStream(log Log, sessionID primitives.SessionID, streamID prim
 		ByteCount:     info.Size(),
 		Events:        events,
 	}, nil
+}
+
+// ReadDurableStream inspects one canonical session stream without reading other
+// sessions. Legacy files retain the same derived stream identity as listing.
+func ReadDurableStream(metadataDir string, session primitives.SessionID, stream primitives.EventStreamID) (DurableStream, bool, error) {
+	if _, err := primitives.ParseSessionID(session.String()); err != nil {
+		return DurableStream{}, false, err
+	}
+	if _, err := primitives.ParseEventStreamID(stream.String()); err != nil {
+		return DurableStream{}, false, err
+	}
+	log := Open(metadataDir)
+	dir := filepath.Join(log.Dir, session.String())
+	if info, err := os.Lstat(dir); err == nil {
+		if !info.IsDir() {
+			return DurableStream{}, false, fmt.Errorf("event stream session path must be a directory: %s", dir)
+		}
+	} else if !os.IsNotExist(err) {
+		return DurableStream{}, false, err
+	}
+	path := log.streamPath(session, stream)
+	if _, err := os.Lstat(path); err == nil {
+		value, err := inspectDurableStream(log, session, stream, path, false)
+		return value, err == nil, err
+	} else if !os.IsNotExist(err) {
+		return DurableStream{}, false, err
+	}
+	legacy, err := primitives.DeriveLegacyEventStreamID(log.StoreID, session)
+	if err != nil || legacy != stream {
+		return DurableStream{}, false, nil
+	}
+	path = log.sessionPath(session)
+	if _, err := os.Lstat(path); os.IsNotExist(err) {
+		return DurableStream{}, false, nil
+	} else if err != nil {
+		return DurableStream{}, false, err
+	}
+	value, err := inspectDurableStream(log, session, stream, path, true)
+	return value, err == nil, err
 }
