@@ -12,7 +12,6 @@
 
 :root {
   --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  --serif: "Newsreader", "Iowan Old Style", Georgia, "Times New Roman", serif;
   --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 
   /* brand */
@@ -50,6 +49,21 @@
     font: inherit;
     cursor: pointer;
   }
+}
+
+/* Visually hidden, still announced by screen readers and still read as a
+   heading by crawlers. Lives here rather than in a page's scoped <style> so
+   it is never tree-shaken away from the markup that depends on it. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 ::selection {

@@ -11,6 +11,18 @@ owners' trademark and brand policies.
 Source information for the provider icons bundled with the VS Code extension
 is recorded in apps/vscode/media/providers/README.md.
 
+The marketing site self-hosts two webfonts under apps/marketing/public/fonts/.
+Both are licensed under the SIL Open Font License, Version 1.1, and their full
+license texts are distributed alongside them:
+
+  Inter          Copyright (c) 2016 The Inter Project Authors
+                 https://github.com/rsms/inter
+                 apps/marketing/public/fonts/Inter-LICENSE.txt
+
+  JetBrains Mono Copyright 2020 The JetBrains Mono Project Authors
+                 https://github.com/JetBrains/JetBrainsMono
+                 apps/marketing/public/fonts/JetBrainsMono-OFL.txt
+
 Turnal's optional local semantic search uses go-potion:
 
 MIT License
