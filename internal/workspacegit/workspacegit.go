@@ -349,6 +349,14 @@ func (git Git) captureDeniedWorkspaceState(targetCommit primitives.CommitSHA, pa
 				entry.IndexObject = fields[1]
 			}
 		}
+		parentsSafe, err := git.deniedRestoreParents(repoPath, false)
+		if err != nil {
+			return nil, fmt.Errorf("inspect deny-listed path %s: %w", repoPath, err)
+		}
+		if !parentsSafe {
+			state = append(state, entry)
+			continue
+		}
 		absPath := git.Root.Join(repoPath)
 		info, err := os.Lstat(absPath)
 		if os.IsNotExist(err) {
