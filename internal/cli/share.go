@@ -29,7 +29,152 @@ func shareCmd() *cobra.Command {
 	cmd.AddCommand(shareStatusCmd())
 	cmd.AddCommand(shareListCmd())
 	cmd.AddCommand(shareShowCmd())
+	cmd.AddCommand(shareRedactionCmd())
 	return cmd
+}
+
+func shareRedactionCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "redaction",
+		Short: "Diagnose and review the shared-history redaction policy",
+	}
+	cmd.AddCommand(shareRedactionDiagnoseCmd())
+	cmd.AddCommand(shareRedactionReviewCmd())
+	return cmd
+}
+
+func shareRedactionDiagnoseCmd() *cobra.Command {
+	var jsonOutput bool
+	cmd := &cobra.Command{
+		Use:          "diagnose",
+		Short:        "Inspect detector coverage and run the golden corpus",
+		Args:         cobra.NoArgs,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			repo, err := openCheckpointRepo()
+			if err != nil {
+				return err
+			}
+			diagnostics, err := sharedhistory.DiagnoseRedaction(repo)
+			if err != nil {
+				return err
+			}
+			if jsonOutput {
+				if err := writeJSON(cmd, diagnostics); err != nil {
+					return err
+				}
+			} else {
+				writeRedactionDiagnostics(cmd, diagnostics)
+			}
+			if !diagnostics.GoldenCorpus.Passed() {
+				return fmt.Errorf("redaction golden corpus failed with %d false positive(s) and %d false negative(s)", diagnostics.GoldenCorpus.FalsePositives, diagnostics.GoldenCorpus.FalseNegatives)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit structured JSON")
+	return cmd
+}
+
+func shareRedactionReviewCmd() *cobra.Command {
+	var jsonOutput bool
+	cmd := &cobra.Command{
+		Use:          "review <corpus.jsonl>...",
+		Short:        "Classify corpus cases as false positives or false negatives",
+		Args:         cobra.MinimumNArgs(1),
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			report, err := reviewRedactionFiles(args)
+			if err != nil {
+				return err
+			}
+			if jsonOutput {
+				if err := writeJSON(cmd, report); err != nil {
+					return err
+				}
+			} else {
+				writeRedactionReview(cmd, report)
+			}
+			if !report.Passed() {
+				return fmt.Errorf("redaction review failed with %d false positive(s) and %d false negative(s)", report.FalsePositives, report.FalseNegatives)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit structured JSON without source text")
+	return cmd
+}
+
+func reviewRedactionFiles(paths []string) (sharedhistory.RedactionReviewReport, error) {
+	merged := sharedhistory.RedactionReviewReport{ScannerVersion: sharedhistory.ScannerVersion}
+	seen := make(map[string]struct{})
+	for _, path := range paths {
+		file, err := os.Open(path)
+		if err != nil {
+			return merged, fmt.Errorf("open redaction review corpus %q: %w", path, err)
+		}
+		report, reviewErr := sharedhistory.ReviewRedactionCorpus(file)
+		closeErr := file.Close()
+		if reviewErr != nil {
+			return merged, fmt.Errorf("review redaction corpus %q: %w", path, reviewErr)
+		}
+		if closeErr != nil {
+			return merged, fmt.Errorf("close redaction review corpus %q: %w", path, closeErr)
+		}
+		for _, result := range report.Cases {
+			if _, duplicate := seen[result.ID]; duplicate {
+				return merged, fmt.Errorf("redaction review case id %q is duplicated across corpora", result.ID)
+			}
+			seen[result.ID] = struct{}{}
+		}
+		merged.Total += report.Total
+		merged.TruePositives += report.TruePositives
+		merged.TrueNegatives += report.TrueNegatives
+		merged.FalsePositives += report.FalsePositives
+		merged.FalseNegatives += report.FalseNegatives
+		merged.Cases = append(merged.Cases, report.Cases...)
+	}
+	return merged, nil
+}
+
+func writeRedactionDiagnostics(cmd *cobra.Command, diagnostics sharedhistory.RedactionDiagnostics) {
+	fmt.Fprintf(cmd.OutOrStdout(), "scanner: %s\n", diagnostics.ScannerVersion)
+	if diagnostics.Configured {
+		fmt.Fprintf(cmd.OutOrStdout(), "configured scanner: %s\n", diagnostics.ConfiguredScanner)
+		fmt.Fprintf(cmd.OutOrStdout(), "policy: %s\n", diagnostics.PolicyHash)
+		fmt.Fprintf(cmd.OutOrStdout(), "approved: %t\n", diagnostics.Approved)
+		fmt.Fprintf(cmd.OutOrStdout(), "migration required: %t\n", diagnostics.MigrationRequired)
+	} else {
+		fmt.Fprintln(cmd.OutOrStdout(), "configured scanner: none")
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), "detectors:")
+	for _, detector := range diagnostics.Detectors {
+		fmt.Fprintf(cmd.OutOrStdout(), "- %s: %s\n", detector.ID, detector.Description)
+	}
+	writeRedactionReviewSummary(cmd, "golden corpus", diagnostics.GoldenCorpus)
+}
+
+func writeRedactionReview(cmd *cobra.Command, report sharedhistory.RedactionReviewReport) {
+	fmt.Fprintf(cmd.OutOrStdout(), "scanner: %s\n", report.ScannerVersion)
+	writeRedactionReviewSummary(cmd, "review", report)
+	for _, result := range report.Cases {
+		if result.Outcome != "false_positive" && result.Outcome != "false_negative" {
+			continue
+		}
+		detectors := "none"
+		if len(result.Detectors) > 0 {
+			detectors = strings.Join(result.Detectors, ",")
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "- %s: %s (detectors: %s)\n", result.Outcome, indentSharedText(result.ID), detectors)
+	}
+}
+
+func writeRedactionReviewSummary(cmd *cobra.Command, label string, report sharedhistory.RedactionReviewReport) {
+	fmt.Fprintf(cmd.OutOrStdout(), "%s: %d cases\n", label, report.Total)
+	fmt.Fprintf(cmd.OutOrStdout(), "true positives: %d\n", report.TruePositives)
+	fmt.Fprintf(cmd.OutOrStdout(), "true negatives: %d\n", report.TrueNegatives)
+	fmt.Fprintf(cmd.OutOrStdout(), "false positives: %d\n", report.FalsePositives)
+	fmt.Fprintf(cmd.OutOrStdout(), "false negatives: %d\n", report.FalseNegatives)
 }
 
 func shareForgetDeviceCmd() *cobra.Command {

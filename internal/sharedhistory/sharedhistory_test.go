@@ -66,6 +66,9 @@ func TestPreviewProjectsOnlyAllowlistedRedactedContext(t *testing.T) {
 	if plan.Manifest.Redactions["path_full"] == 0 || plan.Manifest.Redactions["workspace_path"] == 0 || plan.Manifest.Redactions["secret"] == 0 {
 		t.Fatalf("redactions = %#v", plan.Manifest.Redactions)
 	}
+	if plan.Manifest.Redactions["secret:provider_token"] == 0 {
+		t.Fatalf("redactions do not identify the detector: %#v", plan.Manifest.Redactions)
+	}
 	if err := verifyStoredBundle(repo.RepoID, StoredBundle{Manifest: plan.Manifest, Events: plan.Events, PublicKey: mustDevice(t, repo).PublicKey}); err != nil {
 		t.Fatalf("verify preview bundle: %v", err)
 	}

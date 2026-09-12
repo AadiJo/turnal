@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -128,5 +130,64 @@ func TestSharedHistoryHumanTextEscapesTerminalControls(t *testing.T) {
 	want := "before\\u001b[31mred\\u000d \\u202eevil\n    after"
 	if got != want {
 		t.Fatalf("indented shared text = %q, want %q", got, want)
+	}
+}
+
+func TestSharedHistoryRedactionDiagnosticsAndReviewCLI(t *testing.T) {
+	root, err := primitives.ParseWorkspaceRoot(filepath.Join(t.TempDir(), "workspace"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := checkpoint.Init(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root.String())
+
+	diagnostics := runRootStdout(t, "share", "redaction", "diagnose")
+	for _, want := range []string{"scanner: " + sharedhistory.ScannerVersion, "high_entropy", "known_secret", "golden corpus:", "false positives: 0", "false negatives: 0"} {
+		if !strings.Contains(diagnostics, want) {
+			t.Fatalf("redaction diagnostics missing %q:\n%s", want, diagnostics)
+		}
+	}
+
+	passingPath := filepath.Join(t.TempDir(), "passing.jsonl")
+	passing := strings.Join([]string{
+		`{"id":"known-leak","text":"password=hunter2","expect":"redact"}`,
+		`{"id":"known-safe","text":"ordinary sentence","expect":"allow"}`,
+	}, "\n")
+	if err := os.WriteFile(passingPath, []byte(passing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output := runRootStdout(t, "share", "redaction", "review", passingPath)
+	if !strings.Contains(output, "review: 2 cases") || !strings.Contains(output, "false positives: 0") || !strings.Contains(output, "false negatives: 0") {
+		t.Fatalf("passing redaction review = %q", output)
+	}
+
+	failingPath := filepath.Join(t.TempDir(), "failing.jsonl")
+	failing := strings.Join([]string{
+		`{"id":"expected-fp","text":"password=hunter2","expect":"allow"}`,
+		`{"id":"expected-fn","text":"ordinary sentence","expect":"redact"}`,
+	}, "\n")
+	if err := os.WriteFile(failingPath, []byte(failing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := NewRootCmd()
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stdout)
+	cmd.SetArgs([]string{"share", "redaction", "review", failingPath, "--json"})
+	err = cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "1 false positive(s) and 1 false negative(s)") {
+		t.Fatalf("failing review error = %v, output = %s", err, stdout.String())
+	}
+	var report sharedhistory.RedactionReviewReport
+	decodeCLIJSON(t, stdout.String(), &report)
+	if report.FalsePositives != 1 || report.FalseNegatives != 1 {
+		t.Fatalf("failing review report = %#v", report)
+	}
+	for _, sourceText := range []string{"password=hunter2", "ordinary sentence"} {
+		if strings.Contains(stdout.String(), sourceText) {
+			t.Fatalf("review output echoed source text %q: %s", sourceText, stdout.String())
+		}
 	}
 }
