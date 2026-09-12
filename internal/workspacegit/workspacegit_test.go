@@ -189,6 +189,175 @@ func TestRestorePreservesCurrentDeniedUntrackedFile(t *testing.T) {
 	}
 }
 
+func TestRestoreDoesNotFollowTargetSymlinkForDeniedFile(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t, t.TempDir())
+	runGit(t, root.String(), "init", "-q")
+	runGit(t, root.String(), "config", "user.email", "turnal@example.test")
+	runGit(t, root.String(), "config", "user.name", "turnal")
+	writeFile(t, root.String(), "README.md", "target\n")
+	if err := os.Symlink("..", filepath.Join(root.String(), "secrets")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	runGit(t, root.String(), "add", "README.md", "secrets")
+	runGit(t, root.String(), "commit", "-q", "-m", "target with symlink")
+	target, err := Open(root).Capture()
+	if err != nil {
+		t.Fatalf("Capture target: %v", err)
+	}
+
+	runGit(t, root.String(), "rm", "-q", "secrets")
+	writeFile(t, root.String(), "README.md", "current\n")
+	runGit(t, root.String(), "add", "README.md")
+	runGit(t, root.String(), "commit", "-q", "-m", "current without symlink")
+	writeFile(t, root.String(), "secrets/.env", "SECRET=preserve-me\n")
+	outside := filepath.Join(filepath.Dir(root.String()), ".env")
+	if err := os.WriteFile(outside, []byte("OUTSIDE=unchanged\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Open(root).Restore(target); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	secret, err := os.ReadFile(filepath.Join(root.String(), "secrets", ".env"))
+	if err != nil || string(secret) != "SECRET=preserve-me\n" {
+		t.Fatalf("preserved secret = %q, err=%v", secret, err)
+	}
+	info, err := os.Lstat(filepath.Join(root.String(), "secrets"))
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("secrets parent info=%v err=%v, want real directory", info, err)
+	}
+	outsideContent, err := os.ReadFile(outside)
+	if err != nil || string(outsideContent) != "OUTSIDE=unchanged\n" {
+		t.Fatalf("outside file = %q, err=%v", outsideContent, err)
+	}
+}
+
+func TestRestoreDoesNotFollowTargetSymlinkForAbsentDeniedFile(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t, t.TempDir())
+	runGit(t, root.String(), "init", "-q")
+	runGit(t, root.String(), "config", "user.email", "turnal@example.test")
+	runGit(t, root.String(), "config", "user.name", "turnal")
+	if err := os.Symlink("..", filepath.Join(root.String(), "secrets")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	runGit(t, root.String(), "add", "secrets")
+	runGit(t, root.String(), "commit", "-q", "-m", "target with symlink")
+	target, err := Open(root).Capture()
+	if err != nil {
+		t.Fatalf("Capture target: %v", err)
+	}
+
+	runGit(t, root.String(), "rm", "-q", "secrets")
+	writeFile(t, root.String(), "secrets/.env", "SECRET=committed\n")
+	runGit(t, root.String(), "add", "secrets/.env")
+	runGit(t, root.String(), "commit", "-q", "-m", "current with denied file")
+	if err := os.Remove(filepath.Join(root.String(), "secrets", ".env")); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(filepath.Dir(root.String()), ".env")
+	if err := os.WriteFile(outside, []byte("OUTSIDE=unchanged\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Open(root).Restore(target); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	link, err := os.Readlink(filepath.Join(root.String(), "secrets"))
+	if err != nil || link != ".." {
+		t.Fatalf("restored symlink = %q, err=%v", link, err)
+	}
+	outsideContent, err := os.ReadFile(outside)
+	if err != nil || string(outsideContent) != "OUTSIDE=unchanged\n" {
+		t.Fatalf("outside file = %q, err=%v", outsideContent, err)
+	}
+}
+
+func TestRestorePreservesDeniedSymlinkWithoutCapturingOutsideDescendant(t *testing.T) {
+	requireGit(t)
+	root := workspaceRoot(t, t.TempDir())
+	runGit(t, root.String(), "init", "-q")
+	runGit(t, root.String(), "config", "user.email", "turnal@example.test")
+	runGit(t, root.String(), "config", "user.name", "turnal")
+	writeFile(t, root.String(), ".turnal/config.toml", "version = 1\n[secrets]\nsnapshot_deny_globs = [\"secrets\"]\n")
+	writeFile(t, root.String(), ".gitignore", ".turnal/\n")
+	writeFile(t, root.String(), "secrets/config.yaml", "target: tracked\n")
+	runGit(t, root.String(), "add", ".gitignore", "secrets/config.yaml")
+	runGit(t, root.String(), "commit", "-q", "-m", "target with denied descendant")
+	target, err := Open(root).Capture()
+	if err != nil {
+		t.Fatalf("Capture target: %v", err)
+	}
+
+	runGit(t, root.String(), "rm", "-q", "-r", "secrets")
+	runGit(t, root.String(), "commit", "-q", "-m", "current without secrets")
+	outsideDir := t.TempDir()
+	outsideConfig := filepath.Join(outsideDir, "config.yaml")
+	if err := os.WriteFile(outsideConfig, []byte("outside: private\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideDir, filepath.Join(root.String(), "secrets")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	preserved, err := Open(root).captureDeniedWorkspaceState(target.State.Head.Commit, []string{"secrets"})
+	if err != nil {
+		t.Fatalf("captureDeniedWorkspaceState: %v", err)
+	}
+	descendantFound := false
+	for _, entry := range preserved {
+		if entry.Path.String() != "secrets/config.yaml" {
+			continue
+		}
+		descendantFound = true
+		if entry.Exists || len(entry.Content) != 0 {
+			t.Fatalf("outside descendant captured as %#v", entry)
+		}
+	}
+	if !descendantFound {
+		t.Fatal("target deny-listed descendant was not considered for preservation")
+	}
+
+	if err := Open(root).Restore(target); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	link, err := os.Readlink(filepath.Join(root.String(), "secrets"))
+	if err != nil || link != outsideDir {
+		t.Fatalf("restored denied symlink = %q, err=%v, want %q", link, err, outsideDir)
+	}
+	outsideContent, err := os.ReadFile(outsideConfig)
+	if err != nil || string(outsideContent) != "outside: private\n" {
+		t.Fatalf("outside config = %q, err=%v", outsideContent, err)
+	}
+}
+
+func TestRestoreReplacesFileAncestorForDeniedFile(t *testing.T) {
+	root := workspaceRoot(t, t.TempDir())
+	writeFile(t, root.String(), "secrets", "target file\n")
+	repoPath, err := primitives.ParseRepoPath("secrets/.env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := preservedDeniedPaths{{
+		Path:    repoPath,
+		Exists:  true,
+		Mode:    0o600,
+		Content: []byte("SECRET=preserve-me\n"),
+	}}
+
+	if err := Open(root).restoreDeniedWorkspaceState(entries); err != nil {
+		t.Fatalf("restoreDeniedWorkspaceState: %v", err)
+	}
+	info, err := os.Lstat(filepath.Join(root.String(), "secrets"))
+	if err != nil || info.Mode().Type() != os.ModeDir {
+		t.Fatalf("secrets ancestor info=%v err=%v, want real directory", info, err)
+	}
+	secret, err := os.ReadFile(filepath.Join(root.String(), "secrets", ".env"))
+	if err != nil || string(secret) != "SECRET=preserve-me\n" {
+		t.Fatalf("restored secret = %q, err=%v", secret, err)
+	}
+}
+
 func TestRestorePreservesTrackedDeniedStagedAndWorkingContent(t *testing.T) {
 	requireGit(t)
 	root := workspaceRoot(t, t.TempDir())
