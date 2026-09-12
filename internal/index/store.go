@@ -13,6 +13,7 @@ import (
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/usage"
 	_ "modernc.org/sqlite"
 )
 
@@ -414,7 +415,7 @@ func (s *Store) loadGraphTurns(ctx context.Context, sessionID primitives.Session
 	args := []any{sessionID.String()}
 	query := `
 		SELECT stream_id, worktree_id, turn_id, event_count, adapter, model, prompt_preview, assistant_preview,
-		       tool_names_json, event_type_counts_json, events_first_at, events_last_at,
+		       usage_json, tool_names_json, event_type_counts_json, events_first_at, events_last_at,
 		       diff_loaded, diff_additions, diff_deletions, diff_binary_files, warnings_json
 		FROM turns
 		WHERE session_id = ?`
@@ -444,6 +445,7 @@ func (s *Store) loadGraphTurns(ctx context.Context, sessionID primitives.Session
 		var model sql.NullString
 		var prompt sql.NullString
 		var assistant sql.NullString
+		var usageJSON sql.NullString
 		var toolNamesJSON string
 		var typeCountsJSON string
 		var firstText sql.NullString
@@ -462,6 +464,7 @@ func (s *Store) loadGraphTurns(ctx context.Context, sessionID primitives.Session
 			&model,
 			&prompt,
 			&assistant,
+			&usageJSON,
 			&toolNamesJSON,
 			&typeCountsJSON,
 			&firstText,
@@ -503,6 +506,14 @@ func (s *Store) loadGraphTurns(ctx context.Context, sessionID primitives.Session
 		if err != nil {
 			return nil, fmt.Errorf("decode indexed warnings for %s:%s: %w", sessionID, turnID, err)
 		}
+		var tokenUsage *usage.TokenUsage
+		if usageJSON.Valid && usageJSON.String != "" && usageJSON.String != "null" {
+			var decoded usage.TokenUsage
+			if err := json.Unmarshal([]byte(usageJSON.String), &decoded); err != nil {
+				return nil, fmt.Errorf("decode indexed usage for %s:%s: %w", sessionID, turnID, err)
+			}
+			tokenUsage = &decoded
+		}
 		first, err := parseOptionalTime(firstText)
 		if err != nil {
 			return nil, fmt.Errorf("parse indexed first event time for %s:%s: %w", sessionID, turnID, err)
@@ -533,6 +544,7 @@ func (s *Store) loadGraphTurns(ctx context.Context, sessionID primitives.Session
 				TypeCounts: typeCounts,
 				First:      first,
 				Last:       last,
+				Usage:      tokenUsage,
 			},
 			DiffLoaded: diffLoadedInt != 0,
 			Warnings:   warnings,

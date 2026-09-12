@@ -1,6 +1,6 @@
 module github.com/AadiJo/turnal
 
-go 1.26.5
+go 1.26.6
 
 require (
 	github.com/betterleaks/betterleaks v1.7.4

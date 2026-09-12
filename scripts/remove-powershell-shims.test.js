@@ -113,11 +113,11 @@ test('keeps same-name shims that do not belong to this install', (t) => {
   t.after(() => fs.rmSync(prefix, { recursive: true, force: true }));
 
   const unrelatedShim = path.join(prefix, 'turnal.ps1');
-  const customShim = path.join(prefix, 'turnal-adapter-gemini-cli.ps1');
+  const customShim = path.join(prefix, 'turnal-adapter-cursor.ps1');
   const npmDerivedShim = path.join(prefix, 'turnal-adapter-copilot-cli.ps1');
   const commentOnlyShim = path.join(prefix, 'turnal-adapter-opencode.ps1');
   fs.writeFileSync(unrelatedShim, generatedShim('node_modules/other-package/turnal.js'));
-  fs.writeFileSync(customShim, '& "$PSScriptRoot/node_modules/@aadijo/turnal/npm/turnal-adapter-gemini-cli.js" $args\n');
+  fs.writeFileSync(customShim, '& "$PSScriptRoot/node_modules/@aadijo/turnal/npm/turnal-adapter-cursor.js" $args\n');
   fs.writeFileSync(
     npmDerivedShim,
     generatedShim('node_modules/@aadijo/turnal/npm/turnal-adapter-copilot-cli.js')

@@ -12,7 +12,7 @@
 
 Turnal records what an agent did, the problem it said it was trying to solve, what the workspace looked like before and after each turn, and how to get back safely.
 
-It combines an append-only activity log with private Git checkpoints. Your project history stays local, normal recording never commits to or modifies your existing `.git/`, and SQLite is only a disposable search index. The optional workspace-Git rollback mode is the explicit exception: it can restore a previously captured HEAD and index.
+It combines an append-only activity log with private Git checkpoints. Your project history stays local, normal recording never commits to or modifies your existing `.git/`, and SQLite holds only disposable indexes. The optional workspace-Git rollback mode is the explicit exception: it can restore a previously captured HEAD and index.
 
 Turnal should be piloted before company-wide adoption. Pin a version and validate hook compatibility, retention, and rollback behavior on representative repositories; see the [compatibility policy](docs/compatibility.md), [retention semantics](docs/retention.md), and [recovery runbook](docs/recovery.md).
 
@@ -24,6 +24,7 @@ Turnal should be piloted before company-wide adoption. Pin a version and validat
 - Roll the workspace back with a safety checkpoint created first.
 - Save an explicit rollback point without committing to the project's Git history.
 - Search recorded turns without making SQLite the source of truth.
+- Track recorded token usage and API-equivalent cost by turn, session, and project.
 - Replay checkpoints in isolated worktrees.
 - Run repository-defined checks against the live workspace or a recorded checkpoint.
 - Promote recorded turns into immutable Cases, compare isolated Attempts, and apply a selected result.
@@ -35,7 +36,7 @@ Turnal should be piloted before company-wide adoption. Pin a version and validat
 - Git available on `PATH`. Turnal uses Git plumbing for its private checkpoint store.
 - Node.js 18 or newer when installing through npm.
 - Go 1.26.5 or newer when installing from source or developing Turnal.
-- Claude Code, Codex, OpenCode, Gemini CLI, or Copilot CLI for automatic agent capture. `turnal save` also works without an agent session.
+- Claude Code, Codex, Cursor, Pi, OpenCode, or GitHub Copilot CLI for automatic agent capture. `turnal save` also works without an agent session.
 
 Turnal does not initialize a Git repository for your project. It works in both Git and non-Git directories.
 
@@ -102,6 +103,8 @@ turnal status --probe-agent-capture
 
 `turnal init --agent all` creates a `.turnal/` store, adds `.turnal/` to `.gitignore`, and configures hooks for all supported agents. Initialization does not change your existing `.git/`.
 
+GitHub Copilot CLI hooks are collaborator-visible files under `.github/hooks/`. The default `--agent auto` refreshes an existing `.github/hooks/turnal.json` but never introduces one merely because GitHub Copilot CLI is installed; use explicit `--agent copilot` or `--agent all` after reviewing the repository hook surface.
+
 > [!IMPORTANT]
 > **Trust the workspace hooks before using your agent.** For Codex, launch the Codex CLI in this workspace first and approve the Turnal hooks there before using Codex through another surface, such as the desktop app; those surfaces may not show the hook-trust prompt. For Claude Code, trust the workspace when prompted; no separate hook approval is needed.
 
@@ -125,7 +128,7 @@ $turnal-fork-history Rerun <session>:<turn> in isolation and compare the result 
 $turnal-restore-history Preview restoring the workspace to before <session>:<turn>; do not apply it yet.
 ```
 
-OpenCode, Gemini CLI, and Copilot CLI use the versioned external adapter SDK. Release packages ship their adapter executables; verify discovery with `turnal adapter list` and `turnal adapter doctor`, then follow the [provider hook examples](docs/adapters.md#included-adapters).
+Cursor, Pi, OpenCode, and GitHub Copilot CLI use the versioned external adapter plugin contract. Release packages ship their adapter executables; inspect the contract with `turnal adapter contract`, verify discovery with `turnal adapter list` and `turnal adapter doctor`, then follow the [provider hook examples](docs/adapters.md#included-adapters). Cursor subagents and Pi forks retain their parent-session relationship in session listings.
 
 Now use your agent normally. After it has completed a turn:
 
@@ -136,6 +139,10 @@ turnal sessions
 # Read recent history or a transcript.
 turnal log
 turnal log --transcript
+
+# Summarize token usage and estimated API cost.
+turnal usage
+turnal usage --json
 
 # Inspect and diff one turn.
 turnal show <session>:<turn>
@@ -164,15 +171,22 @@ turnal rollback --to <printed-hash>
 
 Manual saves capture the same project surface as automatic checkpoints. They do not capture the project's Git HEAD or index, so `--workspace-git` rollback is unavailable for them.
 
-### Codex wrapper mode
+### Agent wrapper mode
 
-Turnal can launch Codex with wrapper checkpoints in addition to hook capture:
+Turnal can launch every supported agent with wrapper checkpoints in addition to hook capture:
 
 ```sh
+turnal run -- claude -p "inspect this project"
 turnal run -- codex
+turnal run -- copilot -p "inspect this project"
+turnal run -- agent --print "inspect this project"
+turnal run -- opencode run "inspect this project"
+turnal run -- pi --print "inspect this project"
 ```
 
-Wrapper checkpoints remain available even when Codex hook payloads are unavailable. Prompt, tool, and assistant details still depend on Codex hooks.
+`copilot` here is specifically the [GitHub Copilot CLI](https://docs.github.com/en/copilot/concepts/agents/copilot-cli/about-copilot-cli). Turnal installs its repository hooks at `.github/hooks/turnal.json` and enables repository hooks for the wrapped prompt-mode process unless `GITHUB_COPILOT_PROMPT_MODE_REPO_HOOKS` is already set. In single-turn prompt mode, Turnal waits for the child to flush its final transcript before settling the provider turn; interactive sessions settle each stop hook immediately so later turns cannot leak into an earlier checkpoint. Review every repository hook before enabling this provider feature.
+
+Wrapper checkpoints remain available when provider hook payloads are unavailable. Prompt, tool, and assistant details still depend on the provider loading the Turnal integration. `TURNAL_RUN_ID` links provider sessions and attempts to the wrapper run.
 
 An application embedding Codex app-server does not automatically pass through this wrapper. App-server may discover Turnal's project hooks but skip untrusted definitions until you review and trust them in the host's hooks UI; Turnal diagnoses trust but never grants it.
 
@@ -227,7 +241,7 @@ By default Turnal records:
 - User prompts and assistant messages exposed by agent hooks.
 - For Claude Code and Codex, compact agent intent statements: the problem, expected scope, and evidence references supplied before an edit.
 - Tool names, inputs, and results exposed by agent hooks.
-- For Claude Code and Codex, before/after workspace snapshots around potentially mutating tool actions, so separate edits in one turn can carry separate intent. External adapters currently retain turn-level checkpoints and tool events without per-action snapshots.
+- Before/after workspace snapshots around potentially mutating tool actions when the provider exposes a usable tool boundary. Separate edits in one turn remain distinct; result-only hooks are reconciled with the latest matching call instead of inventing a provider ID.
 - Raw adapter payloads, including malformed payloads when they can be preserved.
 - Byte-exact contents and executable bits for checkpointed files.
 - Symlinks as symlinks, without following their targets.
@@ -347,9 +361,16 @@ it. The first semantic search downloads the 8 MB `minishlab/potion-base-2M`
 model from Hugging Face into the user cache; Turnal sends no prompts,
 transcripts, tool data, or other recorded history.
 
+Repeated semantic searches reuse embeddings from `turnal/embeddings` under the
+OS user-cache directory. Cache files contain vectors keyed by text hashes, not
+raw text. Model or tokenizer changes invalidate them. Deleting this directory
+forces recomputation; deleting a project or pruning its history does not remove
+these user-cache files. An unavailable or damaged cache falls back to local
+inference.
+
 ### Local viewer
 
-Run `turnal ui` to open Turnal Prism, a local browser interface for browsing recorded projects, sessions, turns, prompts, tool activity, diffs, and line-level blame. It runs on the loopback interface and can be launched from inside a recorded project or elsewhere to open the project index.
+Run `turnal ui` to open Turnal Prism, a local browser interface for browsing recorded projects, usage, sessions, turns, prompts, tool activity, diffs, and line-level blame. It runs on the loopback interface and can be launched from inside a recorded project or elsewhere to open the project index.
 
 ```sh
 turnal ui
@@ -548,7 +569,7 @@ Common workspace options:
 version = 1
 
 [init]
-agent = "auto"          # auto | claude | codex | all | none
+agent = "auto"          # auto | claude | codex | copilot | cursor | opencode | pi | all | none
 install_hooks = true
 
 [run]
@@ -603,10 +624,10 @@ turnal sessions
 turnal recovery status
 ```
 
-- **Hooks need attention:** status distinguishes a missing event from an event configured with a different command; rerun `turnal init --agent claude`, `--agent codex`, or `--agent all` only after reviewing the reported configuration.
+- **Hooks need attention:** status distinguishes a missing event from an event configured with a different command. Rerun `turnal init --agent <name>` for `claude`, `codex`, `copilot`, `cursor`, `opencode`, or `pi`, or use `--agent all`, only after reviewing the reported configuration.
 - **Claude Agent SDK is host-controlled:** the host must omit `settingSources` or include `"project"`. Turnal cannot infer arbitrary SDK host configuration and does not consume the SDK stream directly.
 - **Codex app-server hooks are untrusted:** review the project and exact hook definitions in Codex's hooks UI. Turnal does not change project trust, hook trust, or private provider trust databases.
-- **No Codex hook payloads:** review Codex hook trust, or use `turnal run -- codex` for wrapper checkpoints.
+- **No provider hook payloads:** review the provider's project trust and integration status, or use `turnal run` for wrapper checkpoints.
 - **A session is active after an interrupted agent run:** resume the same session so the next prompt can close the stale turn, or finalize it manually with `turnal turn finish --session <session>` after inspecting the workspace.
 - **Search index missing or stale:** run `turnal reindex`.
 - **Pending store import:** run `turnal merge --recover` or `turnal merge --abort` as directed by `status`.
@@ -630,10 +651,22 @@ Turnal may occasionally print a channel-preserving update notice after interacti
 
 ## Development
 
+Install the frontend dependencies, then build the CLI and all bundled adapters with freshly rebuilt viewer assets:
+
+```sh
+npm ci
+npm run build
+```
+
+`make build` performs the same build. Both commands write the executables to `bin/` and require Go, Node.js, and npm.
+
+For Go-only changes, use `make build-go` or `npm run build:go` to reuse the checked-in viewer assets. `make build-go` requires only Go and Make. Both Make build targets accept `GO` and `BIN_DIR` overrides, for example `make build BIN_DIR=/tmp/turnal-build`.
+
+Run the Go checks with:
+
 ```sh
 go test ./...
 go vet ./...
-go build -o bin/turnal ./cmd/turnal
 ```
 
 The Astro marketing and documentation site is kept outside the npm package:
@@ -644,7 +677,7 @@ npm install
 npm run dev
 ```
 
-Authenticated provider testing is intentionally excluded from the default suite. Set `TURNAL_LIVE_CODEX_TEST=1` to run the live Codex integration test in a trusted disposable repository.
+Authenticated provider testing is intentionally excluded from the default suite. Set `TURNAL_LIVE_PARITY_TEST=1` to run the end-to-end edit contract in trusted disposable repositories for every available provider, or select one with `TURNAL_LIVE_PARITY_PROVIDER=claude|codex|copilot|cursor|opencode|pi`. The older Codex-only integration remains available with `TURNAL_LIVE_CODEX_TEST=1`.
 
 ## Security
 

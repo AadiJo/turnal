@@ -10,6 +10,7 @@ import (
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/usage"
 )
 
 // openIsolated redirects machine-wide state so a test never touches the real
@@ -61,9 +62,11 @@ func TestRefreshIndexesRegisteredStores(t *testing.T) {
 		Branch: "main", IndexState: "healthy", HistoryState: "ready",
 		SessionCount: 2, TurnCount: 7, Additions: 40, Deletions: 5,
 		LastActivity: activity, LastPrompt: "Add the thing", LastAdapter: "codex",
+		Usage: usage.Summary{TokenUsage: usage.TokenUsage{InputTokens: 100, OutputTokens: 20}, CoveredTurns: 1, TotalTurns: 2},
 		Sessions: []Activity{{
 			SessionKey: "key-1", SessionID: "sess", Title: "Add the thing",
 			Adapter: "codex", TurnCount: 7, Additions: 40, Deletions: 5, FinishedAt: activity,
+			Usage: usage.Summary{TokenUsage: usage.TokenUsage{InputTokens: 100, OutputTokens: 20}, CoveredTurns: 1, TotalTurns: 2},
 		}},
 	})
 	if err := db.Refresh(context.Background(), summarize); err != nil {
@@ -90,6 +93,9 @@ func TestRefreshIndexesRegisteredStores(t *testing.T) {
 	if project.TurnCount != 7 || project.Additions != 40 {
 		t.Fatalf("summary not stored: turns=%d additions=%d", project.TurnCount, project.Additions)
 	}
+	if project.Usage.Tokens() != 120 || project.Usage.CoveredTurns != 1 {
+		t.Fatalf("project usage not stored: %+v", project.Usage)
+	}
 
 	feed, _, err := db.Activity(context.Background(), 10)
 	if err != nil {
@@ -97,6 +103,9 @@ func TestRefreshIndexesRegisteredStores(t *testing.T) {
 	}
 	if len(feed) != 1 || feed[0].ProjectName != "alpha" || feed[0].Title != "Add the thing" {
 		t.Fatalf("activity = %#v", feed)
+	}
+	if feed[0].Usage.Tokens() != 120 {
+		t.Fatalf("activity usage not stored: %+v", feed[0].Usage)
 	}
 }
 

@@ -12,6 +12,7 @@ package projects
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"github.com/AadiJo/turnal/internal/checkpoint"
 	"github.com/AadiJo/turnal/internal/filelock"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/usage"
 	_ "modernc.org/sqlite"
 )
 
@@ -45,6 +47,7 @@ type Project struct {
 	LastAdapter  string
 	AddedAt      time.Time
 	Worktrees    []Worktree
+	Usage        usage.Summary
 }
 
 // Worktree is one workspace attached to a project's store.
@@ -72,6 +75,7 @@ type Activity struct {
 	Deletions   int
 	StartedAt   time.Time
 	FinishedAt  time.Time
+	Usage       usage.Summary
 }
 
 // Summary is the per-store aggregate the viewer supplies during Refresh. It is
@@ -89,6 +93,7 @@ type Summary struct {
 	LastPrompt   string
 	LastAdapter  string
 	Sessions     []Activity
+	Usage        usage.Summary
 }
 
 // Summarizer produces a Summary for one registered store. Refresh tolerates an
@@ -337,13 +342,17 @@ func (d *DB) upsert(ctx context.Context, store checkpoint.RegisteredStore, root 
 	defer func() { _ = tx.Rollback() }()
 
 	storeID := store.StoreID.String()
+	usageJSON, err := json.Marshal(summary.Usage)
+	if err != nil {
+		return fmt.Errorf("encode project usage: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO projects (
 			store_id, repo_id, store_path, git_common_dir, name, root, branch,
 			present, index_state, history_state, session_count, turn_count,
-			additions, deletions, last_activity, last_prompt, last_adapter,
+			additions, deletions, last_activity, last_prompt, last_adapter, usage_json,
 			added_at, refreshed_at
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(store_id) DO UPDATE SET
 			repo_id = excluded.repo_id,
 			store_path = excluded.store_path,
@@ -361,12 +370,13 @@ func (d *DB) upsert(ctx context.Context, store checkpoint.RegisteredStore, root 
 			last_activity = excluded.last_activity,
 			last_prompt = excluded.last_prompt,
 			last_adapter = excluded.last_adapter,
+			usage_json = excluded.usage_json,
 			refreshed_at = excluded.refreshed_at`,
 		storeID, store.RepoID.String(), store.StorePath, store.GitCommonDir,
 		filepath.Base(root), root, summary.Branch, boolToInt(present),
 		summary.IndexState, summary.HistoryState, summary.SessionCount, summary.TurnCount,
 		summary.Additions, summary.Deletions, timeText(summary.LastActivity),
-		summary.LastPrompt, summary.LastAdapter, timeText(now), timeText(now),
+		summary.LastPrompt, summary.LastAdapter, string(usageJSON), timeText(now), timeText(now),
 	); err != nil {
 		return fmt.Errorf("write indexed project: %w", err)
 	}
@@ -379,14 +389,18 @@ func (d *DB) upsert(ctx context.Context, store checkpoint.RegisteredStore, root 
 		return fmt.Errorf("reset project activity: %w", err)
 	}
 	for _, session := range summary.Sessions {
+		sessionUsageJSON, err := json.Marshal(session.Usage)
+		if err != nil {
+			return fmt.Errorf("encode session usage: %w", err)
+		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO activity (
 				store_id, session_key, session_id, title, adapter, model, branch,
-				status, turn_count, file_count, additions, deletions, started_at, finished_at
-			) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+				status, turn_count, file_count, additions, deletions, started_at, finished_at, usage_json
+			) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			storeID, session.SessionKey, session.SessionID, session.Title, session.Adapter,
 			session.Model, session.Branch, session.Status, session.TurnCount, session.FileCount,
-			session.Additions, session.Deletions, timeText(session.StartedAt), timeText(session.FinishedAt),
+			session.Additions, session.Deletions, timeText(session.StartedAt), timeText(session.FinishedAt), string(sessionUsageJSON),
 		); err != nil {
 			return fmt.Errorf("write project activity: %w", err)
 		}
@@ -463,7 +477,7 @@ func (d *DB) Projects(ctx context.Context) ([]Project, error) {
 		SELECT store_id, repo_id, store_path, name, root, COALESCE(branch, ''), present,
 		       COALESCE(index_state, ''), COALESCE(history_state, ''), session_count, turn_count,
 		       additions, deletions, COALESCE(last_activity, ''), COALESCE(last_prompt, ''),
-		       COALESCE(last_adapter, ''), added_at
+		       COALESCE(last_adapter, ''), usage_json, added_at
 		FROM projects
 		ORDER BY last_activity IS NULL, last_activity DESC, name ASC`)
 	if err != nil {
@@ -474,18 +488,21 @@ func (d *DB) Projects(ctx context.Context) ([]Project, error) {
 	for rows.Next() {
 		var project Project
 		var present int
-		var lastActivity, addedAt string
+		var lastActivity, usageJSON, addedAt string
 		if err := rows.Scan(
 			&project.StoreID, &project.RepoID, &project.StorePath, &project.Name, &project.Root,
 			&project.Branch, &present, &project.IndexState, &project.HistoryState,
 			&project.SessionCount, &project.TurnCount, &project.Additions, &project.Deletions,
-			&lastActivity, &project.LastPrompt, &project.LastAdapter, &addedAt,
+			&lastActivity, &project.LastPrompt, &project.LastAdapter, &usageJSON, &addedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan indexed project: %w", err)
 		}
 		project.Present = present == 1
 		project.LastActivity = parseTime(lastActivity)
 		project.AddedAt = parseTime(addedAt)
+		if err := json.Unmarshal([]byte(usageJSON), &project.Usage); err != nil {
+			return nil, fmt.Errorf("decode indexed project usage: %w", err)
+		}
 		list = append(list, project)
 	}
 	if err := rows.Err(); err != nil {
@@ -552,7 +569,7 @@ func (d *DB) Activity(ctx context.Context, limit int) ([]Activity, bool, error) 
 		SELECT a.store_id, p.name, a.session_key, a.session_id, COALESCE(a.title, ''),
 		       COALESCE(a.adapter, ''), COALESCE(a.model, ''), COALESCE(a.branch, ''),
 		       COALESCE(a.status, ''), a.turn_count, a.file_count, a.additions, a.deletions,
-		       COALESCE(a.started_at, ''), COALESCE(a.finished_at, '')
+		       COALESCE(a.started_at, ''), COALESCE(a.finished_at, ''), a.usage_json
 		FROM activity a
 		JOIN projects p ON p.store_id = a.store_id
 		ORDER BY COALESCE(a.finished_at, a.started_at) DESC
@@ -564,16 +581,19 @@ func (d *DB) Activity(ctx context.Context, limit int) ([]Activity, bool, error) 
 	var list []Activity
 	for rows.Next() {
 		var item Activity
-		var started, finished string
+		var started, finished, usageJSON string
 		if err := rows.Scan(
 			&item.StoreID, &item.ProjectName, &item.SessionKey, &item.SessionID, &item.Title,
 			&item.Adapter, &item.Model, &item.Branch, &item.Status, &item.TurnCount,
-			&item.FileCount, &item.Additions, &item.Deletions, &started, &finished,
+			&item.FileCount, &item.Additions, &item.Deletions, &started, &finished, &usageJSON,
 		); err != nil {
 			return nil, false, fmt.Errorf("scan activity: %w", err)
 		}
 		item.StartedAt = parseTime(started)
 		item.FinishedAt = parseTime(finished)
+		if err := json.Unmarshal([]byte(usageJSON), &item.Usage); err != nil {
+			return nil, false, fmt.Errorf("decode indexed activity usage: %w", err)
+		}
 		list = append(list, item)
 	}
 	if err := rows.Err(); err != nil {

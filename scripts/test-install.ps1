@@ -95,8 +95,9 @@ try {
     $executables = @(
         'turnal.exe'
         'turnal-adapter-opencode.exe'
-        'turnal-adapter-gemini-cli.exe'
         'turnal-adapter-copilot-cli.exe'
+        'turnal-adapter-cursor.exe'
+        'turnal-adapter-pi.exe'
     )
     $releaseDirectory = Join-Path $tempRoot "releases\v$fixtureVersion"
     New-Item -ItemType Directory -Path $releaseDirectory -Force | Out-Null
@@ -146,7 +147,7 @@ try {
     foreach ($name in $executables) {
         [IO.File]::WriteAllText((Join-Path $rollbackDirectory $name), "old-$name`n")
     }
-    $env:TURNAL_TEST_FAIL_INSTALL = 'turnal-adapter-gemini-cli.exe'
+    $env:TURNAL_TEST_FAIL_INSTALL = 'turnal-adapter-copilot-cli.exe'
     Assert-Throws { Invoke-Installer $fixtureVersion $rollbackDirectory } 'injected failure'
     $env:TURNAL_TEST_FAIL_INSTALL = $null
     foreach ($name in $executables) {
@@ -159,7 +160,7 @@ try {
     foreach ($name in $executables) {
         [IO.File]::WriteAllText((Join-Path $failedRollbackDirectory $name), "old-$name`n")
     }
-    $env:TURNAL_TEST_FAIL_INSTALL = 'turnal-adapter-gemini-cli.exe'
+    $env:TURNAL_TEST_FAIL_INSTALL = 'turnal-adapter-copilot-cli.exe'
     $env:TURNAL_TEST_FAIL_RESTORE = 'turnal-adapter-opencode.exe'
     Assert-Throws { Invoke-Installer $fixtureVersion $failedRollbackDirectory } 'rollback incomplete; backups preserved in'
     $env:TURNAL_TEST_FAIL_INSTALL = $null

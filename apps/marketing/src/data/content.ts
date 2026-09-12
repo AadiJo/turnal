@@ -4,10 +4,10 @@
 export const product = {
   name: 'Turnal',
   tagline: 'A local flight recorder for AI coding agents.',
-  sub: 'Turnal pairs Claude Code and Codex activity with local events and hidden Git checkpoints. Search what happened, trace a line to the agent’s stated intent and human request, verify an earlier state, and roll back with a safety checkpoint first.',
+  sub: 'Turnal pairs supported coding-agent activity with local events and hidden Git checkpoints. Search what happened, trace a line to the agent’s stated intent and human request, verify an earlier state, and roll back with a safety checkpoint first.',
   install: 'npm install -g @aadijo/turnal',
   init: 'turnal init',
-  agents: ['Claude Code', 'Codex'],
+  agents: ['Claude Code', 'Codex', 'Cursor', 'Pi', 'OpenCode', 'GitHub Copilot CLI'],
   repo: 'github.com/AadiJo/turnal',
 };
 
@@ -67,7 +67,7 @@ export const steps: Step[] = [
   {
     n: '01',
     title: 'Install & init',
-    body: 'One npm install, then turnal init wires hooks into Claude Code and Codex and creates the hidden store.',
+    body: 'One npm install, then turnal init wires supported agent integrations and creates the hidden store.',
   },
   {
     n: '02',

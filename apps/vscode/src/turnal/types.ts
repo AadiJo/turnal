@@ -18,6 +18,8 @@ export class TurnalCliCompatibilityError extends Error {
 
 export interface SessionSummary {
   session_id: string;
+  parent_session_id?: string;
+  parent_tool_use_id?: string;
   status: string;
   adapter?: string;
   model?: string;
@@ -236,6 +238,8 @@ function parseSession(value: unknown, index: number): SessionSummary {
   );
   return {
     session_id: string(item.session_id, `sessions[${index}].session_id`),
+    parent_session_id: optionalString(item.parent_session_id, `sessions[${index}].parent_session_id`),
+    parent_tool_use_id: optionalString(item.parent_tool_use_id, `sessions[${index}].parent_tool_use_id`),
     status: string(item.status, `sessions[${index}].status`),
     adapter: optionalString(item.adapter, `sessions[${index}].adapter`),
     model: optionalString(item.model, `sessions[${index}].model`),
