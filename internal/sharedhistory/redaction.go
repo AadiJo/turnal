@@ -263,6 +263,10 @@ func (*betterleaksDetector) Info() RedactionDetectorInfo {
 func (detector *betterleaksDetector) Detect(value string) []secretFinding {
 	detector.once.Do(func() {
 		detector.detector, detector.err = detect.NewDetectorDefaultConfig()
+		if detector.err == nil && detector.detector != nil {
+			// Source text cannot authorize bypassing publication redaction.
+			detector.detector.IgnoreGitleaksAllow = true
+		}
 	})
 	if detector.err != nil || detector.detector == nil {
 		// A scanner initialization failure must reduce disclosure, not silently

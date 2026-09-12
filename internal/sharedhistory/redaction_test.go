@@ -44,6 +44,19 @@ func TestRedactionPipelineMergesOverlappingFindings(t *testing.T) {
 	}
 }
 
+func TestRedactionIgnoresSourceAllowDirectives(t *testing.T) {
+	secret := "key-" + strings.Repeat("0123456789abcdef", 2)
+	for _, directive := range []string{"gitleaks:allow", "betterleaks:allow"} {
+		t.Run(directive, func(t *testing.T) {
+			value := "mailgun = " + secret + " # " + directive
+			result := newSecretPipeline().Redact(value)
+			if strings.Contains(result.text, secret) || result.counts["known_secret"] == 0 {
+				t.Fatalf("source directive bypassed redaction: %#v", result)
+			}
+		})
+	}
+}
+
 func TestRedactionReviewSeparatesFalsePositivesAndFalseNegatives(t *testing.T) {
 	corpus := strings.Join([]string{
 		`{"id":"expected-fp","text":"password=hunter2","expect":"allow"}`,

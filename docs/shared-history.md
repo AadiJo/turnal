@@ -36,6 +36,8 @@ turnal share redaction diagnose --json
 
 The command names every detector, runs embedded leak and safe-text golden corpora, reports false positives and false negatives separately, and compares the compiled scanner with the configured policy. It does not contact the shared-history remote. A scanner change requires `turnal share enable` and a fresh preview approval after any older outbox has drained.
 
+Before approving the version 3 scanner, upgrade every device that pulls the shared history. Older readers reject its detector-specific manifest metadata. Updated readers continue to accept older manifests. Inline `gitleaks:allow` and `betterleaks:allow` comments cannot disable publication redaction.
+
 Teams can review project-specific examples with one or more strict JSONL corpora:
 
 ```json
