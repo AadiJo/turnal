@@ -47,6 +47,7 @@ CREATE TABLE turns (
 	model                   TEXT,
 	prompt_preview          TEXT,
 	assistant_preview       TEXT,
+	usage_json              TEXT,
 	tool_names_json         TEXT    NOT NULL DEFAULT '[]',
 	event_type_counts_json  TEXT    NOT NULL DEFAULT '{}',
 	events_first_at         TEXT,

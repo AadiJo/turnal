@@ -6,6 +6,8 @@ package semantic
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	potion "github.com/trengrj/go-potion"
 )
@@ -19,6 +21,7 @@ const ModelName = "minishlab/potion-base-2M"
 // and do not pay the model's load cost.
 type Encoder struct {
 	model *potion.Potion
+	cache *embeddingCache
 }
 
 // NewEncoder loads the model, downloading it into the go-potion user cache on
@@ -28,12 +31,22 @@ func NewEncoder(ctx context.Context) (*Encoder, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load local semantic model %s: %w", ModelName, err)
 	}
-	return &Encoder{model: model}, nil
+	encoder := &Encoder{model: model}
+	if key, err := modelCacheKey(); err == nil {
+		if root, err := os.UserCacheDir(); err == nil {
+			encoder.cache = &embeddingCache{dir: filepath.Join(root, "turnal", "embeddings", key), dimensions: model.Dimensions()}
+		}
+	}
+	return encoder, nil
 }
 
 // EncodeMany embeds texts in order, one vector per input.
 func (e *Encoder) EncodeMany(texts []string) ([][]float32, error) {
-	vectors, err := e.model.EncodeMany(texts)
+	encode := e.model.EncodeMany
+	if e.cache != nil {
+		encode = func(texts []string) ([][]float32, error) { return e.cache.encode(texts, e.model.EncodeMany) }
+	}
+	vectors, err := encode(texts)
 	if err != nil {
 		return nil, fmt.Errorf("encode with %s: %w", ModelName, err)
 	}

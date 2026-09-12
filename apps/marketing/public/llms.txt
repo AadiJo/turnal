@@ -2,7 +2,7 @@
 
 > A local-first flight recorder for AI coding agents. Turnal records what an agent did, the problem it said it was trying to solve, what the workspace looked like before and after each turn, and how to get back safely.
 
-Turnal combines an append-only activity log with private Git checkpoints stored in `.turnal/`. Your project's own Git history is never modified during normal recording, and SQLite is only a disposable search index. It supports Claude Code, Codex, OpenCode, Gemini CLI, and Copilot CLI.
+Turnal combines an append-only activity log with private Git checkpoints stored in `.turnal/`. Your project's own Git history is never modified during normal recording, and SQLite is only a disposable search index. It supports Claude Code, Codex, Cursor, Pi, OpenCode, and GitHub Copilot CLI.
 
 Install: `npm install -g @aadijo/turnal`, then `turnal init`.
 

@@ -5,6 +5,7 @@ import (
 
 	eventlog "github.com/AadiJo/turnal/internal/events"
 	"github.com/AadiJo/turnal/internal/primitives"
+	"github.com/AadiJo/turnal/internal/usage"
 )
 
 type StreamTurnKey struct {
@@ -119,7 +120,23 @@ func applyEventSummary(summary *TurnEventSummary, event eventlog.Event, inherite
 		if summary.Assistant == "" {
 			summary.Assistant = payloadString(event.Payload, "text")
 		}
+		if observed := payloadUsage(event.Payload); observed != nil {
+			if summary.Usage == nil {
+				summary.Usage = &usage.TokenUsage{}
+			}
+			summary.Usage.Add(*observed)
+		}
 	}
+}
+
+func payloadUsage(payload json.RawMessage) *usage.TokenUsage {
+	var object struct {
+		Usage *usage.TokenUsage `json:"usage"`
+	}
+	if json.Unmarshal(payload, &object) != nil || object.Usage == nil || !object.Usage.Valid() {
+		return nil
+	}
+	return object.Usage
 }
 
 func payloadString(payload json.RawMessage, key string) string {

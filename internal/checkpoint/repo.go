@@ -1443,6 +1443,34 @@ func (repo *Repo) ValidateCommit(commit primitives.CommitSHA) error {
 	return nil
 }
 
+// ValidateCommits checks durable commit evidence in a single read-only Git process.
+func (repo *Repo) ValidateCommits(commits []primitives.CommitSHA) error {
+	if len(commits) == 0 {
+		return nil
+	}
+	var input strings.Builder
+	for _, commit := range commits {
+		if _, err := primitives.ParseCommitSHA(commit.String()); err != nil {
+			return err
+		}
+		input.WriteString(commit.String() + "^{commit}\n")
+	}
+	output, err := runHiddenGitReadOnlyWithInput(repo, strings.NewReader(input.String()), "cat-file", "--batch-check=%(objecttype)")
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(strings.TrimSuffix(output, "\n"), "\n")
+	if len(lines) != len(commits) {
+		return fmt.Errorf("validate commits: got %d results for %d commits", len(lines), len(commits))
+	}
+	for i, line := range lines {
+		if line != "commit" {
+			return fmt.Errorf("validate commit %s: %s", commits[i], line)
+		}
+	}
+	return nil
+}
+
 func (repo *Repo) CommitFileBytes(commit primitives.CommitSHA, repoPath string) ([]byte, error) {
 	parsedCommit, err := primitives.ParseCommitSHA(commit.String())
 	if err != nil {
@@ -2768,7 +2796,12 @@ func runHiddenGitWithInput(repo *Repo, indexPath string, stdin io.Reader, args .
 }
 
 func runHiddenGitReadOnly(repo *Repo, args ...string) (string, error) {
+	return runHiddenGitReadOnlyWithInput(repo, nil, args...)
+}
+
+func runHiddenGitReadOnlyWithInput(repo *Repo, stdin io.Reader, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
+	cmd.Stdin = stdin
 	cmd.Dir = repo.WorkspaceRoot.String()
 	cmd.Env = append(cleanGitEnv(os.Environ()),
 		"GIT_DIR="+repo.GitDir,

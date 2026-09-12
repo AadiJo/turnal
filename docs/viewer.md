@@ -25,6 +25,8 @@ The machine-wide list of recorded projects comes from two files in the Turnal st
 
 `projects.sqlite` is disposable. Delete it and the next launch rebuilds it. It is never a source of truth, and nothing is recoverable only from it.
 
+The Usage tab aggregates provider-reported tokens from durable assistant events. It shows coverage alongside every total because events captured before usage support remain valid history without token metadata. Cost is an API-equivalent estimate from Turnal's versioned local price table. See [token usage and cost estimates](usage.md).
+
 A project whose store directory has disappeared stays listed and is marked absent. Recorded history outlives the working tree, so silently dropping the entry would make lost history look like history that never existed.
 
 ## Security boundary
@@ -66,6 +68,7 @@ The viewer retries a transient partial event tail only while an event-writer loc
 - One turn response is limited to 500 normalized events.
 - The review surface loads file patches in pages of 20, with an explicit control to load more.
 - The cross-project activity feed is capped per request and defaults to the most recent 40 sessions.
+- Usage totals distinguish covered turns from turns without provider token metadata.
 - Truncation is reported in the response and UI.
 
 Prism intentionally omits rollback buttons, editing, cloud accounts, automatic uploads, arbitrary network binding, Electron packaging, raw adapter-record browsing, and a search UI. Machine-wide local search is available through `turnal search --all-projects`.
@@ -74,4 +77,24 @@ Prism intentionally omits rollback buttons, editing, cloud accounts, automatic u
 
 `npm run build:web` creates deterministic production assets in `internal/viewer/web/dist`. Those generated assets are committed and embedded with `go:embed`, so direct `go install` and unsupported-platform npm fallback builds do not require Node.
 
-`npm run check:web` type-checks, rebuilds, and fails if the committed assets differ; `scripts/ci/quality.sh` runs it in CI. Tests enforce a 1.5 MB compressed asset budget, reject source maps, and reject remote runtime URL dependencies.
+`npm run check:web` type-checks without rebuilding. `npm run check:web:assets` also rebuilds and fails if the tracked assets differ from the Git index; `scripts/ci/quality.sh` runs it in CI. Tests enforce a 1.5 MB compressed asset budget, reject source maps, and reject remote runtime URL dependencies.
+
+## Preview local changes
+
+Use Node 24 and the Go version in `go.mod`. Install frontend dependencies with `npm ci`, then run `npm run dev:web` or `npm run preview:viewer`. Open the printed URL once to authenticate. The command builds the current frontend and CLI, creates sample projects, and serves them together. Restart the command after editing source.
+
+The preview owns a temporary directory containing its copied Go sources, generated assets, binary, sample history, registry, and configuration. It does not rebuild `bin/turnal` or the committed viewer bundle. Ctrl-C stops the server and removes the temporary directory. If the process is forcibly killed, remove only the `turnal-preview-*` directory from that run.
+
+For a host that forwards local listeners, set `TURNAL_PREVIEW_HOST` to that host's IPv4 address. The development proxy still listens on loopback. It accepts only the configured Host and matching Origin, then forwards to the disposable server. The production server's Host, Origin, and authentication checks stay enabled. This option requires an existing forwarding service; it does not create one.
+
+## Run browser verification
+
+```sh
+npm ci
+npx playwright install --with-deps chromium
+npm run test:browser
+```
+
+The browser suite uses the same disposable preview. It checks project, session, turn, and patch navigation, a delayed response during turn switching, authentication after reload, and rejected proxy Host and Origin values. Failures retain Playwright traces in `test-results/`; the Viewer browser workflow uploads that directory as an artifact.
+
+To create sample history without launching the viewer, set `TURNAL_VISUAL_FIXTURE` to a new, nonexistent directory and run `go test ./internal/viewer -run '^TestCreateVisualFixture$' -count=1`. The fixture refuses existing paths and creates all projects and its isolated registry inside that directory.

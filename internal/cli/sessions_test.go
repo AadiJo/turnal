@@ -67,7 +67,7 @@ func TestSessionsCommandShowsDurableSessionInventory(t *testing.T) {
 		Type:      primitives.EventTypeSessionStart,
 		Adapter:   primitives.AdapterClaudeCode,
 		Time:      testTimestamp(t, time.Date(2026, 7, 6, 13, 0, 0, 0, time.UTC)),
-		Payload:   json.RawMessage(`{"provider_session_id":"active-session"}`),
+		Payload:   json.RawMessage(`{"provider_session_id":"active-session","parent_session_id":"demo","parent_tool_use_id":"task-1"}`),
 	}); err != nil {
 		t.Fatalf("append active session event: %v", err)
 	}
@@ -84,6 +84,7 @@ func TestSessionsCommandShowsDurableSessionInventory(t *testing.T) {
 		`prompt   "change app.txt"`,
 		"tools    apply_patch",
 		"[ACTIVE] active-session",
+		"parent   demo via task-1",
 		"head     turn 1 pre",
 	} {
 		if !strings.Contains(output, want) {
@@ -136,7 +137,7 @@ func TestSessionsCommandShowsDurableSessionInventory(t *testing.T) {
 	}
 
 	active := findSessionSummary(t, got, "active-session")
-	if active.Status != "active" || active.ActiveTurnCount != 1 {
+	if active.Status != "active" || active.ActiveTurnCount != 1 || active.ParentSessionID != "demo" || active.ParentToolUseID != "task-1" {
 		t.Fatalf("active summary = %#v", active)
 	}
 }

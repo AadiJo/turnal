@@ -64,7 +64,7 @@ func TestRebuildPopulatesGraphRows(t *testing.T) {
 		Type:      primitives.EventTypeAssistantMessage,
 		Adapter:   primitives.AdapterCodex,
 		Time:      timestamp(t, time.Date(2026, 7, 6, 12, 2, 0, 0, time.UTC)),
-		Payload:   json.RawMessage(`{"text":"done"}`),
+		Payload:   json.RawMessage(`{"text":"done","usage":{"input_tokens":100,"cache_read_tokens":40,"output_tokens":12}}`),
 	})
 
 	stats, err := Rebuild(repo)
@@ -122,6 +122,9 @@ func TestRebuildPopulatesGraphRows(t *testing.T) {
 	}
 	if len(turn.Events.ToolNames) != 1 || turn.Events.ToolNames[0] != "apply_patch" {
 		t.Fatalf("tool names = %#v, want apply_patch", turn.Events.ToolNames)
+	}
+	if turn.Events.Usage == nil || turn.Events.Usage.Tokens() != 152 {
+		t.Fatalf("usage = %#v, want 152 tokens", turn.Events.Usage)
 	}
 	if turn.Events.TypeCounts[primitives.EventTypePromptUser] != 1 || turn.Events.TypeCounts[primitives.EventTypeToolCall] != 1 {
 		t.Fatalf("type counts = %#v", turn.Events.TypeCounts)
