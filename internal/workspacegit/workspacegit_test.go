@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -189,47 +190,87 @@ func TestRestorePreservesCurrentDeniedUntrackedFile(t *testing.T) {
 	}
 }
 
-func TestRestoreDoesNotFollowTargetSymlinkForDeniedFile(t *testing.T) {
+func TestRestoreRefusesTargetNonDirectoryOverDeniedParent(t *testing.T) {
 	requireGit(t)
-	root := workspaceRoot(t, t.TempDir())
-	runGit(t, root.String(), "init", "-q")
-	runGit(t, root.String(), "config", "user.email", "turnal@example.test")
-	runGit(t, root.String(), "config", "user.name", "turnal")
-	writeFile(t, root.String(), "README.md", "target\n")
-	if err := os.Symlink("..", filepath.Join(root.String(), "secrets")); err != nil {
-		t.Skipf("symlinks unavailable: %v", err)
-	}
-	runGit(t, root.String(), "add", "README.md", "secrets")
-	runGit(t, root.String(), "commit", "-q", "-m", "target with symlink")
-	target, err := Open(root).Capture()
-	if err != nil {
-		t.Fatalf("Capture target: %v", err)
-	}
+	for _, test := range []struct {
+		name    string
+		install func(root string) error
+	}{
+		{name: "symlink outside workspace", install: func(root string) error {
+			return os.Symlink("..", filepath.Join(root, "secrets"))
+		}},
+		{name: "symlink inside workspace", install: func(root string) error {
+			if err := os.MkdirAll(filepath.Join(root, "shared"), 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(root, "shared", "app.yaml"), []byte("shared: true\n"), 0o644); err != nil {
+				return err
+			}
+			return os.Symlink("shared", filepath.Join(root, "secrets"))
+		}},
+		{name: "regular file", install: func(root string) error {
+			return os.WriteFile(filepath.Join(root, "secrets"), []byte("tracked file\n"), 0o644)
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := workspaceRoot(t, t.TempDir())
+			runGit(t, root.String(), "init", "-q")
+			runGit(t, root.String(), "config", "user.email", "turnal@example.test")
+			runGit(t, root.String(), "config", "user.name", "turnal")
+			writeFile(t, root.String(), "README.md", "target\n")
+			if err := test.install(root.String()); err != nil {
+				t.Skipf("install target parent: %v", err)
+			}
+			runGit(t, root.String(), "add", "-A")
+			runGit(t, root.String(), "commit", "-q", "-m", "target with non-directory parent")
+			target, err := Open(root).Capture()
+			if err != nil {
+				t.Fatalf("Capture target: %v", err)
+			}
 
-	runGit(t, root.String(), "rm", "-q", "secrets")
-	writeFile(t, root.String(), "README.md", "current\n")
-	runGit(t, root.String(), "add", "README.md")
-	runGit(t, root.String(), "commit", "-q", "-m", "current without symlink")
-	writeFile(t, root.String(), "secrets/.env", "SECRET=preserve-me\n")
-	outside := filepath.Join(filepath.Dir(root.String()), ".env")
-	if err := os.WriteFile(outside, []byte("OUTSIDE=unchanged\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+			runGit(t, root.String(), "rm", "-q", "-r", "--cached", "secrets")
+			if err := os.RemoveAll(filepath.Join(root.String(), "secrets")); err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, root.String(), "README.md", "current\n")
+			runGit(t, root.String(), "add", "README.md")
+			runGit(t, root.String(), "commit", "-q", "-m", "current without parent")
+			currentHead := runGit(t, root.String(), "rev-parse", "HEAD")
+			writeFile(t, root.String(), "secrets/.env", "SECRET=preserve-me\n")
+			outside := filepath.Join(filepath.Dir(root.String()), ".env")
+			if err := os.WriteFile(outside, []byte("OUTSIDE=unchanged\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
 
-	if err := Open(root).Restore(target); err != nil {
-		t.Fatalf("Restore: %v", err)
-	}
-	secret, err := os.ReadFile(filepath.Join(root.String(), "secrets", ".env"))
-	if err != nil || string(secret) != "SECRET=preserve-me\n" {
-		t.Fatalf("preserved secret = %q, err=%v", secret, err)
-	}
-	info, err := os.Lstat(filepath.Join(root.String(), "secrets"))
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		t.Fatalf("secrets parent info=%v err=%v, want real directory", info, err)
-	}
-	outsideContent, err := os.ReadFile(outside)
-	if err != nil || string(outsideContent) != "OUTSIDE=unchanged\n" {
-		t.Fatalf("outside file = %q, err=%v", outsideContent, err)
+			if err := Open(root).PreflightRestore(target); err == nil || !strings.Contains(err.Error(), "secrets/.env") {
+				t.Fatalf("PreflightRestore error = %v, want refusal naming secrets/.env", err)
+			}
+			if err := Open(root).Restore(target); err == nil || !strings.Contains(err.Error(), "secrets/.env") {
+				t.Fatalf("Restore error = %v, want refusal naming secrets/.env", err)
+			}
+			if head := runGit(t, root.String(), "rev-parse", "HEAD"); head != currentHead {
+				t.Fatalf("HEAD moved to %q after refused restore, want %q", head, currentHead)
+			}
+			readme, err := os.ReadFile(filepath.Join(root.String(), "README.md"))
+			if err != nil || string(readme) != "current\n" {
+				t.Fatalf("README after refused restore = %q, err=%v", readme, err)
+			}
+			info, err := os.Lstat(filepath.Join(root.String(), "secrets"))
+			if err != nil || info.Mode().Type() != os.ModeDir {
+				t.Fatalf("secrets parent info=%v err=%v, want untouched real directory", info, err)
+			}
+			secret, err := os.ReadFile(filepath.Join(root.String(), "secrets", ".env"))
+			if err != nil || string(secret) != "SECRET=preserve-me\n" {
+				t.Fatalf("secret after refused restore = %q, err=%v", secret, err)
+			}
+			outsideContent, err := os.ReadFile(outside)
+			if err != nil || string(outsideContent) != "OUTSIDE=unchanged\n" {
+				t.Fatalf("outside file = %q, err=%v", outsideContent, err)
+			}
+			if _, err := os.Lstat(filepath.Join(root.String(), "shared", ".env")); !os.IsNotExist(err) {
+				t.Fatalf("secret leaked into symlink target directory: %v", err)
+			}
+		})
 	}
 }
 
@@ -352,9 +393,49 @@ func TestRestoreReplacesFileAncestorForDeniedFile(t *testing.T) {
 	if err != nil || info.Mode().Type() != os.ModeDir {
 		t.Fatalf("secrets ancestor info=%v err=%v, want real directory", info, err)
 	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o700 {
+		t.Fatalf("replacement secrets ancestor mode = %v, want 0700", info.Mode().Perm())
+	}
 	secret, err := os.ReadFile(filepath.Join(root.String(), "secrets", ".env"))
 	if err != nil || string(secret) != "SECRET=preserve-me\n" {
 		t.Fatalf("restored secret = %q, err=%v", secret, err)
+	}
+}
+
+func TestRestoreDeniedStateContinuesPastFailedPath(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("requires POSIX directory permissions enforced for the current user")
+	}
+	root := workspaceRoot(t, t.TempDir())
+	locked := filepath.Join(root.String(), "locked")
+	if err := os.Mkdir(locked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	entries := preservedDeniedPaths{}
+	for _, path := range []string{"locked/.env", "open/.env"} {
+		repoPath, err := primitives.ParseRepoPath(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entries = append(entries, preservedDeniedPath{
+			Path:    repoPath,
+			Exists:  true,
+			Mode:    0o600,
+			Content: []byte("SECRET=" + path + "\n"),
+		})
+	}
+
+	err := Open(root).restoreDeniedWorkspaceState(entries)
+	if err == nil || !strings.Contains(err.Error(), "locked/.env") {
+		t.Fatalf("restoreDeniedWorkspaceState error = %v, want failure naming locked/.env", err)
+	}
+	secret, readErr := os.ReadFile(filepath.Join(root.String(), "open", ".env"))
+	if readErr != nil || string(secret) != "SECRET=open/.env\n" {
+		t.Fatalf("secret after earlier failure = %q, err=%v; want it restored anyway", secret, readErr)
 	}
 }
 

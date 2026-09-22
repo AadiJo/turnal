@@ -2,6 +2,7 @@ package workspacegit
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -117,28 +118,44 @@ func (git Git) PlanRestore(target gitsync.Capture) (RestorePlan, error) {
 	}, nil
 }
 
+// PreflightRestore reports whether Restore can run without first changing the
+// workspace. Rollback calls it before journaling the restore phase.
 func (git Git) PreflightRestore(target gitsync.Capture) error {
-	if err := git.ensureSupportedWorktree(); err != nil {
-		return err
-	}
-	if err := git.ensureNoOperationInProgress(); err != nil {
-		return err
-	}
-	if err := git.run("cat-file", "-e", target.State.Head.Commit.String()+"^{commit}"); err != nil {
-		return fmt.Errorf("target workspace git commit is not available: %w", err)
-	}
-	return nil
+	_, _, err := git.preflightRestore(target)
+	return err
 }
 
-func (git Git) Restore(target gitsync.Capture) (returnErr error) {
-	if err := git.PreflightRestore(target); err != nil {
-		return err
+// preflightRestore runs every check that must pass before Restore mutates the
+// workspace. It returns the snapshot deny globs and the deny-listed state that
+// Restore puts back once the target is checked out.
+func (git Git) preflightRestore(target gitsync.Capture) ([]string, preservedDeniedPaths, error) {
+	if err := git.ensureSupportedWorktree(); err != nil {
+		return nil, nil, err
+	}
+	if err := git.ensureNoOperationInProgress(); err != nil {
+		return nil, nil, err
+	}
+	targetCommit := target.State.Head.Commit
+	if err := git.run("cat-file", "-e", targetCommit.String()+"^{commit}"); err != nil {
+		return nil, nil, fmt.Errorf("target workspace git commit is not available: %w", err)
 	}
 	effective, _, err := agentconfig.Resolve(git.Root.String(), agentconfig.Overrides{})
 	if err != nil {
-		return fmt.Errorf("resolve snapshot deny policy: %w", err)
+		return nil, nil, fmt.Errorf("resolve snapshot deny policy: %w", err)
 	}
-	preserved, err := git.captureDeniedWorkspaceState(target.State.Head.Commit, effective.Secrets.SnapshotDenyGlobs)
+	denyGlobs := effective.Secrets.SnapshotDenyGlobs
+	preserved, err := git.captureDeniedWorkspaceState(targetCommit, denyGlobs)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := git.refuseTargetNonDirectoryParents(targetCommit, preserved); err != nil {
+		return nil, nil, err
+	}
+	return denyGlobs, preserved, nil
+}
+
+func (git Git) Restore(target gitsync.Capture) (returnErr error) {
+	denyGlobs, preserved, err := git.preflightRestore(target)
 	if err != nil {
 		return err
 	}
@@ -156,7 +173,7 @@ func (git Git) Restore(target gitsync.Capture) (returnErr error) {
 		return fmt.Errorf("normalize current worktree: %w", err)
 	}
 	cleanArgs := []string{"clean", "-fd", "-e", ".turnal", "-e", ".turnal/"}
-	for _, pattern := range effective.Secrets.SnapshotDenyGlobs {
+	for _, pattern := range denyGlobs {
 		cleanArgs = append(cleanArgs, "-e", filepath.ToSlash(pattern))
 	}
 	cleanArgs = append(cleanArgs, "--", ".")
@@ -323,6 +340,12 @@ func (git Git) captureDeniedWorkspaceState(targetCommit primitives.CommitSHA, pa
 		return nil, fmt.Errorf("scan deny-listed workspace paths: %w", err)
 	}
 
+	workspace, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, fmt.Errorf("open workspace root: %w", err)
+	}
+	defer workspace.Close()
+
 	keys := make([]string, 0, len(candidates))
 	for key := range candidates {
 		keys = append(keys, key)
@@ -349,16 +372,18 @@ func (git Git) captureDeniedWorkspaceState(targetCommit primitives.CommitSHA, pa
 				entry.IndexObject = fields[1]
 			}
 		}
-		parentsSafe, err := git.deniedRestoreParents(repoPath, false)
+		// A path under a symlink, file, or missing parent has no content of its
+		// own in the workspace, so it is recorded as absent without reading it.
+		parentsReal, err := realParentDirs(workspace, repoPath)
 		if err != nil {
 			return nil, fmt.Errorf("inspect deny-listed path %s: %w", repoPath, err)
 		}
-		if !parentsSafe {
+		if !parentsReal {
 			state = append(state, entry)
 			continue
 		}
-		absPath := git.Root.Join(repoPath)
-		info, err := os.Lstat(absPath)
+		name := filepath.FromSlash(repoPath.String())
+		info, err := workspace.Lstat(name)
 		if os.IsNotExist(err) {
 			state = append(state, entry)
 			continue
@@ -370,9 +395,9 @@ func (git Git) captureDeniedWorkspaceState(targetCommit primitives.CommitSHA, pa
 		entry.Mode = info.Mode()
 		switch {
 		case info.Mode().IsRegular():
-			entry.Content, err = os.ReadFile(absPath)
+			entry.Content, err = workspace.ReadFile(name)
 		case info.Mode()&os.ModeSymlink != 0:
-			entry.SymlinkTarget, err = os.Readlink(absPath)
+			entry.SymlinkTarget, err = workspace.Readlink(name)
 		default:
 			return nil, fmt.Errorf("cannot safely preserve deny-listed path %s with mode %s", repoPath, info.Mode())
 		}
@@ -384,38 +409,31 @@ func (git Git) captureDeniedWorkspaceState(targetCommit primitives.CommitSHA, pa
 	return state, nil
 }
 
+// restoreDeniedWorkspaceState puts deny-listed paths back after a restore. It
+// keeps going past a failed path, because preserved content exists only in
+// memory and every path it skips is lost.
 func (git Git) restoreDeniedWorkspaceState(entries preservedDeniedPaths) error {
+	root, err := os.OpenRoot(git.Root.String())
+	if err != nil {
+		return fmt.Errorf("open workspace root to restore deny-listed paths: %w", err)
+	}
+	defer root.Close()
+	var errs []error
 	for index := len(entries) - 1; index >= 0; index-- {
 		entry := entries[index]
 		if entry.Exists {
 			continue
 		}
-		if err := git.removeDeniedPathNoFollow(entry.Path); err != nil {
-			return fmt.Errorf("remove deny-listed path %s that was originally absent: %w", entry.Path, err)
+		if err := removeAbsentDeniedPath(root, entry.Path); err != nil {
+			errs = append(errs, fmt.Errorf("remove deny-listed path %s that was originally absent: %w", entry.Path, err))
 		}
 	}
 	for _, entry := range entries {
 		if !entry.Exists {
 			continue
 		}
-		absPath := git.Root.Join(entry.Path)
-		if err := git.ensureDeniedRestoreParents(entry.Path); err != nil {
-			return fmt.Errorf("prepare parent for deny-listed path %s: %w", entry.Path, err)
-		}
-		if err := os.RemoveAll(absPath); err != nil {
-			return fmt.Errorf("replace deny-listed path %s: %w", entry.Path, err)
-		}
-		if entry.Mode&os.ModeSymlink != 0 {
-			if err := os.Symlink(entry.SymlinkTarget, absPath); err != nil {
-				return fmt.Errorf("restore deny-listed symlink %s: %w", entry.Path, err)
-			}
-			continue
-		}
-		if err := os.WriteFile(absPath, entry.Content, entry.Mode.Perm()); err != nil {
-			return fmt.Errorf("restore deny-listed file %s: %w", entry.Path, err)
-		}
-		if err := os.Chmod(absPath, entry.Mode.Perm()); err != nil {
-			return fmt.Errorf("restore deny-listed mode %s: %w", entry.Path, err)
+		if err := writeDeniedPath(root, entry); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	for _, entry := range entries {
@@ -424,55 +442,137 @@ func (git Git) restoreDeniedWorkspaceState(entries preservedDeniedPaths) error {
 		}
 		if !entry.IndexExists {
 			if err := git.run("update-index", "--force-remove", "--", entry.Path.String()); err != nil {
-				return fmt.Errorf("restore staged deletion for deny-listed path %s: %w", entry.Path, err)
+				errs = append(errs, fmt.Errorf("restore staged deletion for deny-listed path %s: %w", entry.Path, err))
 			}
 			continue
 		}
 		if err := git.run("update-index", "--add", "--cacheinfo", entry.IndexMode, entry.IndexObject, entry.Path.String()); err != nil {
-			return fmt.Errorf("restore staged deny-listed path %s: %w", entry.Path, err)
+			errs = append(errs, fmt.Errorf("restore staged deny-listed path %s: %w", entry.Path, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// refuseTargetNonDirectoryParents fails when the target commit tracks a file,
+// symlink, or submodule where a preserved deny-listed path needs a parent
+// directory. Restore would otherwise have to write the secret through that
+// entry or replace tracked target content, so the user moves the secret first.
+func (git Git) refuseTargetNonDirectoryParents(targetCommit primitives.CommitSHA, preserved preservedDeniedPaths) error {
+	parents := map[string]primitives.RepoPath{}
+	for _, entry := range preserved {
+		if !entry.Exists {
+			continue
+		}
+		for _, parent := range parentPaths(entry.Path) {
+			if _, ok := parents[parent]; !ok {
+				parents[parent] = entry.Path
+			}
+		}
+	}
+	if len(parents) == 0 {
+		return nil
+	}
+	tracked, err := git.nulPaths("ls-tree", "-r", "-z", "--name-only", targetCommit.String())
+	if err != nil {
+		return fmt.Errorf("list target paths: %w", err)
+	}
+	for _, repoPath := range tracked {
+		if denied, ok := parents[repoPath.String()]; ok {
+			return fmt.Errorf("refusing to restore: the target replaces directory %s with a file or symlink, which would overwrite deny-listed %s; move %s aside and retry", repoPath, denied, denied)
 		}
 	}
 	return nil
 }
 
-func (git Git) removeDeniedPathNoFollow(repoPath primitives.RepoPath) error {
-	parentsSafe, err := git.deniedRestoreParents(repoPath, false)
-	if err != nil || !parentsSafe {
+// writeDeniedPath writes one preserved deny-listed file or symlink back into
+// the workspace.
+func writeDeniedPath(root *os.Root, entry preservedDeniedPath) error {
+	if err := makeRealParentDirs(root, entry.Path); err != nil {
+		return fmt.Errorf("prepare parent for deny-listed path %s: %w", entry.Path, err)
+	}
+	name := filepath.FromSlash(entry.Path.String())
+	if err := root.RemoveAll(name); err != nil {
+		return fmt.Errorf("replace deny-listed path %s: %w", entry.Path, err)
+	}
+	if entry.Mode&os.ModeSymlink != 0 {
+		if err := root.Symlink(entry.SymlinkTarget, name); err != nil {
+			return fmt.Errorf("restore deny-listed symlink %s: %w", entry.Path, err)
+		}
+		return nil
+	}
+	if err := root.WriteFile(name, entry.Content, entry.Mode.Perm()); err != nil {
+		return fmt.Errorf("restore deny-listed file %s: %w", entry.Path, err)
+	}
+	if err := root.Chmod(name, entry.Mode.Perm()); err != nil {
+		return fmt.Errorf("restore deny-listed mode %s: %w", entry.Path, err)
+	}
+	return nil
+}
+
+// removeAbsentDeniedPath removes whatever the target placed at a deny-listed
+// path that was absent before restore. It leaves the path alone when a parent
+// is not a real directory, since the path then names something else.
+func removeAbsentDeniedPath(root *os.Root, repoPath primitives.RepoPath) error {
+	parentsReal, err := realParentDirs(root, repoPath)
+	if err != nil || !parentsReal {
 		return err
 	}
-	return os.RemoveAll(git.Root.Join(repoPath))
+	return root.RemoveAll(filepath.FromSlash(repoPath.String()))
 }
 
-func (git Git) ensureDeniedRestoreParents(repoPath primitives.RepoPath) error {
-	_, err := git.deniedRestoreParents(repoPath, true)
-	return err
-}
-
-func (git Git) deniedRestoreParents(repoPath primitives.RepoPath, replaceConflicts bool) (bool, error) {
-	parts := strings.Split(repoPath.String(), "/")
-	current := git.Root.String()
-	for _, part := range parts[:len(parts)-1] {
-		current = filepath.Join(current, filepath.FromSlash(part))
-		info, err := os.Lstat(current)
-		if err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
-			continue
-		}
-		if err != nil && !os.IsNotExist(err) {
-			return false, fmt.Errorf("inspect restore parent %s: %w", current, err)
-		}
-		if !replaceConflicts {
+// realParentDirs reports whether every parent of repoPath is a real directory,
+// not a symlink, file, or missing entry.
+func realParentDirs(root *os.Root, repoPath primitives.RepoPath) (bool, error) {
+	for _, parent := range parentPaths(repoPath) {
+		info, err := root.Lstat(filepath.FromSlash(parent))
+		if os.IsNotExist(err) {
 			return false, nil
 		}
-		if err == nil {
-			if err := os.RemoveAll(current); err != nil {
-				return false, fmt.Errorf("remove conflicting restore parent %s: %w", current, err)
-			}
+		if err != nil {
+			return false, fmt.Errorf("inspect parent %s: %w", parent, err)
 		}
-		if err := os.Mkdir(current, 0o755); err != nil {
-			return false, fmt.Errorf("create restore parent %s: %w", current, err)
+		if !info.IsDir() {
+			return false, nil
 		}
 	}
 	return true, nil
+}
+
+// makeRealParentDirs creates missing parents of repoPath as private
+// directories and replaces any parent that is a symlink or file. Preflight
+// refuses targets that need a replacement, so that only happens when the
+// workspace changed mid-restore or a failed restore left it half applied. The
+// replaced entry is recoverable from Git; the secret being restored is not.
+func makeRealParentDirs(root *os.Root, repoPath primitives.RepoPath) error {
+	for _, parent := range parentPaths(repoPath) {
+		name := filepath.FromSlash(parent)
+		info, err := root.Lstat(name)
+		if err == nil && info.IsDir() {
+			continue
+		}
+		if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("inspect parent %s: %w", parent, err)
+		}
+		if err == nil {
+			if err := root.RemoveAll(name); err != nil {
+				return fmt.Errorf("remove conflicting parent %s: %w", parent, err)
+			}
+		}
+		if err := root.Mkdir(name, 0o700); err != nil {
+			return fmt.Errorf("create parent %s: %w", parent, err)
+		}
+	}
+	return nil
+}
+
+// parentPaths lists the slash-separated parents of repoPath, outermost first.
+func parentPaths(repoPath primitives.RepoPath) []string {
+	parts := strings.Split(repoPath.String(), "/")
+	parents := make([]string, 0, len(parts)-1)
+	for index := 1; index < len(parts); index++ {
+		parents = append(parents, strings.Join(parts[:index], "/"))
+	}
+	return parents
 }
 
 func (git Git) currentHead() (gitsync.Head, error) {
