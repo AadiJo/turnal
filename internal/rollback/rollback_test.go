@@ -105,21 +105,29 @@ func TestRestoreSafetyRecoversPreRollbackWorkspace(t *testing.T) {
 	}
 	sessionID := sessionID(t, "demo")
 	turnID, _ := primitives.NewTurnID(1)
+	writeFile(t, root, ".gitignore", "")
 	writeFile(t, root, "app.txt", "target\n")
 	target, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
 	if err != nil {
 		t.Fatalf("target checkpoint: %v", err)
 	}
+	writeFile(t, root, ".gitignore", "scratch.tmp\n")
 	writeFile(t, root, "app.txt", "before rollback\n")
+	writeFile(t, root, "scratch.tmp", "protected current data\n")
 	safety, err := repo.CreateSnapshotRef("refs/agent-vcs/rollback-safety/demo/turn/000001/pre/recovery", "recovery safety")
 	if err != nil {
 		t.Fatalf("safety snapshot: %v", err)
+	}
+	plan, err := repo.PlanRestoreCommit(target.Commit)
+	if err != nil {
+		t.Fatalf("PlanRestoreCommit: %v", err)
 	}
 	targetRef, _ := primitives.NewTargetRef(sessionID, turnID, primitives.CheckpointPhasePre)
 	journal := Journal{
 		Version: 1, State: "restoring", RestorePhase: "restoring", Target: targetRef.String(),
 		CheckpointRef: target.Ref.String(), TargetCommitSHA: target.Commit.String(),
 		Mode: primitives.RollbackModeCheckpoint.String(), SafetyRef: safety.Ref, SafetyCommitSHA: safety.Commit.String(),
+		Changes: plan.Changes, RestoreProtection: &plan.Protection,
 	}
 	if err := writeOwnedJournal(repo, journal); err != nil {
 		t.Fatalf("write journal: %v", err)
@@ -136,6 +144,9 @@ func TestRestoreSafetyRecoversPreRollbackWorkspace(t *testing.T) {
 	if string(data) != "before rollback\n" {
 		t.Fatalf("restored app = %q, want pre-rollback content", data)
 	}
+	if content := readFile(t, root, "scratch.tmp"); content != "protected current data\n" {
+		t.Fatalf("restored scratch.tmp = %q, want protected current data", content)
+	}
 	if _, err := os.Stat(JournalPath(repo)); !os.IsNotExist(err) {
 		t.Fatalf("journal remains after safety restore: %v", err)
 	}
@@ -150,15 +161,22 @@ func TestResumeRecoveryReappliesTargetAndFinalizes(t *testing.T) {
 	}
 	sessionID := sessionID(t, "demo")
 	turnID, _ := primitives.NewTurnID(1)
+	writeFile(t, root, ".gitignore", "")
 	writeFile(t, root, "app.txt", "target\n")
 	target, err := repo.CreateCheckpoint(sessionID, turnID, primitives.CheckpointPhasePre)
 	if err != nil {
 		t.Fatalf("target checkpoint: %v", err)
 	}
+	writeFile(t, root, ".gitignore", "scratch.tmp\n")
 	writeFile(t, root, "app.txt", "before rollback\n")
+	writeFile(t, root, "scratch.tmp", "protected current data\n")
 	safety, err := repo.CreateSnapshotRef("refs/agent-vcs/rollback-safety/demo/turn/000001/pre/resume", "resume safety")
 	if err != nil {
 		t.Fatalf("safety snapshot: %v", err)
+	}
+	plan, err := repo.PlanRestoreCommit(target.Commit)
+	if err != nil {
+		t.Fatalf("PlanRestoreCommit: %v", err)
 	}
 	targetRef, _ := primitives.NewTargetRef(sessionID, turnID, primitives.CheckpointPhasePre)
 	resolved, err := ResolveTarget(repo, targetRef)
@@ -170,10 +188,12 @@ func TestResumeRecoveryReappliesTargetAndFinalizes(t *testing.T) {
 		CheckpointRef: target.Ref.String(), TargetCommitSHA: target.Commit.String(),
 		Mode: primitives.RollbackModeCheckpoint.String(), SafetyRef: safety.Ref, SafetyCommitSHA: safety.Commit.String(),
 		EventSourceID: rollbackEventSourceID(resolved, safety),
+		Changes:       plan.Changes, RestoreProtection: &plan.Protection,
 	}
 	if err := writeOwnedJournal(repo, journal); err != nil {
 		t.Fatalf("write journal: %v", err)
 	}
+	writeFile(t, root, ".gitignore", "")
 	writeFile(t, root, "app.txt", "ambiguous partial state\n")
 
 	if err := New(repo).ResumeRecovery(); err != nil {
@@ -185,6 +205,9 @@ func TestResumeRecoveryReappliesTargetAndFinalizes(t *testing.T) {
 	}
 	if string(data) != "target\n" {
 		t.Fatalf("resumed app = %q, want target content", data)
+	}
+	if content := readFile(t, root, "scratch.tmp"); content != "protected current data\n" {
+		t.Fatalf("resumed scratch.tmp = %q, want protected current data", content)
 	}
 	if _, err := os.Stat(JournalPath(repo)); !os.IsNotExist(err) {
 		t.Fatalf("journal remains after resume: %v", err)
@@ -221,6 +244,10 @@ func TestManualRollbackRecoveryPhasesFinalizeIdempotently(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CreateSnapshotRef: %v", err)
 			}
+			plan, err := repo.PlanRestoreCommit(created.Commit)
+			if err != nil {
+				t.Fatalf("PlanRestoreCommit: %v", err)
+			}
 			if phase == "restored" {
 				if err := repo.RestoreCommit(created.Commit); err != nil {
 					t.Fatalf("RestoreCommit: %v", err)
@@ -234,6 +261,7 @@ func TestManualRollbackRecoveryPhasesFinalizeIdempotently(t *testing.T) {
 				Target: created.Commit.String(), CheckpointRef: created.Ref.String(), TargetCommitSHA: created.Commit.String(),
 				Mode: primitives.RollbackModeCheckpoint.String(), SafetyRef: safety.Ref, SafetyCommitSHA: safety.Commit.String(),
 				EventSourceID: sourceID,
+				Changes:       plan.Changes, RestoreProtection: &plan.Protection,
 			}
 			if err := writeOwnedJournal(repo, journal); err != nil {
 				t.Fatalf("writeJournal: %v", err)
@@ -284,10 +312,15 @@ func TestManualRollbackRestoreSafety(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateSnapshotRef: %v", err)
 	}
+	plan, err := repo.PlanRestoreCommit(created.Commit)
+	if err != nil {
+		t.Fatalf("PlanRestoreCommit: %v", err)
+	}
 	journal := Journal{
 		Version: 1, State: "restoring", RestorePhase: "restoring", Manual: true,
 		Target: created.Commit.String(), CheckpointRef: created.Ref.String(), TargetCommitSHA: created.Commit.String(),
 		Mode: primitives.RollbackModeCheckpoint.String(), SafetyRef: safety.Ref, SafetyCommitSHA: safety.Commit.String(),
+		Changes: plan.Changes, RestoreProtection: &plan.Protection,
 	}
 	if err := writeOwnedJournal(repo, journal); err != nil {
 		t.Fatalf("writeJournal: %v", err)
