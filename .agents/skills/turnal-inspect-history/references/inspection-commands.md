@@ -66,3 +66,15 @@ turnal verify <session>:<turn>:<pre|post> [--json]
 - With a target, Turnal materializes the recorded state in an isolated temporary directory and runs the repository's current verifier declarations.
 - Without a target, verifier commands run directly in the mutable workspace and may change it. Use live verification only when that behavior is intended.
 - Exit `0` means all checks passed; `3` means one or more checks failed, timed out, or failed to launch; `1` means an operational or invariant error prevented a valid verification.
+
+## Bisect turns
+
+```sh
+turnal bisect [--good <session>:<turn>[:pre|post]] [--bad <session>:<turn>[:pre|post]]
+              [--session <session>] [--path <path>]... [--check <name>]... [--json]
+```
+
+- Candidates are every completed turn in the current worktree in chronological order; `--good` defaults to the earliest pre checkpoint and `--bad` to the latest post checkpoint. An endpoint phase defaults to `post`.
+- Each candidate is materialized in an isolated temporary directory like `verify <target>`; the workspace is never changed. Both endpoints are verified before the search.
+- `--check` selects configured verifier names; `--path` keeps turns whose pre-to-post diff touched the file or directory; `--session` keeps one session.
+- JSON `result.kind` is `turn`, `outside_recorded_turns`, or `not_bisectable`. `result.first_bad`, `result.last_good`, `result.changed`, `result.failed_checks`, `result.culprit`, and `result.skipped_between` carry the evidence. Exit `0` identified a first failing state; `3` means not bisectable; `1` means an operational error.

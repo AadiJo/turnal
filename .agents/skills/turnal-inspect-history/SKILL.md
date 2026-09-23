@@ -1,6 +1,6 @@
 ---
 name: turnal-inspect-history
-description: Search Turnal's recorded history for prior attempts at the current task. Requires an initialized Turnal workspace. Use when the prompt gives a lead into work not visible in this conversation — "we tried this", "again", "still failing", "why is it like this" — or when the user names a Turnal inspection command (log, show, diff, blame, search, replay, verify).
+description: Search Turnal's recorded history for prior attempts at the current task. Requires an initialized Turnal workspace. Use when the prompt gives a lead into work not visible in this conversation — "we tried this", "again", "still failing", "why is it like this" — or when the user names a Turnal inspection command (log, show, diff, blame, search, replay, verify, bisect).
 ---
 
 # Inspect Turnal history
@@ -31,7 +31,7 @@ Start with `turnal sessions --json` when another command will consume the result
 
 Copy session IDs and turn numbers from that output. If search reports the disposable index is missing or stale, run `turnal reindex` and retry; reindex rebuilds only the disposable lookup cache.
 
-Read [references/target-syntax.md](references/target-syntax.md) before passing a target to `show`, `diff`, `verify`, or `replay`. These commands intentionally accept different target shapes.
+Read [references/target-syntax.md](references/target-syntax.md) before passing a target to `show`, `diff`, `verify`, `bisect`, or `replay`. These commands intentionally accept different target shapes.
 
 ## Choose the narrowest inspection
 
@@ -63,6 +63,12 @@ turnal replay stop
 Use `turnal verify <session>:<turn>:<pre|post> --json` to run repository-defined checks against an isolated recorded state. The phase is mandatory. Prefer this over live `turnal verify` for historical questions because configured live checks run in the mutable workspace and may modify it.
 
 Interpret exit codes precisely: `0` means every configured check passed, `3` means at least one check failed, timed out, or could not start, and `1` means Turnal could not validate the configuration, resolve/materialize the target, or clean up correctly.
+
+## Find the turn that broke a check
+
+Use `turnal bisect --json` when the user asks which change or which turn made a check start failing. It binary searches completed turns with the repository verifiers in isolated directories and never modifies the workspace. Narrow it with `--check <name>` for one failing check, `--path <file>` for turns that touched a file, or `--session <id>`.
+
+Read `result.kind` before reporting. `turn` names a culprit in `result.culprit` with its recorded prompt and intent statements. `outside_recorded_turns` means the break sits between two turns and must not be attributed to an agent turn; report the files in `result.changed` instead. `not_bisectable` means the endpoints did not bracket a break. Mention any turns in `result.skipped_between`, because a `--path` filter excluded them from the search even though they changed the workspace inside the final window. Exit `0` means a first failing state was identified, `3` means not bisectable, and `1` means an operational error.
 
 ## Report findings
 

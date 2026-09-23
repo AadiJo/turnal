@@ -1737,6 +1737,21 @@ func (repo *Repo) restoreCommit(commit primitives.CommitSHA) error {
 	return repo.removeEmptyDirs(indexPath)
 }
 
+// CommitTree returns the tree object a checkpoint commit points at. Two
+// checkpoints with equal trees captured identical project surfaces even though
+// their commits differ.
+func (repo *Repo) CommitTree(commit primitives.CommitSHA) (string, error) {
+	parsedCommit, err := primitives.ParseCommitSHA(commit.String())
+	if err != nil {
+		return "", err
+	}
+	output, err := runHiddenGitReadOnly(repo, "rev-parse", parsedCommit.String()+"^{tree}")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(output), nil
+}
+
 func (repo *Repo) ListCommitTree(commit primitives.CommitSHA) ([]TreeEntry, error) {
 	parsedCommit, err := primitives.ParseCommitSHA(commit.String())
 	if err != nil {
