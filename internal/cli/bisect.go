@@ -28,17 +28,24 @@ func bisectCmd() *cobra.Command {
 	var jsonOutput bool
 	cmd := &cobra.Command{
 		Use:   "bisect",
-		Short: "Find the recorded turn that first made repository checks fail",
-		Long: `Binary search recorded checkpoints with the repository verifiers to find the
-first state where the checks fail. Each candidate is materialized into a
-Turnal-owned temporary directory; the active workspace is never modified.
+		Short: "Find the recorded turn that made repository checks fail",
+		Long: `Binary search recorded checkpoints with the repository verifiers to find
+where the checks go from passing to failing. Each candidate is materialized
+into a Turnal-owned temporary directory; Turnal never modifies the active
+workspace.
 
-The search covers every completed turn in this worktree in chronological
-order, from the earliest pre-turn checkpoint to the latest post-turn
-checkpoint. Both endpoints are verified first. When the first failing state is
-a turn's post checkpoint, that turn is the culprit and its recorded prompt and
-intent are shown. When it is a turn's pre checkpoint, the break happened
-outside recorded turns and Turnal says so instead of blaming a turn.`,
+Candidates are every completed turn in this worktree, ordered by checkpoint
+capture time, from the earliest pre-turn checkpoint to the latest post-turn
+checkpoint. Both endpoints are verified first. The result names the last good
+and first bad states, which are always adjacent and both verified. When
+exactly one turn was active between them, that turn is the culprit and its
+recorded prompt and intent are shown. When several turns overlapped, a filter
+excluded one, or a turn never finished, the result is ambiguous and lists
+them. When no turn was active, the change came from outside recorded turns.
+
+Like git bisect, the search assumes checks stay failing once broken. With a
+flaky or non-monotonic history it still reports a verified pass-to-fail
+transition, but not necessarily the earliest one.`,
 		SilenceUsage: true,
 		Args:         cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -54,23 +61,33 @@ outside recorded turns and Turnal says so instead of blaming a turn.`,
 			if err != nil {
 				return err
 			}
-			var sessionFilter primitives.SessionID
+			var filters bisect.Filters
 			if session != "" {
-				sessionFilter, err = primitives.ParseSessionID(session)
+				filters.Session, err = primitives.ParseSessionID(session)
 				if err != nil {
 					return err
 				}
 			}
-			turns, err := blame.New(repo).CompletedTurns(sessionFilter)
+			for _, value := range paths {
+				path, err := primitives.ParseRepoPath(value)
+				if err != nil {
+					return fmt.Errorf("--path %q: %w", value, err)
+				}
+				filters.Paths = append(filters.Paths, path)
+			}
+			history, err := blame.New(repo).History()
 			if err != nil {
 				return err
 			}
-			plan, err := bisect.NewPlan(repo, turns, paths)
+			plan, err := bisect.NewPlan(repo, history, filters)
 			if err != nil {
 				return err
+			}
+			if len(plan.States) == 0 && len(plan.ExcludedTurns) > 0 {
+				return fmt.Errorf("no completed turn matches --session or --path; %d completed turns were excluded", len(plan.ExcludedTurns))
 			}
 			if len(plan.States) < 2 {
-				return fmt.Errorf("bisect needs at least two distinct recorded states; found %d completed turns yielding %d states", len(turns), len(plan.States))
+				return fmt.Errorf("bisect needs at least two distinct recorded states; found %d completed turns yielding %d states", len(history.Completed), len(plan.States))
 			}
 			goodIndex, badIndex := 0, len(plan.States)-1
 			if good != "" {
@@ -83,7 +100,10 @@ outside recorded turns and Turnal says so instead of blaming a turn.`,
 					return err
 				}
 			}
-			if goodIndex >= badIndex {
+			if goodIndex == badIndex {
+				return fmt.Errorf("good and bad resolve to the same state %s with identical content", plan.States[goodIndex].Display())
+			}
+			if goodIndex > badIndex {
 				return fmt.Errorf("good state %s must come before bad state %s", plan.States[goodIndex].Display(), plan.States[badIndex].Display())
 			}
 
@@ -100,8 +120,6 @@ outside recorded turns and Turnal says so instead of blaming a turn.`,
 				BadIndex:  badIndex,
 				Probe:     checkpointProbe(repo, verifiers),
 				Checks:    names,
-				Session:   session,
-				Paths:     paths,
 			})
 			if err != nil {
 				return err
@@ -123,8 +141,8 @@ outside recorded turns and Turnal says so instead of blaming a turn.`,
 	}
 	cmd.Flags().StringVar(&good, "good", "", "Known passing state as <session>:<turn>[:pre|post] (defaults to the earliest pre checkpoint)")
 	cmd.Flags().StringVar(&bad, "bad", "", "Known failing state as <session>:<turn>[:pre|post] (defaults to the latest post checkpoint)")
-	cmd.Flags().StringVar(&session, "session", "", "Only consider turns from this session")
-	cmd.Flags().StringArrayVar(&paths, "path", nil, "Only consider turns that changed this file or directory (repeatable)")
+	cmd.Flags().StringVar(&session, "session", "", "Only search turns from this session (other sessions are still disclosed when active in the result window)")
+	cmd.Flags().StringArrayVar(&paths, "path", nil, "Only search turns that changed this workspace-relative file or directory (repeatable)")
 	cmd.Flags().StringArrayVar(&checks, "check", nil, "Run only the named repository verifier (repeatable)")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit a versioned JSON bisect report")
 	return cmd

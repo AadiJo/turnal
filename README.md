@@ -35,7 +35,7 @@ Turnal should be piloted before company-wide adoption. Pin a version and validat
 - Track recorded token usage and API-equivalent cost by turn, session, and project.
 - Replay checkpoints in isolated worktrees.
 - Run repository-defined checks against the live workspace or a recorded checkpoint.
-- Bisect recorded turns to find the one that first made those checks fail, with the agent's stated intent.
+- Bisect recorded turns to find the one that made those checks fail, with the agent's stated intent.
 - Promote recorded turns into immutable Cases, compare isolated Attempts, and apply a selected result.
 - Share one Turnal store across linked Git worktrees.
 - Publish an explicitly approved, privacy-filtered context history through Git for teammate review.
@@ -449,7 +449,7 @@ Standalone verifier reports are printed or returned as JSON. Forked Case attempt
 
 ### Finding the turn that broke a check
 
-`turnal bisect` binary searches recorded checkpoints with the same verifier declarations to find the first state where the checks fail, then names the turn and shows what the agent said it was doing:
+`turnal bisect` binary searches recorded checkpoints with the same verifier declarations to find where the checks go from passing to failing, then names the turn and shows what the agent said it was doing:
 
 ```sh
 turnal bisect
@@ -460,13 +460,14 @@ turnal bisect --good claude-7f2a:2 --bad claude-7f2a:9 --json
 
 ```text
 bisect 6 states from claude-7f2a:1:pre to claude-7f2a:5:post, checks: unit-tests
-  pass  claude-7f2a:1:pre            f3f26c8058ae  1.555s
-  fail  claude-7f2a:5:post           4e33c3c024f5  119ms
-  pass  claude-7f2a:2:post           b99efaceb7c9  122ms
-  fail  claude-7f2a:3:post           24512a52885b  119ms
+  PASS  claude-7f2a:1:pre            f3f26c8058ae  1.555s
+  FAIL  claude-7f2a:5:post           4e33c3c024f5  119ms
+  PASS  claude-7f2a:2:post           b99efaceb7c9  122ms
+  FAIL  claude-7f2a:3:post           24512a52885b  119ms
 first bad: claude-7f2a:3:post
 last good: claude-7f2a:2:post
 culprit: turn claude-7f2a:3
+  agent:   claude
   intent:  "Add should saturate instead of overflowing" scope add.go
   changed: M add.go
   failed:  unit-tests exit 1
@@ -475,11 +476,17 @@ culprit: turn claude-7f2a:3
 runs: 4 in 1.918s
 ```
 
-The search space is every completed turn in the current worktree in chronological order, from the earliest pre-turn checkpoint to the latest post-turn checkpoint. Consecutive checkpoints with identical content count as one state. Both endpoints are verified before the search starts; `--good` and `--bad` accept `<session>:<turn>[:pre|post]` and default to `post`. Every candidate is materialized into a Turnal-owned temporary directory exactly as `turnal verify <target>` does, so the active workspace, the project's Git state, and the private checkpoint refs are never modified.
+The search space is every completed turn in the current worktree, ordered by checkpoint capture time, from the earliest pre-turn checkpoint to the latest post-turn checkpoint. Consecutive checkpoints with identical content count as one state. Both endpoints are verified before the search starts; `--good` and `--bad` accept `<session>:<turn>[:pre|post]` and default to `post`. Every candidate is materialized into a Turnal-owned temporary directory exactly as `turnal verify <target>` does, so Turnal itself never modifies the active workspace or the private checkpoint refs. Verifier commands still run with the current machine's toolchain and environment, and ignored paths such as dependency directories are absent from the materialized surface, so a check that needs them fails at the good endpoint too.
 
-When the first failing state is a turn's pre checkpoint, the break happened between recorded turns, and bisect reports `changes outside recorded turns` with the files that differ instead of blaming a turn. `--path` limits candidates to turns that changed the given file or directory; turns it excluded inside the final window are listed because they changed the workspace without being verified. `--check` runs a subset of the configured verifiers, which is useful when only one test is failing.
+The last good and first bad states are always adjacent and both verified. The result then depends on which recorded turns were active between them:
 
-The command exits `0` when it identifies the first failing state, `3` when the good endpoint fails or the bad endpoint passes, and `1` for ordinary errors. A check that cannot start or reports an infrastructure error aborts the search rather than counting as a failing state.
+- Exactly one turn, and the first bad state is its post checkpoint: that turn is the culprit, with its recorded prompt, intent statements, changed files, and the failing check's output.
+- No turn at all: the change came from `outside recorded turns`, and the differing files are listed.
+- More than one turn, a turn that `--path` or `--session` excluded from the search, or a turn that never finished: the result is `ambiguous` and lists those turns instead of blaming one of them. This mirrors how `turnal blame` reports concurrent turns.
+
+`--path` limits candidates to turns that changed the given workspace-relative file or directory, and `--check` runs a subset of the configured verifiers, which is useful when only one test is failing. Like git bisect, the search assumes checks stay failing once broken; with a flaky or non-monotonic history it still reports a verified pass-to-fail transition, but not necessarily the earliest one.
+
+The command exits `0` when it identifies a transition, `3` when the good endpoint fails or the bad endpoint passes, and `1` for ordinary errors. A check that cannot start or reports an infrastructure error aborts the search rather than counting as a failing state.
 
 ## Reproducibility and Cases
 

@@ -1,13 +1,14 @@
-// Package bisect finds the recorded checkpoint that first made repository
-// checks fail. It walks completed turns in blame's chronological order, runs
-// the verifier contract against materialized checkpoints, and reports either
-// the culprit turn or, when the break sits between two turns, that the change
-// happened outside recorded turns.
+// Package bisect finds a recorded checkpoint transition where repository
+// checks go from passing to failing. It orders checkpoints by capture time,
+// runs the verifier contract against materialized checkpoints, and reports
+// the culprit turn when exactly one turn was active in that window. When
+// several turns were active, or none, it says so instead of guessing.
 package bisect
 
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -23,11 +24,15 @@ const SchemaVersion = 1
 type Kind string
 
 const (
-	// KindTurn means a turn's post checkpoint is the first failing state.
+	// KindTurn means the first bad state is a turn's post checkpoint and no
+	// other turn was active between the last good and first bad states.
 	KindTurn Kind = "turn"
-	// KindOutsideRecordedTurns means a turn's pre checkpoint is the first
-	// failing state, so the change landed between recorded turns.
+	// KindOutsideRecordedTurns means no recorded turn was active between the
+	// last good and first bad states; the change came from elsewhere.
 	KindOutsideRecordedTurns Kind = "outside_recorded_turns"
+	// KindAmbiguous means more than one turn, an excluded turn, or an
+	// unfinished turn was active in the window, so no single turn is blamed.
+	KindAmbiguous Kind = "ambiguous"
 	// KindNotBisectable means the endpoints do not bracket a break.
 	KindNotBisectable Kind = "not_bisectable"
 )
@@ -39,18 +44,26 @@ const (
 	OutcomeFailed Outcome = "failed"
 )
 
+const (
+	ExcludedBySession = "session"
+	ExcludedByPath    = "path"
+)
+
+// TurnRef names a turn and, when relevant, why it was not a search candidate.
 type TurnRef struct {
-	SessionID primitives.SessionID `json:"session_id"`
-	TurnID    primitives.TurnID    `json:"turn_id"`
+	SessionID  primitives.SessionID `json:"session_id"`
+	TurnID     primitives.TurnID    `json:"turn_id"`
+	ExcludedBy string               `json:"excluded_by,omitempty"`
+	Incomplete bool                 `json:"incomplete,omitempty"`
 }
 
 func (ref TurnRef) String() string {
 	return ref.SessionID.String() + ":" + ref.TurnID.String()
 }
 
-// State is one distinct workspace content in chronological order. Consecutive
-// checkpoints with the same tree collapse into one state; the later
-// identities are kept as aliases so users can refer to either.
+// State is one distinct workspace content, ordered by capture time.
+// Consecutive checkpoints with the same tree collapse into one state; the
+// later identities are kept as aliases so users can refer to either.
 type State struct {
 	SessionID primitives.SessionID       `json:"session_id"`
 	TurnID    primitives.TurnID          `json:"turn_id"`
@@ -99,17 +112,20 @@ type Result struct {
 	// states. For a culprit turn this is exactly what the turn changed.
 	Changed      []Change `json:"changed,omitempty"`
 	FailedChecks []string `json:"failed_checks,omitempty"`
-	Culprit      *Culprit `json:"culprit,omitempty"`
-	// SkippedBetween lists turns a path filter excluded that sit between the
-	// last good and first bad states. They changed the workspace inside the
-	// window but were never verified.
-	SkippedBetween []TurnRef `json:"skipped_between,omitempty"`
+	// Participants are the turns active between the last good and first bad
+	// states, including turns the filters excluded and unfinished turns.
+	Participants []TurnRef `json:"participants,omitempty"`
+	Culprit      *Culprit  `json:"culprit,omitempty"`
+}
+
+type Filters struct {
+	Session primitives.SessionID  `json:"session,omitempty"`
+	Paths   []primitives.RepoPath `json:"paths,omitempty"`
 }
 
 type Report struct {
 	SchemaVersion int       `json:"schema_version"`
-	Session       string    `json:"session,omitempty"`
-	Paths         []string  `json:"paths,omitempty"`
+	Filters       Filters   `json:"filters"`
 	Checks        []string  `json:"checks"`
 	States        []State   `json:"states"`
 	ExcludedTurns []TurnRef `json:"excluded_turns,omitempty"`
@@ -122,50 +138,70 @@ type Report struct {
 	DurationMS    int64     `json:"duration_ms"`
 }
 
-// Plan is the ordered search space built from completed turns.
+// Plan is the ordered search space built from the worktree's turn history.
 type Plan struct {
 	States        []State
 	ExcludedTurns []TurnRef
+	Filters       Filters
 	turns         []blame.CompletedTurn
-	excludedIndex []int
+	excludedBy    []string
+	incomplete    []blame.IncompleteTurn
 }
 
-// NewPlan orders checkpoints chronologically and collapses identical
-// neighbours. When paths are given, only turns whose pre-to-post diff touches
-// one of them contribute states; the rest are listed as excluded.
-func NewPlan(repo *checkpoint.Repo, turns []blame.CompletedTurn, paths []string) (Plan, error) {
+// NewPlan orders every completed turn's checkpoints by capture time and
+// collapses identical neighbours. Filters remove turns from the candidates
+// but not from the history, so an excluded turn active in the final window
+// is still disclosed.
+func NewPlan(repo *checkpoint.Repo, history blame.History, filters Filters) (Plan, error) {
 	if repo == nil {
 		return Plan{}, fmt.Errorf("bisect plan requires checkpoint repo")
 	}
-	plan := Plan{turns: turns}
-	for index, turn := range turns {
-		if len(paths) > 0 {
-			touched, err := turnTouches(repo, turn, paths)
-			if err != nil {
-				return Plan{}, err
-			}
-			if !touched {
-				plan.ExcludedTurns = append(plan.ExcludedTurns, TurnRef{SessionID: turn.SessionID, TurnID: turn.TurnID})
-				plan.excludedIndex = append(plan.excludedIndex, index)
-				continue
-			}
+	plan := Plan{
+		Filters:    filters,
+		turns:      history.Completed,
+		excludedBy: make([]string, len(history.Completed)),
+		incomplete: history.Incomplete,
+	}
+	commits := make([]primitives.CommitSHA, 0, 2*len(history.Completed))
+	for _, turn := range history.Completed {
+		commits = append(commits, turn.Pre.Commit, turn.Post.Commit)
+	}
+	trees, err := repo.CommitTrees(commits)
+	if err != nil {
+		return Plan{}, fmt.Errorf("resolve checkpoint trees: %w", err)
+	}
+
+	var candidates []State
+	for index, turn := range history.Completed {
+		reason, err := exclusionReason(repo, turn, filters)
+		if err != nil {
+			return Plan{}, err
 		}
-		for _, info := range []checkpoint.CheckpointRefInfo{turn.Pre, turn.Post} {
-			state, err := stateFromInfo(repo, turn, info, index)
-			if err != nil {
-				return Plan{}, err
-			}
-			plan.add(state)
+		plan.excludedBy[index] = reason
+		if reason != "" {
+			plan.ExcludedTurns = append(plan.ExcludedTurns, TurnRef{SessionID: turn.SessionID, TurnID: turn.TurnID, ExcludedBy: reason})
+			continue
 		}
+		candidates = append(candidates,
+			newState(turn, turn.Pre, trees[2*index], turn.Start, index),
+			newState(turn, turn.Post, trees[2*index+1], turn.End, index),
+		)
+	}
+	// Stable: ties keep blame's turn order, and a turn's pre before its post.
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].Time.Before(candidates[j].Time)
+	})
+	for _, state := range candidates {
+		if last := len(plan.States) - 1; last >= 0 && plan.States[last].Tree == state.Tree {
+			plan.States[last].Aliases = append(plan.States[last].Aliases, state.Display())
+			continue
+		}
+		plan.States = append(plan.States, state)
 	}
 	return plan, nil
 }
 
-func stateFromInfo(repo *checkpoint.Repo, turn blame.CompletedTurn, info checkpoint.CheckpointRefInfo, index int) (State, error) {
-	tree, err := repo.CommitTree(info.Commit)
-	if err != nil {
-		return State{}, fmt.Errorf("resolve tree for %s:%s:%s: %w", turn.SessionID, turn.TurnID, info.Phase, err)
-	}
+func newState(turn blame.CompletedTurn, info checkpoint.CheckpointRefInfo, tree string, at time.Time, index int) State {
 	return State{
 		SessionID: turn.SessionID,
 		TurnID:    turn.TurnID,
@@ -173,30 +209,32 @@ func stateFromInfo(repo *checkpoint.Repo, turn blame.CompletedTurn, info checkpo
 		Ref:       info.Ref,
 		Commit:    info.Commit,
 		Tree:      tree,
-		Time:      info.Time,
+		Time:      at,
 		turnIndex: index,
-	}, nil
-}
-
-func (plan *Plan) add(state State) {
-	if last := len(plan.States) - 1; last >= 0 && plan.States[last].Tree == state.Tree {
-		plan.States[last].Aliases = append(plan.States[last].Aliases, state.Display())
-		return
 	}
-	plan.States = append(plan.States, state)
 }
 
-func turnTouches(repo *checkpoint.Repo, turn blame.CompletedTurn, paths []string) (bool, error) {
+func exclusionReason(repo *checkpoint.Repo, turn blame.CompletedTurn, filters Filters) (string, error) {
+	if filters.Session != "" && turn.SessionID != filters.Session {
+		return ExcludedBySession, nil
+	}
+	if len(filters.Paths) == 0 {
+		return "", nil
+	}
 	changes, err := repo.DiffNameStatusCommits(turn.Pre.Commit, turn.Post.Commit)
 	if err != nil {
-		return false, fmt.Errorf("diff turn %s:%s for path filter: %w", turn.SessionID, turn.TurnID, err)
+		return "", fmt.Errorf("diff turn %s:%s for path filter: %w", turn.SessionID, turn.TurnID, err)
+	}
+	scope := make([]string, 0, len(filters.Paths))
+	for _, path := range filters.Paths {
+		scope = append(scope, path.String())
 	}
 	for _, change := range changes {
-		if provenance.ScopeMatches(paths, change.Path) || (change.OldPath != "" && provenance.ScopeMatches(paths, change.OldPath)) {
-			return true, nil
+		if provenance.ScopeMatches(scope, change.Path) || (change.OldPath != "" && provenance.ScopeMatches(scope, change.OldPath)) {
+			return "", nil
 		}
 	}
-	return false, nil
+	return ExcludedByPath, nil
 }
 
 // Find locates a state by its own identity or one of its aliases.
@@ -225,14 +263,15 @@ type Request struct {
 	BadIndex  int
 	Probe     Probe
 	Checks    []string
-	Session   string
-	Paths     []string
 	Now       func() time.Time
 }
 
 // Search verifies both endpoints, then binary searches the states between
-// them. A check that cannot launch or hits an infrastructure error aborts the
-// search instead of counting as a failing state.
+// them. Like git bisect, it assumes checks stay failing once broken: with a
+// flaky or non-monotonic history it still returns an adjacent, verified
+// pass-to-fail transition, but not necessarily the earliest one. A check that
+// cannot launch or hits an infrastructure error aborts the search instead of
+// counting as a failing state.
 func Search(ctx context.Context, request Request) (Report, error) {
 	if ctx == nil {
 		return Report{}, fmt.Errorf("bisect context is required")
@@ -249,27 +288,28 @@ func Search(ctx context.Context, request Request) (Report, error) {
 		now = time.Now
 	}
 
+	started := now()
 	report := Report{
 		SchemaVersion: SchemaVersion,
-		Session:       request.Session,
-		Paths:         request.Paths,
+		Filters:       request.Plan.Filters,
 		Checks:        request.Checks,
 		States:        states,
 		ExcludedTurns: request.Plan.ExcludedTurns,
 		Good:          states[request.GoodIndex],
 		Bad:           states[request.BadIndex],
 		Runs:          make([]Run, 0),
-		StartedAt:     now().UTC(),
+		StartedAt:     started.UTC(),
 	}
 	finish := func() {
-		report.FinishedAt = now().UTC()
-		report.DurationMS = report.FinishedAt.Sub(report.StartedAt).Milliseconds()
+		finished := now()
+		report.FinishedAt = finished.UTC()
+		report.DurationMS = finished.Sub(started).Milliseconds()
 	}
 
 	runsByIndex := make(map[int]int)
 	probe := func(index int) (Outcome, error) {
 		state := states[index]
-		started := now()
+		runStarted := now()
 		verified, err := request.Probe(ctx, state)
 		if err != nil {
 			return "", err
@@ -281,21 +321,19 @@ func Search(ctx context.Context, request Request) (Report, error) {
 		report.Runs = append(report.Runs, Run{
 			State:      state,
 			Outcome:    outcome,
-			DurationMS: now().Sub(started).Milliseconds(),
+			DurationMS: now().Sub(runStarted).Milliseconds(),
 			Report:     verified,
 		})
 		runsByIndex[index] = len(report.Runs) - 1
 		return outcome, nil
 	}
 
-	good := states[request.GoodIndex]
-	bad := states[request.BadIndex]
 	outcome, err := probe(request.GoodIndex)
 	if err != nil {
 		return Report{}, err
 	}
 	if outcome != OutcomePassed {
-		report.Result = Result{Kind: KindNotBisectable, Reason: fmt.Sprintf("good state %s fails the checks", good.Display())}
+		report.Result = Result{Kind: KindNotBisectable, Reason: fmt.Sprintf("good state %s fails the checks", report.Good.Display())}
 		finish()
 		return report, nil
 	}
@@ -304,7 +342,7 @@ func Search(ctx context.Context, request Request) (Report, error) {
 		return Report{}, err
 	}
 	if outcome != OutcomeFailed {
-		report.Result = Result{Kind: KindNotBisectable, Reason: fmt.Sprintf("bad state %s passes the checks", bad.Display())}
+		report.Result = Result{Kind: KindNotBisectable, Reason: fmt.Sprintf("bad state %s passes the checks", report.Bad.Display())}
 		finish()
 		return report, nil
 	}
@@ -328,10 +366,7 @@ func Search(ctx context.Context, request Request) (Report, error) {
 	if err != nil {
 		return Report{}, fmt.Errorf("diff %s..%s: %w", lastGood.Display(), firstBad.Display(), err)
 	}
-	result := Result{
-		LastGood: &lastGood,
-		FirstBad: &firstBad,
-	}
+	result := Result{LastGood: &lastGood, FirstBad: &firstBad}
 	for _, change := range changes {
 		result.Changed = append(result.Changed, Change{Status: change.Status, Path: change.Path, OldPath: change.OldPath})
 	}
@@ -340,14 +375,10 @@ func Search(ctx context.Context, request Request) (Report, error) {
 			result.FailedChecks = append(result.FailedChecks, check.Name)
 		}
 	}
-	for position, index := range request.Plan.excludedIndex {
-		if index > lastGood.turnIndex && index < firstBad.turnIndex {
-			result.SkippedBetween = append(result.SkippedBetween, request.Plan.ExcludedTurns[position])
-		}
-	}
-	if firstBad.Phase == primitives.CheckpointPhasePost {
+	result.Participants = request.Plan.participants(lastGood, firstBad)
+	result.Kind = classifyWindow(firstBad, result.Participants)
+	if result.Kind == KindTurn {
 		turn := request.Plan.turns[firstBad.turnIndex]
-		result.Kind = KindTurn
 		result.Culprit = &Culprit{
 			SessionID: turn.SessionID,
 			TurnID:    turn.TurnID,
@@ -357,12 +388,54 @@ func Search(ctx context.Context, request Request) (Report, error) {
 			ToolNames: turn.ToolNames,
 			Intents:   turn.Intents,
 		}
-	} else {
-		result.Kind = KindOutsideRecordedTurns
 	}
 	report.Result = result
 	finish()
 	return report, nil
+}
+
+// participants lists every turn that could have changed the workspace
+// between two adjacent states: the first bad state's own turn when it is a
+// post checkpoint, any turn whose recorded span overlaps the open window,
+// and any unfinished turn that started before the window closed. Boundary
+// comparisons are strict so the sequential turn ending exactly at the last
+// good state is not counted.
+func (plan Plan) participants(lastGood, firstBad State) []TurnRef {
+	var refs []TurnRef
+	seen := make(map[string]bool)
+	add := func(ref TurnRef) {
+		if !seen[ref.String()] {
+			seen[ref.String()] = true
+			refs = append(refs, ref)
+		}
+	}
+	if firstBad.Phase == primitives.CheckpointPhasePost {
+		add(TurnRef{SessionID: firstBad.SessionID, TurnID: firstBad.TurnID, ExcludedBy: plan.excludedBy[firstBad.turnIndex]})
+	}
+	for index, turn := range plan.turns {
+		if turn.Start.Before(firstBad.Time) && turn.End.After(lastGood.Time) {
+			add(TurnRef{SessionID: turn.SessionID, TurnID: turn.TurnID, ExcludedBy: plan.excludedBy[index]})
+		}
+	}
+	for _, turn := range plan.incomplete {
+		if !turn.Start.IsZero() && turn.Start.Before(firstBad.Time) {
+			add(TurnRef{SessionID: turn.SessionID, TurnID: turn.TurnID, Incomplete: true})
+		}
+	}
+	return refs
+}
+
+func classifyWindow(firstBad State, participants []TurnRef) Kind {
+	switch {
+	case len(participants) == 0:
+		return KindOutsideRecordedTurns
+	case len(participants) == 1 && firstBad.Phase == primitives.CheckpointPhasePost &&
+		participants[0].ExcludedBy == "" && !participants[0].Incomplete &&
+		participants[0].SessionID == firstBad.SessionID && participants[0].TurnID == firstBad.TurnID:
+		return KindTurn
+	default:
+		return KindAmbiguous
+	}
 }
 
 func classify(state State, report verifier.Report) (Outcome, error) {

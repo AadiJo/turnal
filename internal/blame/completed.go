@@ -10,7 +10,8 @@ import (
 
 // CompletedTurn is a recorded turn with both checkpoints, in the order blame
 // attributes changes. Other commands that walk turn history chronologically
-// (bisect, for example) use this so they agree with blame about ordering.
+// (bisect, for example) use this so they agree with blame about ordering and
+// about which turns overlap in time.
 type CompletedTurn struct {
 	SessionID primitives.SessionID
 	TurnID    primitives.TurnID
@@ -23,19 +24,38 @@ type CompletedTurn struct {
 	// Intents are the agent's recorded statements for this turn, in event order.
 	// Malformed statements are dropped rather than reported.
 	Intents []provenance.IntentPayload
-	Start   time.Time
-	End     time.Time
+	// Start and End bound the turn in time using the most precise evidence
+	// recorded; a legacy turn without event timestamps may end a second late.
+	Start time.Time
+	End   time.Time
 }
 
-// CompletedTurns lists the current worktree's completed turns in chronological
-// order, optionally narrowed to one session.
-func (engine Engine) CompletedTurns(sessionFilter primitives.SessionID) ([]CompletedTurn, error) {
-	turns, err := engine.completeTurns(sessionFilter, "", 0)
+// IncompleteTurn has a pre checkpoint but no post checkpoint: it is still
+// running or was abandoned. It may have changed the workspace at any time
+// after Start.
+type IncompleteTurn struct {
+	SessionID primitives.SessionID
+	TurnID    primitives.TurnID
+	Start     time.Time
+}
+
+type History struct {
+	Completed  []CompletedTurn
+	Incomplete []IncompleteTurn
+}
+
+// History lists the current worktree's turns: completed ones in chronological
+// order, and incomplete ones that may still be changing the workspace.
+func (engine Engine) History() (History, error) {
+	observed, err := engine.observeHistory("", "", 0)
 	if err != nil {
-		return nil, err
+		return History{}, err
 	}
-	completed := make([]CompletedTurn, 0, len(turns))
-	for _, turn := range turns {
+	history := History{
+		Completed:  make([]CompletedTurn, 0, len(observed.Complete)),
+		Incomplete: make([]IncompleteTurn, 0, len(observed.Incomplete)),
+	}
+	for _, turn := range observed.Complete {
 		var intents []provenance.IntentPayload
 		for _, event := range turn.Records {
 			if event.Type != primitives.EventTypeAgentIntent {
@@ -47,7 +67,7 @@ func (engine Engine) CompletedTurns(sessionFilter primitives.SessionID) ([]Compl
 			}
 			intents = append(intents, payload)
 		}
-		completed = append(completed, CompletedTurn{
+		history.Completed = append(history.Completed, CompletedTurn{
 			SessionID: turn.SessionID,
 			TurnID:    turn.TurnID,
 			Pre:       turn.Pre,
@@ -61,5 +81,12 @@ func (engine Engine) CompletedTurns(sessionFilter primitives.SessionID) ([]Compl
 			End:       completeTurnEnd(turn),
 		})
 	}
-	return completed, nil
+	for _, turn := range observed.Incomplete {
+		history.Incomplete = append(history.Incomplete, IncompleteTurn{
+			SessionID: turn.SessionID,
+			TurnID:    turn.TurnID,
+			Start:     incompleteTurnStart(turn),
+		})
+	}
+	return history, nil
 }

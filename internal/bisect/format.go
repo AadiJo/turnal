@@ -12,50 +12,60 @@ import (
 
 const failureTailLines = 5
 
-// WriteHuman prints the run log, the bracketing states, and the culprit with
-// the agent's recorded prompt and intent.
+// WriteHuman prints the run log, the bracketing states, and either the
+// culprit with the agent's recorded prompt and intent or the reason no single
+// turn can be blamed.
 func WriteHuman(writer io.Writer, report Report) error {
-	print := func(format string, args ...any) error {
+	emit := func(format string, args ...any) error {
 		_, err := fmt.Fprintf(writer, format, args...)
 		return err
 	}
-	if err := print("bisect %d states from %s to %s, checks: %s\n", len(report.States), report.Good.Display(), report.Bad.Display(), strings.Join(report.Checks, ", ")); err != nil {
+	searched := 0
+	for index, state := range report.States {
+		if state.Display() == report.Good.Display() {
+			searched = -index
+		}
+		if state.Display() == report.Bad.Display() {
+			searched += index + 1
+		}
+	}
+	if err := emit("bisect %d states from %s to %s, checks: %s\n", searched, report.Good.Display(), report.Bad.Display(), terminalSafe(strings.Join(report.Checks, ", "))); err != nil {
 		return err
 	}
 	for _, run := range report.Runs {
-		label := "pass"
+		label := "PASS"
 		if run.Outcome == OutcomeFailed {
-			label = "fail"
+			label = "FAIL"
 		}
-		if err := print("  %s  %-28s %s  %s\n", label, run.State.Display(), shortCommit(run.State.Commit.String()), humanDuration(run.DurationMS)); err != nil {
+		if err := emit("  %s  %-28s %s  %s\n", label, run.State.Display(), shortCommit(run.State.Commit.String()), humanDuration(run.DurationMS)); err != nil {
 			return err
 		}
 	}
 
 	result := report.Result
 	if result.Kind == KindNotBisectable {
-		if err := print("not bisectable: %s\n", result.Reason); err != nil {
+		if err := emit("not bisectable: %s\n", result.Reason); err != nil {
 			return err
 		}
 		return writeFailureTails(writer, report, report.Runs[len(report.Runs)-1].State)
 	}
 
-	if err := print("first bad: %s\nlast good: %s\n", result.FirstBad.Display(), result.LastGood.Display()); err != nil {
+	if err := emit("first bad: %s\nlast good: %s\n", result.FirstBad.Display(), result.LastGood.Display()); err != nil {
 		return err
 	}
 	switch result.Kind {
 	case KindTurn:
 		culprit := result.Culprit
-		if err := print("culprit: turn %s:%s\n", culprit.SessionID, culprit.TurnID); err != nil {
+		if err := emit("culprit: turn %s:%s\n", culprit.SessionID, culprit.TurnID); err != nil {
 			return err
 		}
 		if culprit.Adapter != "" || culprit.Model != "" {
-			if err := print("  agent:   %s\n", strings.TrimSpace(culprit.Adapter+" "+culprit.Model)); err != nil {
+			if err := emit("  agent:   %s\n", terminalSafe(strings.TrimSpace(culprit.Adapter+" "+culprit.Model))); err != nil {
 				return err
 			}
 		}
 		if culprit.Prompt != "" {
-			if err := print("  prompt:  %s\n", strconv.Quote(truncate(collapse(culprit.Prompt), 160))); err != nil {
+			if err := emit("  prompt:  %s\n", strconv.Quote(truncate(collapse(culprit.Prompt), 160))); err != nil {
 				return err
 			}
 		}
@@ -64,14 +74,25 @@ func WriteHuman(writer io.Writer, report Report) error {
 			if intent.Redacted {
 				line += " (redacted)"
 			} else if len(intent.Scope) > 0 {
-				line += " scope " + strings.Join(intent.Scope, ", ")
+				line += " scope " + terminalSafe(strings.Join(intent.Scope, ", "))
 			}
-			if err := print("  intent:  %s\n", line); err != nil {
+			if err := emit("  intent:  %s\n", line); err != nil {
 				return err
 			}
 		}
 	case KindOutsideRecordedTurns:
-		if err := print("culprit: changes outside recorded turns between %s and %s\n", result.LastGood.Display(), result.FirstBad.Display()); err != nil {
+		if err := emit("culprit: changes outside recorded turns between %s and %s\n", result.LastGood.Display(), result.FirstBad.Display()); err != nil {
+			return err
+		}
+	case KindAmbiguous:
+		if err := emit("culprit: ambiguous, %d turns were active between %s and %s\n", len(result.Participants), result.LastGood.Display(), result.FirstBad.Display()); err != nil {
+			return err
+		}
+		labels := make([]string, 0, len(result.Participants))
+		for _, participant := range result.Participants {
+			labels = append(labels, participantLabel(participant))
+		}
+		if err := emit("  turns:   %s\n", strings.Join(labels, ", ")); err != nil {
 			return err
 		}
 	}
@@ -84,27 +105,29 @@ func WriteHuman(writer io.Writer, report Report) error {
 			}
 			names = append(names, terminalSafe(name))
 		}
-		if err := print("  changed: %s\n", strings.Join(names, ", ")); err != nil {
-			return err
-		}
-	}
-	if len(result.SkippedBetween) > 0 {
-		refs := make([]string, 0, len(result.SkippedBetween))
-		for _, ref := range result.SkippedBetween {
-			refs = append(refs, ref.String())
-		}
-		if err := print("  excluded by --path in this window: %s\n", strings.Join(refs, ", ")); err != nil {
+		if err := emit("  changed: %s\n", strings.Join(names, ", ")); err != nil {
 			return err
 		}
 	}
 	if err := writeFailureTails(writer, report, *result.FirstBad); err != nil {
 		return err
 	}
-	return print("runs: %d in %s\n", len(report.Runs), humanDuration(report.DurationMS))
+	return emit("runs: %d in %s\n", len(report.Runs), humanDuration(report.DurationMS))
+}
+
+func participantLabel(ref TurnRef) string {
+	switch {
+	case ref.Incomplete:
+		return ref.String() + " (unfinished)"
+	case ref.ExcludedBy != "":
+		return ref.String() + " (excluded by --" + ref.ExcludedBy + ")"
+	default:
+		return ref.String()
+	}
 }
 
 // writeFailureTails shows each failing check for one state with the last few
-// lines of its output, so the culprit's failure is visible without --json.
+// lines of its output, so the failure is visible without --json.
 func writeFailureTails(writer io.Writer, report Report, state State) error {
 	for _, run := range report.Runs {
 		if run.State.Display() != state.Display() {
@@ -115,7 +138,10 @@ func writeFailureTails(writer io.Writer, report Report, state State) error {
 				continue
 			}
 			detail := string(check.Status)
-			if check.ExitCode != nil {
+			switch {
+			case check.Status == verifier.StatusTimedOut:
+				detail = "timed out after " + check.Timeout
+			case check.ExitCode != nil:
 				detail = "exit " + strconv.Itoa(*check.ExitCode)
 			}
 			if _, err := fmt.Fprintf(writer, "  failed:  %s %s\n", terminalSafe(check.Name), detail); err != nil {

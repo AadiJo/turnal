@@ -74,7 +74,7 @@ turnal bisect [--good <session>:<turn>[:pre|post]] [--bad <session>:<turn>[:pre|
               [--session <session>] [--path <path>]... [--check <name>]... [--json]
 ```
 
-- Candidates are every completed turn in the current worktree in chronological order; `--good` defaults to the earliest pre checkpoint and `--bad` to the latest post checkpoint. An endpoint phase defaults to `post`.
+- Candidates are every completed turn in the current worktree ordered by checkpoint capture time; `--good` defaults to the earliest pre checkpoint and `--bad` to the latest post checkpoint. An endpoint phase defaults to `post`.
 - Each candidate is materialized in an isolated temporary directory like `verify <target>`; the workspace is never changed. Both endpoints are verified before the search.
-- `--check` selects configured verifier names; `--path` keeps turns whose pre-to-post diff touched the file or directory; `--session` keeps one session.
-- JSON `result.kind` is `turn`, `outside_recorded_turns`, or `not_bisectable`. `result.first_bad`, `result.last_good`, `result.changed`, `result.failed_checks`, `result.culprit`, and `result.skipped_between` carry the evidence. Exit `0` identified a first failing state; `3` means not bisectable; `1` means an operational error.
+- `--check` selects configured verifier names; `--path` keeps turns whose pre-to-post diff touched the workspace-relative file or directory; `--session` keeps one session. Excluded turns are still disclosed when they were active in the result window.
+- JSON `result.kind` is `turn`, `ambiguous`, `outside_recorded_turns`, or `not_bisectable`. `result.first_bad`, `result.last_good`, `result.changed`, `result.failed_checks`, `result.participants`, and `result.culprit` carry the evidence. Exit `0` identified a pass-to-fail transition; `3` means not bisectable; `1` means an operational error.

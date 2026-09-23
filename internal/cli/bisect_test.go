@@ -20,11 +20,15 @@ import (
 // Ways bisect can go wrong, each covered below through the real command:
 //
 //   - blaming a turn when the break happened between turns (human edits);
+//   - blaming one turn when another session's turn overlapped the window,
+//     or when an unfinished turn may still have been editing;
+//   - blaming a turn when --path or --session excluded another turn that was
+//     active inside the window;
 //   - reporting a culprit when the good endpoint fails or the bad endpoint
 //     passes, instead of refusing to bisect;
 //   - counting a check that could not launch as a failed state;
-//   - hiding turns that --path excluded from the window where the break sits;
 //   - selecting or launching a check that --check did not name;
+//   - accepting a --path form that can never match a recorded change;
 //   - wasting runs on identical consecutive checkpoints;
 //   - touching the workspace, the private refs, the user's Git state, or
 //     leaving evaluation directories behind.
@@ -144,11 +148,12 @@ func TestBisectReportsBreaksOutsideRecordedTurns(t *testing.T) {
 	}
 }
 
-func TestBisectPathFilterNarrowsCandidatesAndDisclosesSkippedTurns(t *testing.T) {
+func TestBisectPathFilterNarrowsCandidatesAndDisclosesExcludedTurns(t *testing.T) {
 	fixture := bisectFixture(t)
 	fixture.turn(func() { fixture.write("other.txt", "1\n") })
 	fixture.turn(func() { fixture.write("app.txt", "broken\n") })
 	fixture.turn(func() { fixture.write("other.txt", "3\n") })
+	fixture.turn(func() { fixture.write("app.txt", "still broken\n") })
 	writeVerifyConfig(t, fixture.repo, []verifyConfigEntry{{Name: "content", Mode: "inspect", Args: []string{"app.txt", "ok\n"}}})
 
 	output, err := executeVerifyCommand(t, fixture.root(), "bisect", "--path", "app.txt", "--json")
@@ -159,31 +164,120 @@ func TestBisectPathFilterNarrowsCandidatesAndDisclosesSkippedTurns(t *testing.T)
 	if report.Result.Kind != bisect.KindTurn || report.Result.Culprit == nil || report.Result.Culprit.TurnID.Uint64() != 2 {
 		t.Fatalf("result = %#v", report.Result)
 	}
-	if len(report.States) != 2 || len(report.Runs) != 2 {
+	if len(report.States) != 4 || len(report.Runs) != 3 {
 		t.Fatalf("states = %d runs = %d", len(report.States), len(report.Runs))
 	}
-	if len(report.ExcludedTurns) != 2 {
+	if len(report.ExcludedTurns) != 2 || report.ExcludedTurns[0].ExcludedBy != bisect.ExcludedByPath {
 		t.Fatalf("excluded = %#v", report.ExcludedTurns)
 	}
 
-	// Excluding the real culprit must not silently blame something else.
+	// Excluding the real culprit must not blame something else. Only the
+	// excluded turn inside the window is a participant; turn 4 is after it.
 	output, err = executeVerifyCommand(t, fixture.root(), "bisect", "--path", "other.txt", "--json")
 	if err != nil {
 		t.Fatalf("bisect --path other.txt: %v\n%s", err, output)
 	}
 	report = decodeBisectReport(t, output)
-	if report.Result.Kind != bisect.KindOutsideRecordedTurns {
+	if report.Result.Kind != bisect.KindAmbiguous || report.Result.Culprit != nil {
 		t.Fatalf("result = %#v", report.Result)
 	}
-	if len(report.Result.SkippedBetween) != 1 || report.Result.SkippedBetween[0].TurnID.Uint64() != 2 {
-		t.Fatalf("skipped between = %#v", report.Result.SkippedBetween)
+	if got := report.Result.FirstBad.Display(); got != fixture.session.String()+":3:pre" {
+		t.Fatalf("first bad = %s", got)
+	}
+	participants := report.Result.Participants
+	if len(participants) != 1 || participants[0].TurnID.Uint64() != 2 || participants[0].ExcludedBy != bisect.ExcludedByPath {
+		t.Fatalf("participants = %#v", participants)
 	}
 	human, err := executeVerifyCommand(t, fixture.root(), "bisect", "--path", "other.txt")
 	if err != nil {
 		t.Fatalf("bisect human: %v\n%s", err, human)
 	}
-	if !strings.Contains(human, "excluded by --path") {
-		t.Fatalf("human output does not disclose skipped turns:\n%s", human)
+	for _, want := range []string{"culprit: ambiguous", fixture.session.String() + ":2 (excluded by --path)"} {
+		if !strings.Contains(human, want) {
+			t.Fatalf("human output missing %q:\n%s", want, human)
+		}
+	}
+
+	for _, test := range []struct{ path, want string }{
+		{path: "/" + filepath.ToSlash(fixture.root()) + "/app.txt", want: "must be relative"},
+		{path: "missing.txt", want: "no completed turn matches"},
+	} {
+		_, err := executeVerifyCommand(t, fixture.root(), "bisect", "--path", test.path)
+		if err == nil || !strings.Contains(err.Error(), test.want) {
+			t.Fatalf("--path %q error = %v, want %q", test.path, err, test.want)
+		}
+	}
+}
+
+func TestBisectDoesNotBlameOneOfTwoOverlappingTurns(t *testing.T) {
+	fixture := bisectFixture(t)
+	other, _ := primitives.ParseSessionID("other-session")
+	fixture.turn(func() { fixture.write("other.txt", "1\n") })
+	fixture.start(fixture.session)
+	fixture.start(other)
+	fixture.write("app.txt", "broken\n")
+	fixture.finish(other)
+	fixture.write("other.txt", "2\n")
+	fixture.finish(fixture.session)
+	fixture.turn(func() { fixture.write("other.txt", "3\n") })
+	writeVerifyConfig(t, fixture.repo, []verifyConfigEntry{{Name: "content", Mode: "inspect", Args: []string{"app.txt", "ok\n"}}})
+
+	output, err := executeVerifyCommand(t, fixture.root(), "bisect", "--json")
+	if err != nil {
+		t.Fatalf("bisect: %v\n%s", err, output)
+	}
+	report := decodeBisectReport(t, output)
+	if report.Result.Kind != bisect.KindAmbiguous || report.Result.Culprit != nil {
+		t.Fatalf("result = %#v", report.Result)
+	}
+	if got := report.Result.FirstBad.Display(); got != other.String()+":1:post" {
+		t.Fatalf("first bad = %s", got)
+	}
+	seen := make(map[string]bool)
+	for _, participant := range report.Result.Participants {
+		seen[participant.String()] = true
+	}
+	if len(seen) != 2 || !seen[other.String()+":1"] || !seen[fixture.session.String()+":2"] {
+		t.Fatalf("participants = %#v", report.Result.Participants)
+	}
+	// State order follows capture time, so the overlapping turn's pre
+	// checkpoint sits before the other session's post checkpoint.
+	displays := make([]string, 0, len(report.States))
+	for _, state := range report.States {
+		displays = append(displays, state.Display())
+	}
+	if got := strings.Join(displays, " "); !strings.Contains(got, other.String()+":1:post "+fixture.session.String()+":2:post") {
+		t.Fatalf("state order = %s", got)
+	}
+}
+
+func TestBisectDisclosesUnfinishedTurnsInTheWindow(t *testing.T) {
+	fixture := bisectFixture(t)
+	other, _ := primitives.ParseSessionID("other-session")
+	fixture.turn(func() { fixture.write("other.txt", "1\n") })
+	fixture.start(other)
+	fixture.write("app.txt", "broken\n")
+	fixture.turn(func() { fixture.write("other.txt", "3\n") })
+	writeVerifyConfig(t, fixture.repo, []verifyConfigEntry{{Name: "content", Mode: "inspect", Args: []string{"app.txt", "ok\n"}}})
+
+	output, err := executeVerifyCommand(t, fixture.root(), "bisect", "--json")
+	if err != nil {
+		t.Fatalf("bisect: %v\n%s", err, output)
+	}
+	report := decodeBisectReport(t, output)
+	if report.Result.Kind != bisect.KindAmbiguous {
+		t.Fatalf("result = %#v", report.Result)
+	}
+	participants := report.Result.Participants
+	if len(participants) != 1 || participants[0].SessionID != other || !participants[0].Incomplete {
+		t.Fatalf("participants = %#v", participants)
+	}
+	human, err := executeVerifyCommand(t, fixture.root(), "bisect")
+	if err != nil {
+		t.Fatalf("bisect human: %v\n%s", err, human)
+	}
+	if !strings.Contains(human, other.String()+":1 (unfinished)") {
+		t.Fatalf("human output missing unfinished turn:\n%s", human)
 	}
 }
 
@@ -328,8 +422,19 @@ func TestBisectSessionFlagLimitsHistory(t *testing.T) {
 		t.Fatalf("bisect --session: %v\n%s", err, output)
 	}
 	report = decodeBisectReport(t, output)
-	if report.Result.Kind != bisect.KindOutsideRecordedTurns {
+	if report.Result.Kind != bisect.KindAmbiguous || report.Result.Culprit != nil {
 		t.Fatalf("result = %#v", report.Result)
+	}
+	participants := report.Result.Participants
+	if len(participants) != 1 || participants[0].SessionID != other || participants[0].ExcludedBy != bisect.ExcludedBySession {
+		t.Fatalf("participants = %#v", participants)
+	}
+	human, err := executeVerifyCommand(t, fixture.root(), "bisect", "--session", fixture.session.String())
+	if err != nil {
+		t.Fatalf("bisect human: %v\n%s", err, human)
+	}
+	if !strings.Contains(human, other.String()+":1 (excluded by --session)") {
+		t.Fatalf("human output missing excluded session turn:\n%s", human)
 	}
 }
 
@@ -373,6 +478,13 @@ func (fixture *bisectTestFixture) turn(during func()) {
 
 func (fixture *bisectTestFixture) turnIn(sessionID primitives.SessionID, during func()) {
 	fixture.t.Helper()
+	fixture.start(sessionID)
+	during()
+	fixture.finish(sessionID)
+}
+
+func (fixture *bisectTestFixture) start(sessionID primitives.SessionID) {
+	fixture.t.Helper()
 	fixture.next[sessionID]++
 	turnID, err := primitives.NewTurnID(fixture.next[sessionID])
 	if err != nil {
@@ -382,7 +494,11 @@ func (fixture *bisectTestFixture) turnIn(sessionID primitives.SessionID, during 
 		fixture.t.Fatalf("start turn %s:%s: %v", sessionID, turnID, err)
 	}
 	fixture.active = sessionID
-	during()
+}
+
+func (fixture *bisectTestFixture) finish(sessionID primitives.SessionID) {
+	fixture.t.Helper()
+	turnID, _ := primitives.NewTurnID(fixture.next[sessionID])
 	if _, err := fixture.recorder.Finish(sessionID, turnID); err != nil {
 		fixture.t.Fatalf("finish turn %s:%s: %v", sessionID, turnID, err)
 	}

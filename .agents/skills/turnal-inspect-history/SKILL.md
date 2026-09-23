@@ -66,9 +66,9 @@ Interpret exit codes precisely: `0` means every configured check passed, `3` mea
 
 ## Find the turn that broke a check
 
-Use `turnal bisect --json` when the user asks which change or which turn made a check start failing. It binary searches completed turns with the repository verifiers in isolated directories and never modifies the workspace. Narrow it with `--check <name>` for one failing check, `--path <file>` for turns that touched a file, or `--session <id>`.
+Use `turnal bisect --json` when the user asks which change or which turn made a check start failing. It binary searches completed turns with the repository verifiers in isolated directories and never modifies the workspace. Narrow it with `--check <name>` for one failing check, `--path <file>` for turns that touched a workspace-relative file, or `--session <id>`.
 
-Read `result.kind` before reporting. `turn` names a culprit in `result.culprit` with its recorded prompt and intent statements. `outside_recorded_turns` means the break sits between two turns and must not be attributed to an agent turn; report the files in `result.changed` instead. `not_bisectable` means the endpoints did not bracket a break. Mention any turns in `result.skipped_between`, because a `--path` filter excluded them from the search even though they changed the workspace inside the final window. Exit `0` means a first failing state was identified, `3` means not bisectable, and `1` means an operational error.
+Read `result.kind` before reporting. `turn` names a culprit in `result.culprit` with its recorded prompt and intent statements. `ambiguous` means more than one turn was active between `result.last_good` and `result.first_bad`, or a turn the filters excluded or an unfinished turn was; report every entry in `result.participants` and do not pick one. `outside_recorded_turns` means no turn was active in that window; report the files in `result.changed` instead. `not_bisectable` means the endpoints did not bracket a break. The last good and first bad states are adjacent and both verified, but with a flaky history the transition is not necessarily the earliest one. Exit `0` means a transition was identified, `3` means not bisectable, and `1` means an operational error.
 
 ## Report findings
 
