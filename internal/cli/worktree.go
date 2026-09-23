@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 
 	"github.com/AadiJo/turnal/internal/checkpoint"
@@ -76,11 +75,7 @@ func worktreeAttachCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			absoluteStore, err := filepath.Abs(storePath)
-			if err != nil {
-				return fmt.Errorf("resolve store path: %w", err)
-			}
-			repo, err := checkpoint.OpenAt(root, absoluteStore)
+			repo, err := checkpoint.OpenExplicitAt(root, storePath)
 			if err != nil {
 				return err
 			}
