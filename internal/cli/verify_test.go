@@ -285,12 +285,19 @@ func cliVerifyRepo(t *testing.T) *checkpoint.Repo {
 
 func cliVerifyRepoWithUserGit(t *testing.T) *checkpoint.Repo {
 	t.Helper()
+	return cliVerifyRepoWithUserGitAt(t, t.TempDir())
+}
+
+// cliVerifyRepoWithUserGitAt initializes a user Git repository and a Turnal
+// store in an existing directory chosen by the test.
+func cliVerifyRepoWithUserGitAt(t *testing.T, directory string) *checkpoint.Repo {
+	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is required")
 	}
 	// Keep this test's store out of the developer's real project registry.
 	t.Setenv("TURNAL_STATE_DIR", t.TempDir())
-	root, err := primitives.ParseWorkspaceRoot(t.TempDir())
+	root, err := primitives.ParseWorkspaceRoot(directory)
 	if err != nil {
 		t.Fatalf("ParseWorkspaceRoot: %v", err)
 	}
@@ -306,7 +313,14 @@ func cliVerifyRepoWithUserGit(t *testing.T) *checkpoint.Repo {
 
 func cliRecordedVerifyRepo(t *testing.T) (*checkpoint.Repo, primitives.SessionID, primitives.TurnID) {
 	t.Helper()
-	repo := cliVerifyRepoWithUserGit(t)
+	return cliRecordedVerifyRepoAt(t, t.TempDir())
+}
+
+// cliRecordedVerifyRepoAt records one manual turn that changes app.txt from
+// "before" to "after" in a workspace at the given directory.
+func cliRecordedVerifyRepoAt(t *testing.T, directory string) (*checkpoint.Repo, primitives.SessionID, primitives.TurnID) {
+	t.Helper()
+	repo := cliVerifyRepoWithUserGitAt(t, directory)
 	initializeUserGitFixture(t, repo.WorkspaceRoot.String())
 	writeCLIFile(t, repo.WorkspaceRoot.String(), ".gitignore", "ignored/\n")
 	writeCLIFile(t, repo.WorkspaceRoot.String(), "ignored/cache.txt", "ignored\n")
@@ -366,11 +380,14 @@ func runUserGit(t *testing.T, root string, args ...string) string {
 	return string(output)
 }
 
+// cleanCLIGitEnv removes every GIT_* variable, in any case because Windows
+// environment names are case-insensitive, so fixture Git commands always act
+// on the directory they run in.
 func cleanCLIGitEnv(environment []string) []string {
 	cleaned := make([]string, 0, len(environment))
 	for _, entry := range environment {
 		key, _, ok := strings.Cut(entry, "=")
-		if ok && !strings.HasPrefix(key, "GIT_") {
+		if ok && !strings.HasPrefix(strings.ToUpper(key), "GIT_") {
 			cleaned = append(cleaned, entry)
 		}
 	}

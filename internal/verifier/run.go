@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -293,30 +294,63 @@ func (buffer *boundedBuffer) result() (string, bool) {
 	return string(append([]byte(nil), buffer.data...)), buffer.truncated
 }
 
-// checkpointEnvironment confines Git to a materialized checkpoint. Checkpoint
-// evaluations live under .turnal/tmp inside the project workspace, so a
+// repositoryVariables are the variables that choose which repository Git
+// uses. The first group is Git's own list (`git rev-parse --local-env-vars`,
+// which Git clears when it enters another repository); the last two widen or
+// replace discovery. Other GIT_* settings, such as author identity or an SSH
+// command, are the caller's and stay inherited.
+var repositoryVariables = []string{
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS",
+	"GIT_CONFIG_COUNT", "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE",
+	"GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE", "GIT_INDEX_FILE",
+	"GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX",
+	"GIT_SHALLOW_FILE", "GIT_COMMON_DIR",
+	"GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+}
+
+// checkpointEnvironment keeps Git inside a materialized checkpoint.
+// Evaluations live under .turnal/tmp inside the project workspace, so a
 // check's git would otherwise walk up into the project repository and could
-// read or rewrite it; inherited GIT_DIR-style variables, which Git sets for
-// hooks, would redirect it there from any directory. Like fork and Turnal's
-// hidden Git operations, this removes inherited GIT_* variables, then stops
-// repository discovery at the directory that holds the evaluation root.
-// Names are compared case-insensitively because Windows environments are.
+// read or rewrite it, and inherited GIT_DIR-style variables, which Git sets
+// for hooks, would redirect it there from any directory.
+//
+// It drops the repository-selecting variables and lists every ancestor of the
+// evaluation root in GIT_CEILING_DIRECTORIES. Git never walks up into a
+// ceiling, so discovery that starts at the root or at any ancestor below the
+// project stops where it started. Git splits that variable on the path-list
+// separator with no escaping, so a path containing one cannot be bounded and
+// is refused. Names are compared case-insensitively because Windows
+// environments are.
+//
+// This bounds discovery by the git CLI only. A check that names the project
+// path, a tool with its own discovery, or a captured symlink that points
+// outside the evaluation can still reach the project.
 func checkpointEnvironment(environment []string, root string) ([]string, error) {
-	absolute, err := filepath.Abs(root)
+	resolved, err := filepath.Abs(root)
 	if err != nil {
 		return nil, fmt.Errorf("resolve checkpoint evaluation root: %w", err)
 	}
-	ceiling := filepath.Dir(absolute)
-	if resolved, err := filepath.EvalSymlinks(ceiling); err == nil {
-		ceiling = resolved
+	if real, err := filepath.EvalSymlinks(resolved); err == nil {
+		resolved = real
 	}
+	var ceilings []string
+	for directory := filepath.Dir(resolved); ; directory = filepath.Dir(directory) {
+		if strings.ContainsRune(directory, os.PathListSeparator) {
+			return nil, fmt.Errorf("cannot keep checkpoint checks out of the project's Git repository: %s contains the path-list separator %q, which GIT_CEILING_DIRECTORIES cannot escape", directory, os.PathListSeparator)
+		}
+		ceilings = append(ceilings, directory)
+		if filepath.Dir(directory) == directory {
+			break
+		}
+	}
+
 	isolated := make([]string, 0, len(environment)+1)
 	for _, entry := range environment {
 		name, _, _ := strings.Cut(entry, "=")
-		if strings.HasPrefix(strings.ToUpper(name), "GIT_") {
+		if slices.ContainsFunc(repositoryVariables, func(variable string) bool { return strings.EqualFold(name, variable) }) {
 			continue
 		}
 		isolated = append(isolated, entry)
 	}
-	return append(isolated, "GIT_CEILING_DIRECTORIES="+ceiling), nil
+	return append(isolated, "GIT_CEILING_DIRECTORIES="+strings.Join(ceilings, string(os.PathListSeparator))), nil
 }
