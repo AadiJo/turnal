@@ -29,7 +29,8 @@ import (
 //     escaping, so a workspace path containing one silently disables the
 //     ceiling;
 //   - the isolation drops Git settings that do not select a repository
-//     (author identity, SSH command), so checks behave differently than live;
+//     (author identity, SSH command, GIT_CONFIG_COUNT entries such as
+//     insteadOf credentials), so checks behave differently than live;
 //   - the isolation bounds discovery too tightly and breaks a repository the
 //     check creates inside the evaluation root;
 //   - the isolation leaks into live verification, which legitimately runs
@@ -119,9 +120,13 @@ func TestVerifyCheckpointChecksKeepGitBehaviorInsideTheEvaluation(t *testing.T) 
 		{Name: "init", Args: []string{"init", "-q"}},
 		{Name: "toplevel", Args: []string{"rev-parse", "--show-toplevel"}},
 		{Name: "identity", Args: []string{"var", "GIT_AUTHOR_IDENT"}},
+		{Name: "config", Args: []string{"config", "--get", "turnal.probe"}},
 	})
 	t.Setenv("GIT_AUTHOR_NAME", "turnal-probe")
 	t.Setenv("GIT_AUTHOR_EMAIL", "probe@example.invalid")
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "turnal.probe")
+	t.Setenv("GIT_CONFIG_VALUE_0", "kept")
 
 	output, err := executeVerifyCommand(t, repo.WorkspaceRoot.String(), "verify", sessionID.String()+":"+turnID.String()+":post", "--json")
 	if err != nil {
@@ -134,6 +139,9 @@ func TestVerifyCheckpointChecksKeepGitBehaviorInsideTheEvaluation(t *testing.T) 
 	}
 	if !strings.Contains(checks[2].Stdout, "turnal-probe <probe@example.invalid>") {
 		t.Fatalf("author identity was not inherited: %q", checks[2].Stdout)
+	}
+	if got := strings.TrimSpace(checks[3].Stdout); got != "kept" {
+		t.Fatalf("environment config was not inherited: %q (%s)", got, checks[3].Status)
 	}
 }
 

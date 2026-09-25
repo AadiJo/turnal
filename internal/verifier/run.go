@@ -295,55 +295,34 @@ func (buffer *boundedBuffer) result() (string, bool) {
 }
 
 // repositoryVariables are the variables that choose which repository Git
-// uses. The first group is Git's own list (`git rev-parse --local-env-vars`,
-// which Git clears when it enters another repository); the last two widen or
-// replace discovery. Other GIT_* settings, such as author identity or an SSH
-// command, are the caller's and stay inherited.
+// uses: Git's own `git rev-parse --local-env-vars` list, minus the two it
+// keeps when entering another repository (GIT_CONFIG_PARAMETERS and
+// GIT_CONFIG_COUNT carry settings such as insteadOf credentials and cannot
+// relocate a repository), plus the two that widen or replace discovery.
+// Other GIT_* settings, such as author identity or an SSH command, are the
+// caller's and stay inherited.
 var repositoryVariables = []string{
-	"GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS",
-	"GIT_CONFIG_COUNT", "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE",
-	"GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE", "GIT_INDEX_FILE",
-	"GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX",
-	"GIT_SHALLOW_FILE", "GIT_COMMON_DIR",
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_OBJECT_DIRECTORY",
+	"GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE",
+	"GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE",
+	"GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_COMMON_DIR",
 	"GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM",
 }
 
-// checkpointEnvironment keeps Git inside a materialized checkpoint.
-// Evaluations live under .turnal/tmp inside the project workspace, so a
-// check's git would otherwise walk up into the project repository and could
-// read or rewrite it, and inherited GIT_DIR-style variables, which Git sets
-// for hooks, would redirect it there from any directory.
+// checkpointEnvironment keeps a checkpoint check's git from discovering a
+// repository above the evaluation root. It drops the repository-selecting
+// variables, which Git sets for hooks and which would redirect git from any
+// directory, and lists the root's ancestors in GIT_CEILING_DIRECTORIES. Names
+// are compared case-insensitively because Windows environments are.
 //
-// It drops the repository-selecting variables and lists every ancestor of the
-// evaluation root in GIT_CEILING_DIRECTORIES. Git never walks up into a
-// ceiling, so discovery that starts at the root or at any ancestor below the
-// project stops where it started. Git splits that variable on the path-list
-// separator with no escaping, so a path containing one cannot be bounded and
-// is refused. Names are compared case-insensitively because Windows
-// environments are.
-//
-// This bounds discovery by the git CLI only. A check that names the project
-// path, a tool with its own discovery, or a captured symlink that points
-// outside the evaluation can still reach the project.
+// This bounds discovery by the git CLI only. A check that names another path,
+// a tool with its own discovery, or a captured symlink that points outside
+// the evaluation is not contained.
 func checkpointEnvironment(environment []string, root string) ([]string, error) {
-	resolved, err := filepath.Abs(root)
+	ceilings, _, err := gitCeilings(root)
 	if err != nil {
-		return nil, fmt.Errorf("resolve checkpoint evaluation root: %w", err)
+		return nil, err
 	}
-	if real, err := filepath.EvalSymlinks(resolved); err == nil {
-		resolved = real
-	}
-	var ceilings []string
-	for directory := filepath.Dir(resolved); ; directory = filepath.Dir(directory) {
-		if strings.ContainsRune(directory, os.PathListSeparator) {
-			return nil, fmt.Errorf("cannot keep checkpoint checks out of the project's Git repository: %s contains the path-list separator %q, which GIT_CEILING_DIRECTORIES cannot escape", directory, os.PathListSeparator)
-		}
-		ceilings = append(ceilings, directory)
-		if filepath.Dir(directory) == directory {
-			break
-		}
-	}
-
 	isolated := make([]string, 0, len(environment)+1)
 	for _, entry := range environment {
 		name, _, _ := strings.Cut(entry, "=")
@@ -352,5 +331,36 @@ func checkpointEnvironment(environment []string, root string) ([]string, error) 
 		}
 		isolated = append(isolated, entry)
 	}
-	return append(isolated, "GIT_CEILING_DIRECTORIES="+strings.Join(ceilings, string(os.PathListSeparator))), nil
+	if len(ceilings) > 0 {
+		isolated = append(isolated, "GIT_CEILING_DIRECTORIES="+strings.Join(ceilings, string(os.PathListSeparator)))
+	}
+	return isolated, nil
+}
+
+// gitCeilings lists every ancestor of an evaluation root, resolved through
+// symlinks, for GIT_CEILING_DIRECTORIES. Git never walks up into a ceiling,
+// so discovery that starts at the root or at any listed ancestor stops where
+// it started. Git splits the variable on the path-list separator with no
+// escaping, so an ancestor containing one cannot be listed; the lowest such
+// ancestor is returned as unbounded, and discovery can reach it and anything
+// above it that is not listed.
+func gitCeilings(root string) (ceilings []string, unbounded string, err error) {
+	absolute, err := filepath.Abs(root)
+	if err != nil {
+		return nil, "", fmt.Errorf("resolve checkpoint evaluation root: %w", err)
+	}
+	parent := filepath.Dir(absolute)
+	if resolved, err := filepath.EvalSymlinks(parent); err == nil {
+		parent = resolved
+	}
+	for directory := parent; ; directory = filepath.Dir(directory) {
+		if !strings.ContainsRune(directory, os.PathListSeparator) {
+			ceilings = append(ceilings, directory)
+		} else if unbounded == "" {
+			unbounded = directory
+		}
+		if filepath.Dir(directory) == directory {
+			return ceilings, unbounded, nil
+		}
+	}
 }

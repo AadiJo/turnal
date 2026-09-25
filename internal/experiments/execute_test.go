@@ -329,6 +329,31 @@ func TestExecuteRunsFrozenCaseVerifiersAgainstPostCheckpoint(t *testing.T) {
 	}
 }
 
+// Fork attempt verification runs under the system temporary directory, not
+// the project, so a temp path that Git's ceiling list cannot express must not
+// stop it. Only evaluations inside the workspace are refused.
+func TestExecuteVerifiesAttemptsWhenTheTempPathCannotBeBounded(t *testing.T) {
+	t.Setenv("TURNAL_FORK_VERIFY_EXPECT", "verified result\n")
+	verifierConfig := fmt.Sprintf("version = 1\n[[verify]]\nname = \"result-content\"\ncommand = %q\nargs = [\"-test.run=^TestForkVerifierHelper$\"]\ntimeout = \"10s\"\n", os.Args[0])
+	repo, definition := experimentCaseWithConfig(t, verifierConfig)
+	temp := filepath.Join(t.TempDir(), "odd"+string(os.PathListSeparator)+"temp")
+	if err := os.Mkdir(temp, 0o700); err != nil {
+		t.Skipf("this filesystem cannot hold the path-list separator in a name: %v", err)
+	}
+	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(name, temp)
+	}
+	result, err := Execute(context.Background(), repo, Request{Case: definition, Command: []string{"runner"}, Runner: runnerFunc(func(_ context.Context, root string, _ []string, _ []string) (int, error) {
+		return 0, os.WriteFile(filepath.Join(root, "app.txt"), []byte("verified result\n"), 0o644)
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Verification == nil || !result.Verification.Successful() {
+		t.Fatalf("verification = %#v", result.Verification)
+	}
+}
+
 func TestForkVerifierHelper(t *testing.T) {
 	want := os.Getenv("TURNAL_FORK_VERIFY_EXPECT")
 	if want == "" {
