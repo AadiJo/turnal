@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -47,6 +48,13 @@ func Run(ctx context.Context, request Request) (Report, error) {
 	}
 	if request.Environment == nil {
 		request.Environment = os.Environ()
+	}
+	if request.Target.Kind == TargetCheckpoint {
+		environment, err := checkpointEnvironment(request.Environment, request.Root)
+		if err != nil {
+			return Report{}, err
+		}
+		request.Environment = environment
 	}
 	if request.newProcessControllerFunc == nil {
 		request.newProcessControllerFunc = newProcessController
@@ -283,4 +291,32 @@ func (buffer *boundedBuffer) result() (string, bool) {
 	buffer.mu.Lock()
 	defer buffer.mu.Unlock()
 	return string(append([]byte(nil), buffer.data...)), buffer.truncated
+}
+
+// checkpointEnvironment confines Git to a materialized checkpoint. Checkpoint
+// evaluations live under .turnal/tmp inside the project workspace, so a
+// check's git would otherwise walk up into the project repository and could
+// read or rewrite it; inherited GIT_DIR-style variables, which Git sets for
+// hooks, would redirect it there from any directory. Like fork and Turnal's
+// hidden Git operations, this removes inherited GIT_* variables, then stops
+// repository discovery at the directory that holds the evaluation root.
+// Names are compared case-insensitively because Windows environments are.
+func checkpointEnvironment(environment []string, root string) ([]string, error) {
+	absolute, err := filepath.Abs(root)
+	if err != nil {
+		return nil, fmt.Errorf("resolve checkpoint evaluation root: %w", err)
+	}
+	ceiling := filepath.Dir(absolute)
+	if resolved, err := filepath.EvalSymlinks(ceiling); err == nil {
+		ceiling = resolved
+	}
+	isolated := make([]string, 0, len(environment)+1)
+	for _, entry := range environment {
+		name, _, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(strings.ToUpper(name), "GIT_") {
+			continue
+		}
+		isolated = append(isolated, entry)
+	}
+	return append(isolated, "GIT_CEILING_DIRECTORIES="+ceiling), nil
 }

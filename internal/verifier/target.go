@@ -124,7 +124,7 @@ func PrepareCheckpoint(repo *checkpoint.Repo, sessionID primitives.SessionID, tu
 		Commit:        recorded.CommitSHA.String(),
 		Mutable:       false,
 		Reproducible:  false,
-		Environment:   "inherited from the turnal process; values are not recorded",
+		Environment:   "inherited from the turnal process without GIT_* variables; Git repository discovery stops at the evaluation directory; values are not recorded",
 		Limitations: []string{
 			"Only the captured project surface was materialized; ignored, secrets-denied, and otherwise uncaptured paths are absent.",
 			"Turnal and Git metadata directories are absent from the evaluation surface.",
