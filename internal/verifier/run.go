@@ -315,13 +315,24 @@ var repositoryVariables = []string{
 // directory, and lists the root's ancestors in GIT_CEILING_DIRECTORIES. Names
 // are compared case-insensitively because Windows environments are.
 //
+// Git splits that variable on the path-list separator with no escaping, so
+// ancestors whose paths contain one cannot be listed and stay open to
+// discovery. When one of those holds a repository, the check could reach it,
+// so this refuses instead of running unbounded. Checkpoint evaluations live
+// inside the project workspace, so that is the common way to get here.
+//
 // This bounds discovery by the git CLI only. A check that names another path,
 // a tool with its own discovery, or a captured symlink that points outside
 // the evaluation is not contained.
 func checkpointEnvironment(environment []string, root string) ([]string, error) {
-	ceilings, _, err := gitCeilings(root)
+	ceilings, exposed, err := gitCeilings(root)
 	if err != nil {
 		return nil, err
+	}
+	for _, directory := range exposed {
+		if holdsGitRepository(directory) {
+			return nil, fmt.Errorf("cannot keep checkpoint checks out of the Git repository at %s: its path contains the path-list separator %q, which GIT_CEILING_DIRECTORIES cannot escape; move it to a path without one", directory, os.PathListSeparator)
+		}
 	}
 	isolated := make([]string, 0, len(environment)+1)
 	for _, entry := range environment {
@@ -338,29 +349,43 @@ func checkpointEnvironment(environment []string, root string) ([]string, error) 
 }
 
 // gitCeilings lists every ancestor of an evaluation root, resolved through
-// symlinks, for GIT_CEILING_DIRECTORIES. Git never walks up into a ceiling,
-// so discovery that starts at the root or at any listed ancestor stops where
-// it started. Git splits the variable on the path-list separator with no
-// escaping, so an ancestor containing one cannot be listed; the lowest such
-// ancestor is returned as unbounded, and discovery can reach it and anything
-// above it that is not listed.
-func gitCeilings(root string) (ceilings []string, unbounded string, err error) {
+// symlinks, that GIT_CEILING_DIRECTORIES can express. Git never walks up into
+// a ceiling, so discovery that starts at the root or at any listed ancestor
+// stops where it started. An ancestor whose path contains the path-list
+// separator cannot be listed; because every directory below it shares that
+// path, those form one run starting at the root's parent, returned as
+// exposed. Git still examines each exposed directory during discovery.
+func gitCeilings(root string) (ceilings, exposed []string, err error) {
 	absolute, err := filepath.Abs(root)
 	if err != nil {
-		return nil, "", fmt.Errorf("resolve checkpoint evaluation root: %w", err)
+		return nil, nil, fmt.Errorf("resolve checkpoint evaluation root: %w", err)
 	}
 	parent := filepath.Dir(absolute)
 	if resolved, err := filepath.EvalSymlinks(parent); err == nil {
 		parent = resolved
 	}
 	for directory := parent; ; directory = filepath.Dir(directory) {
-		if !strings.ContainsRune(directory, os.PathListSeparator) {
+		if strings.ContainsRune(directory, os.PathListSeparator) {
+			exposed = append(exposed, directory)
+		} else {
 			ceilings = append(ceilings, directory)
-		} else if unbounded == "" {
-			unbounded = directory
 		}
 		if filepath.Dir(directory) == directory {
-			return ceilings, unbounded, nil
+			return ceilings, exposed, nil
 		}
 	}
+}
+
+// holdsGitRepository reports whether Git's discovery would stop at directory:
+// it has a .git entry, or it is itself a bare repository.
+func holdsGitRepository(directory string) bool {
+	if _, err := os.Lstat(filepath.Join(directory, ".git")); err == nil {
+		return true
+	}
+	for _, name := range []string{"HEAD", "objects", "refs"} {
+		if _, err := os.Lstat(filepath.Join(directory, name)); err != nil {
+			return false
+		}
+	}
+	return true
 }

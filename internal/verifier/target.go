@@ -103,15 +103,6 @@ func PrepareCheckpoint(repo *checkpoint.Repo, sessionID primitives.SessionID, tu
 		return PreparedTarget{}, err
 	}
 	root := filepath.Join(ownedPath, materializedDirName)
-	// The evaluation sits inside the project workspace, so Run's Git ceiling
-	// must cover every ancestor up to the project; otherwise a check's git
-	// walks into the project repository.
-	if _, unbounded, err := gitCeilings(root); err != nil || unbounded != "" {
-		if err == nil {
-			err = fmt.Errorf("cannot keep checkpoint checks out of the project's Git repository: %s contains the path-list separator %q, which GIT_CEILING_DIRECTORIES cannot escape; move the workspace to a path without it", unbounded, os.PathListSeparator)
-		}
-		return PreparedTarget{}, errors.Join(err, prepared.Cleanup())
-	}
 	if err := repo.MaterializeCommit(recorded.CommitSHA, root, checkpoint.MaterializeOptions{ApplyCurrentSecretDenyGlobs: true}); err != nil {
 		cleanupErr := prepared.Cleanup()
 		return PreparedTarget{}, errors.Join(fmt.Errorf("materialize verifier checkpoint: %w", err), cleanupErr)
