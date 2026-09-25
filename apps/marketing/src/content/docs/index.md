@@ -393,6 +393,23 @@ turnal verify claude-7f2a:4:post
 
 Verifier definitions must come from the workspace `.turnal/config.toml`; user-level configuration cannot silently add repository commands. Historical files are fixed by the checkpoint, but commands still use the current machine's toolchain, credentials, network, and external services. Human output summarizes every check, while `--json` emits the complete versioned report. A completed verification with failed checks exits with status 3.
 
+### Bisect
+
+`turnal bisect` binary searches recorded checkpoints with the same verifiers to find where the checks go from passing to failing. When exactly one turn was active in that window it names the culprit, shows the agent's recorded prompt and intent, lists the files that turn changed, and prints the failing check's output.
+
+```sh
+# Search every completed turn in this worktree.
+turnal bisect
+
+# Only run one check, and only consider turns that touched one file.
+turnal bisect --check unit-tests --path src/retry.go
+
+# Pin the endpoints and get the versioned report.
+turnal bisect --good claude-7f2a:2 --bad claude-7f2a:9 --json
+```
+
+Candidates are ordered by checkpoint capture time and materialized into a Turnal-owned temporary directory, so Turnal never modifies the active workspace. Both endpoints are verified first, and the reported last good and first bad states are adjacent and both verified. When several turns overlapped that window, a filter excluded one of them, or a turn never finished, the result is ambiguous and lists those turns rather than blaming one. When no turn was active, the change came from outside recorded turns. Like git bisect, the search assumes checks stay failing once broken. Exit status is 0 when a transition is identified, 3 when the endpoints do not bracket a break, and 1 for errors.
+
 ---
 
 ## Reproducibility and cases

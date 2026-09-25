@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/AadiJo/turnal/internal/checkpoint"
 	"github.com/AadiJo/turnal/internal/config"
 	"github.com/AadiJo/turnal/internal/verifier"
 	"github.com/spf13/cobra"
@@ -27,12 +28,9 @@ func verifyCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			effective, origins, err := config.Resolve(repo.WorkspaceRoot.String(), config.Overrides{})
+			verifiers, err := repositoryVerifiers(repo)
 			if err != nil {
 				return err
-			}
-			if origins["verify"] != config.OriginWorkspace || len(effective.Verify) == 0 {
-				return fmt.Errorf("no repository verifiers are configured in %s", config.WorkspacePath(repo.WorkspaceRoot.String()))
 			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
@@ -63,7 +61,7 @@ func verifyCmd() *cobra.Command {
 			report, runErr := verifier.Run(ctx, verifier.Request{
 				Root:      prepared.Root,
 				Target:    prepared.Target,
-				Verifiers: effective.Verify,
+				Verifiers: verifiers,
 			})
 			if runErr != nil {
 				return runErr
@@ -85,4 +83,17 @@ func verifyCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit a versioned JSON verifier report")
 	return cmd
+}
+
+// repositoryVerifiers loads the verifier contract declared in the workspace
+// configuration. User-level configuration cannot add repository commands.
+func repositoryVerifiers(repo *checkpoint.Repo) ([]config.Verifier, error) {
+	effective, origins, err := config.Resolve(repo.WorkspaceRoot.String(), config.Overrides{})
+	if err != nil {
+		return nil, err
+	}
+	if origins["verify"] != config.OriginWorkspace || len(effective.Verify) == 0 {
+		return nil, fmt.Errorf("no repository verifiers are configured in %s", config.WorkspacePath(repo.WorkspaceRoot.String()))
+	}
+	return effective.Verify, nil
 }

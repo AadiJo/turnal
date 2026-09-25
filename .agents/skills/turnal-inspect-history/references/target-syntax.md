@@ -11,6 +11,7 @@ Turnal does not have one universal turn-reference grammar. Choose the shape requ
 | `turnal fork` | `sess_a:7`, `sess_a:turn:7`, or a `case_...` ID | phase forbidden |
 | `turnal case create` | `sess_a:7`, `sess_a:turn:7` | phase forbidden |
 | `turnal verify` | `sess_a:7:pre`, `sess_a:turn:7:post` | phase required |
+| `turnal bisect --good` / `--bad` | `sess_a:7`, `sess_a:7:pre`, `sess_a:turn:7:post` | phase optional, defaults to `post` |
 | `turnal rollback --to` | `sess_a:7`, `sess_a:7:pre`, `sess_a:turn:7:post`, `chk_...`, or a commit SHA prefix | phase optional, defaults to `post` |
 | `turnal replay checkout` / `goto` | session, turn, phased turn, or range forms described below | phase optional for a single turn |
 
@@ -34,6 +35,7 @@ Use `<session>:<turn>` or `<session>:turn:<turn>` with `diff`, `fork`, and `case
 
 - `verify` requires the phase: `<session>:<turn>:<pre|post>` or `<session>:turn:<turn>:<pre|post>`.
 - `rollback` accepts an omitted phase but defaults it to `post`. Write the phase explicitly whenever changing the workspace.
+- `bisect --good` and `--bad` accept an omitted phase and default it to `post`.
 - A single-turn replay may include a phase. If omitted, replay chooses its sequence position according to the replay selection.
 
 ## Replay selections

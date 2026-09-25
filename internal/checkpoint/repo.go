@@ -1737,6 +1737,39 @@ func (repo *Repo) restoreCommit(commit primitives.CommitSHA) error {
 	return repo.removeEmptyDirs(indexPath)
 }
 
+// CommitTrees resolves the tree object behind each checkpoint commit in one
+// read-only Git process. Two checkpoints with equal trees captured identical
+// project surfaces even though their commits differ.
+func (repo *Repo) CommitTrees(commits []primitives.CommitSHA) ([]string, error) {
+	if len(commits) == 0 {
+		return nil, nil
+	}
+	var input strings.Builder
+	for _, commit := range commits {
+		if _, err := primitives.ParseCommitSHA(commit.String()); err != nil {
+			return nil, err
+		}
+		input.WriteString(commit.String() + "^{tree}\n")
+	}
+	output, err := runHiddenGitReadOnlyWithInput(repo, strings.NewReader(input.String()), "cat-file", "--batch-check=%(objecttype) %(objectname)")
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(strings.TrimSuffix(output, "\n"), "\n")
+	if len(lines) != len(commits) {
+		return nil, fmt.Errorf("resolve commit trees: got %d results for %d commits", len(lines), len(commits))
+	}
+	trees := make([]string, len(commits))
+	for i, line := range lines {
+		objectType, objectName, ok := strings.Cut(line, " ")
+		if !ok || objectType != "tree" || objectName == "" {
+			return nil, fmt.Errorf("resolve tree for commit %s: %s", commits[i], line)
+		}
+		trees[i] = objectName
+	}
+	return trees, nil
+}
+
 func (repo *Repo) ListCommitTree(commit primitives.CommitSHA) ([]TreeEntry, error) {
 	parsedCommit, err := primitives.ParseCommitSHA(commit.String())
 	if err != nil {
