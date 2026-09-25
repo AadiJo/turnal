@@ -391,7 +391,7 @@ turnal verify
 turnal verify claude-7f2a:4:post
 ```
 
-Verifier definitions must come from the workspace `.turnal/config.toml`; user-level configuration cannot silently add repository commands. Historical files are fixed by the checkpoint, but commands still use the current machine's toolchain, credentials, network, and external services. Human output summarizes every check, while `--json` emits the complete versioned report. A completed verification with failed checks exits with status 3.
+Verifier definitions must come from the workspace `.turnal/config.toml`; user-level configuration cannot silently add repository commands. Historical files are fixed by the checkpoint, but commands still use the current machine's toolchain, credentials, network, and external services. Historical checks run without the inherited variables that select a Git repository, and Git's repository discovery cannot walk up from the evaluation into the project. This is not a sandbox: a check that names the project path, or a tool that finds repositories without the `git` command, can still reach it. When a Git repository sits on a path containing the path-list separator (`:` or `;`), Git's ceiling list cannot stop discovery before it reaches that repository, so historical verification refuses to run there. Human output summarizes every check, while `--json` emits the complete versioned report. A completed verification with failed checks exits with status 3.
 
 ### Bisect
 

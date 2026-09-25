@@ -394,6 +394,11 @@ func verifyAttempt(ctx context.Context, repo *checkpoint.Repo, definition cases.
 		Environment: forkEnvironment(os.Environ(), root, nil),
 	})
 	if err != nil {
+		// Run returns a report with the error only when checks already ran;
+		// an empty one would fail validation and hide this error.
+		if verificationReport.SchemaVersion == 0 {
+			return nil, fmt.Errorf("verify attempt %s: %w", attemptID, err)
+		}
 		return &verificationReport, fmt.Errorf("verify attempt %s: %w", attemptID, err)
 	}
 	return &verificationReport, nil
